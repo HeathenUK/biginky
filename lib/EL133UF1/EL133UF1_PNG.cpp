@@ -39,6 +39,9 @@ static uint32_t g_minY = UINT32_MAX;
 static uint32_t g_maxY = 0;
 static uint32_t g_minX = UINT32_MAX;
 static uint32_t g_maxX = 0;
+static uint32_t g_drawnCount = 0;
+static uint32_t g_drawnMinY = UINT32_MAX;
+static uint32_t g_drawnMaxY = 0;
 
 // C callback function for pngle
 static void pngle_draw_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]) {
@@ -106,6 +109,11 @@ void EL133UF1_PNG::_onDraw(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const
     }
     
     _display->setPixel(dstX, dstY, color);
+    
+    // Track what we actually drew
+    g_drawnCount++;
+    if ((uint32_t)dstY < g_drawnMinY) g_drawnMinY = dstY;
+    if ((uint32_t)dstY > g_drawnMaxY) g_drawnMaxY = dstY;
 }
 
 PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t len) {
@@ -125,6 +133,9 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     g_maxY = 0;
     g_minX = UINT32_MAX;
     g_maxX = 0;
+    g_drawnCount = 0;
+    g_drawnMinY = UINT32_MAX;
+    g_drawnMaxY = 0;
     
     // Create pngle instance
     pngle_t* pngle = pngle_new();
@@ -171,11 +182,12 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     
     uint32_t elapsed = millis() - t0;
     Serial.printf("PNG: Decoded %ldx%ld in %lu ms\n", _width, _height, elapsed);
-    Serial.printf("PNG: Pixel stats - count=%lu, X range=[%lu-%lu], Y range=[%lu-%lu]\n",
+    Serial.printf("PNG: Callback stats - count=%lu, X range=[%lu-%lu], Y range=[%lu-%lu]\n",
                   g_pixelCount, g_minX, g_maxX, g_minY, g_maxY);
-    Serial.printf("PNG: Expected pixels: %ld, got callbacks for %lu (%.1f%%)\n",
-                  _width * _height, g_pixelCount, 
-                  100.0f * g_pixelCount / (_width * _height));
+    Serial.printf("PNG: Drawn stats - count=%lu, display Y range=[%lu-%lu]\n",
+                  g_drawnCount, g_drawnMinY, g_drawnMaxY);
+    Serial.printf("PNG: Expected pixels: %ld, callbacks=%lu, drawn=%lu\n",
+                  _width * _height, g_pixelCount, g_drawnCount);
     
     pngle_destroy(pngle);
     g_pngInstance = nullptr;

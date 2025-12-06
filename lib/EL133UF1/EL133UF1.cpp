@@ -747,16 +747,29 @@ void EL133UF1::_sendBuffer() {
     
     stepStart = millis();
     uint8_t* bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
-    Serial.printf("    bufA:           %p\n", bufA);
     uint8_t* bufB = (uint8_t*)pmalloc(SEND_HALF_SIZE);
-    Serial.printf("    bufB:           %p\n", bufB);
+    
+    bool singleBufferMode = false;
     
     if (bufA == nullptr || bufB == nullptr) {
-        Serial.printf("EL133UF1: Failed to allocate send buffers (need %lu bytes each)\n", SEND_HALF_SIZE);
-        Serial.printf("    Main buffer at: %p (size %lu)\n", _buffer, (unsigned long)(EL133UF1_WIDTH * EL133UF1_HEIGHT));
+        // Fallback: try single buffer mode - process one half at a time
+        Serial.println("    Two-buffer alloc failed, trying single-buffer fallback...");
         if (bufA) free(bufA);
         if (bufB) free(bufB);
-        return;
+        bufA = nullptr;
+        bufB = nullptr;
+        
+        // Try to allocate just one buffer
+        bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+        if (bufA == nullptr) {
+            Serial.printf("EL133UF1: FATAL - Cannot allocate even single send buffer (%lu KB)\n", 
+                         SEND_HALF_SIZE / 1024);
+            return;
+        }
+        singleBufferMode = true;
+        Serial.printf("    Single buffer:  %p (%lu KB) - slower but works\n", bufA, SEND_HALF_SIZE / 1024);
+    } else {
+        Serial.printf("    Dual buffers:   %p, %p\n", bufA, bufB);
     }
     Serial.printf("    Buffer alloc:   %4lu ms\n", millis() - stepStart);
 
@@ -884,11 +897,9 @@ void EL133UF1::_sendBuffer() {
             currentBuf = 1 - currentBuf;
         }
         
-        free(sramStrip[0]);
-        free(sramStrip[1]);
         Serial.printf("    Rotate/pack:    %4lu ms (DMA+SIMD)\n", millis() - stepStart);
     } else {
-        // Single buffer mode with DMA
+        // Single SRAM strip buffer mode with DMA
         stepStart = millis();
         
         // Process bufA (source rows 0-599) in strips
@@ -902,17 +913,18 @@ void EL133UF1::_sendBuffer() {
             processStrip(sramStrip[0], bufA, stripStart, stripH, 0);
         }
         
-        // Process bufB (source rows 600-1199) in strips
-        for (int stripStart = 600; stripStart < 1200; stripStart += STRIP_ROWS) {
-            int stripH = min(STRIP_ROWS, 1200 - stripStart);
-            
-            dmaMemcpy(sramStrip[0], _buffer + stripStart * EL133UF1_WIDTH,
-                     stripH * EL133UF1_WIDTH);
-            
-            processStrip(sramStrip[0], bufB, stripStart, stripH, 300);
+        // Process bufB (source rows 600-1199) in strips - only if we have bufB
+        if (!singleBufferMode) {
+            for (int stripStart = 600; stripStart < 1200; stripStart += STRIP_ROWS) {
+                int stripH = min(STRIP_ROWS, 1200 - stripStart);
+                
+                dmaMemcpy(sramStrip[0], _buffer + stripStart * EL133UF1_WIDTH,
+                         stripH * EL133UF1_WIDTH);
+                
+                processStrip(sramStrip[0], bufB, stripStart, stripH, 300);
+            }
         }
         
-        free(sramStrip[0]);
         Serial.printf("    Rotate/pack:    %4lu ms (DMA+SIMD single)\n", millis() - stepStart);
     }
 
@@ -921,15 +933,52 @@ void EL133UF1::_sendBuffer() {
     _sendCommand(CMD_DTM, CS0_SEL, bufA, SEND_HALF_SIZE);
     uint32_t spiA = millis() - stepStart;
     
-    stepStart = millis();
-    _sendCommand(CMD_DTM, CS1_SEL, bufB, SEND_HALF_SIZE);
-    uint32_t spiB = millis() - stepStart;
+    uint32_t spiB = 0;
+    if (singleBufferMode) {
+        // Single buffer mode: reuse bufA for second half
+        // We need to re-process rows 600-1199 into bufA
+        Serial.println("    Reprocessing for CS1 (single buffer mode)...");
+        uint32_t reprocessStart = millis();
+        
+        if (sramStrip[0] != nullptr) {
+            // Use SRAM-accelerated path
+            for (int stripStart = 600; stripStart < 1200; stripStart += STRIP_ROWS) {
+                int stripH = min(STRIP_ROWS, 1200 - stripStart);
+                dmaMemcpy(sramStrip[0], _buffer + stripStart * EL133UF1_WIDTH,
+                         stripH * EL133UF1_WIDTH);
+                processStrip(sramStrip[0], bufA, stripStart, stripH, 300);
+            }
+        } else {
+            // Direct PSRAM fallback for second half
+            for (int srcCol = 1599; srcCol >= 0; srcCol--) {
+                int outRow = 1599 - srcCol;
+                uint8_t* outPtr = bufA + outRow * 300;
+                const uint8_t* srcPtr = _buffer + srcCol + 600 * EL133UF1_WIDTH;
+                for (int i = 0; i < 300; i += 4) {
+                    packPixels8_SIMD(srcPtr, EL133UF1_WIDTH, outPtr);
+                    srcPtr += EL133UF1_WIDTH * 8;
+                    outPtr += 4;
+                }
+            }
+        }
+        Serial.printf("    Reprocess:      %4lu ms\n", millis() - reprocessStart);
+        
+        stepStart = millis();
+        _sendCommand(CMD_DTM, CS1_SEL, bufA, SEND_HALF_SIZE);
+        spiB = millis() - stepStart;
+    } else {
+        stepStart = millis();
+        _sendCommand(CMD_DTM, CS1_SEL, bufB, SEND_HALF_SIZE);
+        spiB = millis() - stepStart;
+    }
     
     Serial.printf("    SPI transmit:   %4lu ms (CS0: %lu, CS1: %lu)\n", 
                   spiA + spiB, spiA, spiB);
 
     free(bufA);
-    free(bufB);
+    if (bufB) free(bufB);
+    if (sramStrip[0]) free(sramStrip[0]);
+    if (sramStrip[1]) free(sramStrip[1]);
 }
 
 void EL133UF1::update(bool skipInit) {

@@ -173,6 +173,7 @@ PNGResult EL133UF1_PNG::drawFullscreen(const uint8_t* data, size_t len) {
                       ((uint32_t)data[22] << 8) | data[23];
     
     Serial.printf("PNG: Image dimensions %lux%lu\n", width, height);
+    Serial.printf("PNG: Display dimensions %dx%d\n", _display->width(), _display->height());
     
     // Center the image
     int16_t x = (_display->width() - (int32_t)width) / 2;
@@ -180,6 +181,8 @@ PNGResult EL133UF1_PNG::drawFullscreen(const uint8_t* data, size_t len) {
     
     if (x < 0) x = 0;
     if (y < 0) y = 0;
+    
+    Serial.printf("PNG: Drawing at offset (%d, %d)\n", x, y);
     
     return draw(x, y, data, len);
 }

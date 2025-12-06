@@ -308,8 +308,13 @@ OpenAIResult OpenAIImage::downloadImage(const char* url, uint8_t** outData, size
     // Read headers to get content length
     size_t contentLength = 0;
     int statusCode = 0;
+    bool chunked = false;
     
-    while (client.connected()) {
+    while (client.connected() || client.available()) {
+        if (!client.available()) {
+            delay(10);
+            continue;
+        }
         String line = client.readStringUntil('\n');
         line.trim();
         
@@ -320,12 +325,19 @@ OpenAIResult OpenAIImage::downloadImage(const char* url, uint8_t** outData, size
             if (spaceIdx > 0) {
                 statusCode = line.substring(spaceIdx + 1).toInt();
             }
-        } else if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+        }
+        // Case-insensitive header matching
+        String lowerLine = line;
+        lowerLine.toLowerCase();
+        if (lowerLine.startsWith("content-length:")) {
             contentLength = line.substring(15).toInt();
+        } else if (lowerLine.indexOf("transfer-encoding") >= 0 && lowerLine.indexOf("chunked") >= 0) {
+            chunked = true;
         }
     }
     
-    Serial.printf("OpenAI: Image download: HTTP %d, %zu bytes\n", statusCode, contentLength);
+    Serial.printf("OpenAI: Image download: HTTP %d, Content-Length: %zu, Chunked: %s\n", 
+                  statusCode, contentLength, chunked ? "yes" : "no");
     
     if (statusCode != 200) {
         client.stop();
@@ -333,57 +345,94 @@ OpenAIResult OpenAIImage::downloadImage(const char* url, uint8_t** outData, size
         return OPENAI_ERR_DOWNLOAD_FAILED;
     }
     
-    if (contentLength == 0) {
-        // If no Content-Length, use a reasonable buffer
-        contentLength = 4 * 1024 * 1024;  // 4MB max
+    // Use known contentLength or allocate max buffer for chunked/unknown
+    size_t bufferSize = contentLength;
+    bool unknownSize = (contentLength == 0 || chunked);
+    if (unknownSize) {
+        bufferSize = 4 * 1024 * 1024;  // 4MB max for unknown size
+        Serial.println("OpenAI: Content-Length unknown, will read until connection closes");
     }
     
     // Allocate buffer in PSRAM
-    uint8_t* buffer = (uint8_t*)pmalloc(contentLength);
+    uint8_t* buffer = (uint8_t*)pmalloc(bufferSize);
     if (!buffer) {
         client.stop();
-        snprintf(_lastError, sizeof(_lastError), "Failed to allocate %zu bytes", contentLength);
+        snprintf(_lastError, sizeof(_lastError), "Failed to allocate %zu bytes", bufferSize);
         return OPENAI_ERR_ALLOC_FAILED;
     }
     
-    // Read image data in chunks for better performance
+    // Read image data
     size_t bytesRead = 0;
     startTime = millis();
     uint32_t lastProgress = 0;
-    uint32_t noDataCount = 0;
+    uint32_t idleStart = 0;
+    bool wasIdle = false;
+    const uint32_t IDLE_TIMEOUT = 15000;  // 15 seconds of no data before giving up
     
-    while (bytesRead < contentLength) {
-        if (client.available()) {
-            // Read as many bytes as available, up to remaining needed
-            size_t toRead = contentLength - bytesRead;
-            size_t avail = client.available();
-            if (avail < toRead) toRead = avail;
-            
-            // Read in chunks for efficiency
-            size_t chunk = (toRead > 4096) ? 4096 : toRead;
-            size_t got = client.read(buffer + bytesRead, chunk);
+    Serial.printf("OpenAI: Starting image download, expecting %zu bytes\n", contentLength);
+    
+    // Keep reading until we hit content length (if known) or connection closes (if unknown)
+    while (true) {
+        // Check if we have enough data
+        if (!unknownSize && bytesRead >= contentLength) {
+            Serial.printf("OpenAI: Received all %zu expected bytes\n", contentLength);
+            break;
+        }
+        
+        // Don't overflow buffer
+        if (bytesRead >= bufferSize) {
+            Serial.printf("OpenAI: Buffer full at %zu bytes\n", bytesRead);
+            break;
+        }
+        
+        // Try to read data
+        size_t toRead = bufferSize - bytesRead;
+        if (toRead > 8192) toRead = 8192;  // Read in 8KB chunks
+        
+        int got = client.read(buffer + bytesRead, toRead);
+        
+        if (got > 0) {
             bytesRead += got;
-            noDataCount = 0;
+            wasIdle = false;  // Reset idle state
             
             // Progress indication every 100KB
             if (bytesRead - lastProgress >= 102400) {
-                Serial.printf("OpenAI: Downloaded %zu / %zu bytes (%d%%)\n", 
-                              bytesRead, contentLength, (int)(bytesRead * 100 / contentLength));
+                uint32_t elapsed = millis() - startTime;
+                float kbps = (bytesRead / 1024.0f) / (elapsed / 1000.0f);
+                if (contentLength > 0) {
+                    Serial.printf("OpenAI: Downloaded %zu / %zu bytes (%d%%) - %.1f KB/s\n", 
+                                  bytesRead, contentLength, (int)(bytesRead * 100 / contentLength), kbps);
+                } else {
+                    Serial.printf("OpenAI: Downloaded %zu bytes - %.1f KB/s\n", bytesRead, kbps);
+                }
                 lastProgress = bytesRead;
             }
         } else {
-            // No data available - check if we should keep waiting
-            noDataCount++;
-            if (noDataCount > 100) {  // ~1 second of no data
-                if (!client.connected()) {
+            // No data received this iteration
+            if (!wasIdle) {
+                idleStart = millis();
+                wasIdle = true;
+            }
+            
+            uint32_t idleTime = millis() - idleStart;
+            
+            // Check for stall / disconnect
+            if (idleTime >= IDLE_TIMEOUT) {
+                bool connected = client.connected();
+                int avail = client.available();
+                Serial.printf("OpenAI: Idle for %lu ms, connected=%d, avail=%d\n", 
+                              idleTime, connected, avail);
+                if (!connected && avail == 0) {
                     Serial.printf("OpenAI: Connection closed after %zu bytes\n", bytesRead);
                     break;
                 }
             }
+            
             delay(10);
         }
         
-        if (millis() - startTime > 120000) {  // 2 minute timeout for large images
+        // Overall timeout
+        if (millis() - startTime > 180000) {  // 3 minute timeout
             free(buffer);
             client.stop();
             snprintf(_lastError, sizeof(_lastError), "Timeout downloading image at %zu/%zu bytes", 
@@ -394,8 +443,15 @@ OpenAIResult OpenAIImage::downloadImage(const char* url, uint8_t** outData, size
     
     client.stop();
     
-    Serial.printf("OpenAI: Download complete: %zu bytes in %lu ms\n", 
-                  bytesRead, millis() - startTime);
+    uint32_t elapsed = millis() - startTime;
+    float kbps = (bytesRead / 1024.0f) / (elapsed / 1000.0f);
+    Serial.printf("OpenAI: Download complete: %zu bytes in %lu ms (%.1f KB/s)\n", 
+                  bytesRead, elapsed, kbps);
+    
+    if (contentLength > 0 && bytesRead < contentLength) {
+        Serial.printf("OpenAI: WARNING - Incomplete download! Got %zu of %zu bytes (%d%%)\n",
+                      bytesRead, contentLength, (int)(bytesRead * 100 / contentLength));
+    }
     
     // Verify we got a PNG (check magic bytes)
     if (bytesRead >= 8) {

@@ -75,7 +75,10 @@ static char wifiPSK[65] = {0};
 #define PIN_RTC_INT   18    // DS3231 INT/SQW pin for wake (GP18)
 
 // Battery voltage monitoring (Pimoroni Pico LiPo 2 XL W)
+// GP43 is ADC3 on RP2350 - try both pin number and A3 constant
+// Note: Arduino-Pico may need PIN_A3 or just the raw GPIO number
 #define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
+
 // Voltage divider ratio - Pimoroni typically uses 3:1 for LiPo monitoring
 // This brings 4.2V max down to ~1.4V (safe for 3.3V ADC)
 // Adjust if your readings are off
@@ -95,7 +98,35 @@ EL133UF1_TTF ttf;
 // ================================================================
 
 float readBatteryVoltage() {
-    // Configure ADC pin
+    // Set ADC resolution to 12-bit
+    analogReadResolution(12);
+    
+    // Debug: try reading from multiple potential battery pins
+    static bool firstRead = true;
+    if (firstRead) {
+        Serial.println("  [Battery ADC Debug]");
+        
+        // Try GP43 (what's labeled on the board)
+        pinMode(43, INPUT);
+        uint16_t raw43 = analogRead(43);
+        Serial.printf("    GP43 raw: %u -> %.2fV (x3 = %.2fV)\n", 
+                      raw43, raw43 * 3.3f / 4095.0f, raw43 * 3.3f / 4095.0f * 3.0f);
+        
+        // Try GP29 (traditional ADC3/VSYS pin on Pico LiPo)
+        pinMode(29, INPUT);
+        uint16_t raw29 = analogRead(29);
+        Serial.printf("    GP29 raw: %u -> %.2fV (x3 = %.2fV)\n", 
+                      raw29, raw29 * 3.3f / 4095.0f, raw29 * 3.3f / 4095.0f * 3.0f);
+        
+        // Try A3 constant
+        uint16_t rawA3 = analogRead(A3);
+        Serial.printf("    A3 raw:   %u -> %.2fV (x3 = %.2fV)\n", 
+                      rawA3, rawA3 * 3.3f / 4095.0f, rawA3 * 3.3f / 4095.0f * 3.0f);
+        
+        firstRead = false;
+    }
+    
+    // Use the configured pin
     pinMode(PIN_VBAT_ADC, INPUT);
     
     // Take multiple readings and average for stability

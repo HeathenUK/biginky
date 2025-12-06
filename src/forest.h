@@ -3,6 +3,9 @@
 // Generate this file from a BMP image using xxd:
 //   xxd -i forest.bmp > forest.h
 //
+// IMPORTANT: After generating, change the array declaration to:
+//   static const unsigned char forest_bmp[] PROGMEM = {
+//
 // BMP requirements for best results:
 // - Resolution: 1600x1200 (display native) or will be drawn at top-left
 // - Color depth: 24-bit or 8-bit indexed
@@ -14,7 +17,9 @@
 // Placeholder data (white 4x4 BMP) - replace with your actual image
 // This is a minimal valid BMP to prevent compilation errors
 
-static const unsigned char forest_bmp[] = {
+#include <Arduino.h>
+
+static const unsigned char forest_bmp[] PROGMEM = {
     // BMP Header (14 bytes)
     0x42, 0x4D,             // 'BM' magic
     0x46, 0x00, 0x00, 0x00, // File size: 70 bytes

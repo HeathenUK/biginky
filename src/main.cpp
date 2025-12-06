@@ -477,9 +477,9 @@ bool connectWiFiAndGetNTP() {
         Serial.println("NTP sync time saved to EEPROM");
     }
     
-    // Disconnect WiFi to save power
-    WiFi.disconnect(true);
-    Serial.println("WiFi disconnected (saving power)");
+    // Keep WiFi connected - we may need it for AI image generation
+    // WiFi will be disconnected after display update
+    Serial.println("WiFi staying connected for potential API calls");
     
     return true;
 }

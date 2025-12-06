@@ -1050,6 +1050,16 @@ void doDisplayUpdate(int updateNumber) {
     bool hasApiKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
                      eeprom.getOpenAIKey(apiKey, sizeof(apiKey));
     
+    // Debug: show AI image generation status
+    Serial.println("--- AI Image Status ---");
+    Serial.printf("  Need new image: %s\n", needNewImage ? "YES" : "NO (cached)");
+    Serial.printf("  EEPROM present: %s\n", eeprom.isPresent() ? "YES" : "NO");
+    Serial.printf("  Has API key: %s\n", hasApiKey ? "YES" : "NO");
+    Serial.printf("  WiFi status: %d (connected=%d)\n", WiFi.status(), WL_CONNECTED);
+    if (hasApiKey) {
+        Serial.printf("  API key: %.7s...%s\n", apiKey, apiKey + strlen(apiKey) - 4);
+    }
+    
     if (needNewImage && hasApiKey && WiFi.status() == WL_CONNECTED) {
         Serial.println("Generating AI background image...");
         
@@ -1079,6 +1089,16 @@ void doDisplayUpdate(int updateNumber) {
             aiImageData = nullptr;
             aiImageLen = 0;
         }
+    } else if (needNewImage) {
+        // Explain why we're not generating
+        if (!hasApiKey) {
+            Serial.println("  Skipping AI generation: No API key configured");
+            Serial.println("  (Press 'c' on boot to configure)");
+        } else if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("  Skipping AI generation: WiFi not connected");
+        }
+    } else {
+        Serial.printf("  Using cached AI image: %zu bytes\n", aiImageLen);
     }
     
     // Draw the background

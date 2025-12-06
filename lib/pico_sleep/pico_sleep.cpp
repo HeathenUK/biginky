@@ -465,8 +465,20 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
         Serial.printf("  [sleep] Configuring GPIO%d for wake (low level)\n", _rtc_int_pin);
         Serial.flush();
         
-        // Enable GPIO wake in powman
+        // Enable GPIO wake in powman - Slot 0 for RTC
         powman_enable_gpio_wakeup(0, _rtc_int_pin, false, false);  // Slot 0, level-triggered, low
+        
+        // Enable additional GPIO wake sources (slots 1-3)
+        for (int i = 0; i < _gpio_wake_count; i++) {
+            if (_gpio_wake_pins[i] >= 0) {
+                Serial.printf("  [sleep] Configuring GPIO%d for wake (slot %d, %s)\n",
+                              _gpio_wake_pins[i], i + 1, 
+                              _gpio_wake_active_high[i] ? "high" : "low");
+                powman_enable_gpio_wakeup(i + 1, _gpio_wake_pins[i], 
+                                          false,  // level-triggered (not edge)
+                                          _gpio_wake_active_high[i]);  // high or low
+            }
+        }
         
         bool valid = powman_configure_wakeup_state(sleep_state, wake_state);
         if (!valid) {

@@ -77,6 +77,9 @@ static char wifiPSK[65] = {0};
 #define PIN_RTC_SCL    3    // I2C1 SCL (GP3)
 #define PIN_RTC_INT   18    // DS3231 INT/SQW pin for wake (GP18)
 
+// Button pins (directly active-low buttons to GND)
+#define PIN_BTN_WAKE   1    // Wake button (GP1) - press to wake from sleep
+
 // Battery voltage monitoring (Pimoroni Pico LiPo 2 XL W)
 // GP43 is the battery voltage ADC pin
 #define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
@@ -573,6 +576,9 @@ void setup() {
     bool hasRTC = sleep_init_rtc(PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
     if (hasRTC) {
         Serial.println("DS3231 RTC found - using for timekeeping");
+        
+        // Add button as additional wake source (active-low)
+        sleep_add_gpio_wake_source(PIN_BTN_WAKE, false);  // false = active-low
         // Read current RTC time
         uint64_t rtcTime = sleep_get_time_ms();
         char timeBuf[32];

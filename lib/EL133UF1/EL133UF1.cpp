@@ -139,6 +139,17 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     _busyPin = busyPin;
 
     // Allocate frame buffer in PSRAM (1.92MB)
+    // Free old buffer if exists (prevents leak on repeated begin() calls)
+    if (_buffer != nullptr) {
+        Serial.printf("  Freeing old buffer at %p\n", _buffer);
+        free(_buffer);
+        _buffer = nullptr;
+    }
+    if (_bufferRight != nullptr) {
+        free(_bufferRight);
+        _bufferRight = nullptr;
+    }
+    
     Serial.printf("  Allocating %u bytes in PSRAM...\n", EL133UF1_WIDTH * EL133UF1_HEIGHT);
     Serial.flush();
     

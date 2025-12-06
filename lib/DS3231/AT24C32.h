@@ -26,6 +26,8 @@
 #define EEPROM_SLEEP_SEC      0x0200  // 2 bytes: sleep duration in seconds
 #define EEPROM_LAST_STATUS    0x0210  // 1 byte: last update status code
 #define EEPROM_LAST_STAGE     0x0211  // 1 byte: last stage reached
+#define EEPROM_LAST_UPDATE    0x0212  // 2 bytes: last update number
+#define EEPROM_LAST_WAKE_TIME 0x0214  // 4 bytes: last wake time (unix)
 #define EEPROM_TEMP_LOG_START 0x0800  // Temperature log (to end of EEPROM)
 #define EEPROM_TEMP_LOG_SIZE  (AT24C32_SIZE - EEPROM_TEMP_LOG_START)
 

@@ -543,6 +543,9 @@ void setup() {
         if (eeprom.begin(&Wire1, 0x57)) {
             eeprom.printStatus();
             
+            // Report what happened in the previous session
+            reportLastUpdate();
+            
             // Log temperature
             eeprom.logTemperature(rtc.getTemperature());
             
@@ -770,6 +773,32 @@ void setup() {
     Serial.printf("RTC time: %lu seconds\n", sleep_get_uptime_seconds());
     Serial.println("Using RP2350 powman - TRUE deep sleep (core powers down)");
     
+    // Verify RTC is still responding before sleep (catch I2C lockup)
+    if (sleep_has_rtc()) {
+        time_t rtcTime = rtc.getTime();
+        if (rtcTime < 1700000000) {
+            Serial.println("WARNING: RTC not responding or time invalid!");
+            Serial.println("Attempting I2C bus recovery...");
+            Wire1.end();
+            delay(10);
+            Wire1.setSDA(PIN_RTC_SDA);
+            Wire1.setSCL(PIN_RTC_SCL);
+            Wire1.begin();
+            Wire1.setClock(100000);
+            delay(10);
+            rtcTime = rtc.getTime();
+            if (rtcTime < 1700000000) {
+                Serial.println("ERROR: RTC still not responding after I2C recovery!");
+                Serial.println("Cannot safely enter sleep - hanging here");
+                while(1) {
+                    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+                    delay(100);  // Fast blink indicates error
+                }
+            }
+        }
+        Serial.printf("RTC verified OK: %lu\n", (unsigned long)rtcTime);
+    }
+    
     Serial.flush();
     delay(100);
     
@@ -816,18 +845,54 @@ void logStage(uint8_t stage) {
     }
 }
 
+void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime) {
+    if (eeprom.isPresent()) {
+        eeprom.writeUInt16(EEPROM_LAST_UPDATE, updateNum);
+        eeprom.writeUInt32(EEPROM_LAST_WAKE_TIME, wakeTime);
+    }
+}
+
+void reportLastUpdate() {
+    if (eeprom.isPresent()) {
+        uint8_t lastStage = eeprom.readByte(EEPROM_LAST_STAGE);
+        uint16_t lastUpdate = eeprom.readUInt16(EEPROM_LAST_UPDATE);
+        uint32_t lastWakeTime = eeprom.readUInt32(EEPROM_LAST_WAKE_TIME);
+        
+        Serial.println("=== Previous Session Info ===");
+        Serial.printf("  Last update #: %u\n", lastUpdate);
+        Serial.printf("  Last stage:    0x%02X", lastStage);
+        switch(lastStage) {
+            case 0x01: Serial.println(" (START)"); break;
+            case 0x02: Serial.println(" (PSRAM_OK)"); break;
+            case 0x03: Serial.println(" (DISPLAY_OK)"); break;
+            case 0x04: Serial.println(" (TTF_OK)"); break;
+            case 0x05: Serial.println(" (DRAWING)"); break;
+            case 0x06: Serial.println(" (UPDATING)"); break;
+            case 0x07: Serial.println(" (COMPLETE)"); break;
+            case 0xFF: Serial.println(" (ERROR)"); break;
+            default: Serial.println(" (unknown)"); break;
+        }
+        if (lastWakeTime > 1700000000) {
+            // Valid unix time
+            time_t t = (time_t)lastWakeTime;
+            struct tm* tm = gmtime(&t);
+            Serial.printf("  Last wake:     %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                         tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+                         tm->tm_hour, tm->tm_min, tm->tm_sec);
+        }
+        Serial.println("=============================");
+    }
+}
+
 void doDisplayUpdate(int updateNumber) {
     Serial.printf("\n=== Display Update #%d ===\n", updateNumber);
     logStage(STAGE_START);
     
-    // Show last stage from previous boot (for debugging)
-    if (eeprom.isPresent()) {
-        uint8_t lastStage = eeprom.readByte(EEPROM_LAST_STAGE);
-        Serial.printf("(Previous boot reached stage: 0x%02X)\n", lastStage);
-    }
+    // Log this update's info for post-mortem analysis
+    uint64_t now_ms = sleep_get_corrected_time_ms();
+    logUpdateInfo((uint16_t)updateNumber, (uint32_t)(now_ms / 1000));
     
     // Get current time with drift correction applied
-    uint64_t now_ms = sleep_get_corrected_time_ms();
     char timeStr[32];
     formatTime(now_ms, timeStr, sizeof(timeStr));
     Serial.printf("Drift correction: %d ppm\n", sleep_get_drift_ppm());

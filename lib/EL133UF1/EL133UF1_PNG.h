@@ -42,6 +42,14 @@ public:
     bool begin(EL133UF1* display);
     
     /**
+     * @brief Enable/disable Floyd-Steinberg dithering
+     * Dithering improves gradient appearance but takes more time
+     * @param enable true to enable dithering
+     */
+    void setDithering(bool enable) { _useDithering = enable; }
+    bool getDithering() const { return _useDithering; }
+    
+    /**
      * @brief Draw PNG image at position
      * @param x X position
      * @param y Y position
@@ -79,6 +87,7 @@ private:
     int16_t _offsetY;
     int32_t _width;
     int32_t _height;
+    bool _useDithering;
     
     uint8_t mapToSpectra6(uint8_t r, uint8_t g, uint8_t b);
 };

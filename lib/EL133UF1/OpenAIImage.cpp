@@ -131,7 +131,8 @@ OpenAIResult OpenAIImage::generate(const char* prompt, uint8_t** outData, size_t
         return OPENAI_ERR_CONNECT_FAILED;
     }
     
-    Serial.println("OpenAI: Connected, sending request...");
+    Serial.printf("OpenAI: Connected. Model=%s, Size=%s, Quality=%s\n",
+                  getModelString(), getSizeString(), getQualityString());
     
     // Build JSON request body
     // Escape special characters in prompt

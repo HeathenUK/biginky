@@ -1077,8 +1077,9 @@ void doDisplayUpdate(int updateNumber) {
     // Enable glyph cache for time display (160px digits)
     ttf.enableGlyphCache(160.0, "0123456789: ");
     
-    // Initialize PNG decoder
+    // Initialize PNG decoder with dithering for better gradient handling
     png.begin(&display);
+    png.setDithering(true);  // Floyd-Steinberg dithering for AI images
     
     // Draw update info with performance profiling
     uint32_t drawStart = millis();

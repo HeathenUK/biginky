@@ -8,27 +8,8 @@
  */
 
 #include "EL133UF1_PNG.h"
+#include "EL133UF1_Color.h"
 #include <pngle.h>
-
-// Spectra 6 reference colors (approximate RGB values)
-static const uint8_t SPECTRA_COLORS[6][3] = {
-    {0,   0,   0  },  // BLACK  (0)
-    {255, 255, 255},  // WHITE  (1)
-    {255, 255, 0  },  // YELLOW (2)
-    {255, 0,   0  },  // RED    (3)
-    {0,   0,   255},  // BLUE   (5)
-    {0,   255, 0  }   // GREEN  (6)
-};
-
-// Map from our array index to actual Spectra color code
-static const uint8_t SPECTRA_CODE[6] = {
-    EL133UF1_BLACK,   // 0
-    EL133UF1_WHITE,   // 1
-    EL133UF1_YELLOW,  // 2
-    EL133UF1_RED,     // 3
-    EL133UF1_BLUE,    // 5
-    EL133UF1_GREEN    // 6
-};
 
 // Global pointer for callback (pngle uses C callbacks)
 static EL133UF1_PNG* g_pngInstance = nullptr;
@@ -58,7 +39,7 @@ static void pngle_draw_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t
 }
 
 EL133UF1_PNG::EL133UF1_PNG() 
-    : _display(nullptr), _offsetX(0), _offsetY(0), _width(0), _height(0) {}
+    : _display(nullptr), _offsetX(0), _offsetY(0), _width(0), _height(0), _useDithering(false) {}
 
 bool EL133UF1_PNG::begin(EL133UF1* display) {
     if (display == nullptr) return false;
@@ -67,25 +48,8 @@ bool EL133UF1_PNG::begin(EL133UF1* display) {
 }
 
 uint8_t EL133UF1_PNG::mapToSpectra6(uint8_t r, uint8_t g, uint8_t b) {
-    // Find closest Spectra 6 color using weighted distance
-    uint32_t minDist = UINT32_MAX;
-    uint8_t bestColor = EL133UF1_WHITE;
-    
-    for (int i = 0; i < 6; i++) {
-        int32_t dr = (int32_t)r - SPECTRA_COLORS[i][0];
-        int32_t dg = (int32_t)g - SPECTRA_COLORS[i][1];
-        int32_t db = (int32_t)b - SPECTRA_COLORS[i][2];
-        
-        // Weighted distance (human eye is more sensitive to green)
-        uint32_t dist = (dr * dr * 2) + (dg * dg * 4) + (db * db);
-        
-        if (dist < minDist) {
-            minDist = dist;
-            bestColor = SPECTRA_CODE[i];
-        }
-    }
-    
-    return bestColor;
+    // Use the global color mapper (Lab color space by default)
+    return spectra6Color.mapColor(r, g, b);
 }
 
 void EL133UF1_PNG::_onDraw(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]) {
@@ -100,11 +64,15 @@ void EL133UF1_PNG::_onDraw(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const
     if (dstY < 0 || dstY >= _display->height()) return;
     
     // Map RGBA to Spectra 6 color
-    // If alpha is very low, use white (background)
     uint8_t color;
     if (rgba[3] < 128) {
+        // Transparent - use white (background)
         color = EL133UF1_WHITE;
+    } else if (_useDithering) {
+        // Use Floyd-Steinberg dithering for better gradients
+        color = spectra6Color.mapColorDithered(x, y, rgba[0], rgba[1], rgba[2], _width);
     } else {
+        // Standard color mapping (Lab perceptual)
         color = mapToSpectra6(rgba[0], rgba[1], rgba[2]);
     }
     
@@ -136,6 +104,11 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     g_drawnCount = 0;
     g_drawnMinY = UINT32_MAX;
     g_drawnMaxY = 0;
+    
+    // Reset dithering error buffer if dithering is enabled
+    if (_useDithering) {
+        spectra6Color.resetDither();
+    }
     
     // Create pngle instance
     pngle_t* pngle = pngle_new();

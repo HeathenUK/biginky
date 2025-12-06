@@ -310,8 +310,8 @@ bool AT24C32::getOpenAIKey(char* key, size_t keyLen) {
 }
 
 void AT24C32::setOpenAIKey(const char* key) {
-    writeString(EEPROM_OPENAI_KEY, key, 64);
-    Serial.println("AT24C32: Saved OpenAI API key");
+    writeString(EEPROM_OPENAI_KEY, key, 200);
+    Serial.printf("AT24C32: Saved OpenAI API key (%d chars)\n", strlen(key));
 }
 
 void AT24C32::logTemperature(float temp) {

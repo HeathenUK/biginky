@@ -306,7 +306,7 @@ void enterConfigMode() {
     Serial.println("\n--- OpenAI API Key (for AI image generation) ---");
     
     if (eeprom.isPresent() && eeprom.hasOpenAIKey()) {
-        char currentKey[64];
+        char currentKey[200];
         eeprom.getOpenAIKey(currentKey, sizeof(currentKey));
         // Show only first/last few chars for security
         Serial.printf("Current key: %.7s...%s\n", currentKey, currentKey + strlen(currentKey) - 4);
@@ -1093,7 +1093,7 @@ void doDisplayUpdate(int updateNumber) {
     bool needNewImage = (aiImageData == nullptr);
     
     // Check if we have an API key configured
-    char apiKey[64] = {0};
+    char apiKey[200] = {0};
     bool hasApiKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
                      eeprom.getOpenAIKey(apiKey, sizeof(apiKey));
     

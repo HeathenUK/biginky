@@ -88,10 +88,17 @@ void formatTime(uint64_t time_ms, char* buf, size_t len);
 
 // Load credentials from EEPROM or compiled fallback
 bool loadWifiCredentials() {
-    if (eeprom.isPresent() && eeprom.hasWifiCredentials()) {
-        eeprom.getWifiCredentials(wifiSSID, sizeof(wifiSSID), wifiPSK, sizeof(wifiPSK));
-        Serial.printf("WiFi: Loaded from EEPROM: '%s'\n", wifiSSID);
-        return true;
+    Serial.printf("loadWifiCredentials: eeprom.isPresent()=%d\n", eeprom.isPresent());
+    
+    if (eeprom.isPresent()) {
+        bool hasCreds = eeprom.hasWifiCredentials();
+        Serial.printf("loadWifiCredentials: hasWifiCredentials()=%d\n", hasCreds);
+        
+        if (hasCreds) {
+            eeprom.getWifiCredentials(wifiSSID, sizeof(wifiSSID), wifiPSK, sizeof(wifiPSK));
+            Serial.printf("WiFi: Loaded from EEPROM: '%s'\n", wifiSSID);
+            return true;
+        }
     }
     
     // Fallback to compiled defaults (if any)
@@ -477,6 +484,13 @@ void setup() {
     // ================================================================
     // WiFi credential management
     // ================================================================
+    Serial.println("\n--- WiFi Credential Check ---");
+    Serial.printf("eeprom.isPresent() = %d\n", eeprom.isPresent());
+    if (eeprom.isPresent()) {
+        Serial.printf("eeprom.hasWifiCredentials() = %d\n", eeprom.hasWifiCredentials());
+    }
+    Serial.flush();
+    
     // Check for config mode (only on cold boot, not wake from sleep)
     checkConfigMode();
     

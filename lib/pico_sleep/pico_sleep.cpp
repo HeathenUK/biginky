@@ -46,12 +46,9 @@ static int _rtc_int_pin = -1;
 // Sleep state - use powman scratch registers (preserved across reset!)
 // ========================================================================
 
-// Build timestamp - changes on each compile, detects firmware reflash
-// We use the lower 24 bits of build time combined with a magic prefix
-#define BUILD_TIMESTAMP_HASH  ((uint32_t)(__TIME__[0] ^ __TIME__[1]) << 16 | \
-                               (uint32_t)(__TIME__[3] ^ __TIME__[4]) << 8 | \
-                               (uint32_t)(__TIME__[6] ^ __TIME__[7]))
-#define SLEEP_SCRATCH_MAGIC    (0xDE000000 | (BUILD_TIMESTAMP_HASH & 0x00FFFFFF))
+// Fixed magic value - we rely on other checks (buffer null, etc.) to detect
+// true cold boots after reflashing. User can press 'r' to force reset.
+#define SLEEP_SCRATCH_MAGIC    0xDEE95EE7
 #define SLEEP_SCRATCH_REG      0           // Which scratch register to use
 
 // Drift calibration scratch registers

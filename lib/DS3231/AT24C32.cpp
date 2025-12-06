@@ -212,6 +212,8 @@ void AT24C32::setLastNtpSync(uint32_t unixTime) {
 
 bool AT24C32::hasWifiCredentials() {
     uint8_t first = readByte(EEPROM_WIFI_SSID);
+    Serial.printf("  [hasWifiCredentials] first byte at 0x%04X = 0x%02X ('%c')\n", 
+                  EEPROM_WIFI_SSID, first, (first >= 32 && first < 127) ? first : '?');
     return (first != 0xFF && first != 0x00);
 }
 

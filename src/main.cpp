@@ -755,9 +755,27 @@ void setup() {
     setUpdateCount(updateCount);
     doDisplayUpdate(updateCount);
     
-    // Enter deep sleep for 10 seconds
-    Serial.println("\n=== Entering deep sleep for 10 seconds ===");
-    Serial.printf("RTC time: %lu seconds\n", sleep_get_uptime_seconds());
+    // Calculate sleep until next even minute
+    time_t now = rtc.getTime();
+    struct tm* tm = gmtime(&now);
+    
+    // Calculate seconds until next even minute
+    int currentMin = tm->tm_min;
+    int currentSec = tm->tm_sec;
+    int nextEvenMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
+    int secsUntilNextEven = (nextEvenMin - currentMin) * 60 - currentSec;
+    
+    // Handle edge case: if we're very close to the next even minute, skip to the one after
+    if (secsUntilNextEven < 5) {
+        secsUntilNextEven += 120;  // Add 2 minutes
+    }
+    
+    uint32_t sleepMs = secsUntilNextEven * 1000;
+    
+    Serial.printf("\n=== Entering deep sleep until next even minute ===\n");
+    Serial.printf("Current time: %02d:%02d:%02d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
+    Serial.printf("Sleep duration: %d seconds (until xx:%02d:00)\n", 
+                  secsUntilNextEven, (currentMin + (secsUntilNextEven / 60)) % 60);
     Serial.println("Using RP2350 powman - TRUE deep sleep (core powers down)");
     
     // Verify RTC is still responding before sleep (catch I2C lockup)
@@ -799,8 +817,8 @@ void setup() {
         sleep_run_from_lposc();
     }
     
-    // Go to deep sleep for 10 seconds
-    sleep_goto_dormant_for_ms(10000);
+    // Go to deep sleep until next even minute
+    sleep_goto_dormant_for_ms(sleepMs);
     
     // We should never reach here
     Serial.println("ERROR: Should not reach here after deep sleep!");

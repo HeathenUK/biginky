@@ -38,8 +38,9 @@
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_BMP.h"
+#include "EL133UF1_PNG.h"
+#include "OpenAIImage.h"
 #include "fonts/opensans.h"
-#include "forest.h"  // Background image: xxd -i forest.bmp > forest.h
 #include "pico_sleep.h"
 #include "DS3231.h"
 #include "AT24C32.h"
@@ -95,6 +96,14 @@ EL133UF1_TTF ttf;
 
 // BMP image loader
 EL133UF1_BMP bmp;
+
+// PNG decoder and OpenAI image generator
+EL133UF1_PNG png;
+OpenAIImage openai;
+
+// AI-generated image stored in PSRAM (persists between updates)
+static uint8_t* aiImageData = nullptr;
+static size_t aiImageLen = 0;
 
 // ================================================================
 // Battery voltage monitoring

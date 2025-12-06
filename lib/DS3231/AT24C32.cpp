@@ -295,6 +295,25 @@ void AT24C32::setSleepSeconds(uint16_t seconds) {
     writeUInt16(EEPROM_SLEEP_SEC, seconds);
 }
 
+bool AT24C32::hasOpenAIKey() {
+    uint8_t first = readByte(EEPROM_OPENAI_KEY);
+    // Valid API key starts with 's' (from "sk-...")
+    return (first == 's');
+}
+
+bool AT24C32::getOpenAIKey(char* key, size_t keyLen) {
+    if (!hasOpenAIKey()) {
+        return false;
+    }
+    readString(EEPROM_OPENAI_KEY, key, keyLen);
+    return true;
+}
+
+void AT24C32::setOpenAIKey(const char* key) {
+    writeString(EEPROM_OPENAI_KEY, key, 64);
+    Serial.println("AT24C32: Saved OpenAI API key");
+}
+
 void AT24C32::logTemperature(float temp) {
     Serial.printf("  [logTemperature] temp=%.2f\n", temp);
     

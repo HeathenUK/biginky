@@ -172,30 +172,42 @@ void logStage(uint8_t stage);
 void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime);
 void reportLastUpdate();
 
-// Calculate seconds until next even minute wake time
-// Returns sleep duration in seconds and optionally fills wakeHour/wakeMin
+// Time needed from wake to display completion (boot + draw + refresh)
+// We wake this many seconds BEFORE the target display time
+#define WAKE_TO_DISPLAY_SECONDS  32  // ~2s boot + ~1s draw + ~28s refresh
+
+// Calculate sleep duration so display update COMPLETES at the next even minute
+// Returns sleep duration in seconds and optionally fills displayHour/displayMin
+// (the time that will be shown on the display when refresh completes)
 uint32_t calculateNextWakeTime(int currentMin, int currentSec, int currentHour,
-                                int* wakeHour = nullptr, int* wakeMin = nullptr) {
-    int nextEvenMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
-    int secsUntilNextEven = (nextEvenMin - currentMin) * 60 - currentSec;
+                                int* displayHour = nullptr, int* displayMin = nullptr) {
+    // Find the next even minute (this is when we want the display to SHOW)
+    int targetMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
+    int secsUntilTarget = (targetMin - currentMin) * 60 - currentSec;
     
-    // Need at least 15 seconds margin for display update to complete
-    if (secsUntilNextEven < 15) {
-        secsUntilNextEven += 120;  // Add 2 minutes
-        nextEvenMin += 2;
+    // We need to wake WAKE_TO_DISPLAY_SECONDS before the target time
+    // so the display refresh completes right at the even minute
+    int sleepDuration = secsUntilTarget - WAKE_TO_DISPLAY_SECONDS;
+    
+    // If we don't have enough time (would need to wake in the past or too soon),
+    // skip to the next even minute
+    if (sleepDuration < 5) {  // Need at least 5 seconds of sleep
+        sleepDuration += 120;  // Add 2 minutes
+        targetMin += 2;
     }
     
-    if (wakeHour || wakeMin) {
+    // Calculate the display time (what will be shown)
+    if (displayHour || displayMin) {
         int hour = currentHour;
-        int min = nextEvenMin % 60;
-        if (nextEvenMin >= 60) {
+        int min = targetMin % 60;
+        if (targetMin >= 60) {
             hour = (hour + 1) % 24;
         }
-        if (wakeHour) *wakeHour = hour;
-        if (wakeMin) *wakeMin = min;
+        if (displayHour) *displayHour = hour;
+        if (displayMin) *displayMin = min;
     }
     
-    return (uint32_t)secsUntilNextEven;
+    return (uint32_t)sleepDuration;
 }
 
 // ================================================================
@@ -881,19 +893,31 @@ void setup() {
         Serial.println("WiFi disconnected (saving power for sleep)");
     }
     
-    // Calculate sleep until next even minute
+    // Calculate sleep so display update COMPLETES at next even minute
     time_t now = rtc.getTime();
     struct tm* tm = gmtime(&now);
     
-    int wakeHour, wakeMin;
-    uint32_t secsUntilNextEven = calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, 
-                                                        &wakeHour, &wakeMin);
-    uint32_t sleepMs = secsUntilNextEven * 1000;
+    int displayHour, displayMin;
+    uint32_t sleepSecs = calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, 
+                                                &displayHour, &displayMin);
+    uint32_t sleepMs = sleepSecs * 1000;
     
-    Serial.printf("\n=== Entering deep sleep until next even minute ===\n");
-    Serial.printf("Current time: %02d:%02d:%02d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
-    Serial.printf("Sleep duration: %lu seconds (until %02d:%02d)\n", 
-                  secsUntilNextEven, wakeHour, wakeMin);
+    // Calculate actual wake time (display time - refresh duration)
+    int wakeAtSec = (displayMin * 60) - WAKE_TO_DISPLAY_SECONDS;
+    int wakeMin = displayMin;
+    int wakeHour = displayHour;
+    if (wakeAtSec < 0) {
+        wakeAtSec += 60;
+        wakeMin = (displayMin + 59) % 60;
+        if (displayMin == 0) wakeHour = (displayHour + 23) % 24;
+    }
+    
+    Serial.printf("\n=== Entering deep sleep ===\n");
+    Serial.printf("Current time:   %02d:%02d:%02d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
+    Serial.printf("Sleep duration: %lu seconds\n", sleepSecs);
+    Serial.printf("Will wake at:   ~%02d:%02d:%02d (to allow %ds for refresh)\n", 
+                  wakeHour, wakeMin, wakeAtSec % 60, WAKE_TO_DISPLAY_SECONDS);
+    Serial.printf("Display shows:  %02d:%02d:00\n", displayHour, displayMin);
     Serial.println("Using RP2350 powman - TRUE deep sleep (core powers down)");
     
     // Verify RTC is still responding before sleep (catch I2C lockup)
@@ -1262,11 +1286,12 @@ void doDisplayUpdate(int updateNumber) {
     Serial.printf("  TTF battery:    %lu ms\n", t1);
     
     // ================================================================
-    // NEXT WAKE - Bottom left corner, outlined
+    // NEXT UPDATE - Bottom left corner, outlined
+    // Shows when the next display update will complete (the even minute)
     // ================================================================
-    int wakeHour, wakeMin;
-    calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, &wakeHour, &wakeMin);
-    snprintf(buf, sizeof(buf), "Next: %02d:%02d", wakeHour, wakeMin);
+    int nextDisplayHour, nextDisplayMin;
+    calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, &nextDisplayHour, &nextDisplayMin);
+    snprintf(buf, sizeof(buf), "Next: %02d:%02d", nextDisplayHour, nextDisplayMin);
     t0 = millis();
     ttf.drawTextAlignedOutlined(30, display.height() - 30, buf, 36.0,
                                  EL133UF1_WHITE, EL133UF1_BLACK,

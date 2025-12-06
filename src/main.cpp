@@ -758,6 +758,34 @@ void setup() {
     }
     
     // ================================================================
+    // Connect WiFi for AI image generation (if needed)
+    // ================================================================
+    // On cold boot, if we have an API key but skipped NTP sync (RTC had valid time),
+    // we still need to connect WiFi for the OpenAI API call
+    if (!sleep_woke_from_deep_sleep() && WiFi.status() != WL_CONNECTED) {
+        // Check if we have an API key and might need to generate an image
+        if (eeprom.isPresent() && eeprom.hasOpenAIKey() && aiImageData == nullptr) {
+            Serial.println("\n=== Connecting WiFi for AI image generation ===");
+            if (strlen(wifiSSID) > 0) {
+                WiFi.begin(wifiSSID, wifiPSK);
+                Serial.print("Connecting to ");
+                Serial.print(wifiSSID);
+                uint32_t start = millis();
+                while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
+                    Serial.print(".");
+                    delay(500);
+                }
+                if (WiFi.status() == WL_CONNECTED) {
+                    Serial.println(" connected!");
+                    Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+                } else {
+                    Serial.println(" FAILED");
+                }
+            }
+        }
+    }
+    
+    // ================================================================
     // Common setup
     // ================================================================
 
@@ -808,6 +836,12 @@ void setup() {
     updateCount++;
     setUpdateCount(updateCount);
     doDisplayUpdate(updateCount);
+    
+    // Disconnect WiFi to save power before sleep
+    if (WiFi.status() == WL_CONNECTED) {
+        WiFi.disconnect(true);
+        Serial.println("WiFi disconnected (saving power for sleep)");
+    }
     
     // Calculate sleep until next even minute
     time_t now = rtc.getTime();

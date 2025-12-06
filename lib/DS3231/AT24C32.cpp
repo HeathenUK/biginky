@@ -264,6 +264,10 @@ uint16_t AT24C32::getTemperatureLogCount() {
 }
 
 float AT24C32::getLoggedTemperature(uint16_t index) {
+    uint16_t maxEntries = (EEPROM_TEMP_LOG_SIZE - 2) / 2;
+    if (index >= maxEntries || index >= getTemperatureLogCount()) {
+        return 0.0f;  // Invalid index
+    }
     uint16_t addr = EEPROM_TEMP_LOG_START + 2 + (index * 2);
     int16_t tempFixed = (int16_t)readUInt16(addr);
     return tempFixed / 4.0f;

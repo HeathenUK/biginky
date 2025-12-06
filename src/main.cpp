@@ -5,18 +5,27 @@
  * This example demonstrates driving the EL133UF1 e-ink panel with a
  * Pimoroni Pico Plus 2 W using the Arduino-Pico framework.
  * 
- * Wiring:
+ * Wiring (Pimoroni Inky Impression 13.3" + Pico Plus 2 W):
  *   Display      Pico Plus 2 W
  *   -------      -------------
- *   MOSI    ->   GP19 (SPI0 TX)
- *   SCLK    ->   GP18 (SPI0 SCK)
- *   CS0     ->   GP17
- *   CS1     ->   GP16
- *   DC      ->   GP20
- *   RESET   ->   GP21
- *   BUSY    ->   GP22
+ *   MOSI    ->   GP11 (SPI1 TX)
+ *   SCLK    ->   GP10 (SPI1 SCK)
+ *   CS0     ->   GP26 (left half)
+ *   CS1     ->   GP16 (right half)
+ *   DC      ->   GP22
+ *   RESET   ->   GP27
+ *   BUSY    ->   GP17
  *   GND     ->   GND
  *   3.3V    ->   3V3
+ * 
+ * DS3231 RTC (optional, for accurate timekeeping):
+ *   SDA     ->   GP2 (I2C1)
+ *   SCL     ->   GP3 (I2C1)
+ *   INT     ->   GP18 (wake from sleep)
+ * 
+ * WiFi Configuration:
+ *   On first boot (or press 'c' within 3 seconds), enter config mode
+ *   to set WiFi credentials via serial. Credentials are stored in EEPROM.
  */
 
 #include <Arduino.h>
@@ -31,14 +40,20 @@
 #include "hardware/structs/powman.h"
 #include "hardware/powman.h"
 
-// WiFi credentials
-const char* WIFI_SSID = "JELLING";
-const char* WIFI_PSK = "Crusty jugglers";
+// WiFi credentials - loaded from EEPROM or set via serial config
+// Compile-time fallback (optional, for development only)
+// Set via platformio_local.ini (not committed to git):
+//   build_flags = -DWIFI_SSID_DEFAULT=\"YourSSID\" -DWIFI_PSK_DEFAULT=\"YourPassword\"
+#ifndef WIFI_SSID_DEFAULT
+#define WIFI_SSID_DEFAULT ""
+#endif
+#ifndef WIFI_PSK_DEFAULT
+#define WIFI_PSK_DEFAULT ""
+#endif
 
-// NTP servers - use pool.ntp.org which is more reliable than NIST
-// NIST servers often rate-limit and can be slow
-const char* NTP_SERVER1_NAME = "pool.ntp.org";
-const char* NTP_SERVER2_NAME = "time.google.com";
+// Runtime credential buffers
+static char wifiSSID[33] = {0};
+static char wifiPSK[65] = {0};
 
 // Pin definitions for Pimoroni Pico Plus 2 W with Inky Impression 13.3"
 // These match the working CircuitPython reference
@@ -68,13 +83,153 @@ bool connectWiFiAndGetNTP();
 void formatTime(uint64_t time_ms, char* buf, size_t len);
 
 // ================================================================
+// WiFi Credential Management
+// ================================================================
+
+// Load credentials from EEPROM or compiled fallback
+bool loadWifiCredentials() {
+    if (eeprom.isPresent() && eeprom.hasWifiCredentials()) {
+        eeprom.getWifiCredentials(wifiSSID, sizeof(wifiSSID), wifiPSK, sizeof(wifiPSK));
+        Serial.printf("WiFi: Loaded from EEPROM: '%s'\n", wifiSSID);
+        return true;
+    }
+    
+    // Fallback to compiled defaults (if any)
+    if (strlen(WIFI_SSID_DEFAULT) > 0) {
+        strncpy(wifiSSID, WIFI_SSID_DEFAULT, sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, WIFI_PSK_DEFAULT, sizeof(wifiPSK) - 1);
+        Serial.printf("WiFi: Using compiled fallback: '%s'\n", wifiSSID);
+        return true;
+    }
+    
+    Serial.println("WiFi: No credentials available");
+    return false;
+}
+
+// Read a line from Serial with echo
+String serialReadLine(bool maskInput = false) {
+    String result = "";
+    while (true) {
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == '\n' || c == '\r') {
+                if (result.length() > 0 || c == '\n') {
+                    Serial.println();
+                    break;
+                }
+            } else if (c == '\b' || c == 127) {  // Backspace
+                if (result.length() > 0) {
+                    result.remove(result.length() - 1);
+                    Serial.print("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {  // Printable
+                result += c;
+                Serial.print(maskInput ? '*' : c);
+            }
+        }
+        delay(10);
+    }
+    return result;
+}
+
+// Interactive serial configuration mode
+void enterConfigMode() {
+    Serial.println("\n========================================");
+    Serial.println("       WiFi Configuration Mode");
+    Serial.println("========================================");
+    
+    // Show current config if any
+    if (eeprom.isPresent() && eeprom.hasWifiCredentials()) {
+        char currentSSID[33], currentPSK[65];
+        eeprom.getWifiCredentials(currentSSID, sizeof(currentSSID), 
+                                   currentPSK, sizeof(currentPSK));
+        Serial.printf("Current SSID: '%s'\n", currentSSID);
+        Serial.println("(Press Enter to keep current, or type new value)\n");
+    }
+    
+    // Get SSID
+    Serial.print("WiFi SSID: ");
+    String ssid = serialReadLine(false);
+    
+    // If empty and we have existing, keep it
+    if (ssid.length() == 0 && eeprom.hasWifiCredentials()) {
+        Serial.println("(keeping existing SSID)");
+        eeprom.getWifiCredentials(wifiSSID, sizeof(wifiSSID), wifiPSK, sizeof(wifiPSK));
+        ssid = wifiSSID;
+    }
+    
+    if (ssid.length() == 0) {
+        Serial.println("ERROR: SSID cannot be empty!");
+        return;
+    }
+    
+    // Get PSK
+    Serial.print("WiFi Password: ");
+    String psk = serialReadLine(true);  // Masked input
+    
+    // Save to EEPROM
+    if (eeprom.isPresent()) {
+        eeprom.setWifiCredentials(ssid.c_str(), psk.c_str());
+        Serial.println("\nCredentials saved to EEPROM!");
+        
+        // Load into active buffers
+        strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+    } else {
+        Serial.println("\nWARNING: EEPROM not available, using for this session only");
+        strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+    }
+    
+    Serial.println("========================================\n");
+}
+
+// Check for config mode trigger during boot
+// Returns true if config mode was entered
+bool checkConfigMode() {
+    // Skip on wake from deep sleep
+    if (sleep_woke_from_deep_sleep()) {
+        return false;
+    }
+    
+    Serial.println("\nPress 'c' within 3 seconds for WiFi config...");
+    Serial.flush();
+    
+    uint32_t start = millis();
+    while (millis() - start < 3000) {
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == 'c' || c == 'C') {
+                enterConfigMode();
+                return true;
+            }
+        }
+        // Show countdown
+        uint32_t remaining = 3 - (millis() - start) / 1000;
+        static uint32_t lastShown = 99;
+        if (remaining != lastShown) {
+            Serial.printf("\r%lu... ", remaining);
+            lastShown = remaining;
+        }
+        delay(50);
+    }
+    Serial.println("continuing.");
+    return false;
+}
+
+// ================================================================
 // Connect to WiFi and sync NTP time (arduino-pico native)
 // ================================================================
 bool connectWiFiAndGetNTP() {
-    Serial.println("\n=== Connecting to WiFi ===");
-    Serial.printf("SSID: %s\n", WIFI_SSID);
+    if (strlen(wifiSSID) == 0) {
+        Serial.println("ERROR: No WiFi credentials configured!");
+        return false;
+    }
     
-    WiFi.begin(WIFI_SSID, WIFI_PSK);
+    Serial.println("\n=== Connecting to WiFi ===");
+    Serial.printf("SSID: %s\n", wifiSSID);
+    
+    WiFi.begin(wifiSSID, wifiPSK);
     
     Serial.print("Connecting");
     uint32_t start = millis();
@@ -289,6 +444,23 @@ void setup() {
     if (eeprom.isPresent()) {
         eeprom.incrementBootCount();
         totalBoots = eeprom.getBootCount();
+    }
+    
+    // ================================================================
+    // WiFi credential management
+    // ================================================================
+    // Check for config mode (only on cold boot, not wake from sleep)
+    checkConfigMode();
+    
+    // Load WiFi credentials
+    if (!loadWifiCredentials()) {
+        Serial.println("No WiFi credentials - entering config mode");
+        enterConfigMode();
+        
+        // Check again after config
+        if (!loadWifiCredentials()) {
+            Serial.println("WARNING: Still no WiFi credentials, NTP sync will fail");
+        }
     }
     
     // ================================================================

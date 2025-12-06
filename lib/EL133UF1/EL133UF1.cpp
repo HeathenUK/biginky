@@ -326,20 +326,28 @@ void EL133UF1::setPreRotatedMode(bool enable) {
     
     if (enable && !_packedMode) {
         // Switching to pre-rotated mode: reallocate buffers
-        // Free old unpacked buffer
-        if (_buffer) {
-            free(_buffer);
-            _buffer = nullptr;
-        }
+        // Allocate new buffers first before freeing old one
+        uint8_t* newBuffer = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
+        uint8_t* newBufferRight = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
         
-        // Allocate two packed buffers (480KB each)
-        _buffer = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
-        _bufferRight = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
-        
-        if (_buffer && _bufferRight) {
+        if (newBuffer && newBufferRight) {
+            // Success - free old buffer and switch
+            if (_buffer) {
+                free(_buffer);
+            }
+            _buffer = newBuffer;
+            _bufferRight = newBufferRight;
+            
             // Clear to white
             memset(_buffer, 0x11, PACKED_HALF_SIZE);
             memset(_bufferRight, 0x11, PACKED_HALF_SIZE);
+        } else {
+            // Allocation failed - clean up and keep current mode
+            if (newBuffer) free(newBuffer);
+            if (newBufferRight) free(newBufferRight);
+            Serial.println("EL133UF1: Failed to allocate pre-rotated buffers");
+            _preRotatedMode = !enable;  // Revert the mode flag
+            return;
         }
     } else if (!enable && !_packedMode) {
         // Switching back to unpacked mode

@@ -1113,12 +1113,14 @@ void doDisplayUpdate(int updateNumber) {
         // Initialize OpenAI client
         openai.begin(apiKey);
         openai.setModel(DALLE_3);
-        openai.setSize(DALLE_1024x1024);
+        openai.setSize(DALLE_1792x1024);  // Landscape format for 1600x1200 display
         openai.setQuality(DALLE_STANDARD);
         
         // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
+        // Note: requesting landscape 1792x1024 to better fill the 1600x1200 display
         const char* prompt = 
-            "A beautiful nature scene designed for a 6-color e-ink display. "
+            "A beautiful wide landscape nature scene in 16:9 aspect ratio, "
+            "designed for a 6-color e-ink display. "
             "Use ONLY these colors: pure black, pure white, bright red, bright yellow, "
             "bright blue, and bright green. No gradients, no shading, no intermediate colors. "
             "Bold graphic style like a vintage travel poster or woodblock print. "

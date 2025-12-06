@@ -37,7 +37,9 @@
 #include <time.h>
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
+#include "EL133UF1_BMP.h"
 #include "fonts/opensans.h"
+#include "forest.h"  // Background image: xxd -i forest.bmp > forest.h
 #include "pico_sleep.h"
 #include "DS3231.h"
 #include "AT24C32.h"
@@ -90,6 +92,9 @@ EL133UF1 display(&SPI1);
 
 // TTF font renderer
 EL133UF1_TTF ttf;
+
+// BMP image loader
+EL133UF1_BMP bmp;
 
 // ================================================================
 // Battery voltage monitoring
@@ -981,20 +986,31 @@ void doDisplayUpdate(int updateNumber) {
     logStage(STAGE_TTF_OK);
     
     // Enable glyph cache for time display (160px digits)
-    // This pre-renders 0-9, colon, space - used repeatedly
     ttf.enableGlyphCache(160.0, "0123456789: ");
+    
+    // Initialize BMP loader
+    bmp.begin(&display);
     
     // Draw update info with performance profiling
     uint32_t drawStart = millis();
     uint32_t t0, t1;
     uint32_t ttfTotal = 0, bitmapTotal = 0;
     
+    // ================================================================
+    // BACKGROUND - Forest bitmap
+    // ================================================================
     t0 = millis();
-    display.clear(EL133UF1_WHITE);
-    Serial.printf("  clear:          %lu ms\n", millis() - t0);
+    BMPResult bmpResult = bmp.drawFullscreen(forest_bmp, forest_bmp_len);
+    bitmapTotal = millis() - t0;
+    if (bmpResult != BMP_OK) {
+        Serial.printf("  BMP error: %s\n", bmp.getErrorString(bmpResult));
+        // Fallback to white background
+        display.clear(EL133UF1_WHITE);
+    }
+    Serial.printf("  BMP background: %lu ms\n", bitmapTotal);
     
     // ================================================================
-    // MAIN TIME DISPLAY - centered with outline for readability
+    // TIME - Large outlined text, centered
     // ================================================================
     
     // Display the PREDICTED time (what it will be when refresh completes)
@@ -1003,205 +1019,44 @@ void doDisplayUpdate(int updateNumber) {
     char timeBuf[16];
     strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", tm);
     
-    // Cycle through background colors based on update number
-    uint8_t colors[] = {EL133UF1_RED, EL133UF1_GREEN, EL133UF1_BLUE, EL133UF1_YELLOW};
-    uint8_t bgColor = colors[(updateNumber - 1) % 4];
-    
-    // Large colored banner for time
+    // Time - large outlined text for readability on any background
     t0 = millis();
-    display.fillRect(0, 80, display.width(), 220, bgColor);
-    Serial.printf("  fillRect:       %lu ms\n", millis() - t0);
-    
-    // Time - large outlined text, centered on anchor point
-    // Using anchor at center of banner (800, 190)
-    t0 = millis();
-    ttf.drawTextAlignedOutlined(display.width() / 2, 190, timeBuf, 160.0,
+    ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2 - 50, timeBuf, 160.0,
                                  EL133UF1_WHITE, EL133UF1_BLACK,
-                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
+                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     t1 = millis() - t0;
     ttfTotal += t1;
     Serial.printf("  TTF time 160px: %lu ms\n", t1);
     
-    // Date - centered below banner
+    // ================================================================
+    // DATE - Below time, also outlined for readability
+    // ================================================================
     char dateBuf[32];
     strftime(dateBuf, sizeof(dateBuf), "%A, %d %B %Y", tm);
     t0 = millis();
-    ttf.drawTextAligned(display.width() / 2, 340, dateBuf, 48.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
+    ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2 + 100, dateBuf, 48.0,
+                                 EL133UF1_WHITE, EL133UF1_BLACK,
+                                 ALIGN_CENTER, ALIGN_TOP, 2);
     t1 = millis() - t0;
     ttfTotal += t1;
     Serial.printf("  TTF date 48px:  %lu ms\n", t1);
     
-    // Update count and battery voltage on same line
+    // ================================================================
+    // BATTERY - Bottom right corner, outlined
+    // ================================================================
     char buf[64];
-    
-    // Read battery voltage
     float batteryV = readBatteryVoltage();
     int batteryPct = getBatteryPercent(batteryV);
     Serial.printf("  Battery: %.2fV (%d%%)\n", batteryV, batteryPct);
     
-    // Left side: Update count
-    snprintf(buf, sizeof(buf), "Update #%d", updateNumber);
+    snprintf(buf, sizeof(buf), "%.1fV %d%%", batteryV, batteryPct);
     t0 = millis();
-    ttf.drawTextAligned(200, 420, buf, 32.0, EL133UF1_BLACK,
-                        ALIGN_LEFT, ALIGN_TOP);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    Serial.printf("  TTF count 32px: %lu ms\n", t1);
-    
-    // Right side: Battery voltage with color indicator
-    // Also show raw ADC for debugging
-    uint16_t rawADC = analogRead(PIN_VBAT_ADC);
-    snprintf(buf, sizeof(buf), "Batt: %.2fV (raw:%u)", batteryV, rawADC);
-    t0 = millis();
-    // Color based on battery level: green > 50%, yellow 20-50%, red < 20%
-    uint8_t battColor = EL133UF1_GREEN;
-    if (batteryPct < 20) battColor = EL133UF1_RED;
-    else if (batteryPct < 50) battColor = EL133UF1_YELLOW;
-    
-    // If reading is suspiciously low, show in yellow to indicate "check this"
-    if (rawADC < 500) battColor = EL133UF1_YELLOW;
-    
-    ttf.drawTextAligned(display.width() - 200, 420, buf, 28.0, battColor,
-                        ALIGN_RIGHT, ALIGN_TOP);
+    ttf.drawTextAlignedOutlined(display.width() - 30, display.height() - 30, buf, 36.0,
+                                 EL133UF1_WHITE, EL133UF1_BLACK,
+                                 ALIGN_RIGHT, ALIGN_BOTTOM, 2);
     t1 = millis() - t0;
     ttfTotal += t1;
     Serial.printf("  TTF battery:    %lu ms\n", t1);
-    
-    // ================================================================
-    // ALIGNMENT DEMO - show anchor points and alignment modes
-    // ================================================================
-    
-    int16_t demoY = 500;
-    int16_t anchorX = display.width() / 2;  // Center of screen
-    
-    // Draw vertical anchor line
-    display.drawVLine(anchorX, demoY, 180, EL133UF1_BLACK);
-    
-    // Draw horizontal baseline indicators
-    int16_t baselineY = demoY + 90;
-    display.drawHLine(anchorX - 300, baselineY, 600, EL133UF1_BLACK);
-    
-    // Small marker at anchor point
-    display.fillRect(anchorX - 3, baselineY - 3, 6, 6, EL133UF1_RED);
-    
-    // Left-aligned text (anchor on left edge, baseline)
-    t0 = millis();
-    ttf.drawTextAligned(anchorX - 280, baselineY, "Left", 32.0, EL133UF1_BLACK,
-                        ALIGN_LEFT, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    
-    // Center-aligned text (anchor at center, baseline)
-    t0 = millis();
-    ttf.drawTextAligned(anchorX, baselineY, "Center", 32.0, EL133UF1_RED,
-                        ALIGN_CENTER, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    
-    // Right-aligned text (anchor on right edge, baseline)
-    t0 = millis();
-    ttf.drawTextAligned(anchorX + 280, baselineY, "Right", 32.0, EL133UF1_BLACK,
-                        ALIGN_RIGHT, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    Serial.printf("  Alignment demo: %lu ms\n", t1 * 3);
-    
-    // ================================================================
-    // VERTICAL ALIGNMENT DEMO - showing descenders
-    // ================================================================
-    
-    int16_t vdemoX = 200;
-    int16_t vdemoY = 750;
-    
-    // Draw anchor line
-    display.drawHLine(vdemoX, vdemoY, 500, EL133UF1_RED);
-    display.fillRect(vdemoX - 3, vdemoY - 3, 6, 6, EL133UF1_RED);
-    
-    // Demonstrate baseline alignment with descenders (g, y, p)
-    t0 = millis();
-    ttf.drawTextAligned(vdemoX, vdemoY, "gyp Baseline", 36.0, EL133UF1_BLACK,
-                        ALIGN_LEFT, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    
-    // Show different vertical alignments side by side
-    int16_t vX2 = 900;
-    display.drawHLine(vX2, vdemoY, 400, EL133UF1_BLUE);
-    
-    ttf.drawTextAligned(vX2, vdemoY, "Top", 28.0, EL133UF1_BLUE,
-                        ALIGN_LEFT, ALIGN_TOP);
-    ttf.drawTextAligned(vX2 + 100, vdemoY, "Mid", 28.0, EL133UF1_GREEN,
-                        ALIGN_LEFT, ALIGN_MIDDLE);
-    ttf.drawTextAligned(vX2 + 200, vdemoY, "Base", 28.0, EL133UF1_RED,
-                        ALIGN_LEFT, ALIGN_BASELINE);
-    ttf.drawTextAligned(vX2 + 320, vdemoY, "Bot", 28.0, EL133UF1_BLACK,
-                        ALIGN_LEFT, ALIGN_BOTTOM);
-    Serial.printf("  V-align demo:   %lu ms\n", millis() - t0);
-    
-    // ================================================================
-    // OUTLINED TEXT DEMO
-    // ================================================================
-    
-    // Gradient background for outline demo
-    for (int i = 0; i < 6; i++) {
-        display.fillRect(0, 850 + i * 25, display.width(), 25, i);
-    }
-    
-    t0 = millis();
-    ttf.drawTextAlignedOutlined(display.width() / 2, 925, "Outlined Text on Any Background", 40.0,
-                                 EL133UF1_WHITE, EL133UF1_BLACK,
-                                 ALIGN_CENTER, ALIGN_MIDDLE, 1);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    Serial.printf("  Outlined demo:  %lu ms\n", t1);
-    
-    // ================================================================
-    // INFO FOOTER
-    // ================================================================
-    
-    t0 = millis();
-    
-    // Line 1: Time source info
-    if (sleep_has_rtc()) {
-        // DS3231 RTC present
-        snprintf(buf, sizeof(buf), "DS3231 RTC: crystal accurate (~2ppm), battery-backed");
-    } else {
-        // LPOSC fallback
-        uint32_t lposcFreq = sleep_get_lposc_freq_hz();
-        int32_t lposcDev = sleep_get_lposc_deviation_centipercent();
-        if (lposcFreq > 0) {
-            snprintf(buf, sizeof(buf), "LPOSC: %lu Hz (%+ld.%02ld%% from 32768)", 
-                     lposcFreq, lposcDev / 100, abs(lposcDev) % 100);
-        } else {
-            snprintf(buf, sizeof(buf), "LPOSC: not calibrated");
-        }
-    }
-    ttf.drawTextAligned(display.width() / 2, 1020, buf, 22.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
-    
-    // Line 2: Status
-    if (sleep_has_rtc()) {
-        snprintf(buf, sizeof(buf), "Wake: DS3231 alarm | Sleep: 10s | Update #%d", updateNumber);
-    } else {
-        int32_t driftPpm = sleep_get_drift_ppm();
-        snprintf(buf, sizeof(buf), "Drift: %+ld ppm | Sleep: 10s | Update #%d", 
-                 (long)driftPpm, updateNumber);
-    }
-    ttf.drawTextAligned(display.width() / 2, 1055, buf, 22.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
-    ttfTotal += millis() - t0;
-
-    // Line 3: Status
-    const char* statusMsg = sleep_has_rtc() 
-        ? "DS3231 RTC maintains time during deep sleep"
-        : "NTP synced on boot, time maintained during deep sleep";
-    ttf.drawTextAligned(display.width() / 2, 1090, statusMsg, 
-                        20.0, EL133UF1_BLACK, ALIGN_CENTER, ALIGN_TOP);
-    
-    // Version/tech info - right aligned at bottom
-    ttf.drawTextAligned(display.width() - 20, 1150, "RP2350 + EL133UF1 + Open Sans TTF", 
-                        18.0, EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_BOTTOM);
     
     Serial.printf("--- Drawing summary ---\n");
     Serial.printf("  TTF total:      %lu ms\n", ttfTotal);

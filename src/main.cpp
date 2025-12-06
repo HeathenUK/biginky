@@ -3,11 +3,12 @@
  * @brief Example application for EL133UF1 13.3" Spectra 6 E-Ink Display
  * 
  * This example demonstrates driving the EL133UF1 e-ink panel with a
- * Pimoroni Pico Plus 2 W using the Arduino-Pico framework.
+ * Pimoroni Pico LiPo 2 XL W (RP2350) using the Arduino-Pico framework.
+ * Build target: pimoroni_pico_plus_2w (compatible)
  * 
- * Wiring (Pimoroni Inky Impression 13.3" + Pico Plus 2 W):
- *   Display      Pico Plus 2 W
- *   -------      -------------
+ * Wiring (Pimoroni Inky Impression 13.3" + Pico LiPo 2 XL W):
+ *   Display      Pico LiPo 2 XL W
+ *   -------      ----------------
  *   MOSI    ->   GP11 (SPI1 TX)
  *   SCLK    ->   GP10 (SPI1 SCK)
  *   CS0     ->   GP26 (left half)
@@ -22,6 +23,9 @@
  *   SDA     ->   GP2 (I2C1)
  *   SCL     ->   GP3 (I2C1)
  *   INT     ->   GP18 (wake from sleep)
+ * 
+ * Battery Monitoring:
+ *   VBAT    ->   GP43 (ADC, via voltage divider)
  * 
  * WiFi Configuration:
  *   On first boot (or press 'c' within 3 seconds), enter config mode
@@ -70,11 +74,12 @@ static char wifiPSK[65] = {0};
 #define PIN_RTC_SCL    3    // I2C1 SCL (GP3)
 #define PIN_RTC_INT   18    // DS3231 INT/SQW pin for wake (GP18)
 
-// Battery voltage monitoring
-#define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43)
-// Voltage divider ratio: if using 100k/100k divider, ratio = 2.0
-// Adjust based on your actual circuit
-#define VBAT_DIVIDER_RATIO  2.0f
+// Battery voltage monitoring (Pimoroni Pico LiPo 2 XL W)
+#define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
+// Voltage divider ratio - Pimoroni typically uses 3:1 for LiPo monitoring
+// This brings 4.2V max down to ~1.4V (safe for 3.3V ADC)
+// Adjust if your readings are off
+#define VBAT_DIVIDER_RATIO  3.0f
 // ADC reference voltage (3.3V for RP2350)
 #define VBAT_ADC_REF  3.3f
 

@@ -1240,6 +1240,38 @@ void doDisplayUpdate(int updateNumber) {
     ttfTotal += t1;
     Serial.printf("  TTF battery:    %lu ms\n", t1);
     
+    // ================================================================
+    // NEXT WAKE - Bottom left corner, outlined
+    // ================================================================
+    // Calculate next even minute (same logic as sleep calculation)
+    int currentMin = tm->tm_min;
+    int currentSec = tm->tm_sec;
+    int nextEvenMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
+    int secsUntilNextEven = (nextEvenMin - currentMin) * 60 - currentSec;
+    
+    // Account for display refresh time (~30 seconds) - we need to wake up early
+    // If we're too close to the next even minute, we'll skip to the one after
+    if (secsUntilNextEven < 15) {
+        secsUntilNextEven += 120;  // Add 2 minutes
+        nextEvenMin += 2;
+    }
+    
+    // Calculate the actual wake time
+    int wakeHour = tm->tm_hour;
+    int wakeMin = nextEvenMin % 60;
+    if (nextEvenMin >= 60) {
+        wakeHour = (wakeHour + 1) % 24;
+    }
+    
+    snprintf(buf, sizeof(buf), "Next: %02d:%02d", wakeHour, wakeMin);
+    t0 = millis();
+    ttf.drawTextAlignedOutlined(30, display.height() - 30, buf, 36.0,
+                                 EL133UF1_WHITE, EL133UF1_BLACK,
+                                 ALIGN_LEFT, ALIGN_BOTTOM, 2);
+    t1 = millis() - t0;
+    ttfTotal += t1;
+    Serial.printf("  TTF next wake:  %lu ms\n", t1);
+    
     Serial.printf("--- Drawing summary ---\n");
     Serial.printf("  TTF total:      %lu ms\n", ttfTotal);
     Serial.printf("  Bitmap total:   %lu ms\n", bitmapTotal);

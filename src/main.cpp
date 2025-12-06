@@ -979,14 +979,19 @@ void doDisplayUpdate(int updateNumber) {
     Serial.printf("  TTF count 32px: %lu ms\n", t1);
     
     // Right side: Battery voltage with color indicator
-    snprintf(buf, sizeof(buf), "Battery: %.2fV (%d%%)", batteryV, batteryPct);
+    // Also show raw ADC for debugging
+    uint16_t rawADC = analogRead(PIN_VBAT_ADC);
+    snprintf(buf, sizeof(buf), "Batt: %.2fV (raw:%u)", batteryV, rawADC);
     t0 = millis();
     // Color based on battery level: green > 50%, yellow 20-50%, red < 20%
     uint8_t battColor = EL133UF1_GREEN;
     if (batteryPct < 20) battColor = EL133UF1_RED;
     else if (batteryPct < 50) battColor = EL133UF1_YELLOW;
     
-    ttf.drawTextAligned(display.width() - 200, 420, buf, 32.0, battColor,
+    // If reading is suspiciously low, show in orange to indicate "check this"
+    if (rawADC < 500) battColor = EL133UF1_ORANGE;
+    
+    ttf.drawTextAligned(display.width() - 200, 420, buf, 28.0, battColor,
                         ALIGN_RIGHT, ALIGN_TOP);
     t1 = millis() - t0;
     ttfTotal += t1;

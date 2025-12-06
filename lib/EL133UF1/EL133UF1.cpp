@@ -740,12 +740,20 @@ void EL133UF1::_sendBuffer() {
 
     const size_t SEND_HALF_SIZE = PACKED_HALF_SIZE;
     
+    // Debug: show PSRAM state before allocation
+    Serial.printf("    PSRAM total:    %lu KB\n", rp2040.getPSRAMSize() / 1024);
+    Serial.printf("    Need:           %lu KB (2x %lu)\n", 
+                  (SEND_HALF_SIZE * 2) / 1024, SEND_HALF_SIZE / 1024);
+    
     stepStart = millis();
     uint8_t* bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+    Serial.printf("    bufA:           %p\n", bufA);
     uint8_t* bufB = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+    Serial.printf("    bufB:           %p\n", bufB);
     
     if (bufA == nullptr || bufB == nullptr) {
-        Serial.println("EL133UF1: Failed to allocate send buffers in PSRAM");
+        Serial.printf("EL133UF1: Failed to allocate send buffers (need %lu bytes each)\n", SEND_HALF_SIZE);
+        Serial.printf("    Main buffer at: %p (size %lu)\n", _buffer, (unsigned long)(EL133UF1_WIDTH * EL133UF1_HEIGHT));
         if (bufA) free(bufA);
         if (bufB) free(bufB);
         return;

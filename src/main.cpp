@@ -75,14 +75,13 @@ static char wifiPSK[65] = {0};
 #define PIN_RTC_INT   18    // DS3231 INT/SQW pin for wake (GP18)
 
 // Battery voltage monitoring (Pimoroni Pico LiPo 2 XL W)
-// GP43 is ADC3 on RP2350 - try both pin number and A3 constant
-// Note: Arduino-Pico may need PIN_A3 or just the raw GPIO number
-#define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
+// GP47 shows the battery voltage based on ADC scan
+#define PIN_VBAT_ADC  47    // Battery voltage ADC pin (GP47 on Pico LiPo)
 
-// Voltage divider ratio - Pimoroni typically uses 3:1 for LiPo monitoring
-// This brings 4.2V max down to ~1.4V (safe for 3.3V ADC)
-// Adjust if your readings are off
-#define VBAT_DIVIDER_RATIO  3.0f
+// Voltage divider ratio - GP47 seems to read direct battery voltage
+// If you measure 3.7V on battery but display shows different, adjust this
+// Set to 1.0 for no divider, or measure and calibrate
+#define VBAT_DIVIDER_RATIO  1.0f
 // ADC reference voltage (3.3V for RP2350)
 #define VBAT_ADC_REF  3.3f
 

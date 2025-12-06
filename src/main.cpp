@@ -766,7 +766,8 @@ void setup() {
     int secsUntilNextEven = (nextEvenMin - currentMin) * 60 - currentSec;
     
     // Handle edge case: if we're very close to the next even minute, skip to the one after
-    if (secsUntilNextEven < 5) {
+    // Need at least 15 seconds to wake up and start the display update
+    if (secsUntilNextEven < 15) {
         secsUntilNextEven += 120;  // Add 2 minutes
     }
     

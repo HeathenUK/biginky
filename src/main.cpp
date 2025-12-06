@@ -243,8 +243,11 @@ String serialReadLine(bool maskInput = false) {
 // Interactive serial configuration mode
 void enterConfigMode() {
     Serial.println("\n========================================");
-    Serial.println("       WiFi Configuration Mode");
+    Serial.println("       Configuration Mode");
     Serial.println("========================================");
+    
+    // --- WiFi Configuration ---
+    Serial.println("\n--- WiFi Settings ---");
     
     // Show current config if any
     if (eeprom.isPresent() && eeprom.hasWifiCredentials()) {
@@ -252,7 +255,7 @@ void enterConfigMode() {
         eeprom.getWifiCredentials(currentSSID, sizeof(currentSSID), 
                                    currentPSK, sizeof(currentPSK));
         Serial.printf("Current SSID: '%s'\n", currentSSID);
-        Serial.println("(Press Enter to keep current, or type new value)\n");
+        Serial.println("(Press Enter to keep current, or type new value)");
     }
     
     // Get SSID
@@ -275,21 +278,51 @@ void enterConfigMode() {
     Serial.print("WiFi Password: ");
     String psk = serialReadLine(true);  // Masked input
     
-    // Save to EEPROM
+    // Save WiFi to EEPROM
     if (eeprom.isPresent()) {
         eeprom.setWifiCredentials(ssid.c_str(), psk.c_str());
-        Serial.println("\nCredentials saved to EEPROM!");
+        Serial.println("WiFi credentials saved!");
         
         // Load into active buffers
         strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
         strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
     } else {
-        Serial.println("\nWARNING: EEPROM not available, using for this session only");
+        Serial.println("WARNING: EEPROM not available, using for this session only");
         strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
         strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
     }
     
-    Serial.println("========================================\n");
+    // --- OpenAI API Key Configuration ---
+    Serial.println("\n--- OpenAI API Key (for AI image generation) ---");
+    
+    if (eeprom.isPresent() && eeprom.hasOpenAIKey()) {
+        char currentKey[64];
+        eeprom.getOpenAIKey(currentKey, sizeof(currentKey));
+        // Show only first/last few chars for security
+        Serial.printf("Current key: %.7s...%s\n", currentKey, currentKey + strlen(currentKey) - 4);
+        Serial.println("(Press Enter to keep current, or paste new key)");
+    } else {
+        Serial.println("No API key configured.");
+        Serial.println("Get one at: https://platform.openai.com/api-keys");
+    }
+    
+    Serial.print("OpenAI API Key: ");
+    String apiKey = serialReadLine(true);  // Masked input
+    
+    if (apiKey.length() > 0) {
+        if (apiKey.startsWith("sk-")) {
+            if (eeprom.isPresent()) {
+                eeprom.setOpenAIKey(apiKey.c_str());
+                Serial.println("API key saved!");
+            }
+        } else {
+            Serial.println("WARNING: Key doesn't start with 'sk-', not saved.");
+        }
+    } else if (eeprom.hasOpenAIKey()) {
+        Serial.println("(keeping existing key)");
+    }
+    
+    Serial.println("\n========================================\n");
 }
 
 // Check for config mode trigger during boot
@@ -300,7 +333,7 @@ bool checkConfigMode() {
         return false;
     }
     
-    Serial.println("\nPress 'c' for WiFi config, 'r' to reset sleep state (3s)...");
+    Serial.println("\nPress 'c' for config (WiFi/API key), 'r' to reset sleep state (3s)...");
     Serial.flush();
     
     uint32_t start = millis();
@@ -997,8 +1030,8 @@ void doDisplayUpdate(int updateNumber) {
     // Enable glyph cache for time display (160px digits)
     ttf.enableGlyphCache(160.0, "0123456789: ");
     
-    // Initialize BMP loader
-    bmp.begin(&display);
+    // Initialize PNG decoder
+    png.begin(&display);
     
     // Draw update info with performance profiling
     uint32_t drawStart = millis();
@@ -1006,17 +1039,77 @@ void doDisplayUpdate(int updateNumber) {
     uint32_t ttfTotal = 0, bitmapTotal = 0;
     
     // ================================================================
-    // BACKGROUND - Forest bitmap
+    // BACKGROUND - AI-generated image (or fallback to solid color)
     // ================================================================
-    t0 = millis();
-    BMPResult bmpResult = bmp.drawFullscreen(forest_bmp, forest_bmp_len);
-    bitmapTotal = millis() - t0;
-    if (bmpResult != BMP_OK) {
-        Serial.printf("  BMP error: %s\n", bmp.getErrorString(bmpResult));
-        // Fallback to white background
-        display.clear(EL133UF1_WHITE);
+    
+    // Generate new AI image on first boot, or if we don't have one cached
+    bool needNewImage = (aiImageData == nullptr);
+    
+    // Check if we have an API key configured
+    char apiKey[64] = {0};
+    bool hasApiKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
+                     eeprom.getOpenAIKey(apiKey, sizeof(apiKey));
+    
+    if (needNewImage && hasApiKey && WiFi.status() == WL_CONNECTED) {
+        Serial.println("Generating AI background image...");
+        
+        // Initialize OpenAI client
+        openai.begin(apiKey);
+        openai.setModel(DALLE_3);
+        openai.setSize(DALLE_1024x1024);
+        openai.setQuality(DALLE_STANDARD);
+        
+        // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
+        const char* prompt = 
+            "A beautiful nature scene designed for a 6-color e-ink display. "
+            "Use ONLY these colors: pure black, pure white, bright red, bright yellow, "
+            "bright blue, and bright green. No gradients, no shading, no intermediate colors. "
+            "Bold graphic style like a vintage travel poster or woodblock print. "
+            "High contrast with clear separation between color regions. "
+            "Simple shapes, no fine details. A serene forest landscape with mountains.";
+        
+        t0 = millis();
+        OpenAIResult result = openai.generate(prompt, &aiImageData, &aiImageLen, 90000);
+        t1 = millis() - t0;
+        
+        if (result == OPENAI_OK && aiImageData != nullptr) {
+            Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+        } else {
+            Serial.printf("  AI generation failed: %s\n", openai.getLastError());
+            aiImageData = nullptr;
+            aiImageLen = 0;
+        }
     }
-    Serial.printf("  BMP background: %lu ms\n", bitmapTotal);
+    
+    // Draw the background
+    t0 = millis();
+    if (aiImageData != nullptr && aiImageLen > 0) {
+        // Draw AI-generated PNG
+        PNGResult pngResult = png.drawFullscreen(aiImageData, aiImageLen);
+        bitmapTotal = millis() - t0;
+        if (pngResult != PNG_OK) {
+            Serial.printf("  PNG error: %s\n", png.getErrorString(pngResult));
+            display.clear(EL133UF1_WHITE);
+        }
+        Serial.printf("  PNG background: %lu ms\n", bitmapTotal);
+    } else {
+        // No AI image available - use a simple colored background
+        display.clear(EL133UF1_WHITE);
+        
+        // Draw a simple decorative pattern using the 6 colors
+        int bandHeight = display.height() / 6;
+        uint8_t colors[] = {EL133UF1_RED, EL133UF1_YELLOW, EL133UF1_GREEN, 
+                            EL133UF1_BLUE, EL133UF1_WHITE, EL133UF1_BLACK};
+        for (int i = 0; i < 6; i++) {
+            display.fillRect(0, i * bandHeight, display.width(), bandHeight / 4, colors[i]);
+        }
+        bitmapTotal = millis() - t0;
+        Serial.printf("  Fallback background: %lu ms\n", bitmapTotal);
+        
+        if (!hasApiKey) {
+            Serial.println("  (No OpenAI API key configured - press 'c' on boot to set)");
+        }
+    }
     
     // ================================================================
     // TIME - Large outlined text, centered

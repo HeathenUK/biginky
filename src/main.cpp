@@ -75,8 +75,8 @@ static char wifiPSK[65] = {0};
 #define PIN_RTC_INT   18    // DS3231 INT/SQW pin for wake (GP18)
 
 // Battery voltage monitoring (Pimoroni Pico LiPo 2 XL W)
-// GP47 shows the battery voltage based on ADC scan
-#define PIN_VBAT_ADC  47    // Battery voltage ADC pin (GP47 on Pico LiPo)
+// GP43 is the battery voltage ADC pin
+#define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
 
 // Voltage divider ratio - GP47 seems to read direct battery voltage
 // If you measure 3.7V on battery but display shows different, adjust this

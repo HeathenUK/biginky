@@ -108,15 +108,33 @@ bool loadWifiCredentials() {
 
 // Read a line from Serial with echo
 String serialReadLine(bool maskInput = false) {
+    // Flush any pending newlines from previous input
+    while (Serial.available()) {
+        char c = Serial.peek();
+        if (c == '\n' || c == '\r') {
+            Serial.read();  // Consume it
+        } else {
+            break;
+        }
+    }
+    
     String result = "";
     while (true) {
         if (Serial.available()) {
             char c = Serial.read();
             if (c == '\n' || c == '\r') {
-                if (result.length() > 0 || c == '\n') {
-                    Serial.println();
-                    break;
+                // End of line - consume any trailing \n after \r
+                delay(10);  // Brief delay for trailing chars to arrive
+                while (Serial.available()) {
+                    char next = Serial.peek();
+                    if (next == '\n' || next == '\r') {
+                        Serial.read();
+                    } else {
+                        break;
+                    }
                 }
+                Serial.println();
+                break;
             } else if (c == '\b' || c == 127) {  // Backspace
                 if (result.length() > 0) {
                     result.remove(result.length() - 1);

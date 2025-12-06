@@ -101,27 +101,28 @@ float readBatteryVoltage() {
     // Set ADC resolution to 12-bit
     analogReadResolution(12);
     
-    // Debug: try reading from multiple potential battery pins
+    // Debug: scan all ADC-capable pins to find battery voltage
     static bool firstRead = true;
     if (firstRead) {
-        Serial.println("  [Battery ADC Debug]");
+        Serial.println("  [Battery ADC Scan - looking for battery voltage]");
         
-        // Try GP43 (what's labeled on the board)
-        pinMode(43, INPUT);
-        uint16_t raw43 = analogRead(43);
-        Serial.printf("    GP43 raw: %u -> %.2fV (x3 = %.2fV)\n", 
-                      raw43, raw43 * 3.3f / 4095.0f, raw43 * 3.3f / 4095.0f * 3.0f);
+        // Standard ADC pins (GP26-GP29 = ADC0-ADC3)
+        int adcPins[] = {26, 27, 28, 29, 43, 44, 45, 46, 47};
+        const char* adcNames[] = {"GP26/A0", "GP27/A1", "GP28/A2", "GP29/A3", 
+                                   "GP43", "GP44", "GP45", "GP46", "GP47"};
         
-        // Try GP29 (traditional ADC3/VSYS pin on Pico LiPo)
-        pinMode(29, INPUT);
-        uint16_t raw29 = analogRead(29);
-        Serial.printf("    GP29 raw: %u -> %.2fV (x3 = %.2fV)\n", 
-                      raw29, raw29 * 3.3f / 4095.0f, raw29 * 3.3f / 4095.0f * 3.0f);
-        
-        // Try A3 constant
-        uint16_t rawA3 = analogRead(A3);
-        Serial.printf("    A3 raw:   %u -> %.2fV (x3 = %.2fV)\n", 
-                      rawA3, rawA3 * 3.3f / 4095.0f, rawA3 * 3.3f / 4095.0f * 3.0f);
+        for (int i = 0; i < 9; i++) {
+            pinMode(adcPins[i], INPUT);
+            uint16_t raw = analogRead(adcPins[i]);
+            float voltage = raw * 3.3f / 4095.0f;
+            // Only print if there's a meaningful reading
+            if (raw > 100) {
+                Serial.printf("    %s: raw=%u -> %.2fV (x3=%.2fV) <-- SIGNAL!\n", 
+                              adcNames[i], raw, voltage, voltage * 3.0f);
+            } else {
+                Serial.printf("    %s: raw=%u (low/floating)\n", adcNames[i], raw);
+            }
+        }
         
         firstRead = false;
     }

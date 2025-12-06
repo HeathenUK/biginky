@@ -78,10 +78,9 @@ static char wifiPSK[65] = {0};
 // GP43 is the battery voltage ADC pin
 #define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
 
-// Voltage divider ratio - GP47 seems to read direct battery voltage
-// If you measure 3.7V on battery but display shows different, adjust this
-// Set to 1.0 for no divider, or measure and calibrate
-#define VBAT_DIVIDER_RATIO  1.0f
+// Voltage divider ratio - adjust based on actual circuit
+// If battery shows wrong voltage, measure with multimeter and calibrate
+#define VBAT_DIVIDER_RATIO  3.0f
 // ADC reference voltage (3.3V for RP2350)
 #define VBAT_ADC_REF  3.3f
 
@@ -100,29 +99,15 @@ float readBatteryVoltage() {
     // Set ADC resolution to 12-bit
     analogReadResolution(12);
     
-    // Debug: scan all ADC-capable pins to find battery voltage
+    // Read battery voltage from GP43
     static bool firstRead = true;
     if (firstRead) {
-        Serial.println("  [Battery ADC Scan - looking for battery voltage]");
-        
-        // Standard ADC pins (GP26-GP29 = ADC0-ADC3)
-        int adcPins[] = {26, 27, 28, 29, 43, 44, 45, 46, 47};
-        const char* adcNames[] = {"GP26/A0", "GP27/A1", "GP28/A2", "GP29/A3", 
-                                   "GP43", "GP44", "GP45", "GP46", "GP47"};
-        
-        for (int i = 0; i < 9; i++) {
-            pinMode(adcPins[i], INPUT);
-            uint16_t raw = analogRead(adcPins[i]);
-            float voltage = raw * 3.3f / 4095.0f;
-            // Only print if there's a meaningful reading
-            if (raw > 100) {
-                Serial.printf("    %s: raw=%u -> %.2fV (x3=%.2fV) <-- SIGNAL!\n", 
-                              adcNames[i], raw, voltage, voltage * 3.0f);
-            } else {
-                Serial.printf("    %s: raw=%u (low/floating)\n", adcNames[i], raw);
-            }
-        }
-        
+        // Just read GP43 - the designated battery ADC pin
+        // Note: Battery reading may only work when running on battery (not USB)
+        pinMode(PIN_VBAT_ADC, INPUT);
+        uint16_t raw = analogRead(PIN_VBAT_ADC);
+        Serial.printf("  [Battery] GP%d raw=%u -> %.2fV\n", 
+                      PIN_VBAT_ADC, raw, raw * 3.3f / 4095.0f * VBAT_DIVIDER_RATIO);
         firstRead = false;
     }
     

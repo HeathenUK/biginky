@@ -673,18 +673,35 @@ void doDisplayUpdate(int updateNumber) {
     SPI1.setTX(PIN_SPI_MOSI);
     SPI1.begin();
     
+    // Test PSRAM accessibility after wake
+    Serial.println("Testing PSRAM...");
+    void* testPtr = pmalloc(1024);
+    if (testPtr) {
+        memset(testPtr, 0xAA, 1024);
+        uint8_t* p = (uint8_t*)testPtr;
+        bool ok = (p[0] == 0xAA && p[512] == 0xAA && p[1023] == 0xAA);
+        Serial.printf("  PSRAM test: %s (ptr=%p)\n", ok ? "OK" : "FAILED", testPtr);
+        free(testPtr);
+    } else {
+        Serial.println("  PSRAM test: ALLOCATION FAILED!");
+    }
+    
     // Always do full display initialization
     // During deep sleep, GPIO pins float and may reset the display controller,
     // so we can't rely on it retaining configuration.
-    // The C++ runtime also reinitializes global objects on each boot.
+    Serial.println("Initializing display...");
     if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
         Serial.println("ERROR: Display initialization failed!");
         return;
     }
+    Serial.printf("Display buffer: %p\n", display.getBuffer());
     
     // Initialize TTF renderer
+    Serial.println("Initializing TTF...");
     ttf.begin(&display);
-    ttf.loadFont(opensans_ttf, opensans_ttf_len);
+    if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+        Serial.println("ERROR: TTF font load failed!");
+    }
     
     // Enable glyph cache for time display (160px digits)
     // This pre-renders 0-9, colon, space - used repeatedly
@@ -890,8 +907,11 @@ void doDisplayUpdate(int updateNumber) {
     
     // Update display and measure actual refresh time
     // Always skip init in update() since begin() already ran it
+    Serial.println("Starting display.update()...");
+    Serial.flush();
     uint32_t refreshStart = millis();
     display.update(true);  // skipInit=true - begin() handles init
+    Serial.println("display.update() complete.");
     uint32_t actualRefreshMs = millis() - refreshStart;
     
     // Get actual time now for comparison (with drift correction)

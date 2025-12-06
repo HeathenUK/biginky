@@ -886,8 +886,17 @@ void EL133UF1::_sendBuffer() {
 }
 
 void EL133UF1::update(bool skipInit) {
+    Serial.printf("EL133UF1::update(skipInit=%d) - _initialized=%d, _buffer=%p\n", 
+                  skipInit, _initialized, _buffer);
+    Serial.flush();
+    
     if (!_initialized) {
         Serial.println("EL133UF1: Not initialized!");
+        return;
+    }
+    
+    if (_buffer == nullptr) {
+        Serial.println("EL133UF1: No buffer allocated!");
         return;
     }
 

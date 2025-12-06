@@ -108,7 +108,10 @@ public:
     EL133UF1(SPIClass* spi = &SPI);
 
     /**
-     * @brief Initialize the display with specified pins
+     * @brief Initialize the display with specified pins (cold boot)
+     * 
+     * Performs full initialization: allocates buffer, resets display,
+     * runs init sequence. Use for first boot or after power loss.
      * 
      * Note: For custom SPI pins, configure them BEFORE calling begin():
      *   SPI.setSCK(sckPin);
@@ -123,6 +126,19 @@ public:
      */
     bool begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin, 
                int8_t resetPin, int8_t busyPin);
+
+    /**
+     * @brief Reconnect to display after sleep (warm boot)
+     * 
+     * Reinitializes SPI and GPIO without resetting the display controller.
+     * Use when waking from deep sleep - the display controller retains
+     * its configuration, so we just need to reconnect.
+     * 
+     * Much faster than begin() - skips reset and init sequence.
+     * 
+     * @return true if reconnection successful
+     */
+    bool reconnect();
 
     /**
      * @brief Clear the display buffer

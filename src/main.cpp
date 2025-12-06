@@ -670,19 +670,30 @@ void doDisplayUpdate(int updateNumber) {
     SPI1.setTX(PIN_SPI_MOSI);
     SPI1.begin();
     
-    // Initialize display
-    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+    // Initialize or reconnect display
+    bool displayOk;
+    if (isColdBoot) {
+        // Cold boot: full initialization with reset
+        displayOk = display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY);
+    } else {
+        // Warm boot: just reconnect (display controller retained config)
+        displayOk = display.reconnect();
+    }
+    
+    if (!displayOk) {
         Serial.println("ERROR: Display initialization failed!");
         return;
     }
     
-    // Reinitialize TTF (display was reinitialized)
-    ttf.begin(&display);
-    ttf.loadFont(opensans_ttf, opensans_ttf_len);
-    
-    // Enable glyph cache for time display (160px digits)
-    // This pre-renders 0-9, colon, space - used repeatedly
-    ttf.enableGlyphCache(160.0, "0123456789: ");
+    // Initialize TTF renderer (only on cold boot - state preserved during sleep)
+    if (isColdBoot) {
+        ttf.begin(&display);
+        ttf.loadFont(opensans_ttf, opensans_ttf_len);
+        
+        // Enable glyph cache for time display (160px digits)
+        // This pre-renders 0-9, colon, space - used repeatedly
+        ttf.enableGlyphCache(160.0, "0123456789: ");
+    }
     
     // Draw update info with performance profiling
     uint32_t drawStart = millis();

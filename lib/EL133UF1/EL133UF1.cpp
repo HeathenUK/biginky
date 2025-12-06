@@ -173,6 +173,38 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     return true;
 }
 
+bool EL133UF1::reconnect() {
+    // Warm boot reconnection - skip reset and init sequence
+    // Display controller retains configuration during sleep
+    
+    if (_buffer == nullptr) {
+        // Buffer not allocated - need full init
+        Serial.println("EL133UF1: reconnect() called but no buffer - use begin()");
+        return false;
+    }
+    
+    // Reconfigure GPIO (states lost during deep sleep)
+    pinMode(_cs0Pin, OUTPUT);
+    pinMode(_cs1Pin, OUTPUT);
+    pinMode(_dcPin, OUTPUT);
+    pinMode(_resetPin, OUTPUT);
+    pinMode(_busyPin, INPUT_PULLUP);
+
+    digitalWrite(_cs0Pin, HIGH);
+    digitalWrite(_cs1Pin, HIGH);
+    digitalWrite(_dcPin, LOW);
+    digitalWrite(_resetPin, HIGH);  // Keep HIGH - don't reset!
+
+    // Reinitialize SPI
+    _spi->begin();
+
+    _initialized = true;
+    // Keep _initDone as-is (should still be true from before sleep)
+    
+    Serial.println("EL133UF1: Reconnected (skipped reset/init)");
+    return true;
+}
+
 void EL133UF1::_reset() {
     // Reset sequence from Python reference (verified working)
     // Pull reset LOW, wait 30ms, then HIGH, wait 30ms

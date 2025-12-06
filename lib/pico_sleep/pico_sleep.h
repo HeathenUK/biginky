@@ -196,6 +196,31 @@ uint32_t sleep_get_lposc_freq_hz(void);
  */
 int32_t sleep_get_lposc_deviation_centipercent(void);
 
+/**
+ * @brief Add a GPIO pin as an additional wake source
+ * 
+ * The RP2350 powman supports up to 4 GPIO wake sources (slots 0-3).
+ * Slot 0 is used by the RTC INT pin. Slots 1-3 are available for buttons.
+ * The device will wake if ANY configured source triggers.
+ * 
+ * @param pin GPIO pin number
+ * @param active_high true for active-high (wake on HIGH), false for active-low (wake on LOW)
+ * @return slot number used (1-3), or -1 if no slots available
+ */
+int sleep_add_gpio_wake_source(int pin, bool active_high);
+
+/**
+ * @brief Clear all additional GPIO wake sources (keeps RTC wake if configured)
+ */
+void sleep_clear_gpio_wake_sources(void);
+
+/**
+ * @brief Check which wake source triggered the wake (after waking)
+ * 
+ * @return GPIO pin number that triggered wake, or -1 if timer/unknown
+ */
+int sleep_get_wake_gpio(void);
+
 
 #ifdef __cplusplus
 }

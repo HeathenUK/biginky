@@ -42,6 +42,12 @@
 static bool _rtc_present = false;
 static int _rtc_int_pin = -1;
 
+// Additional GPIO wake sources (slots 1-3, slot 0 is for RTC)
+#define MAX_GPIO_WAKE_SOURCES 3
+static int _gpio_wake_pins[MAX_GPIO_WAKE_SOURCES] = {-1, -1, -1};
+static bool _gpio_wake_active_high[MAX_GPIO_WAKE_SOURCES] = {false, false, false};
+static int _gpio_wake_count = 0;
+
 // ========================================================================
 // Sleep state - use powman scratch registers (preserved across reset!)
 // ========================================================================
@@ -711,4 +717,64 @@ uint64_t sleep_get_corrected_time_ms(void) {
     uint64_t corrected_time = last_sync_ntp + lposc_elapsed - correction;
     
     return corrected_time;
+}
+
+// ========================================================================
+// Additional GPIO wake sources
+// ========================================================================
+
+int sleep_add_gpio_wake_source(int pin, bool active_high) {
+    if (_gpio_wake_count >= MAX_GPIO_WAKE_SOURCES) {
+        Serial.println("  [sleep] ERROR: No more GPIO wake slots available");
+        return -1;
+    }
+    
+    int slot = _gpio_wake_count;
+    _gpio_wake_pins[slot] = pin;
+    _gpio_wake_active_high[slot] = active_high;
+    _gpio_wake_count++;
+    
+    // Configure the pin with appropriate pull resistor
+    if (active_high) {
+        pinMode(pin, INPUT_PULLDOWN);
+    } else {
+        pinMode(pin, INPUT_PULLUP);
+    }
+    
+    Serial.printf("  [sleep] Added GPIO%d as wake source (slot %d, active-%s)\n",
+                  pin, slot + 1, active_high ? "high" : "low");
+    
+    return slot + 1;  // Return 1-based slot number (slot 0 is RTC)
+}
+
+void sleep_clear_gpio_wake_sources(void) {
+    for (int i = 0; i < MAX_GPIO_WAKE_SOURCES; i++) {
+        _gpio_wake_pins[i] = -1;
+        _gpio_wake_active_high[i] = false;
+    }
+    _gpio_wake_count = 0;
+    Serial.println("  [sleep] Cleared all additional GPIO wake sources");
+}
+
+int sleep_get_wake_gpio(void) {
+    // Check RTC INT pin first
+    if (_rtc_int_pin >= 0) {
+        bool rtc_active = (digitalRead(_rtc_int_pin) == LOW);  // RTC INT is active-low
+        if (rtc_active) {
+            return _rtc_int_pin;
+        }
+    }
+    
+    // Check additional GPIO wake sources
+    for (int i = 0; i < _gpio_wake_count; i++) {
+        if (_gpio_wake_pins[i] >= 0) {
+            bool pin_state = digitalRead(_gpio_wake_pins[i]);
+            bool is_active = _gpio_wake_active_high[i] ? pin_state : !pin_state;
+            if (is_active) {
+                return _gpio_wake_pins[i];
+            }
+        }
+    }
+    
+    return -1;  // Timer wake or unknown
 }

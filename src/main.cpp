@@ -763,6 +763,7 @@ void setup() {
         }
     }
     
+#if 0  // AI image generation disabled for demo
     // ================================================================
     // Connect WiFi for AI image generation (if needed)
     // ================================================================
@@ -790,6 +791,7 @@ void setup() {
             }
         }
     }
+#endif
     
     // ================================================================
     // Common setup
@@ -1087,9 +1089,16 @@ void doDisplayUpdate(int updateNumber) {
     uint32_t ttfTotal = 0, bitmapTotal = 0;
     
     // ================================================================
-    // BACKGROUND - AI-generated image (or fallback to solid color)
+    // BACKGROUND
     // ================================================================
     
+    // Simple white background for demo
+    t0 = millis();
+    display.clear(EL133UF1_WHITE);
+    bitmapTotal = millis() - t0;
+    Serial.printf("  Background clear: %lu ms\n", bitmapTotal);
+    
+#if 0  // AI image generation - disabled for demo, enable with #if 1
     // Generate new AI image on first boot, or if we don't have one cached
     bool needNewImage = (aiImageData == nullptr);
     
@@ -1180,6 +1189,7 @@ void doDisplayUpdate(int updateNumber) {
             Serial.println("  (No OpenAI API key configured - press 'c' on boot to set)");
         }
     }
+#endif  // AI image generation disabled
     
     // ================================================================
     // TIME - Large outlined text, centered

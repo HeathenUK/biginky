@@ -172,22 +172,47 @@ void logStage(uint8_t stage);
 void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime);
 void reportLastUpdate();
 
-// Time needed from wake to display completion (boot + draw + refresh)
-// We wake this many seconds BEFORE the target display time
-#define WAKE_TO_DISPLAY_SECONDS  32  // ~2s boot + ~1s draw + ~28s refresh
+// Default time from wake to display completion (boot + draw + refresh)
+// This is the initial estimate; actual measured value is used after first cycle
+#define DEFAULT_WAKE_TO_DISPLAY_SECONDS  32  // ~2s boot + ~1s draw + ~28s refresh
+
+// Powman scratch register for storing measured wake-to-display time
+#define WAKE_DURATION_REG  3  // Stores measured seconds (uses scratch[3])
+
+// Get the measured wake-to-display duration from scratch register
+// Returns the stored value, or default if not yet measured
+uint32_t getWakeToDisplaySeconds() {
+    uint32_t stored = powman_hw->scratch[WAKE_DURATION_REG];
+    // Sanity check: should be between 20 and 60 seconds
+    if (stored >= 20 && stored <= 60) {
+        return stored;
+    }
+    return DEFAULT_WAKE_TO_DISPLAY_SECONDS;
+}
+
+// Store the measured wake-to-display duration
+void setWakeToDisplaySeconds(uint32_t seconds) {
+    // Sanity check and clamp
+    if (seconds < 20) seconds = 20;
+    if (seconds > 60) seconds = 60;
+    powman_hw->scratch[WAKE_DURATION_REG] = seconds;
+}
 
 // Calculate sleep duration so display update COMPLETES at the next even minute
 // Returns sleep duration in seconds and optionally fills displayHour/displayMin
 // (the time that will be shown on the display when refresh completes)
 uint32_t calculateNextWakeTime(int currentMin, int currentSec, int currentHour,
                                 int* displayHour = nullptr, int* displayMin = nullptr) {
+    // Get the measured (or default) wake-to-display duration
+    uint32_t wakeToDisplay = getWakeToDisplaySeconds();
+    
     // Find the next even minute (this is when we want the display to SHOW)
     int targetMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
     int secsUntilTarget = (targetMin - currentMin) * 60 - currentSec;
     
-    // We need to wake WAKE_TO_DISPLAY_SECONDS before the target time
+    // We need to wake wakeToDisplay seconds before the target time
     // so the display refresh completes right at the even minute
-    int sleepDuration = secsUntilTarget - WAKE_TO_DISPLAY_SECONDS;
+    int sleepDuration = secsUntilTarget - (int)wakeToDisplay;
     
     // If we don't have enough time (would need to wake in the past or too soon),
     // skip to the next even minute
@@ -562,7 +587,14 @@ void setUpdateCount(int count) {
     powman_hw->scratch[UPDATE_COUNT_REG] = (uint32_t)count;
 }
 
+// Boot timestamp for measuring wake-to-display duration
+static uint32_t g_bootTimestamp = 0;
+
 void setup() {
+    // Record boot time immediately (before any delays)
+    // We'll use this to measure actual wake-to-display duration
+    g_bootTimestamp = millis();
+    
     // Initialize serial for debugging
     Serial.begin(115200);
     
@@ -887,6 +919,21 @@ void setup() {
     setUpdateCount(updateCount);
     doDisplayUpdate(updateCount);
     
+    // Measure actual wake-to-display duration and store for next cycle
+    uint32_t actualWakeDuration = (millis() - g_bootTimestamp) / 1000;
+    uint32_t previousEstimate = getWakeToDisplaySeconds();
+    
+    // Use exponential moving average to smooth out variations
+    // New = 0.7 * measured + 0.3 * previous (weights recent measurement more)
+    uint32_t smoothed = (actualWakeDuration * 7 + previousEstimate * 3) / 10;
+    setWakeToDisplaySeconds(smoothed);
+    
+    Serial.printf("\n=== Wake-to-Display Timing ===\n");
+    Serial.printf("  Boot to display ready: %lu seconds\n", actualWakeDuration);
+    Serial.printf("  Previous estimate:     %lu seconds\n", previousEstimate);
+    Serial.printf("  New estimate (EMA):    %lu seconds\n", smoothed);
+    Serial.println("===============================");
+    
     // Disconnect WiFi to save power before sleep
     if (WiFi.status() == WL_CONNECTED) {
         WiFi.disconnect(true);
@@ -902,22 +949,24 @@ void setup() {
                                                 &displayHour, &displayMin);
     uint32_t sleepMs = sleepSecs * 1000;
     
-    // Calculate actual wake time (display time - refresh duration)
-    int wakeAtSec = (displayMin * 60) - WAKE_TO_DISPLAY_SECONDS;
-    int wakeMin = displayMin;
-    int wakeHour = displayHour;
-    if (wakeAtSec < 0) {
-        wakeAtSec += 60;
-        wakeMin = (displayMin + 59) % 60;
-        if (displayMin == 0) wakeHour = (displayHour + 23) % 24;
-    }
+    // Get the offset we're using (measured or default)
+    uint32_t wakeOffset = getWakeToDisplaySeconds();
+    
+    // Calculate actual wake time for logging
+    // We wake wakeOffset seconds before displayHour:displayMin:00
+    int totalDisplaySecs = displayHour * 3600 + displayMin * 60;
+    int totalWakeSecs = totalDisplaySecs - (int)wakeOffset;
+    if (totalWakeSecs < 0) totalWakeSecs += 24 * 3600;
+    int wakeHour = (totalWakeSecs / 3600) % 24;
+    int wakeMin = (totalWakeSecs / 60) % 60;
+    int wakeSec = totalWakeSecs % 60;
     
     Serial.printf("\n=== Entering deep sleep ===\n");
     Serial.printf("Current time:   %02d:%02d:%02d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
     Serial.printf("Sleep duration: %lu seconds\n", sleepSecs);
-    Serial.printf("Will wake at:   ~%02d:%02d:%02d (to allow %ds for refresh)\n", 
-                  wakeHour, wakeMin, wakeAtSec % 60, WAKE_TO_DISPLAY_SECONDS);
-    Serial.printf("Display shows:  %02d:%02d:00\n", displayHour, displayMin);
+    Serial.printf("Wake offset:    %lu seconds (measured)\n", wakeOffset);
+    Serial.printf("Will wake at:   ~%02d:%02d:%02d\n", wakeHour, wakeMin, wakeSec);
+    Serial.printf("Display ready:  %02d:%02d:00\n", displayHour, displayMin);
     Serial.println("Using RP2350 powman - TRUE deep sleep (core powers down)");
     
     // Verify RTC is still responding before sleep (catch I2C lockup)

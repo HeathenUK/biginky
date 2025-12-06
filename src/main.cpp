@@ -463,6 +463,11 @@ void setup() {
             
             // Log temperature
             eeprom.logTemperature(rtc.getTemperature());
+            
+            // Debug: verify EEPROM still readable after logTemperature
+            Serial.println("--- After logTemperature ---");
+            uint8_t test1 = eeprom.readByte(0x0100);
+            Serial.printf("  Read 0x0100 = 0x%02X ('%c')\n", test1, (test1 >= 32 && test1 < 127) ? test1 : '?');
         }
     } else {
         Serial.println("No DS3231 found - using LPOSC (less accurate)");
@@ -492,17 +497,45 @@ void setup() {
     // ================================================================
     Serial.println("\n--- WiFi Credential Check ---");
     
-    // Re-initialize I2C bus to clear any stale state after EEPROM writes
-    // This is a workaround for potential I2C bus issues after writes
-    Serial.println("  Reinitializing I2C bus...");
-    Wire1.end();
-    delay(10);
-    Wire1.setSDA(2);  // Same pins as RTC init
-    Wire1.setSCL(3);
-    Wire1.begin();
-    Wire1.setClock(100000);
-    delay(10);
-    Serial.println("  I2C bus reinitialized");
+    // Debug: check EEPROM object state
+    eeprom.debugState();
+    
+    // Try a direct read first WITHOUT any I2C reinit
+    Serial.println("  Direct read attempt 1:");
+    uint8_t directTest = eeprom.readByte(0x0100);
+    Serial.printf("  0x0100 = 0x%02X ('%c')\n", directTest, (directTest >= 32 && directTest < 127) ? directTest : '?');
+    
+    // If we got 0xFF, the bus might be stuck - try to recover
+    if (directTest == 0xFF && eeprom.isPresent()) {
+        Serial.println("  Got 0xFF - trying I2C bus recovery...");
+        
+        // Toggle SDA/SCL to try to unstick any slave device
+        Wire1.end();
+        delay(5);
+        
+        // Manually toggle SCL to free any stuck slave
+        pinMode(3, OUTPUT);  // SCL
+        for (int i = 0; i < 16; i++) {
+            digitalWrite(3, HIGH);
+            delayMicroseconds(50);
+            digitalWrite(3, LOW);
+            delayMicroseconds(50);
+        }
+        digitalWrite(3, HIGH);
+        delay(5);
+        
+        // Reinit I2C
+        Wire1.setSDA(2);
+        Wire1.setSCL(3);
+        Wire1.begin();
+        Wire1.setClock(100000);
+        delay(10);
+        
+        // Try again
+        Serial.println("  Direct read attempt 2 after recovery:");
+        directTest = eeprom.readByte(0x0100);
+        Serial.printf("  0x0100 = 0x%02X ('%c')\n", directTest, (directTest >= 32 && directTest < 127) ? directTest : '?');
+    }
     
     Serial.printf("eeprom.isPresent() = %d\n", eeprom.isPresent());
     if (eeprom.isPresent()) {

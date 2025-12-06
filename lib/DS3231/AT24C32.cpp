@@ -41,29 +41,51 @@ void AT24C32::waitForWrite() {
     // EEPROM needs up to 10ms to complete a write
     // Poll until it responds
     uint32_t start = millis();
-    while (millis() - start < 20) {
+    int attempts = 0;
+    while (millis() - start < 50) {  // Increased timeout
+        attempts++;
         _wire->beginTransmission(_addr);
-        if (_wire->endTransmission() == 0) {
+        uint8_t err = _wire->endTransmission();
+        if (err == 0) {
+            // Add extra delay after write completes for reliability
+            delay(5);
+            
+            // Do a dummy read to verify bus is working
+            // This also ensures the EEPROM's address pointer is reset
+            _wire->beginTransmission(_addr);
+            _wire->write((uint8_t)0);  // Address high byte
+            _wire->write((uint8_t)0);  // Address low byte  
+            _wire->endTransmission();
+            _wire->requestFrom(_addr, (uint8_t)1);
+            while (_wire->available()) _wire->read();  // Discard
+            
             return;  // Write complete
         }
         delay(1);
     }
+    Serial.printf("  [waitForWrite] TIMEOUT after %d attempts!\n", attempts);
 }
 
 uint8_t AT24C32::readByte(uint16_t addr) {
+    // Debug: print device address to check for corruption
+    if (addr == EEPROM_WIFI_SSID) {
+        Serial.printf("  [readByte] I2C dev=0x%02X, mem=0x%04X, wire=%p\n", 
+                      _addr, addr, (void*)_wire);
+    }
+    
     _wire->beginTransmission(_addr);
     _wire->write((uint8_t)(addr >> 8));    // High byte
     _wire->write((uint8_t)(addr & 0xFF));  // Low byte
     uint8_t err = _wire->endTransmission();
     
     if (err != 0) {
-        Serial.printf("  [readByte] I2C error %d at addr 0x%04X\n", err, addr);
+        Serial.printf("  [readByte] I2C error %d at dev 0x%02X addr 0x%04X\n", err, _addr, addr);
         return 0xFF;
     }
     
     uint8_t received = _wire->requestFrom(_addr, (uint8_t)1);
     if (received != 1) {
-        Serial.printf("  [readByte] requestFrom returned %d (expected 1)\n", received);
+        Serial.printf("  [readByte] requestFrom(0x%02X) returned %d (expected 1)\n", _addr, received);
         return 0xFF;
     }
     
@@ -200,8 +222,11 @@ uint32_t AT24C32::getBootCount() {
 }
 
 void AT24C32::incrementBootCount() {
+    Serial.println("  [incrementBootCount] starting...");
     uint32_t count = getBootCount();
+    Serial.printf("  [incrementBootCount] current count=%lu, writing %lu\n", count, count + 1);
     writeUInt32(EEPROM_BOOT_COUNT, count + 1);
+    Serial.println("  [incrementBootCount] done");
 }
 
 uint32_t AT24C32::getTotalUptime() {
@@ -271,20 +296,27 @@ void AT24C32::setSleepSeconds(uint16_t seconds) {
 }
 
 void AT24C32::logTemperature(float temp) {
+    Serial.printf("  [logTemperature] temp=%.2f\n", temp);
+    
     // Simple circular buffer of temperatures
     // First 2 bytes at TEMP_LOG_START = write index
     uint16_t maxEntries = (EEPROM_TEMP_LOG_SIZE - 2) / 2;  // 2 bytes per temp
     uint16_t index = readUInt16(EEPROM_TEMP_LOG_START);
+    
+    Serial.printf("  [logTemperature] index=%u, maxEntries=%u\n", index, maxEntries);
     
     if (index >= maxEntries) index = 0;
     
     // Store as fixed-point (temp * 4, gives 0.25 degree resolution)
     int16_t tempFixed = (int16_t)(temp * 4);
     uint16_t addr = EEPROM_TEMP_LOG_START + 2 + (index * 2);
+    Serial.printf("  [logTemperature] writing to addr 0x%04X\n", addr);
     writeUInt16(addr, (uint16_t)tempFixed);
     
     // Update index
+    Serial.printf("  [logTemperature] updating index to %u\n", index + 1);
     writeUInt16(EEPROM_TEMP_LOG_START, index + 1);
+    Serial.println("  [logTemperature] done");
 }
 
 uint16_t AT24C32::getTemperatureLogCount() {

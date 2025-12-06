@@ -90,6 +90,12 @@ public:
     float getLoggedTemperature(uint16_t index);
     
     void printStatus();
+    
+    // Debug: dump internal state
+    void debugState() {
+        Serial.printf("  [EEPROM state] _wire=%p, _addr=0x%02X, _present=%d\n",
+                      (void*)_wire, _addr, _present);
+    }
 
 private:
     TwoWire* _wire;

@@ -602,40 +602,7 @@ void setup() {
     Serial.printf("  BUSY:     GP%d\n", PIN_BUSY);
     Serial.println();
 
-    // Test: Read BUSY pin state before anything
-    pinMode(PIN_BUSY, INPUT_PULLUP);
-    Serial.printf("BUSY pin initial state: %s\n", digitalRead(PIN_BUSY) ? "HIGH" : "LOW");
-
-    // Configure SPI1 pins BEFORE initializing display
-    // arduino-pico requires pin configuration before SPI.begin()
-    Serial.println("Configuring SPI1 pins...");
-    SPI1.setSCK(PIN_SPI_SCK);
-    SPI1.setTX(PIN_SPI_MOSI);
-    Serial.println("SPI1 pins configured");
-
-    // Initialize the display
-    Serial.println("Initializing display...");
-    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
-        Serial.println("ERROR: Display initialization failed!");
-        Serial.println("Check wiring and connections.");
-        while (1) {
-            delay(1000);
-        }
-    }
-    
-    Serial.printf("Display initialized: %dx%d pixels\n", 
-                  display.width(), display.height());
-    
-    // Initialize TTF font renderer
-    ttf.begin(&display);
-    if (ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
-        Serial.println("TTF font loaded successfully");
-    } else {
-        Serial.println("WARNING: TTF font failed to load");
-    }
-    Serial.println();
-
-    // Do display update
+    // Do display update (handles SPI/display/TTF initialization internally)
     updateCount++;
     setUpdateCount(updateCount);
     doDisplayUpdate(updateCount);

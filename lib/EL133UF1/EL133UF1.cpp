@@ -169,6 +169,7 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     _initSequence();
 
     _initialized = true;
+    _initDone = true;  // Mark init as done so update() doesn't repeat it
     return true;
 }
 

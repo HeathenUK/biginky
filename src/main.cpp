@@ -671,12 +671,17 @@ void doDisplayUpdate(int updateNumber) {
     SPI1.begin();
     
     // Initialize or reconnect display
+    // Check buffer to detect true cold boot (scratch registers persist across flash!)
+    bool needsFullInit = isColdBoot || (display.getBuffer() == nullptr);
+    
     bool displayOk;
-    if (isColdBoot) {
-        // Cold boot: full initialization with reset
+    if (needsFullInit) {
+        // Cold boot or no buffer: full initialization with reset
+        Serial.println("Display: full initialization");
         displayOk = display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY);
     } else {
-        // Warm boot: just reconnect (display controller retained config)
+        // Warm boot with valid buffer: just reconnect
+        Serial.println("Display: reconnecting (warm boot)");
         displayOk = display.reconnect();
     }
     
@@ -685,8 +690,9 @@ void doDisplayUpdate(int updateNumber) {
         return;
     }
     
-    // Initialize TTF renderer (only on cold boot - state preserved during sleep)
-    if (isColdBoot) {
+    // Initialize TTF renderer (only needed when display was fully initialized,
+    // or if font isn't loaded - e.g., scratch registers stale after flash)
+    if (needsFullInit || !ttf.fontLoaded()) {
         ttf.begin(&display);
         ttf.loadFont(opensans_ttf, opensans_ttf_len);
         

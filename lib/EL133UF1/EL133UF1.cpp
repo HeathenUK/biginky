@@ -129,6 +129,9 @@ EL133UF1::EL133UF1(SPIClass* spi) :
 
 bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin, 
                      int8_t resetPin, int8_t busyPin) {
+    Serial.println("EL133UF1::begin() starting...");
+    Serial.flush();
+    
     _cs0Pin = cs0Pin;
     _cs1Pin = cs1Pin;
     _dcPin = dcPin;
@@ -136,19 +139,33 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     _busyPin = busyPin;
 
     // Allocate frame buffer in PSRAM (1.92MB)
+    Serial.printf("  Allocating %u bytes in PSRAM...\n", EL133UF1_WIDTH * EL133UF1_HEIGHT);
+    Serial.flush();
+    
     _buffer = (uint8_t*)pmalloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
     _packedMode = false;
     _bufferRight = nullptr;
     
     if (_buffer == nullptr) {
-        Serial.println("EL133UF1: PSRAM allocation failed!");
+        Serial.println("  ERROR: PSRAM allocation failed!");
         return false;
     }
+    Serial.printf("  Buffer allocated at %p\n", _buffer);
+    Serial.flush();
     
-    // Clear to white
+    // Clear to white and verify write
+    Serial.println("  Clearing buffer...");
     memset(_buffer, EL133UF1_WHITE, EL133UF1_WIDTH * EL133UF1_HEIGHT);
+    
+    // Verify buffer is accessible
+    if (_buffer[0] != EL133UF1_WHITE || _buffer[1000000] != EL133UF1_WHITE) {
+        Serial.println("  ERROR: Buffer verification failed!");
+        return false;
+    }
+    Serial.println("  Buffer verified OK");
 
     // Configure GPIO pins
+    Serial.println("  Configuring GPIO...");
     pinMode(_cs0Pin, OUTPUT);
     pinMode(_cs1Pin, OUTPUT);
     pinMode(_dcPin, OUTPUT);
@@ -161,15 +178,26 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     digitalWrite(_resetPin, HIGH);
 
     // Initialize SPI
+    Serial.println("  Starting SPI...");
     _spi->begin();
 
     // Hardware reset and init sequence
+    Serial.println("  Resetting display...");
+    Serial.flush();
     _reset();
+    
+    Serial.println("  Waiting for display ready...");
+    Serial.flush();
     _busyWait(1000);
+    
+    Serial.println("  Running init sequence...");
+    Serial.flush();
     _initSequence();
 
     _initialized = true;
     _initDone = true;  // Mark init as done so update() doesn't repeat it
+    
+    Serial.println("EL133UF1::begin() complete!");
     return true;
 }
 
@@ -920,24 +948,33 @@ void EL133UF1::update(bool skipInit) {
     Serial.printf("  Send buffer:      %4lu ms\n", millis() - stepStart);
 
     // Power on
+    Serial.println("  Powering on...");
+    Serial.flush();
     stepStart = millis();
     _sendCommand(CMD_PON, CS_BOTH_SEL);
-    _busyWait(200);
-    Serial.printf("  Power on:         %4lu ms\n", millis() - stepStart);
+    bool ponOk = _busyWait(200);
+    Serial.printf("  Power on:         %4lu ms (busy=%d)\n", millis() - stepStart, ponOk);
+    Serial.flush();
 
     // Display refresh
+    Serial.println("  Starting refresh (this takes 20-30s)...");
+    Serial.flush();
     stepStart = millis();
     const uint8_t drf[] = {0x00};
     _sendCommand(CMD_DRF, CS_BOTH_SEL, drf, sizeof(drf));
-    _busyWait(32000);
-    Serial.printf("  Panel refresh:    %4lu ms\n", millis() - stepStart);
+    bool drfOk = _busyWait(32000);
+    Serial.printf("  Panel refresh:    %4lu ms (busy=%d)\n", millis() - stepStart, drfOk);
+    Serial.flush();
 
     // Power off
+    Serial.println("  Powering off...");
+    Serial.flush();
     stepStart = millis();
     const uint8_t pof[] = {0x00};
     _sendCommand(CMD_POF, CS_BOTH_SEL, pof, sizeof(pof));
-    _busyWait(200);
-    Serial.printf("  Power off:        %4lu ms\n", millis() - stepStart);
+    bool pofOk = _busyWait(200);
+    Serial.printf("  Power off:        %4lu ms (busy=%d)\n", millis() - stepStart, pofOk);
+    Serial.flush();
 
     Serial.printf("  TOTAL:            %4lu ms (%.1f sec)\n", 
                   millis() - totalStart, (millis() - totalStart) / 1000.0);

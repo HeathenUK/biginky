@@ -391,15 +391,21 @@ void setup() {
     // Initialize serial for debugging
     Serial.begin(115200);
     
-    // Wait for serial connection (longer timeout for reliability)
+    // Wait for serial connection
+    // After deep sleep, USB needs time to re-enumerate (can take 5-10 seconds)
+    // Blink LED to show we're alive while waiting
+    pinMode(LED_BUILTIN, OUTPUT);
     uint32_t startWait = millis();
-    while (!Serial && (millis() - startWait < 3000)) {
-        delay(100);
+    while (!Serial && (millis() - startWait < 10000)) {
+        digitalWrite(LED_BUILTIN, (millis() / 200) % 2);  // Fast blink while waiting
+        delay(50);
     }
+    digitalWrite(LED_BUILTIN, HIGH);  // LED on when serial ready
     delay(500);  // Extra delay for serial to stabilize
     
     // Immediate sign of life
     Serial.println("\n\n>>> BOOT <<<");
+    Serial.printf("Serial ready after %lu ms\n", millis() - startWait);
     Serial.flush();
     delay(100);
     
@@ -646,8 +652,31 @@ void setup() {
 #define DISPLAY_REFRESH_COLD_MS  32000  // First update after power-on
 #define DISPLAY_REFRESH_WARM_MS  28000  // Subsequent updates
 
+// Stage codes for EEPROM logging
+#define STAGE_START       0x01
+#define STAGE_PSRAM_OK    0x02
+#define STAGE_DISPLAY_OK  0x03
+#define STAGE_TTF_OK      0x04
+#define STAGE_DRAWING     0x05
+#define STAGE_UPDATING    0x06
+#define STAGE_COMPLETE    0x07
+#define STAGE_ERROR       0xFF
+
+void logStage(uint8_t stage) {
+    if (eeprom.isPresent()) {
+        eeprom.writeByte(EEPROM_LAST_STAGE, stage);
+    }
+}
+
 void doDisplayUpdate(int updateNumber) {
     Serial.printf("\n=== Display Update #%d ===\n", updateNumber);
+    logStage(STAGE_START);
+    
+    // Show last stage from previous boot (for debugging)
+    if (eeprom.isPresent()) {
+        uint8_t lastStage = eeprom.readByte(EEPROM_LAST_STAGE);
+        Serial.printf("(Previous boot reached stage: 0x%02X)\n", lastStage);
+    }
     
     // Get current time with drift correction applied
     uint64_t now_ms = sleep_get_corrected_time_ms();
@@ -673,35 +702,64 @@ void doDisplayUpdate(int updateNumber) {
     SPI1.setTX(PIN_SPI_MOSI);
     SPI1.begin();
     
-    // Test PSRAM accessibility after wake
-    Serial.println("Testing PSRAM...");
+    // Check PSRAM availability after wake
+    Serial.println("Checking PSRAM...");
+    size_t psramSize = rp2040.getPSRAMSize();
+    Serial.printf("  PSRAM size: %u bytes (%u MB)\n", psramSize, psramSize / (1024*1024));
+    
+    if (psramSize == 0) {
+        Serial.println("  ERROR: PSRAM not detected after wake!");
+        logStage(STAGE_ERROR);
+        // Blink error: 1 long blink
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(1000);
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(500);
+    }
+    
+    // Test PSRAM accessibility
     void* testPtr = pmalloc(1024);
     if (testPtr) {
         memset(testPtr, 0xAA, 1024);
         uint8_t* p = (uint8_t*)testPtr;
         bool ok = (p[0] == 0xAA && p[512] == 0xAA && p[1023] == 0xAA);
-        Serial.printf("  PSRAM test: %s (ptr=%p)\n", ok ? "OK" : "FAILED", testPtr);
+        Serial.printf("  PSRAM alloc test: %s (ptr=%p)\n", ok ? "OK" : "FAILED", testPtr);
         free(testPtr);
+        if (!ok) {
+            Serial.println("  ERROR: PSRAM read/write failed!");
+            logStage(STAGE_ERROR);
+            return;
+        }
     } else {
-        Serial.println("  PSRAM test: ALLOCATION FAILED!");
+        Serial.println("  PSRAM alloc test: ALLOCATION FAILED!");
+        logStage(STAGE_ERROR);
+        return;
     }
+    logStage(STAGE_PSRAM_OK);
     
     // Always do full display initialization
-    // During deep sleep, GPIO pins float and may reset the display controller,
-    // so we can't rely on it retaining configuration.
     Serial.println("Initializing display...");
     if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
         Serial.println("ERROR: Display initialization failed!");
+        logStage(STAGE_ERROR);
+        // Blink error pattern: 2 blinks
+        for (int i = 0; i < 10; i++) {
+            digitalWrite(LED_BUILTIN, (i < 4) ? (i % 2) : LOW);
+            delay(200);
+        }
         return;
     }
     Serial.printf("Display buffer: %p\n", display.getBuffer());
+    logStage(STAGE_DISPLAY_OK);
     
     // Initialize TTF renderer
     Serial.println("Initializing TTF...");
     ttf.begin(&display);
     if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
         Serial.println("ERROR: TTF font load failed!");
+        logStage(STAGE_ERROR);
     }
+    logStage(STAGE_TTF_OK);
     
     // Enable glyph cache for time display (160px digits)
     // This pre-renders 0-9, colon, space - used repeatedly
@@ -904,14 +962,23 @@ void doDisplayUpdate(int updateNumber) {
     Serial.printf("  TTF total:      %lu ms\n", ttfTotal);
     Serial.printf("  Bitmap total:   %lu ms\n", bitmapTotal);
     Serial.printf("  All drawing:    %lu ms\n", millis() - drawStart);
+    logStage(STAGE_DRAWING);
     
     // Update display and measure actual refresh time
     // Always skip init in update() since begin() already ran it
     Serial.println("Starting display.update()...");
     Serial.flush();
+    logStage(STAGE_UPDATING);
+    
+    // LED feedback: turn off during update, on when done
+    digitalWrite(LED_BUILTIN, LOW);
+    
     uint32_t refreshStart = millis();
     display.update(true);  // skipInit=true - begin() handles init
+    
+    digitalWrite(LED_BUILTIN, HIGH);  // LED on = update complete
     Serial.println("display.update() complete.");
+    logStage(STAGE_COMPLETE);
     uint32_t actualRefreshMs = millis() - refreshStart;
     
     // Get actual time now for comparison (with drift correction)

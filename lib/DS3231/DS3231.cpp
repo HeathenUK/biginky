@@ -191,6 +191,15 @@ void DS3231::setAlarm1(uint32_t delayMs) {
 }
 
 void DS3231::setAlarm1At(time_t alarmTime) {
+    // Get current time for comparison
+    time_t now = getTime();
+    int32_t delta = (int32_t)(alarmTime - now);
+    Serial.printf("DS3231: Setting alarm %ld seconds from now\n", (long)delta);
+    
+    if (delta <= 0) {
+        Serial.println("DS3231: WARNING - alarm time is in the past!");
+    }
+    
     struct tm* t = gmtime(&alarmTime);
     
     // Alarm 1 has seconds, minutes, hours, day/date
@@ -204,7 +213,7 @@ void DS3231::setAlarm1At(time_t alarmTime) {
     
     writeRegisters(DS3231_REG_ALARM1_SEC, data, 4);
     
-    // Clear any existing alarm flag
+    // Clear any existing alarm flag (this is also called before setAlarm1, but be safe)
     clearAlarm1();
     
     // Enable alarm 1 interrupt
@@ -216,7 +225,15 @@ void DS3231::setAlarm1At(time_t alarmTime) {
 
 void DS3231::clearAlarm1() {
     uint8_t status = readRegister(DS3231_REG_STATUS);
+    Serial.printf("  [clearAlarm1] status before: 0x%02X (A1F=%d)\n", 
+                  status, (status & DS3231_STAT_A1F) ? 1 : 0);
+    
     writeRegister(DS3231_REG_STATUS, status & ~DS3231_STAT_A1F);
+    
+    // Verify it was cleared
+    status = readRegister(DS3231_REG_STATUS);
+    Serial.printf("  [clearAlarm1] status after:  0x%02X (A1F=%d)\n", 
+                  status, (status & DS3231_STAT_A1F) ? 1 : 0);
 }
 
 bool DS3231::alarm1Triggered() {

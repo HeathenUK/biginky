@@ -393,21 +393,47 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
         Serial.println("  [sleep] Using DS3231 RTC for wake");
         Serial.flush();
         
-        // Set alarm on DS3231
+        // CRITICAL: Clear any existing alarm BEFORE setting new one
+        // The INT pin won't go HIGH until the alarm flag is cleared
+        Serial.println("  [sleep] Clearing any existing alarm...");
+        rtc.clearAlarm1();
+        delay(5);  // Give the RTC time to release INT
+        
+        // Verify the INT pin is now HIGH (alarm cleared)
+        int intState = digitalRead(_rtc_int_pin);
+        Serial.printf("  [sleep] GPIO%d state after clear: %s\n", 
+                      _rtc_int_pin, intState ? "HIGH (good)" : "LOW (alarm still active!)");
+        
+        if (intState == LOW) {
+            // INT pin is still low - try clearing again
+            Serial.println("  [sleep] WARNING: INT still low, trying again...");
+            rtc.clearAlarm1();
+            delay(10);
+            intState = digitalRead(_rtc_int_pin);
+            Serial.printf("  [sleep] GPIO%d state after 2nd clear: %s\n", 
+                          _rtc_int_pin, intState ? "HIGH" : "LOW");
+            
+            if (intState == LOW) {
+                Serial.println("  ERROR: Cannot clear RTC alarm - INT pin stuck low!");
+                Serial.println("  This would cause immediate wake. Aborting sleep.");
+                sleep_clear_wake_flag();
+                return;
+            }
+        }
+        
+        // Now set the new alarm
         rtc.setAlarm1(delay_ms);
         
+        // Verify INT is still HIGH (alarm not triggered yet)
+        intState = digitalRead(_rtc_int_pin);
+        Serial.printf("  [sleep] GPIO%d after setting alarm: %s\n", 
+                      _rtc_int_pin, intState ? "HIGH (good)" : "LOW (triggered already?!)");
+        
         // Configure GPIO wake on the INT pin (active low when alarm triggers)
-        // The DS3231 INT pin goes LOW when alarm fires and stays low until cleared
         Serial.printf("  [sleep] Configuring GPIO%d for wake (low level)\n", _rtc_int_pin);
         Serial.flush();
         
         // Enable GPIO wake in powman
-        // powman_enable_gpio_wakeup(slot, gpio, edge, high)
-        // slot: 0-3 (which GPIO wake source to use)
-        // gpio: the GPIO pin number
-        // edge: true = edge triggered, false = level triggered
-        // high: true = high/rising, false = low/falling
-        // DS3231 INT is active-low and stays low, so use level-triggered low
         powman_enable_gpio_wakeup(0, _rtc_int_pin, false, false);  // Slot 0, level-triggered, low
         
         bool valid = powman_configure_wakeup_state(sleep_state, wake_state);

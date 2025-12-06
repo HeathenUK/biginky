@@ -90,6 +90,10 @@ static char wifiPSK[65] = {0};
 // ADC reference voltage (3.3V for RP2350)
 #define VBAT_ADC_REF  3.3f
 
+// Unix timestamp validation bounds
+#define TIMESTAMP_MIN_VALID 1700000000UL  // ~2023, older means RTC not set
+#define TIMESTAMP_MAX_VALID 4102444800UL  // ~2100, sanity check
+
 // Create display instance using SPI1
 // (SPI1 is the correct bus for GP10/GP11 on Pico)
 EL133UF1 display(&SPI1);
@@ -167,6 +171,32 @@ void formatTime(uint64_t time_ms, char* buf, size_t len);
 void logStage(uint8_t stage);
 void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime);
 void reportLastUpdate();
+
+// Calculate seconds until next even minute wake time
+// Returns sleep duration in seconds and optionally fills wakeHour/wakeMin
+uint32_t calculateNextWakeTime(int currentMin, int currentSec, int currentHour,
+                                int* wakeHour = nullptr, int* wakeMin = nullptr) {
+    int nextEvenMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
+    int secsUntilNextEven = (nextEvenMin - currentMin) * 60 - currentSec;
+    
+    // Need at least 15 seconds margin for display update to complete
+    if (secsUntilNextEven < 15) {
+        secsUntilNextEven += 120;  // Add 2 minutes
+        nextEvenMin += 2;
+    }
+    
+    if (wakeHour || wakeMin) {
+        int hour = currentHour;
+        int min = nextEvenMin % 60;
+        if (nextEvenMin >= 60) {
+            hour = (hour + 1) % 24;
+        }
+        if (wakeHour) *wakeHour = hour;
+        if (wakeMin) *wakeMin = min;
+    }
+    
+    return (uint32_t)secsUntilNextEven;
+}
 
 // ================================================================
 // WiFi Credential Management
@@ -855,24 +885,15 @@ void setup() {
     time_t now = rtc.getTime();
     struct tm* tm = gmtime(&now);
     
-    // Calculate seconds until next even minute
-    int currentMin = tm->tm_min;
-    int currentSec = tm->tm_sec;
-    int nextEvenMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
-    int secsUntilNextEven = (nextEvenMin - currentMin) * 60 - currentSec;
-    
-    // Handle edge case: if we're very close to the next even minute, skip to the one after
-    // Need at least 15 seconds to wake up and start the display update
-    if (secsUntilNextEven < 15) {
-        secsUntilNextEven += 120;  // Add 2 minutes
-    }
-    
+    int wakeHour, wakeMin;
+    uint32_t secsUntilNextEven = calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, 
+                                                        &wakeHour, &wakeMin);
     uint32_t sleepMs = secsUntilNextEven * 1000;
     
     Serial.printf("\n=== Entering deep sleep until next even minute ===\n");
     Serial.printf("Current time: %02d:%02d:%02d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
-    Serial.printf("Sleep duration: %d seconds (until xx:%02d:00)\n", 
-                  secsUntilNextEven, (currentMin + (secsUntilNextEven / 60)) % 60);
+    Serial.printf("Sleep duration: %lu seconds (until %02d:%02d)\n", 
+                  secsUntilNextEven, wakeHour, wakeMin);
     Serial.println("Using RP2350 powman - TRUE deep sleep (core powers down)");
     
     // Verify RTC is still responding before sleep (catch I2C lockup)
@@ -1243,26 +1264,8 @@ void doDisplayUpdate(int updateNumber) {
     // ================================================================
     // NEXT WAKE - Bottom left corner, outlined
     // ================================================================
-    // Calculate next even minute (same logic as sleep calculation)
-    int currentMin = tm->tm_min;
-    int currentSec = tm->tm_sec;
-    int nextEvenMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
-    int secsUntilNextEven = (nextEvenMin - currentMin) * 60 - currentSec;
-    
-    // Account for display refresh time (~30 seconds) - we need to wake up early
-    // If we're too close to the next even minute, we'll skip to the one after
-    if (secsUntilNextEven < 15) {
-        secsUntilNextEven += 120;  // Add 2 minutes
-        nextEvenMin += 2;
-    }
-    
-    // Calculate the actual wake time
-    int wakeHour = tm->tm_hour;
-    int wakeMin = nextEvenMin % 60;
-    if (nextEvenMin >= 60) {
-        wakeHour = (wakeHour + 1) % 24;
-    }
-    
+    int wakeHour, wakeMin;
+    calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, &wakeHour, &wakeMin);
     snprintf(buf, sizeof(buf), "Next: %02d:%02d", wakeHour, wakeMin);
     t0 = millis();
     ttf.drawTextAlignedOutlined(30, display.height() - 30, buf, 36.0,

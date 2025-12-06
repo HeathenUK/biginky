@@ -27,6 +27,7 @@ enum ColorMapMode {
 class Spectra6ColorMap {
 public:
     Spectra6ColorMap();
+    ~Spectra6ColorMap();
     
     /**
      * @brief Set the color mapping mode
@@ -91,13 +92,14 @@ private:
     float _paletteLab[6][3];
     
     // Dithering error buffer (for current and next row)
-    // Using int16_t to handle negative error values
+    // Dynamically allocated only when dithering is enabled to save ~21KB RAM
     static const int MAX_DITHER_WIDTH = 1800;
-    int16_t _errorR[2][MAX_DITHER_WIDTH];
-    int16_t _errorG[2][MAX_DITHER_WIDTH];
-    int16_t _errorB[2][MAX_DITHER_WIDTH];
+    int16_t* _errorR[2];  // Allocated on demand
+    int16_t* _errorG[2];
+    int16_t* _errorB[2];
     int _currentRow;
     int _ditherWidth;
+    bool _ditherAllocated;
     
     // Color mapping for palette index to Spectra code
     static const uint8_t SPECTRA_CODE[6];

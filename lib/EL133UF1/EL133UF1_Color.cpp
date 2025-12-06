@@ -20,9 +20,23 @@ const uint8_t Spectra6ColorMap::SPECTRA_CODE[6] = {
 Spectra6ColorMap spectra6Color;
 
 Spectra6ColorMap::Spectra6ColorMap() 
-    : _mode(COLOR_MAP_LAB), _currentRow(0), _ditherWidth(0) {
+    : _mode(COLOR_MAP_LAB), _currentRow(0), _ditherWidth(0), _ditherAllocated(false) {
+    // Initialize error buffer pointers to null
+    _errorR[0] = _errorR[1] = nullptr;
+    _errorG[0] = _errorG[1] = nullptr;
+    _errorB[0] = _errorB[1] = nullptr;
     useDefaultPalette();
-    resetDither();
+}
+
+Spectra6ColorMap::~Spectra6ColorMap() {
+    // Free dither buffers if allocated
+    if (_ditherAllocated) {
+        for (int i = 0; i < 2; i++) {
+            if (_errorR[i]) free(_errorR[i]);
+            if (_errorG[i]) free(_errorG[i]);
+            if (_errorB[i]) free(_errorB[i]);
+        }
+    }
 }
 
 void Spectra6ColorMap::useDefaultPalette() {
@@ -71,17 +85,29 @@ void Spectra6ColorMap::setCalibratedColor(int index, uint8_t r, uint8_t g, uint8
     updatePaletteLab();
 }
 
+// Pre-computed sRGB gamma LUT - avoids expensive powf() per pixel
+// Converts 0-255 sRGB to 0.0-1.0 linear RGB
+static float srgbToLinearLUT[256];
+static bool srgbLUTInitialized = false;
+
+static void initSRGBLUT() {
+    if (srgbLUTInitialized) return;
+    for (int i = 0; i < 256; i++) {
+        float v = i / 255.0f;
+        srgbToLinearLUT[i] = (v > 0.04045f) ? powf((v + 0.055f) / 1.055f, 2.4f) : v / 12.92f;
+    }
+    srgbLUTInitialized = true;
+}
+
 // Convert RGB to CIE Lab color space
 void Spectra6ColorMap::rgbToLab(uint8_t r, uint8_t g, uint8_t b, float* L, float* a, float* labB) {
-    // First convert RGB to XYZ (assuming sRGB)
-    float rf = r / 255.0f;
-    float gf = g / 255.0f;
-    float bf = b / 255.0f;
+    // Initialize LUT on first use (once per session)
+    if (!srgbLUTInitialized) initSRGBLUT();
     
-    // Apply sRGB gamma correction
-    rf = (rf > 0.04045f) ? powf((rf + 0.055f) / 1.055f, 2.4f) : rf / 12.92f;
-    gf = (gf > 0.04045f) ? powf((gf + 0.055f) / 1.055f, 2.4f) : gf / 12.92f;
-    bf = (bf > 0.04045f) ? powf((bf + 0.055f) / 1.055f, 2.4f) : bf / 12.92f;
+    // Fast lookup instead of powf() for each component
+    float rf = srgbToLinearLUT[r];
+    float gf = srgbToLinearLUT[g];
+    float bf = srgbToLinearLUT[b];
     
     // Convert to XYZ using sRGB matrix
     float x = rf * 0.4124564f + gf * 0.3575761f + bf * 0.1804375f;
@@ -186,25 +212,62 @@ uint8_t Spectra6ColorMap::mapColor(uint8_t r, uint8_t g, uint8_t b) {
 void Spectra6ColorMap::resetDither() {
     _currentRow = 0;
     _ditherWidth = 0;
-    memset(_errorR, 0, sizeof(_errorR));
-    memset(_errorG, 0, sizeof(_errorG));
-    memset(_errorB, 0, sizeof(_errorB));
+    
+    // Allocate error buffers on first use (saves ~21KB when dithering not used)
+    if (!_ditherAllocated) {
+        for (int i = 0; i < 2; i++) {
+            _errorR[i] = (int16_t*)malloc(MAX_DITHER_WIDTH * sizeof(int16_t));
+            _errorG[i] = (int16_t*)malloc(MAX_DITHER_WIDTH * sizeof(int16_t));
+            _errorB[i] = (int16_t*)malloc(MAX_DITHER_WIDTH * sizeof(int16_t));
+        }
+        // Check allocation success
+        if (_errorR[0] && _errorR[1] && _errorG[0] && _errorG[1] && _errorB[0] && _errorB[1]) {
+            _ditherAllocated = true;
+        } else {
+            // Cleanup on partial failure
+            for (int i = 0; i < 2; i++) {
+                if (_errorR[i]) { free(_errorR[i]); _errorR[i] = nullptr; }
+                if (_errorG[i]) { free(_errorG[i]); _errorG[i] = nullptr; }
+                if (_errorB[i]) { free(_errorB[i]); _errorB[i] = nullptr; }
+            }
+            Serial.println("Spectra6ColorMap: Failed to allocate dither buffers");
+            return;
+        }
+    }
+    
+    // Clear error buffers
+    if (_ditherAllocated) {
+        for (int i = 0; i < 2; i++) {
+            memset(_errorR[i], 0, MAX_DITHER_WIDTH * sizeof(int16_t));
+            memset(_errorG[i], 0, MAX_DITHER_WIDTH * sizeof(int16_t));
+            memset(_errorB[i], 0, MAX_DITHER_WIDTH * sizeof(int16_t));
+        }
+    }
 }
 
 uint8_t Spectra6ColorMap::mapColorDithered(int x, int y, uint8_t r, uint8_t g, uint8_t b, int imageWidth) {
+    // Fallback to non-dithered if buffers not allocated
+    if (!_ditherAllocated) {
+        return findNearestLab(r, g, b);
+    }
+    
     // Handle row changes
     if (y != _currentRow) {
+        size_t rowBytes = MAX_DITHER_WIDTH * sizeof(int16_t);
         // Copy next row errors to current, clear next
         if (y == _currentRow + 1) {
-            memcpy(_errorR[0], _errorR[1], sizeof(_errorR[0]));
-            memcpy(_errorG[0], _errorG[1], sizeof(_errorG[0]));
-            memcpy(_errorB[0], _errorB[1], sizeof(_errorB[0]));
-            memset(_errorR[1], 0, sizeof(_errorR[1]));
-            memset(_errorG[1], 0, sizeof(_errorG[1]));
-            memset(_errorB[1], 0, sizeof(_errorB[1]));
+            memcpy(_errorR[0], _errorR[1], rowBytes);
+            memcpy(_errorG[0], _errorG[1], rowBytes);
+            memcpy(_errorB[0], _errorB[1], rowBytes);
+            memset(_errorR[1], 0, rowBytes);
+            memset(_errorG[1], 0, rowBytes);
+            memset(_errorB[1], 0, rowBytes);
         } else {
             // Non-sequential row, reset dithering
             resetDither();
+            if (!_ditherAllocated) {
+                return findNearestLab(r, g, b);
+            }
         }
         _currentRow = y;
         _ditherWidth = imageWidth;

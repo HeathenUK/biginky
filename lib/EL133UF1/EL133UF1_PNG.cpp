@@ -14,6 +14,12 @@
 // Global pointer for callback (pngle uses C callbacks)
 static EL133UF1_PNG* g_pngInstance = nullptr;
 
+// Set to 1 to enable per-pixel diagnostic counters (adds overhead)
+#ifndef PNG_DEBUG_STATS
+#define PNG_DEBUG_STATS 0
+#endif
+
+#if PNG_DEBUG_STATS
 // Diagnostic counters
 static uint32_t g_pixelCount = 0;
 static uint32_t g_minY = UINT32_MAX;
@@ -23,18 +29,21 @@ static uint32_t g_maxX = 0;
 static uint32_t g_drawnCount = 0;
 static uint32_t g_drawnMinY = UINT32_MAX;
 static uint32_t g_drawnMaxY = 0;
+#endif
 
 // C callback function for pngle
 static void pngle_draw_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]) {
     if (g_pngInstance) {
         g_pngInstance->_onDraw(x, y, w, h, rgba);
         
-        // Track statistics
+#if PNG_DEBUG_STATS
+        // Track statistics (adds overhead per pixel)
         g_pixelCount++;
         if (y < g_minY) g_minY = y;
         if (y > g_maxY) g_maxY = y;
         if (x < g_minX) g_minX = x;
         if (x > g_maxX) g_maxX = x;
+#endif
     }
 }
 
@@ -78,10 +87,12 @@ void EL133UF1_PNG::_onDraw(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const
     
     _display->setPixel(dstX, dstY, color);
     
+#if PNG_DEBUG_STATS
     // Track what we actually drew
     g_drawnCount++;
     if ((uint32_t)dstY < g_drawnMinY) g_drawnMinY = dstY;
     if ((uint32_t)dstY > g_drawnMaxY) g_drawnMaxY = dstY;
+#endif
 }
 
 PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t len) {
@@ -95,6 +106,7 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     // Set global instance for C callback
     g_pngInstance = this;
     
+#if PNG_DEBUG_STATS
     // Reset diagnostic counters
     g_pixelCount = 0;
     g_minY = UINT32_MAX;
@@ -104,6 +116,7 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     g_drawnCount = 0;
     g_drawnMinY = UINT32_MAX;
     g_drawnMaxY = 0;
+#endif
     
     // Reset dithering error buffer if dithering is enabled
     if (_useDithering) {
@@ -134,8 +147,10 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
         result = pngle_feed(pngle, data + fed, chunk);
         if (result < 0) {
             Serial.printf("PNG: Decode error at offset %zu: %s\n", fed, pngle_error(pngle));
+#if PNG_DEBUG_STATS
             Serial.printf("PNG: Pixels drawn before error: %lu, Y range: [%lu-%lu]\n",
                           g_pixelCount, g_minY, g_maxY);
+#endif
             pngle_destroy(pngle);
             g_pngInstance = nullptr;
             return PNG_ERR_DECODE_FAILED;
@@ -155,12 +170,14 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     
     uint32_t elapsed = millis() - t0;
     Serial.printf("PNG: Decoded %ldx%ld in %lu ms\n", _width, _height, elapsed);
+#if PNG_DEBUG_STATS
     Serial.printf("PNG: Callback stats - count=%lu, X range=[%lu-%lu], Y range=[%lu-%lu]\n",
                   g_pixelCount, g_minX, g_maxX, g_minY, g_maxY);
     Serial.printf("PNG: Drawn stats - count=%lu, display Y range=[%lu-%lu]\n",
                   g_drawnCount, g_drawnMinY, g_drawnMaxY);
     Serial.printf("PNG: Expected pixels: %ld, callbacks=%lu, drawn=%lu\n",
                   _width * _height, g_pixelCount, g_drawnCount);
+#endif
     
     pngle_destroy(pngle);
     g_pngInstance = nullptr;

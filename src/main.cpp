@@ -70,12 +70,57 @@ static char wifiPSK[65] = {0};
 #define PIN_RTC_SCL    3    // I2C1 SCL (GP3)
 #define PIN_RTC_INT   18    // DS3231 INT/SQW pin for wake (GP18)
 
+// Battery voltage monitoring
+#define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43)
+// Voltage divider ratio: if using 100k/100k divider, ratio = 2.0
+// Adjust based on your actual circuit
+#define VBAT_DIVIDER_RATIO  2.0f
+// ADC reference voltage (3.3V for RP2350)
+#define VBAT_ADC_REF  3.3f
+
 // Create display instance using SPI1
 // (SPI1 is the correct bus for GP10/GP11 on Pico)
 EL133UF1 display(&SPI1);
 
 // TTF font renderer
 EL133UF1_TTF ttf;
+
+// ================================================================
+// Battery voltage monitoring
+// ================================================================
+
+float readBatteryVoltage() {
+    // Configure ADC pin
+    pinMode(PIN_VBAT_ADC, INPUT);
+    
+    // Take multiple readings and average for stability
+    uint32_t sum = 0;
+    const int samples = 16;
+    for (int i = 0; i < samples; i++) {
+        sum += analogRead(PIN_VBAT_ADC);
+        delayMicroseconds(100);
+    }
+    uint16_t adcValue = sum / samples;
+    
+    // Convert to voltage
+    // ADC is 12-bit (0-4095), reference is 3.3V
+    float adcVoltage = (adcValue / 4095.0f) * VBAT_ADC_REF;
+    
+    // Apply voltage divider ratio to get actual battery voltage
+    float batteryVoltage = adcVoltage * VBAT_DIVIDER_RATIO;
+    
+    return batteryVoltage;
+}
+
+// Get battery percentage (rough estimate for LiPo)
+// LiPo: 4.2V = 100%, 3.7V = ~50%, 3.0V = 0%
+int getBatteryPercent(float voltage) {
+    if (voltage >= 4.2f) return 100;
+    if (voltage <= 3.0f) return 0;
+    
+    // Linear interpolation between 3.0V and 4.2V
+    return (int)((voltage - 3.0f) / 1.2f * 100.0f);
+}
 
 // Forward declarations
 void drawDemoPattern();
@@ -879,15 +924,36 @@ void doDisplayUpdate(int updateNumber) {
     ttfTotal += t1;
     Serial.printf("  TTF date 48px:  %lu ms\n", t1);
     
-    // Update count
+    // Update count and battery voltage on same line
     char buf[64];
+    
+    // Read battery voltage
+    float batteryV = readBatteryVoltage();
+    int batteryPct = getBatteryPercent(batteryV);
+    Serial.printf("  Battery: %.2fV (%d%%)\n", batteryV, batteryPct);
+    
+    // Left side: Update count
     snprintf(buf, sizeof(buf), "Update #%d", updateNumber);
     t0 = millis();
-    ttf.drawTextAligned(display.width() / 2, 410, buf, 36.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
+    ttf.drawTextAligned(200, 420, buf, 32.0, EL133UF1_BLACK,
+                        ALIGN_LEFT, ALIGN_TOP);
     t1 = millis() - t0;
     ttfTotal += t1;
-    Serial.printf("  TTF count 36px: %lu ms\n", t1);
+    Serial.printf("  TTF count 32px: %lu ms\n", t1);
+    
+    // Right side: Battery voltage with color indicator
+    snprintf(buf, sizeof(buf), "Battery: %.2fV (%d%%)", batteryV, batteryPct);
+    t0 = millis();
+    // Color based on battery level: green > 50%, yellow 20-50%, red < 20%
+    uint8_t battColor = EL133UF1_GREEN;
+    if (batteryPct < 20) battColor = EL133UF1_RED;
+    else if (batteryPct < 50) battColor = EL133UF1_YELLOW;
+    
+    ttf.drawTextAligned(display.width() - 200, 420, buf, 32.0, battColor,
+                        ALIGN_RIGHT, ALIGN_TOP);
+    t1 = millis() - t0;
+    ttfTotal += t1;
+    Serial.printf("  TTF battery:    %lu ms\n", t1);
     
     // ================================================================
     // ALIGNMENT DEMO - show anchor points and alignment modes

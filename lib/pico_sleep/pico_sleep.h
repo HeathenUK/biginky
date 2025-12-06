@@ -112,6 +112,14 @@ bool sleep_woke_from_deep_sleep(void);
 void sleep_clear_wake_flag(void);
 
 /**
+ * @brief Clear all sleep-related scratch registers (for testing)
+ * 
+ * Clears the wake flag, drift calibration, and sync data.
+ * Use this after flashing to force a clean cold boot state.
+ */
+void sleep_clear_all_state(void);
+
+/**
  * @brief Get the current RTC time in milliseconds
  * 
  * This timer runs continuously, even during deep sleep (using LPOSC).

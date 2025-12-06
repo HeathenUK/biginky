@@ -46,7 +46,12 @@ static int _rtc_int_pin = -1;
 // Sleep state - use powman scratch registers (preserved across reset!)
 // ========================================================================
 
-#define SLEEP_SCRATCH_MAGIC    0xDEE95EE7  // Magic value to detect wake
+// Build timestamp - changes on each compile, detects firmware reflash
+// We use the lower 24 bits of build time combined with a magic prefix
+#define BUILD_TIMESTAMP_HASH  ((uint32_t)(__TIME__[0] ^ __TIME__[1]) << 16 | \
+                               (uint32_t)(__TIME__[3] ^ __TIME__[4]) << 8 | \
+                               (uint32_t)(__TIME__[6] ^ __TIME__[7]))
+#define SLEEP_SCRATCH_MAGIC    (0xDE000000 | (BUILD_TIMESTAMP_HASH & 0x00FFFFFF))
 #define SLEEP_SCRATCH_REG      0           // Which scratch register to use
 
 // Drift calibration scratch registers
@@ -124,6 +129,14 @@ bool sleep_woke_from_deep_sleep(void) {
 
 void sleep_clear_wake_flag(void) {
     powman_hw->scratch[SLEEP_SCRATCH_REG] = 0;
+}
+
+void sleep_clear_all_state(void) {
+    // Clear all scratch registers (0-7) used by sleep module
+    for (int i = 0; i < 8; i++) {
+        powman_hw->scratch[i] = 0;
+    }
+    Serial.println("Sleep state cleared (all scratch registers reset)");
 }
 
 static void sleep_set_wake_flag(void) {

@@ -210,7 +210,7 @@ bool checkConfigMode() {
         return false;
     }
     
-    Serial.println("\nPress 'c' within 3 seconds for WiFi config...");
+    Serial.println("\nPress 'c' for WiFi config, 'r' to reset sleep state (3s)...");
     Serial.flush();
     
     uint32_t start = millis();
@@ -219,6 +219,10 @@ bool checkConfigMode() {
             char c = Serial.read();
             if (c == 'c' || c == 'C') {
                 enterConfigMode();
+                return true;
+            } else if (c == 'r' || c == 'R') {
+                sleep_clear_all_state();
+                Serial.println("Reboot to apply clean state.");
                 return true;
             }
         }

@@ -46,9 +46,8 @@ static int _rtc_int_pin = -1;
 // Sleep state - use powman scratch registers (preserved across reset!)
 // ========================================================================
 
-// Fixed magic value - we rely on other checks (buffer null, etc.) to detect
-// true cold boots after reflashing. User can press 'r' to force reset.
-#define SLEEP_SCRATCH_MAGIC    0xDEE95EE7
+// Sleep magic is now computed dynamically with compile time embedded
+// This ensures new firmware is detected automatically
 #define SLEEP_SCRATCH_REG      0           // Which scratch register to use
 
 // Drift calibration scratch registers
@@ -119,21 +118,32 @@ int sleep_get_rtc_int_pin(void) {
     return _rtc_int_pin;
 }
 
+// Compute a magic value that includes compile time - changes with each build
+// This ensures stale scratch registers from old firmware are detected
+static uint32_t getSleepMagic() {
+    const char* timeStr = __TIME__;  // "HH:MM:SS"
+    uint32_t hash = 0xDEE90000;  // Base magic with room for hash
+    // Just use hours and minutes to keep it simple but unique per build
+    hash |= ((timeStr[0] - '0') << 12);  // Hour tens
+    hash |= ((timeStr[1] - '0') << 8);   // Hour ones
+    hash |= ((timeStr[3] - '0') << 4);   // Minute tens
+    hash |= ((timeStr[4] - '0'));        // Minute ones
+    return hash;
+}
+
 // Check if we woke from deep sleep by looking at scratch register
-// Also verify the powman timer is running - if it's not, this is a fresh boot
-// regardless of what the scratch register says (handles stale state after reflash)
+// The magic includes compile time, so new firmware = different magic = cold boot
 bool sleep_woke_from_deep_sleep(void) {
-    // Must have magic value in scratch register
-    if (powman_hw->scratch[SLEEP_SCRATCH_REG] != SLEEP_SCRATCH_MAGIC) {
-        return false;
-    }
+    uint32_t expectedMagic = getSleepMagic();
+    uint32_t storedMagic = powman_hw->scratch[SLEEP_SCRATCH_REG];
     
-    // Additional check: if powman timer is 0 and not running, this is likely
-    // a fresh boot with stale scratch registers (e.g., after reflashing)
-    // A real wake from deep sleep would have the timer running with valid time
-    if (!powman_timer_is_running() && powman_timer_get_ms() == 0) {
-        Serial.println("  [sleep] Scratch magic found but timer not running - clearing stale state");
-        sleep_clear_wake_flag();
+    if (storedMagic != expectedMagic) {
+        // Either never slept, or firmware changed
+        if (storedMagic != 0 && (storedMagic & 0xFFFF0000) == 0xDEE90000) {
+            // Had old firmware's magic - this is a reflash
+            Serial.println("  [sleep] New firmware detected - clearing stale sleep state");
+            sleep_clear_all_state();
+        }
         return false;
     }
     
@@ -153,7 +163,7 @@ void sleep_clear_all_state(void) {
 }
 
 static void sleep_set_wake_flag(void) {
-    powman_hw->scratch[SLEEP_SCRATCH_REG] = SLEEP_SCRATCH_MAGIC;
+    powman_hw->scratch[SLEEP_SCRATCH_REG] = getSleepMagic();
 }
 
 // ========================================================================

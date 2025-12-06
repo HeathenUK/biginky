@@ -163,6 +163,9 @@ int getBatteryPercent(float voltage) {
 void drawDemoPattern();
 bool connectWiFiAndGetNTP();
 void formatTime(uint64_t time_ms, char* buf, size_t len);
+void logStage(uint8_t stage);
+void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime);
+void reportLastUpdate();
 
 // ================================================================
 // WiFi Credential Management
@@ -1053,8 +1056,8 @@ void doDisplayUpdate(int updateNumber) {
     if (batteryPct < 20) battColor = EL133UF1_RED;
     else if (batteryPct < 50) battColor = EL133UF1_YELLOW;
     
-    // If reading is suspiciously low, show in orange to indicate "check this"
-    if (rawADC < 500) battColor = EL133UF1_ORANGE;
+    // If reading is suspiciously low, show in yellow to indicate "check this"
+    if (rawADC < 500) battColor = EL133UF1_YELLOW;
     
     ttf.drawTextAligned(display.width() - 200, 420, buf, 28.0, battColor,
                         ALIGN_RIGHT, ALIGN_TOP);

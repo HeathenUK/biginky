@@ -33,10 +33,24 @@ static const uint8_t SPECTRA_CODE[6] = {
 // Global pointer for callback (pngle uses C callbacks)
 static EL133UF1_PNG* g_pngInstance = nullptr;
 
+// Diagnostic counters
+static uint32_t g_pixelCount = 0;
+static uint32_t g_minY = UINT32_MAX;
+static uint32_t g_maxY = 0;
+static uint32_t g_minX = UINT32_MAX;
+static uint32_t g_maxX = 0;
+
 // C callback function for pngle
 static void pngle_draw_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]) {
     if (g_pngInstance) {
         g_pngInstance->_onDraw(x, y, w, h, rgba);
+        
+        // Track statistics
+        g_pixelCount++;
+        if (y < g_minY) g_minY = y;
+        if (y > g_maxY) g_maxY = y;
+        if (x < g_minX) g_minX = x;
+        if (x > g_maxX) g_maxX = x;
     }
 }
 
@@ -105,6 +119,13 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     // Set global instance for C callback
     g_pngInstance = this;
     
+    // Reset diagnostic counters
+    g_pixelCount = 0;
+    g_minY = UINT32_MAX;
+    g_maxY = 0;
+    g_minX = UINT32_MAX;
+    g_maxX = 0;
+    
     // Create pngle instance
     pngle_t* pngle = pngle_new();
     if (pngle == nullptr) {
@@ -129,11 +150,19 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
         result = pngle_feed(pngle, data + fed, chunk);
         if (result < 0) {
             Serial.printf("PNG: Decode error at offset %zu: %s\n", fed, pngle_error(pngle));
+            Serial.printf("PNG: Pixels drawn before error: %lu, Y range: [%lu-%lu]\n",
+                          g_pixelCount, g_minY, g_maxY);
             pngle_destroy(pngle);
             g_pngInstance = nullptr;
             return PNG_ERR_DECODE_FAILED;
         }
-        fed += chunk;
+        // pngle_feed returns bytes consumed (should equal chunk on success)
+        if (result == 0) {
+            Serial.printf("PNG: Warning - pngle_feed consumed 0 bytes at offset %zu\n", fed);
+            fed += chunk;  // Advance anyway to avoid infinite loop
+        } else {
+            fed += result;
+        }
     }
     
     // Store dimensions
@@ -142,6 +171,11 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     
     uint32_t elapsed = millis() - t0;
     Serial.printf("PNG: Decoded %ldx%ld in %lu ms\n", _width, _height, elapsed);
+    Serial.printf("PNG: Pixel stats - count=%lu, X range=[%lu-%lu], Y range=[%lu-%lu]\n",
+                  g_pixelCount, g_minX, g_maxX, g_minY, g_maxY);
+    Serial.printf("PNG: Expected pixels: %ld, got callbacks for %lu (%.1f%%)\n",
+                  _width * _height, g_pixelCount, 
+                  100.0f * g_pixelCount / (_width * _height));
     
     pngle_destroy(pngle);
     g_pngInstance = nullptr;

@@ -346,29 +346,49 @@ OpenAIResult OpenAIImage::downloadImage(const char* url, uint8_t** outData, size
         return OPENAI_ERR_ALLOC_FAILED;
     }
     
-    // Read image data
+    // Read image data in chunks for better performance
     size_t bytesRead = 0;
     startTime = millis();
+    uint32_t lastProgress = 0;
+    uint32_t noDataCount = 0;
     
-    while (client.connected() || client.available()) {
-        while (client.available()) {
-            if (bytesRead < contentLength) {
-                buffer[bytesRead++] = client.read();
-            } else {
-                client.read();  // Discard excess
+    while (bytesRead < contentLength) {
+        if (client.available()) {
+            // Read as many bytes as available, up to remaining needed
+            size_t toRead = contentLength - bytesRead;
+            size_t avail = client.available();
+            if (avail < toRead) toRead = avail;
+            
+            // Read in chunks for efficiency
+            size_t chunk = (toRead > 4096) ? 4096 : toRead;
+            size_t got = client.read(buffer + bytesRead, chunk);
+            bytesRead += got;
+            noDataCount = 0;
+            
+            // Progress indication every 100KB
+            if (bytesRead - lastProgress >= 102400) {
+                Serial.printf("OpenAI: Downloaded %zu / %zu bytes (%d%%)\n", 
+                              bytesRead, contentLength, (int)(bytesRead * 100 / contentLength));
+                lastProgress = bytesRead;
             }
+        } else {
+            // No data available - check if we should keep waiting
+            noDataCount++;
+            if (noDataCount > 100) {  // ~1 second of no data
+                if (!client.connected()) {
+                    Serial.printf("OpenAI: Connection closed after %zu bytes\n", bytesRead);
+                    break;
+                }
+            }
+            delay(10);
         }
         
-        if (millis() - startTime > 60000) {
+        if (millis() - startTime > 120000) {  // 2 minute timeout for large images
             free(buffer);
             client.stop();
-            snprintf(_lastError, sizeof(_lastError), "Timeout downloading image");
+            snprintf(_lastError, sizeof(_lastError), "Timeout downloading image at %zu/%zu bytes", 
+                     bytesRead, contentLength);
             return OPENAI_ERR_TIMEOUT;
-        }
-        
-        // Progress indication
-        if ((bytesRead % 102400) == 0 && bytesRead > 0) {
-            Serial.printf("OpenAI: Downloaded %zu / %zu bytes\n", bytesRead, contentLength);
         }
     }
     

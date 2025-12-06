@@ -479,12 +479,31 @@ void setup() {
     if (eeprom.isPresent()) {
         eeprom.incrementBootCount();
         totalBoots = eeprom.getBootCount();
+        
+        // Debug: verify EEPROM still readable after write
+        Serial.println("--- EEPROM read test after incrementBootCount ---");
+        uint8_t testByte = eeprom.readByte(0x0100);  // EEPROM_WIFI_SSID
+        Serial.printf("  Direct read of 0x0100 = 0x%02X ('%c')\n", 
+                      testByte, (testByte >= 32 && testByte < 127) ? testByte : '?');
     }
     
     // ================================================================
     // WiFi credential management
     // ================================================================
     Serial.println("\n--- WiFi Credential Check ---");
+    
+    // Re-initialize I2C bus to clear any stale state after EEPROM writes
+    // This is a workaround for potential I2C bus issues after writes
+    Serial.println("  Reinitializing I2C bus...");
+    Wire1.end();
+    delay(10);
+    Wire1.setSDA(2);  // Same pins as RTC init
+    Wire1.setSCL(3);
+    Wire1.begin();
+    Wire1.setClock(100000);
+    delay(10);
+    Serial.println("  I2C bus reinitialized");
+    
     Serial.printf("eeprom.isPresent() = %d\n", eeprom.isPresent());
     if (eeprom.isPresent()) {
         Serial.printf("eeprom.hasWifiCredentials() = %d\n", eeprom.hasWifiCredentials());

@@ -54,12 +54,23 @@ uint8_t AT24C32::readByte(uint16_t addr) {
     _wire->beginTransmission(_addr);
     _wire->write((uint8_t)(addr >> 8));    // High byte
     _wire->write((uint8_t)(addr & 0xFF));  // Low byte
-    _wire->endTransmission();
+    uint8_t err = _wire->endTransmission();
     
-    _wire->requestFrom(_addr, (uint8_t)1);
+    if (err != 0) {
+        Serial.printf("  [readByte] I2C error %d at addr 0x%04X\n", err, addr);
+        return 0xFF;
+    }
+    
+    uint8_t received = _wire->requestFrom(_addr, (uint8_t)1);
+    if (received != 1) {
+        Serial.printf("  [readByte] requestFrom returned %d (expected 1)\n", received);
+        return 0xFF;
+    }
+    
     if (_wire->available()) {
         return _wire->read();
     }
+    Serial.println("  [readByte] no data available after requestFrom");
     return 0xFF;
 }
 
@@ -211,10 +222,27 @@ void AT24C32::setLastNtpSync(uint32_t unixTime) {
 }
 
 bool AT24C32::hasWifiCredentials() {
-    uint8_t first = readByte(EEPROM_WIFI_SSID);
-    Serial.printf("  [hasWifiCredentials] first byte at 0x%04X = 0x%02X ('%c')\n", 
-                  EEPROM_WIFI_SSID, first, (first >= 32 && first < 127) ? first : '?');
-    return (first != 0xFF && first != 0x00);
+    // Try reading up to 3 times in case of I2C bus issues
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+            delay(10);  // Wait before retry
+            Serial.printf("  [hasWifiCredentials] retry %d...\n", attempt);
+        }
+        
+        uint8_t first = readByte(EEPROM_WIFI_SSID);
+        Serial.printf("  [hasWifiCredentials] first byte at 0x%04X = 0x%02X ('%c')\n", 
+                      EEPROM_WIFI_SSID, first, (first >= 32 && first < 127) ? first : '?');
+        
+        // If we got a valid result (not 0xFF indicating I2C error), return it
+        if (first != 0xFF) {
+            return (first != 0x00);  // 0x00 means empty, anything else means credentials exist
+        }
+        
+        // 0xFF could mean empty OR I2C error - try again
+    }
+    
+    // After 3 attempts of 0xFF, assume no credentials
+    return false;
 }
 
 bool AT24C32::getWifiCredentials(char* ssid, size_t ssidLen, char* psk, size_t pskLen) {

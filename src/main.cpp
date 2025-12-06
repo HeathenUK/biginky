@@ -249,12 +249,14 @@ void enterConfigMode() {
     // --- WiFi Configuration ---
     Serial.println("\n--- WiFi Settings ---");
     
-    // Show current config if any
-    if (eeprom.isPresent() && eeprom.hasWifiCredentials()) {
-        char currentSSID[33], currentPSK[65];
-        eeprom.getWifiCredentials(currentSSID, sizeof(currentSSID), 
-                                   currentPSK, sizeof(currentPSK));
-        Serial.printf("Current SSID: '%s'\n", currentSSID);
+    // Load existing credentials if any
+    char existingSSID[33] = {0};
+    char existingPSK[65] = {0};
+    bool hasExisting = eeprom.isPresent() && eeprom.hasWifiCredentials();
+    if (hasExisting) {
+        eeprom.getWifiCredentials(existingSSID, sizeof(existingSSID), 
+                                   existingPSK, sizeof(existingPSK));
+        Serial.printf("Current SSID: '%s'\n", existingSSID);
         Serial.println("(Press Enter to keep current, or type new value)");
     }
     
@@ -263,10 +265,9 @@ void enterConfigMode() {
     String ssid = serialReadLine(false);
     
     // If empty and we have existing, keep it
-    if (ssid.length() == 0 && eeprom.hasWifiCredentials()) {
+    if (ssid.length() == 0 && hasExisting) {
         Serial.println("(keeping existing SSID)");
-        eeprom.getWifiCredentials(wifiSSID, sizeof(wifiSSID), wifiPSK, sizeof(wifiPSK));
-        ssid = wifiSSID;
+        ssid = existingSSID;
     }
     
     if (ssid.length() == 0) {
@@ -277,6 +278,12 @@ void enterConfigMode() {
     // Get PSK
     Serial.print("WiFi Password: ");
     String psk = serialReadLine(true);  // Masked input
+    
+    // If empty and we have existing, keep it
+    if (psk.length() == 0 && hasExisting) {
+        Serial.println("(keeping existing password)");
+        psk = existingPSK;
+    }
     
     // Save WiFi to EEPROM
     if (eeprom.isPresent()) {

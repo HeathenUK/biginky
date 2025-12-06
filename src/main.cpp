@@ -641,11 +641,10 @@ void setup() {
 // Perform a display update (called on each wake cycle)
 // ================================================================
 // Expected time for FULL display update cycle (from reading time to display complete)
-// This includes: drawing (~0.5s) + rotate/pack (~0.7s) + SPI (~0.5s) + panel refresh (~20-32s)
-// Cold boot (with init):  ~35 seconds (init 1.5s + panel refresh is slower first time)
-// Warm update (skipInit): ~26 seconds (no init, faster refresh)
-#define DISPLAY_REFRESH_COLD_MS  35000  // First update after power-on
-#define DISPLAY_REFRESH_WARM_MS  26000  // Subsequent updates (skipInit=true)
+// This includes: init (~1.5s) + drawing (~0.5s) + rotate/pack (~0.7s) + SPI (~0.5s) + panel refresh (~20-32s)
+// First update after power-on may be slightly slower due to panel warmup
+#define DISPLAY_REFRESH_COLD_MS  32000  // First update after power-on
+#define DISPLAY_REFRESH_WARM_MS  28000  // Subsequent updates
 
 void doDisplayUpdate(int updateNumber) {
     Serial.printf("\n=== Display Update #%d ===\n", updateNumber);
@@ -674,36 +673,22 @@ void doDisplayUpdate(int updateNumber) {
     SPI1.setTX(PIN_SPI_MOSI);
     SPI1.begin();
     
-    // Initialize or reconnect display
-    // Check buffer to detect true cold boot (scratch registers persist across flash!)
-    bool needsFullInit = isColdBoot || (display.getBuffer() == nullptr);
-    
-    bool displayOk;
-    if (needsFullInit) {
-        // Cold boot or no buffer: full initialization with reset
-        Serial.println("Display: full initialization");
-        displayOk = display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY);
-    } else {
-        // Warm boot with valid buffer: just reconnect
-        Serial.println("Display: reconnecting (warm boot)");
-        displayOk = display.reconnect();
-    }
-    
-    if (!displayOk) {
+    // Always do full display initialization
+    // During deep sleep, GPIO pins float and may reset the display controller,
+    // so we can't rely on it retaining configuration.
+    // The C++ runtime also reinitializes global objects on each boot.
+    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
         Serial.println("ERROR: Display initialization failed!");
         return;
     }
     
-    // Initialize TTF renderer (only needed when display was fully initialized,
-    // or if font isn't loaded - e.g., scratch registers stale after flash)
-    if (needsFullInit || !ttf.fontLoaded()) {
-        ttf.begin(&display);
-        ttf.loadFont(opensans_ttf, opensans_ttf_len);
-        
-        // Enable glyph cache for time display (160px digits)
-        // This pre-renders 0-9, colon, space - used repeatedly
-        ttf.enableGlyphCache(160.0, "0123456789: ");
-    }
+    // Initialize TTF renderer
+    ttf.begin(&display);
+    ttf.loadFont(opensans_ttf, opensans_ttf_len);
+    
+    // Enable glyph cache for time display (160px digits)
+    // This pre-renders 0-9, colon, space - used repeatedly
+    ttf.enableGlyphCache(160.0, "0123456789: ");
     
     // Draw update info with performance profiling
     uint32_t drawStart = millis();
@@ -904,9 +889,9 @@ void doDisplayUpdate(int updateNumber) {
     Serial.printf("  All drawing:    %lu ms\n", millis() - drawStart);
     
     // Update display and measure actual refresh time
-    // Skip init sequence on warm updates (saves ~1.7 seconds)
+    // Always skip init in update() since begin() already ran it
     uint32_t refreshStart = millis();
-    display.update(!isColdBoot);  // skipInit=true for warm updates
+    display.update(true);  // skipInit=true - begin() handles init
     uint32_t actualRefreshMs = millis() - refreshStart;
     
     // Get actual time now for comparison (with drift correction)

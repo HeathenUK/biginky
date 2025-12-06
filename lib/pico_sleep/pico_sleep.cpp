@@ -120,8 +120,24 @@ int sleep_get_rtc_int_pin(void) {
 }
 
 // Check if we woke from deep sleep by looking at scratch register
+// Also verify the powman timer is running - if it's not, this is a fresh boot
+// regardless of what the scratch register says (handles stale state after reflash)
 bool sleep_woke_from_deep_sleep(void) {
-    return (powman_hw->scratch[SLEEP_SCRATCH_REG] == SLEEP_SCRATCH_MAGIC);
+    // Must have magic value in scratch register
+    if (powman_hw->scratch[SLEEP_SCRATCH_REG] != SLEEP_SCRATCH_MAGIC) {
+        return false;
+    }
+    
+    // Additional check: if powman timer is 0 and not running, this is likely
+    // a fresh boot with stale scratch registers (e.g., after reflashing)
+    // A real wake from deep sleep would have the timer running with valid time
+    if (!powman_timer_is_running() && powman_timer_get_ms() == 0) {
+        Serial.println("  [sleep] Scratch magic found but timer not running - clearing stale state");
+        sleep_clear_wake_flag();
+        return false;
+    }
+    
+    return true;
 }
 
 void sleep_clear_wake_flag(void) {

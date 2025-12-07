@@ -49,6 +49,9 @@
 #include "hardware/structs/powman.h"
 #include "hardware/powman.h"
 
+// SdFat for SDIO SD card support
+#include <SdFat.h>
+
 // WiFi credentials - loaded from EEPROM or set via serial config
 // Compile-time fallback (optional, for development only)
 // Set via platformio_local.ini (not committed to git):
@@ -86,6 +89,16 @@ static char wifiPSK[65] = {0};
 // GP43 is the battery voltage ADC pin
 #define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
 
+// SDIO SD Card pins (directly wired microSD card)
+// These pins must be consecutive for PIO SDIO on RP2350
+// Using GPIO 4-9 as they are not used by display or RTC
+#define PIN_SDIO_CLK   5    // SDIO CLK (GPIO 5)
+#define PIN_SDIO_CMD   4    // SDIO CMD (GPIO 4)
+#define PIN_SDIO_DAT0  6    // SDIO DAT0 (GPIO 6)
+#define PIN_SDIO_DAT1  7    // SDIO DAT1 (GPIO 7) - optional for 4-bit mode
+#define PIN_SDIO_DAT2  8    // SDIO DAT2 (GPIO 8) - optional for 4-bit mode
+#define PIN_SDIO_DAT3  9    // SDIO DAT3 (GPIO 9) - optional for 4-bit mode
+
 // Voltage divider ratio - adjust based on actual circuit
 // If battery shows wrong voltage, measure with multimeter and calibrate
 #define VBAT_DIVIDER_RATIO  3.0f
@@ -115,6 +128,13 @@ ModelsLabAI modelslab;
 // AI-generated image stored in PSRAM (persists between updates)
 static uint8_t* aiImageData = nullptr;
 static size_t aiImageLen = 0;
+
+// ================================================================
+// SDIO SD Card support
+// ================================================================
+// Use SdFs for FAT16/FAT32/exFAT support
+SdFs sd;
+FsFile sdFile;
 
 // ================================================================
 // Battery voltage monitoring
@@ -793,6 +813,191 @@ void setUpdateCount(int count) {
 // Boot timestamp for measuring wake-to-display duration
 static uint32_t g_bootTimestamp = 0;
 
+// ================================================================
+// SDIO SD Card Debug Function
+// ================================================================
+/**
+ * @brief Test SDIO SD card connectivity and print debug info
+ * 
+ * This function attempts to initialize an SD card via SDIO interface
+ * and prints detailed debug information about the card and filesystem.
+ * 
+ * @return true if SD card was successfully initialized
+ */
+bool testSdioSdCard() {
+    Serial.println("\n=== SDIO SD Card Debug ===");
+    Serial.printf("  SDIO Pins: CLK=%d, CMD=%d, DAT0=%d, DAT1=%d, DAT2=%d, DAT3=%d\n",
+                  PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 
+                  PIN_SDIO_DAT1, PIN_SDIO_DAT2, PIN_SDIO_DAT3);
+    
+    // Configure SDIO pins for RP2350 PIO-based SDIO
+    // The SdFat library uses PIO for SDIO on RP2040/RP2350
+    // Pin configuration: CLK pin and CMD pin define the bus location
+    // DAT0-3 must follow CMD consecutively
+    
+    Serial.println("  Attempting SDIO initialization...");
+    Serial.flush();
+    
+    // Create SDIO configuration
+    // For RP2040/RP2350, use SdioConfig with the correct pins
+    // The second parameter is the clock speed in kHz (start low for debug)
+    #if defined(ARDUINO_ARCH_RP2040)
+    // RP2040/RP2350 uses PIO for SDIO - configure via SdioConfig
+    // SdioConfig takes: (clockPin, cmdPin, d0Pin) - d1-d3 are d0+1, d0+2, d0+3
+    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0);
+    #else
+    SdioConfig sdioConfig;  // Default for other platforms
+    #endif
+    
+    uint32_t startTime = millis();
+    bool success = sd.begin(sdioConfig);
+    uint32_t initTime = millis() - startTime;
+    
+    if (!success) {
+        Serial.printf("  SDIO init FAILED after %lu ms\n", initTime);
+        Serial.println("  Possible causes:");
+        Serial.println("    - No SD card inserted");
+        Serial.println("    - SD card not properly seated");
+        Serial.println("    - Wrong pin configuration");
+        Serial.println("    - Card not compatible with SDIO mode");
+        Serial.println("    - Card requires SPI mode instead");
+        
+        // Try to get more error info
+        if (sd.sdErrorCode()) {
+            Serial.printf("  SD Error Code: 0x%02X\n", sd.sdErrorCode());
+            Serial.printf("  SD Error Data: 0x%02X\n", sd.sdErrorData());
+        }
+        Serial.println("=============================\n");
+        return false;
+    }
+    
+    Serial.printf("  SDIO init SUCCESS in %lu ms\n", initTime);
+    
+    // Get card info
+    cid_t cid;
+    csd_t csd;
+    
+    if (sd.card()->readCID(&cid)) {
+        Serial.println("  --- Card Identification (CID) ---");
+        Serial.printf("    Manufacturer ID: 0x%02X\n", cid.mid);
+        Serial.printf("    OEM ID: %c%c\n", cid.oid[0], cid.oid[1]);
+        Serial.printf("    Product: %.5s\n", cid.pnm);
+        Serial.printf("    Revision: %d.%d\n", cid.prvN(), cid.prvM());
+        Serial.printf("    Serial: 0x%08lX\n", (unsigned long)cid.psn());
+        Serial.printf("    Mfg Date: %d/%d\n", cid.mdtMonth(), 2000 + cid.mdtYear());
+    } else {
+        Serial.println("  Failed to read CID");
+    }
+    
+    if (sd.card()->readCSD(&csd)) {
+        Serial.println("  --- Card Specific Data (CSD) ---");
+        // CSD version is in the first byte
+        uint8_t csdVersion = (csd.csd[0] >> 6) & 0x03;
+        Serial.printf("    CSD Version: %d\n", csdVersion + 1);
+    } else {
+        Serial.println("  Failed to read CSD");
+    }
+    
+    // Card capacity and type
+    uint64_t cardSize = sd.card()->sectorCount() * 512ULL;
+    Serial.println("  --- Card Info ---");
+    Serial.printf("    Card Size: %.2f GB\n", cardSize / (1024.0 * 1024.0 * 1024.0));
+    Serial.printf("    Sectors: %lu\n", (unsigned long)sd.card()->sectorCount());
+    Serial.printf("    Card Type: ");
+    switch (sd.card()->type()) {
+        case SD_CARD_TYPE_SD1:  Serial.println("SD1 (<=2GB)"); break;
+        case SD_CARD_TYPE_SD2:  Serial.println("SD2"); break;
+        case SD_CARD_TYPE_SDHC: 
+            if (cardSize > 32ULL * 1024 * 1024 * 1024) {
+                Serial.println("SDXC (>32GB)");
+            } else {
+                Serial.println("SDHC (4-32GB)");
+            }
+            break;
+        default: Serial.printf("Unknown (%d)\n", sd.card()->type()); break;
+    }
+    
+    // Filesystem info
+    Serial.println("  --- Filesystem Info ---");
+    Serial.printf("    FAT Type: ");
+    switch (sd.fatType()) {
+        case FAT_TYPE_FAT12: Serial.println("FAT12"); break;
+        case FAT_TYPE_FAT16: Serial.println("FAT16"); break;
+        case FAT_TYPE_FAT32: Serial.println("FAT32"); break;
+        case FAT_TYPE_EXFAT: Serial.println("exFAT"); break;
+        default: Serial.printf("Unknown (%d)\n", sd.fatType()); break;
+    }
+    
+    uint64_t freeSpace = sd.freeClusterCount() * sd.bytesPerCluster();
+    uint64_t totalSpace = sd.clusterCount() * sd.bytesPerCluster();
+    Serial.printf("    Cluster Size: %lu bytes\n", (unsigned long)sd.bytesPerCluster());
+    Serial.printf("    Total Clusters: %lu\n", (unsigned long)sd.clusterCount());
+    Serial.printf("    Free Clusters: %lu\n", (unsigned long)sd.freeClusterCount());
+    Serial.printf("    Total Space: %.2f GB\n", totalSpace / (1024.0 * 1024.0 * 1024.0));
+    Serial.printf("    Free Space: %.2f GB (%.1f%%)\n", 
+                  freeSpace / (1024.0 * 1024.0 * 1024.0),
+                  100.0 * freeSpace / totalSpace);
+    
+    // List root directory (first 10 entries)
+    Serial.println("  --- Root Directory (first 10 entries) ---");
+    FsFile root;
+    if (root.open("/")) {
+        FsFile entry;
+        int count = 0;
+        while (entry.openNext(&root, O_RDONLY) && count < 10) {
+            char name[64];
+            entry.getName(name, sizeof(name));
+            
+            if (entry.isDirectory()) {
+                Serial.printf("    [DIR]  %s/\n", name);
+            } else {
+                uint64_t size = entry.fileSize();
+                if (size >= 1024 * 1024) {
+                    Serial.printf("    [FILE] %s (%.2f MB)\n", name, size / (1024.0 * 1024.0));
+                } else if (size >= 1024) {
+                    Serial.printf("    [FILE] %s (%.2f KB)\n", name, size / 1024.0);
+                } else {
+                    Serial.printf("    [FILE] %s (%llu bytes)\n", name, size);
+                }
+            }
+            entry.close();
+            count++;
+        }
+        if (count == 0) {
+            Serial.println("    (empty)");
+        }
+        root.close();
+    } else {
+        Serial.println("    Failed to open root directory");
+    }
+    
+    // Speed test - read first sector
+    Serial.println("  --- Speed Test (read 100 sectors) ---");
+    uint8_t* testBuf = (uint8_t*)malloc(512 * 100);
+    if (testBuf) {
+        startTime = millis();
+        bool readOk = true;
+        for (int i = 0; i < 100 && readOk; i++) {
+            readOk = sd.card()->readSector(i, testBuf + i * 512);
+        }
+        uint32_t readTime = millis() - startTime;
+        free(testBuf);
+        
+        if (readOk) {
+            float speedKBs = (100 * 512.0 / 1024.0) / (readTime / 1000.0);
+            Serial.printf("    Read 100 sectors (50KB) in %lu ms\n", readTime);
+            Serial.printf("    Read Speed: %.1f KB/s\n", speedKBs);
+        } else {
+            Serial.println("    Read test FAILED");
+        }
+    } else {
+        Serial.println("    Could not allocate test buffer");
+    }
+    
+    Serial.println("=============================\n");
+    return true;
+}
+
 void setup() {
     // Record boot time immediately (before any delays)
     // We'll use this to measure actual wake-to-display duration
@@ -899,6 +1104,16 @@ void setup() {
         uint8_t testByte = eeprom.readByte(0x0100);  // EEPROM_WIFI_SSID
         Serial.printf("  Direct read of 0x0100 = 0x%02X ('%c')\n", 
                       testByte, (testByte >= 32 && testByte < 127) ? testByte : '?');
+    }
+    
+    // ================================================================
+    // SDIO SD Card Test
+    // ================================================================
+    bool hasSDCard = testSdioSdCard();
+    if (hasSDCard) {
+        Serial.println("SD Card: Available and working");
+    } else {
+        Serial.println("SD Card: Not available (continuing without SD)");
     }
     
     // ================================================================

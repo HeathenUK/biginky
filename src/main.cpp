@@ -837,39 +837,48 @@ bool testSdioSdCard() {
     Serial.println("\n=== SDIO SD Card Debug ===");
     Serial.printf("  SDIO Pins: CLK=GP%d, CMD=GP%d, DAT0-3=GP%d-%d, DET=GP%d\n",
                   PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, PIN_SDIO_DAT3, PIN_SDIO_DET);
+    Serial.flush();
     
     // Check card detect pin first (active low - LOW when card inserted)
+    Serial.println("  Checking card detect pin...");
+    Serial.flush();
     pinMode(PIN_SDIO_DET, INPUT_PULLUP);
     delay(10);  // Let pin settle
     bool cardDetected = (digitalRead(PIN_SDIO_DET) == LOW);
     Serial.printf("  Card Detect (GP%d): %s\n", PIN_SDIO_DET, 
                   cardDetected ? "CARD PRESENT" : "NO CARD (or DET not connected)");
+    Serial.flush();
     
     if (!cardDetected) {
         Serial.println("  WARNING: Card detect pin shows no card inserted");
-        Serial.println("  (Continuing anyway in case DET is not wired)");
+        Serial.println("  Skipping SDIO init to avoid crash on empty slot");
+        Serial.println("=============================\n");
+        return false;
     }
     
     // Configure SDIO pins for RP2350 PIO-based SDIO
     // The SdFat library uses PIO for SDIO on RP2040/RP2350
-    // Pin configuration: CLK pin, CMD pin, and D0 pin
-    // DAT1-3 are expected to be consecutive after DAT0
+    // PioSdioConfig(clkPin, cmdPin, dat0Pin, clkDiv)
+    // DAT1-3 must be consecutive after DAT0 (dat0+1, dat0+2, dat0+3)
+    Serial.println("  Creating SDIO configuration...");
+    Serial.printf("    CLK=GP%d, CMD=GP%d, DAT0=GP%d (DAT1-3 consecutive)\n",
+                  PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0);
+    Serial.flush();
+    
+    // Verify DAT pins are consecutive (required by PIO SDIO driver)
+    static_assert(PIN_SDIO_DAT1 == PIN_SDIO_DAT0 + 1, "DAT1 must be DAT0+1");
+    static_assert(PIN_SDIO_DAT2 == PIN_SDIO_DAT0 + 2, "DAT2 must be DAT0+2");
+    static_assert(PIN_SDIO_DAT3 == PIN_SDIO_DAT0 + 3, "DAT3 must be DAT0+3");
     
     Serial.println("  Attempting SDIO initialization...");
     Serial.flush();
     
-    // Create SDIO configuration
-    // For RP2040/RP2350, use SdioConfig with the correct pins
-    // The second parameter is the clock speed in kHz (start low for debug)
-    #if defined(ARDUINO_ARCH_RP2040)
-    // RP2040/RP2350 uses PIO for SDIO - configure via SdioConfig
-    // SdioConfig takes: (clockPin, cmdPin, d0Pin) - d1-d3 are d0+1, d0+2, d0+3
-    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0);
-    #else
-    SdioConfig sdioConfig;  // Default for other platforms
-    #endif
-    
     uint32_t startTime = millis();
+    
+    // Create SDIO config with our pins
+    // clkDiv=1.0 is default, can increase if having stability issues (e.g., 2.0 for slower clock)
+    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 1.0);
+    
     bool success = sd.begin(sdioConfig);
     uint32_t initTime = millis() - startTime;
     
@@ -1129,12 +1138,20 @@ void setup() {
     // ================================================================
     // SDIO SD Card Test
     // ================================================================
+    #ifndef DISABLE_SDIO_TEST
+    Serial.println("\n>>> About to test SDIO SD card...");
+    Serial.flush();
+    delay(100);
     bool hasSDCard = testSdioSdCard();
     if (hasSDCard) {
         Serial.println("SD Card: Available and working");
     } else {
         Serial.println("SD Card: Not available (continuing without SD)");
     }
+    #else
+    Serial.println("\n>>> SDIO test disabled (DISABLE_SDIO_TEST defined)");
+    bool hasSDCard = false;
+    #endif
     
     // ================================================================
     // WiFi credential management

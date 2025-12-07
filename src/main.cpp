@@ -1062,6 +1062,167 @@ bool testSdioSdCard() {
 }
 #endif // DISABLE_SDIO_TEST
 
+// ================================================================
+// SD Card BMP Image Display
+// ================================================================
+#ifndef DISABLE_SDIO_TEST
+/**
+ * @brief Scan SD card root for BMP files and display a random one
+ * 
+ * Scans the root directory for .bmp files, picks one at random,
+ * loads it into PSRAM, and displays it on the e-ink display.
+ * 
+ * @return true if a BMP was found and displayed successfully
+ */
+bool displayRandomBmpFromSd() {
+    if (sd == nullptr) {
+        Serial.println("SD: Card not initialized");
+        return false;
+    }
+    
+    Serial.println("\n=== Scanning SD Card for BMP files ===");
+    
+    // First pass: count BMP files
+    FsFile root;
+    if (!root.open("/")) {
+        Serial.println("SD: Failed to open root directory");
+        return false;
+    }
+    
+    int bmpCount = 0;
+    FsFile entry;
+    while (entry.openNext(&root, O_RDONLY)) {
+        if (!entry.isDirectory()) {
+            char name[64];
+            entry.getName(name, sizeof(name));
+            size_t len = strlen(name);
+            // Check for .bmp extension (case insensitive)
+            if (len > 4 && 
+                (strcasecmp(name + len - 4, ".bmp") == 0)) {
+                bmpCount++;
+                Serial.printf("  Found: %s (%llu bytes)\n", name, entry.fileSize());
+            }
+        }
+        entry.close();
+    }
+    root.close();
+    
+    if (bmpCount == 0) {
+        Serial.println("  No BMP files found in root directory");
+        Serial.println("=====================================\n");
+        return false;
+    }
+    
+    Serial.printf("  Total BMP files: %d\n", bmpCount);
+    
+    // Pick a random file
+    // Use micros() for randomness since we may not have called randomSeed()
+    int targetIndex = micros() % bmpCount;
+    Serial.printf("  Randomly selected index: %d\n", targetIndex);
+    
+    // Second pass: find the selected file
+    if (!root.open("/")) {
+        Serial.println("SD: Failed to reopen root directory");
+        return false;
+    }
+    
+    char selectedName[64] = {0};
+    uint64_t selectedSize = 0;
+    int currentIndex = 0;
+    
+    while (entry.openNext(&root, O_RDONLY)) {
+        if (!entry.isDirectory()) {
+            char name[64];
+            entry.getName(name, sizeof(name));
+            size_t len = strlen(name);
+            if (len > 4 && strcasecmp(name + len - 4, ".bmp") == 0) {
+                if (currentIndex == targetIndex) {
+                    strncpy(selectedName, name, sizeof(selectedName) - 1);
+                    selectedSize = entry.fileSize();
+                    entry.close();
+                    break;
+                }
+                currentIndex++;
+            }
+        }
+        entry.close();
+    }
+    root.close();
+    
+    if (selectedName[0] == 0) {
+        Serial.println("SD: Failed to find selected BMP");
+        return false;
+    }
+    
+    Serial.printf("  Selected: %s (%llu bytes)\n", selectedName, selectedSize);
+    
+    // Check if file will fit in memory
+    size_t maxSize = 16 * 1024 * 1024;  // 16MB max (reasonable for PSRAM)
+    if (selectedSize > maxSize) {
+        Serial.printf("SD: File too large (%llu > %zu bytes)\n", selectedSize, maxSize);
+        return false;
+    }
+    
+    // Allocate buffer in PSRAM
+    Serial.println("  Allocating buffer in PSRAM...");
+    uint8_t* bmpData = (uint8_t*)pmalloc((size_t)selectedSize);
+    if (bmpData == nullptr) {
+        // Try regular malloc as fallback
+        Serial.println("  PSRAM alloc failed, trying regular malloc...");
+        bmpData = (uint8_t*)malloc((size_t)selectedSize);
+        if (bmpData == nullptr) {
+            Serial.println("SD: Failed to allocate memory for BMP");
+            return false;
+        }
+    }
+    Serial.printf("  Buffer allocated at %p\n", bmpData);
+    
+    // Open and read the file
+    FsFile bmpFile;
+    char fullPath[72];
+    snprintf(fullPath, sizeof(fullPath), "/%s", selectedName);
+    
+    if (!bmpFile.open(fullPath, O_RDONLY)) {
+        Serial.printf("SD: Failed to open %s\n", fullPath);
+        free(bmpData);
+        return false;
+    }
+    
+    Serial.println("  Reading file...");
+    uint32_t readStart = millis();
+    size_t bytesRead = bmpFile.read(bmpData, (size_t)selectedSize);
+    uint32_t readTime = millis() - readStart;
+    bmpFile.close();
+    
+    if (bytesRead != selectedSize) {
+        Serial.printf("SD: Read error - got %zu of %llu bytes\n", bytesRead, selectedSize);
+        free(bmpData);
+        return false;
+    }
+    
+    float readSpeedKBs = (bytesRead / 1024.0f) / (readTime / 1000.0f);
+    Serial.printf("  Read %zu bytes in %lu ms (%.1f KB/s)\n", bytesRead, readTime, readSpeedKBs);
+    
+    // Display the BMP
+    Serial.println("  Displaying BMP...");
+    bmp.begin(&display);
+    
+    BMPResult result = bmp.drawFullscreen(bmpData, bytesRead);
+    
+    // Free the buffer
+    free(bmpData);
+    
+    if (result != BMP_OK) {
+        Serial.printf("SD: BMP display error: %s\n", bmp.getErrorString(result));
+        return false;
+    }
+    
+    Serial.printf("  Successfully displayed: %s\n", selectedName);
+    Serial.println("=====================================\n");
+    return true;
+}
+#endif // DISABLE_SDIO_TEST
+
 void setup() {
     // Record boot time immediately (before any delays)
     // We'll use this to measure actual wake-to-display duration
@@ -1678,11 +1839,24 @@ void doDisplayUpdate(int updateNumber) {
     // BACKGROUND
     // ================================================================
     
-    // Simple white background for demo
     t0 = millis();
-    display.clear(EL133UF1_WHITE);
+    bool backgroundSet = false;
+    
+    #ifndef DISABLE_SDIO_TEST
+    // Try to display a random BMP from SD card
+    if (sd != nullptr) {
+        backgroundSet = displayRandomBmpFromSd();
+    }
+    #endif
+    
+    // Fallback to white background if no BMP displayed
+    if (!backgroundSet) {
+        Serial.println("  Using white background (no SD BMP)");
+        display.clear(EL133UF1_WHITE);
+    }
+    
     bitmapTotal = millis() - t0;
-    Serial.printf("  Background clear: %lu ms\n", bitmapTotal);
+    Serial.printf("  Background: %lu ms\n", bitmapTotal);
     
 #if 0  // AI image generation - disabled for demo, enable with #if 1
     // Generate new AI image on first boot, or if we don't have one cached

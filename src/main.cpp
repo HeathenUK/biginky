@@ -58,8 +58,10 @@
 #include "hardware/structs/powman.h"
 #include "hardware/powman.h"
 
-// SdFat for SDIO SD card support
+// SdFat for SDIO SD card support (can disable with -DDISABLE_SDIO_TEST)
+#ifndef DISABLE_SDIO_TEST
 #include <SdFat.h>
+#endif
 
 // WiFi credentials - loaded from EEPROM or set via serial config
 // Compile-time fallback (optional, for development only)
@@ -141,9 +143,12 @@ static size_t aiImageLen = 0;
 // ================================================================
 // SDIO SD Card support
 // ================================================================
+#ifndef DISABLE_SDIO_TEST
 // Use SdFs for FAT16/FAT32/exFAT support
-SdFs sd;
-FsFile sdFile;
+// Note: These are created as pointers to avoid crashes from global object construction
+static SdFs* sd = nullptr;
+static FsFile* sdFile = nullptr;
+#endif
 
 // ================================================================
 // Battery voltage monitoring
@@ -833,6 +838,7 @@ static uint32_t g_bootTimestamp = 0;
  * 
  * @return true if SD card was successfully initialized
  */
+#ifndef DISABLE_SDIO_TEST
 bool testSdioSdCard() {
     Serial.println("\n=== SDIO SD Card Debug ===");
     Serial.printf("  SDIO Pins: CLK=GP%d, CMD=GP%d, DAT0-3=GP%d-%d, DET=GP%d\n",
@@ -855,6 +861,21 @@ bool testSdioSdCard() {
         Serial.println("=============================\n");
         return false;
     }
+    
+    // Allocate SD object dynamically to avoid global constructor issues
+    Serial.println("  Allocating SdFs object...");
+    Serial.flush();
+    
+    if (sd == nullptr) {
+        sd = new SdFs();
+        if (sd == nullptr) {
+            Serial.println("  ERROR: Failed to allocate SdFs object!");
+            Serial.println("=============================\n");
+            return false;
+        }
+    }
+    Serial.println("  SdFs object allocated OK");
+    Serial.flush();
     
     // Configure SDIO pins for RP2350 PIO-based SDIO
     // The SdFat library uses PIO for SDIO on RP2040/RP2350
@@ -879,7 +900,7 @@ bool testSdioSdCard() {
     // clkDiv=1.0 is default, can increase if having stability issues (e.g., 2.0 for slower clock)
     SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 1.0);
     
-    bool success = sd.begin(sdioConfig);
+    bool success = sd->begin(sdioConfig);
     uint32_t initTime = millis() - startTime;
     
     if (!success) {
@@ -892,9 +913,9 @@ bool testSdioSdCard() {
         Serial.println("    - Card requires SPI mode instead");
         
         // Try to get more error info
-        if (sd.sdErrorCode()) {
-            Serial.printf("  SD Error Code: 0x%02X\n", sd.sdErrorCode());
-            Serial.printf("  SD Error Data: 0x%02X\n", sd.sdErrorData());
+        if (sd->sdErrorCode()) {
+            Serial.printf("  SD Error Code: 0x%02X\n", sd->sdErrorCode());
+            Serial.printf("  SD Error Data: 0x%02X\n", sd->sdErrorData());
         }
         Serial.println("=============================\n");
         return false;
@@ -906,7 +927,7 @@ bool testSdioSdCard() {
     cid_t cid;
     csd_t csd;
     
-    if (sd.card()->readCID(&cid)) {
+    if (sd->card()->readCID(&cid)) {
         Serial.println("  --- Card Identification (CID) ---");
         Serial.printf("    Manufacturer ID: 0x%02X\n", cid.mid);
         Serial.printf("    OEM ID: %c%c\n", cid.oid[0], cid.oid[1]);
@@ -918,7 +939,7 @@ bool testSdioSdCard() {
         Serial.println("  Failed to read CID");
     }
     
-    if (sd.card()->readCSD(&csd)) {
+    if (sd->card()->readCSD(&csd)) {
         Serial.println("  --- Card Specific Data (CSD) ---");
         // CSD version is in the first byte
         uint8_t csdVersion = (csd.csd[0] >> 6) & 0x03;
@@ -928,12 +949,12 @@ bool testSdioSdCard() {
     }
     
     // Card capacity and type
-    uint64_t cardSize = sd.card()->sectorCount() * 512ULL;
+    uint64_t cardSize = sd->card()->sectorCount() * 512ULL;
     Serial.println("  --- Card Info ---");
     Serial.printf("    Card Size: %.2f GB\n", cardSize / (1024.0 * 1024.0 * 1024.0));
-    Serial.printf("    Sectors: %lu\n", (unsigned long)sd.card()->sectorCount());
+    Serial.printf("    Sectors: %lu\n", (unsigned long)sd->card()->sectorCount());
     Serial.printf("    Card Type: ");
-    switch (sd.card()->type()) {
+    switch (sd->card()->type()) {
         case SD_CARD_TYPE_SD1:  Serial.println("SD1 (<=2GB)"); break;
         case SD_CARD_TYPE_SD2:  Serial.println("SD2"); break;
         case SD_CARD_TYPE_SDHC: 
@@ -943,25 +964,25 @@ bool testSdioSdCard() {
                 Serial.println("SDHC (4-32GB)");
             }
             break;
-        default: Serial.printf("Unknown (%d)\n", sd.card()->type()); break;
+        default: Serial.printf("Unknown (%d)\n", sd->card()->type()); break;
     }
     
     // Filesystem info
     Serial.println("  --- Filesystem Info ---");
     Serial.printf("    FAT Type: ");
-    switch (sd.fatType()) {
+    switch (sd->fatType()) {
         case FAT_TYPE_FAT12: Serial.println("FAT12"); break;
         case FAT_TYPE_FAT16: Serial.println("FAT16"); break;
         case FAT_TYPE_FAT32: Serial.println("FAT32"); break;
         case FAT_TYPE_EXFAT: Serial.println("exFAT"); break;
-        default: Serial.printf("Unknown (%d)\n", sd.fatType()); break;
+        default: Serial.printf("Unknown (%d)\n", sd->fatType()); break;
     }
     
-    uint64_t freeSpace = sd.freeClusterCount() * sd.bytesPerCluster();
-    uint64_t totalSpace = sd.clusterCount() * sd.bytesPerCluster();
-    Serial.printf("    Cluster Size: %lu bytes\n", (unsigned long)sd.bytesPerCluster());
-    Serial.printf("    Total Clusters: %lu\n", (unsigned long)sd.clusterCount());
-    Serial.printf("    Free Clusters: %lu\n", (unsigned long)sd.freeClusterCount());
+    uint64_t freeSpace = sd->freeClusterCount() * sd->bytesPerCluster();
+    uint64_t totalSpace = sd->clusterCount() * sd->bytesPerCluster();
+    Serial.printf("    Cluster Size: %lu bytes\n", (unsigned long)sd->bytesPerCluster());
+    Serial.printf("    Total Clusters: %lu\n", (unsigned long)sd->clusterCount());
+    Serial.printf("    Free Clusters: %lu\n", (unsigned long)sd->freeClusterCount());
     Serial.printf("    Total Space: %.2f GB\n", totalSpace / (1024.0 * 1024.0 * 1024.0));
     Serial.printf("    Free Space: %.2f GB (%.1f%%)\n", 
                   freeSpace / (1024.0 * 1024.0 * 1024.0),
@@ -1007,7 +1028,7 @@ bool testSdioSdCard() {
         startTime = millis();
         bool readOk = true;
         for (int i = 0; i < 100 && readOk; i++) {
-            readOk = sd.card()->readSector(i, testBuf + i * 512);
+            readOk = sd->card()->readSector(i, testBuf + i * 512);
         }
         uint32_t readTime = millis() - startTime;
         free(testBuf);
@@ -1026,6 +1047,7 @@ bool testSdioSdCard() {
     Serial.println("=============================\n");
     return true;
 }
+#endif // DISABLE_SDIO_TEST
 
 void setup() {
     // Record boot time immediately (before any delays)

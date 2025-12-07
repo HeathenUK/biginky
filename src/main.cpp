@@ -845,21 +845,25 @@ bool testSdioSdCard() {
                   PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, PIN_SDIO_DAT3, PIN_SDIO_DET);
     Serial.flush();
     
-    // Check card detect pin first (active low - LOW when card inserted)
+    // Check card detect pin
+    // Note: Card detect polarity varies by socket design
+    // Some are active-low (LOW=inserted), some are active-high (HIGH=inserted)
     Serial.println("  Checking card detect pin...");
     Serial.flush();
     pinMode(PIN_SDIO_DET, INPUT_PULLUP);
     delay(10);  // Let pin settle
-    bool cardDetected = (digitalRead(PIN_SDIO_DET) == LOW);
-    Serial.printf("  Card Detect (GP%d): %s\n", PIN_SDIO_DET, 
-                  cardDetected ? "CARD PRESENT" : "NO CARD (or DET not connected)");
+    int detState = digitalRead(PIN_SDIO_DET);
+    Serial.printf("  Card Detect (GP%d): pin is %s\n", PIN_SDIO_DET, 
+                  detState == HIGH ? "HIGH" : "LOW");
+    // Try active-high (HIGH = card inserted) based on user feedback
+    bool cardDetected = (detState == HIGH);
+    Serial.printf("  Interpretation: %s\n", 
+                  cardDetected ? "CARD PRESENT (active-high)" : "NO CARD (or check wiring)");
     Serial.flush();
     
+    // Continue anyway - user can insert card or DET might not be wired
     if (!cardDetected) {
-        Serial.println("  WARNING: Card detect pin shows no card inserted");
-        Serial.println("  Skipping SDIO init to avoid crash on empty slot");
-        Serial.println("=============================\n");
-        return false;
+        Serial.println("  NOTE: Continuing with SDIO init anyway...");
     }
     
     // Allocate SD object dynamically to avoid global constructor issues
@@ -892,13 +896,22 @@ bool testSdioSdCard() {
     static_assert(PIN_SDIO_DAT3 == PIN_SDIO_DAT0 + 3, "DAT3 must be DAT0+3");
     
     Serial.println("  Attempting SDIO initialization...");
+    Serial.println("  NOTE: If device crashes here, SDIO pins may be incompatible with PIO driver");
     Serial.flush();
+    delay(100);  // Give time for serial to flush
     
     uint32_t startTime = millis();
     
     // Create SDIO config with our pins
-    // clkDiv=1.0 is default, can increase if having stability issues (e.g., 2.0 for slower clock)
-    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 1.0);
+    // Using slower clock divider (2.0) for initial testing - more stable
+    // Can reduce to 1.0 once working for faster speeds
+    Serial.println("  Creating SdioConfig...");
+    Serial.flush();
+    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 2.0);
+    
+    Serial.println("  Calling sd->begin()...");
+    Serial.flush();
+    delay(100);
     
     bool success = sd->begin(sdioConfig);
     uint32_t initTime = millis() - startTime;

@@ -176,6 +176,144 @@ void logStage(uint8_t stage);
 void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime);
 void reportLastUpdate();
 
+// ================================================================
+// Generate AI background image using ModelsLab Qwen at exact display resolution
+// ================================================================
+/**
+ * @brief Generate a 1600x1200 image using ModelsLab's Qwen model
+ * 
+ * This function generates an image at the exact resolution of the EL133UF1
+ * display, optimized for the 6-color Spectra palette.
+ * 
+ * @param apiKey ModelsLab API key
+ * @param outData Pointer to receive allocated image data (caller must free!)
+ * @param outLen Pointer to receive image data length
+ * @param customPrompt Optional custom prompt (nullptr for default)
+ * @return true if successful
+ * 
+ * @note Requires WiFi to be connected before calling
+ */
+bool generateDisplayImage_ModelsLabQwen(const char* apiKey, 
+                                         uint8_t** outData, 
+                                         size_t* outLen,
+                                         const char* customPrompt = nullptr) {
+    if (!apiKey || !outData || !outLen) {
+        Serial.println("ModelsLabQwen: Invalid parameters");
+        return false;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("ModelsLabQwen: WiFi not connected");
+        return false;
+    }
+    
+    *outData = nullptr;
+    *outLen = 0;
+    
+    // Default prompt optimized for 6-color e-ink display
+    const char* defaultPrompt = 
+        "A beautiful landscape scene with bold, flat colors. "
+        "Use only pure black, pure white, bright red, bright yellow, "
+        "bright blue, and bright green. No gradients or shading. "
+        "Graphic poster style with high contrast and clear color separation. "
+        "Simple shapes, clean lines, vintage travel poster aesthetic. "
+        "Mountains, forest, and sky in a serene composition.";
+    
+    const char* prompt = customPrompt ? customPrompt : defaultPrompt;
+    
+    Serial.println("=== ModelsLab Qwen Image Generation ===");
+    Serial.printf("  Resolution: 1600x1200 (exact display size)\n");
+    Serial.printf("  Model: qwen2-vl-flux\n");
+    Serial.printf("  Prompt: %.60s...\n", prompt);
+    
+    // Configure ModelsLab client
+    modelslab.begin(apiKey);
+    modelslab.setModel(MODELSLAB_QWEN);      // Use Qwen model
+    modelslab.setSize(1600, 1200);            // Exact display resolution
+    modelslab.setSteps(25);                   // Good balance of quality/speed
+    modelslab.setGuidance(7.5f);              // Standard CFG
+    modelslab.setNegativePrompt(
+        "blurry, gradient, photorealistic, complex details, "
+        "fine textures, shadows, 3d render, photograph"
+    );
+    
+    Serial.println("  Generating image...");
+    uint32_t startTime = millis();
+    
+    ModelsLabResult result = modelslab.generate(prompt, outData, outLen, 120000);  // 2 min timeout
+    
+    uint32_t elapsed = millis() - startTime;
+    
+    if (result == MODELSLAB_OK && *outData != nullptr && *outLen > 0) {
+        Serial.printf("  Success! %zu bytes in %lu ms\n", *outLen, elapsed);
+        Serial.println("========================================");
+        return true;
+    } else {
+        Serial.printf("  Failed: %s\n", modelslab.getLastError());
+        Serial.printf("  Result code: %d\n", result);
+        Serial.println("========================================");
+        return false;
+    }
+}
+
+/**
+ * @brief Example: Generate and display a Qwen-generated background
+ * 
+ * Call this from setup() or doDisplayUpdate() when you want to 
+ * generate a fresh AI background at exact display resolution.
+ */
+void exampleGenerateAndDisplayQwenImage() {
+    // Get API key from EEPROM
+    char apiKey[200] = {0};
+    if (!eeprom.isPresent() || !eeprom.hasModelsLabKey()) {
+        Serial.println("No ModelsLab API key configured");
+        Serial.println("Press 'c' on boot to configure");
+        return;
+    }
+    eeprom.getModelsLabKey(apiKey, sizeof(apiKey));
+    
+    // Ensure WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, skipping image generation");
+        return;
+    }
+    
+    // Generate the image
+    uint8_t* imageData = nullptr;
+    size_t imageLen = 0;
+    
+    // Option 1: Use default prompt
+    bool success = generateDisplayImage_ModelsLabQwen(apiKey, &imageData, &imageLen);
+    
+    // Option 2: Use custom prompt
+    // const char* myPrompt = "A cozy cabin in snowy mountains, flat colors, poster style";
+    // bool success = generateDisplayImage_ModelsLabQwen(apiKey, &imageData, &imageLen, myPrompt);
+    
+    if (success && imageData != nullptr) {
+        Serial.println("Drawing generated image to display...");
+        
+        // Initialize PNG decoder if not already done
+        png.begin(&display);
+        png.setDithering(true);  // Floyd-Steinberg for better color mapping
+        
+        // Draw at 0,0 - image is already 1600x1200 so no scaling needed
+        PNGResult pngResult = png.draw(0, 0, imageData, imageLen);
+        
+        if (pngResult == PNG_OK) {
+            Serial.println("Image drawn successfully!");
+        } else {
+            Serial.printf("PNG decode error: %s\n", png.getErrorString(pngResult));
+            display.clear(EL133UF1_WHITE);  // Fallback to white
+        }
+        
+        // Free the image data
+        free(imageData);
+    } else {
+        Serial.println("Image generation failed, using fallback");
+        display.clear(EL133UF1_WHITE);
+    }
+}
+
 // Default time from wake to display completion (boot + draw + refresh)
 // This is the initial estimate; actual measured value is used after first cycle
 #define DEFAULT_WAKE_TO_DISPLAY_SECONDS  32  // ~2s boot + ~1s draw + ~28s refresh

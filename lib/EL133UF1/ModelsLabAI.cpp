@@ -13,6 +13,7 @@ static const int MODELSLAB_PORT = 443;
 ModelsLabAI::ModelsLabAI() 
     : _apiKey(nullptr), 
       _model(MODELSLAB_FLUX_SCHNELL),
+      _customModelId(nullptr),
       _width(1024), 
       _height(1024),
       _steps(20),
@@ -37,6 +38,8 @@ const char* ModelsLabAI::getModelString() const {
         case MODELSLAB_REALISTIC_VISION: return "realistic-vision-v51";
         case MODELSLAB_DREAMSHAPER:      return "dreamshaper-v8";
         case MODELSLAB_DELIBERATE:       return "deliberate-v3";
+        case MODELSLAB_QWEN:             return "qwen2-vl-flux";
+        case MODELSLAB_CUSTOM:           return _customModelId ? _customModelId : "flux";
         default:                         return "flux";
     }
 }
@@ -46,7 +49,8 @@ const char* ModelsLabAI::getEndpoint() const {
     switch (_model) {
         case MODELSLAB_FLUX_SCHNELL:
         case MODELSLAB_FLUX_DEV:
-            return "/api/v6/images/text2img";  // Flux endpoint
+        case MODELSLAB_QWEN:
+            return "/api/v6/images/text2img";  // Flux/Qwen endpoint
         default:
             return "/api/v6/images/text2img";  // Standard endpoint
     }
@@ -411,8 +415,11 @@ ModelsLabResult ModelsLabAI::generate(const char* prompt, uint8_t** outData, siz
     body += String(_guidance, 1);
     
     // Add model-specific parameters
-    if (_model != MODELSLAB_FLUX_SCHNELL && _model != MODELSLAB_FLUX_DEV) {
-        // Non-flux models support more parameters
+    bool isFlux = (_model == MODELSLAB_FLUX_SCHNELL || _model == MODELSLAB_FLUX_DEV);
+    bool isQwen = (_model == MODELSLAB_QWEN);
+    
+    // Always specify model_id for non-default models
+    if (!isFlux || isQwen || _model == MODELSLAB_CUSTOM) {
         body += ",\"model_id\":\"";
         body += getModelString();
         body += "\"";

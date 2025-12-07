@@ -48,6 +48,12 @@ enum ModelsLabModel {
     MODELSLAB_REALISTIC_VISION, // realistic-vision-v5.1
     MODELSLAB_DREAMSHAPER,      // dreamshaper-v8
     MODELSLAB_DELIBERATE,       // deliberate-v3
+    
+    // Qwen models
+    MODELSLAB_QWEN,             // qwen-turbo (custom model)
+    
+    // Custom model (use setCustomModel to specify)
+    MODELSLAB_CUSTOM
 };
 
 // Result codes
@@ -81,6 +87,15 @@ public:
      * @param model One of the ModelsLabModel values
      */
     void setModel(ModelsLabModel model) { _model = model; }
+    
+    /**
+     * @brief Set a custom model ID (use with MODELSLAB_CUSTOM)
+     * @param modelId The model identifier string from ModelsLab
+     */
+    void setCustomModel(const char* modelId) { 
+        _model = MODELSLAB_CUSTOM; 
+        _customModelId = modelId; 
+    }
     
     /**
      * @brief Set the image dimensions
@@ -141,6 +156,7 @@ public:
 private:
     const char* _apiKey;
     ModelsLabModel _model;
+    const char* _customModelId;
     int _width;
     int _height;
     int _steps;

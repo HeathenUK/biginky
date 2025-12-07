@@ -48,6 +48,7 @@
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
+#include "EL133UF1_Color.h"
 #include "OpenAIImage.h"
 #include "GetimgAI.h"
 #include "ModelsLabAI.h"
@@ -1063,14 +1064,174 @@ bool testSdioSdCard() {
 #endif // DISABLE_SDIO_TEST
 
 // ================================================================
-// SD Card BMP Image Display
+// SD Card BMP Image Display (Streaming - no large buffer needed)
 // ================================================================
 #ifndef DISABLE_SDIO_TEST
+
+// BMP header structures for streaming reader
+#pragma pack(push, 1)
+struct BmpFileHeader {
+    uint16_t signature;      // 'BM' = 0x4D42
+    uint32_t fileSize;
+    uint16_t reserved1;
+    uint16_t reserved2;
+    uint32_t dataOffset;
+};
+
+struct BmpInfoHeader {
+    uint32_t headerSize;
+    int32_t  width;
+    int32_t  height;
+    uint16_t planes;
+    uint16_t bitsPerPixel;
+    uint32_t compression;
+    uint32_t imageSize;
+    int32_t  xPixelsPerMeter;
+    int32_t  yPixelsPerMeter;
+    uint32_t colorsUsed;
+    uint32_t colorsImportant;
+};
+#pragma pack(pop)
+
+/**
+ * @brief Stream a BMP file from SD card directly to display
+ * 
+ * Reads and processes one row at a time, using minimal memory.
+ * Only needs ~6KB buffer for a 1600px wide 24-bit row.
+ * 
+ * @param file Open file handle positioned at start
+ * @param filename For logging
+ * @return true if successful
+ */
+bool streamBmpToDisplay(FsFile& file, const char* filename) {
+    // Read file header
+    BmpFileHeader fileHeader;
+    if (file.read(&fileHeader, sizeof(fileHeader)) != sizeof(fileHeader)) {
+        Serial.println("  Failed to read BMP file header");
+        return false;
+    }
+    
+    // Verify BMP signature
+    if (fileHeader.signature != 0x4D42) {
+        Serial.println("  Invalid BMP signature");
+        return false;
+    }
+    
+    // Read info header
+    BmpInfoHeader infoHeader;
+    if (file.read(&infoHeader, sizeof(infoHeader)) != sizeof(infoHeader)) {
+        Serial.println("  Failed to read BMP info header");
+        return false;
+    }
+    
+    // Check format support
+    if (infoHeader.compression != 0) {
+        Serial.println("  Compressed BMPs not supported");
+        return false;
+    }
+    
+    int32_t width = infoHeader.width;
+    int32_t height = infoHeader.height;
+    bool topDown = (height < 0);
+    if (topDown) height = -height;
+    uint16_t bpp = infoHeader.bitsPerPixel;
+    
+    Serial.printf("  BMP: %ldx%ld, %d bpp\n", width, height, bpp);
+    
+    if (bpp != 24 && bpp != 32) {
+        Serial.println("  Only 24/32-bit BMPs supported for streaming");
+        return false;
+    }
+    
+    // Calculate row size (padded to 4-byte boundary)
+    int bytesPerPixel = bpp / 8;
+    uint32_t rowSize = ((width * bytesPerPixel + 3) / 4) * 4;
+    
+    // Allocate row buffer (only ~6KB for 1600px @ 24bpp)
+    uint8_t* rowBuffer = (uint8_t*)malloc(rowSize);
+    if (rowBuffer == nullptr) {
+        Serial.println("  Failed to allocate row buffer");
+        return false;
+    }
+    Serial.printf("  Row buffer: %lu bytes\n", rowSize);
+    
+    // Read palette if present (for indexed formats - not used here but skip past it)
+    // For 24/32 bit, there's no palette, dataOffset points directly to pixel data
+    
+    // Calculate centering offset
+    int16_t offsetX = (display.width() - width) / 2;
+    int16_t offsetY = (display.height() - height) / 2;
+    if (offsetX < 0) offsetX = 0;
+    if (offsetY < 0) offsetY = 0;
+    
+    // Clear display first (in case image doesn't cover everything)
+    display.clear(EL133UF1_WHITE);
+    
+    Serial.println("  Streaming to display...");
+    uint32_t streamStart = millis();
+    uint64_t totalBytesRead = 0;
+    
+    // Process each row
+    for (int32_t row = 0; row < height; row++) {
+        // Calculate which row to read from file
+        // BMP is bottom-up by default, top-down if height was negative
+        int32_t srcRow = topDown ? row : (height - 1 - row);
+        
+        // Seek to row position
+        uint64_t rowOffset = fileHeader.dataOffset + (uint64_t)srcRow * rowSize;
+        if (!file.seek(rowOffset)) {
+            Serial.printf("  Seek failed at row %ld\n", row);
+            free(rowBuffer);
+            return false;
+        }
+        
+        // Read the row
+        if (file.read(rowBuffer, rowSize) != (int)rowSize) {
+            Serial.printf("  Read failed at row %ld\n", row);
+            free(rowBuffer);
+            return false;
+        }
+        totalBytesRead += rowSize;
+        
+        // Calculate destination Y
+        int16_t dstY = offsetY + row;
+        if (dstY < 0 || dstY >= display.height()) continue;
+        
+        // Process pixels in this row
+        for (int32_t col = 0; col < width; col++) {
+            int16_t dstX = offsetX + col;
+            if (dstX < 0 || dstX >= display.width()) continue;
+            
+            // BMP stores as BGR (or BGRA for 32-bit)
+            uint8_t b = rowBuffer[col * bytesPerPixel + 0];
+            uint8_t g = rowBuffer[col * bytesPerPixel + 1];
+            uint8_t r = rowBuffer[col * bytesPerPixel + 2];
+            
+            // Map to Spectra 6 color and set pixel
+            uint8_t spectraColor = spectra6Color.mapColor(r, g, b);
+            display.setPixel(dstX, dstY, spectraColor);
+        }
+        
+        // Progress update every 100 rows
+        if (row % 200 == 0) {
+            Serial.printf("  Row %ld/%ld\r", row, height);
+        }
+    }
+    
+    uint32_t streamTime = millis() - streamStart;
+    float speedKBs = (totalBytesRead / 1024.0f) / (streamTime / 1000.0f);
+    Serial.printf("  Streamed %llu bytes in %lu ms (%.1f KB/s)\n", 
+                  totalBytesRead, streamTime, speedKBs);
+    
+    free(rowBuffer);
+    return true;
+}
+
 /**
  * @brief Scan SD card root for BMP files and display a random one
  * 
  * Scans the root directory for .bmp files, picks one at random,
- * loads it into PSRAM, and displays it on the e-ink display.
+ * and streams it directly to the display (no large buffer needed).
  * 
  * @return true if a BMP was found and displayed successfully
  */
@@ -1097,8 +1258,7 @@ bool displayRandomBmpFromSd() {
             entry.getName(name, sizeof(name));
             size_t len = strlen(name);
             // Check for .bmp extension (case insensitive)
-            if (len > 4 && 
-                (strcasecmp(name + len - 4, ".bmp") == 0)) {
+            if (len > 4 && strcasecmp(name + len - 4, ".bmp") == 0) {
                 bmpCount++;
                 Serial.printf("  Found: %s (%llu bytes)\n", name, entry.fileSize());
             }
@@ -1116,19 +1276,18 @@ bool displayRandomBmpFromSd() {
     Serial.printf("  Total BMP files: %d\n", bmpCount);
     
     // Pick a random file
-    // Use micros() for randomness since we may not have called randomSeed()
     int targetIndex = micros() % bmpCount;
     Serial.printf("  Randomly selected index: %d\n", targetIndex);
     
-    // Second pass: find the selected file
+    // Second pass: find and open the selected file
     if (!root.open("/")) {
         Serial.println("SD: Failed to reopen root directory");
         return false;
     }
     
     char selectedName[64] = {0};
-    uint64_t selectedSize = 0;
     int currentIndex = 0;
+    FsFile selectedFile;
     
     while (entry.openNext(&root, O_RDONLY)) {
         if (!entry.isDirectory()) {
@@ -1138,9 +1297,28 @@ bool displayRandomBmpFromSd() {
             if (len > 4 && strcasecmp(name + len - 4, ".bmp") == 0) {
                 if (currentIndex == targetIndex) {
                     strncpy(selectedName, name, sizeof(selectedName) - 1);
-                    selectedSize = entry.fileSize();
+                    Serial.printf("  Selected: %s (%llu bytes)\n", name, entry.fileSize());
+                    
+                    // Open the file for streaming
+                    char fullPath[72];
+                    snprintf(fullPath, sizeof(fullPath), "/%s", name);
                     entry.close();
-                    break;
+                    root.close();
+                    
+                    if (!selectedFile.open(fullPath, O_RDONLY)) {
+                        Serial.printf("SD: Failed to open %s\n", fullPath);
+                        return false;
+                    }
+                    
+                    // Stream directly to display
+                    bool success = streamBmpToDisplay(selectedFile, selectedName);
+                    selectedFile.close();
+                    
+                    if (success) {
+                        Serial.printf("  Successfully displayed: %s\n", selectedName);
+                    }
+                    Serial.println("=====================================\n");
+                    return success;
                 }
                 currentIndex++;
             }
@@ -1149,77 +1327,8 @@ bool displayRandomBmpFromSd() {
     }
     root.close();
     
-    if (selectedName[0] == 0) {
-        Serial.println("SD: Failed to find selected BMP");
-        return false;
-    }
-    
-    Serial.printf("  Selected: %s (%llu bytes)\n", selectedName, selectedSize);
-    
-    // Check if file will fit in memory
-    size_t maxSize = 16 * 1024 * 1024;  // 16MB max (reasonable for PSRAM)
-    if (selectedSize > maxSize) {
-        Serial.printf("SD: File too large (%llu > %zu bytes)\n", selectedSize, maxSize);
-        return false;
-    }
-    
-    // Allocate buffer in PSRAM
-    Serial.println("  Allocating buffer in PSRAM...");
-    uint8_t* bmpData = (uint8_t*)pmalloc((size_t)selectedSize);
-    if (bmpData == nullptr) {
-        // Try regular malloc as fallback
-        Serial.println("  PSRAM alloc failed, trying regular malloc...");
-        bmpData = (uint8_t*)malloc((size_t)selectedSize);
-        if (bmpData == nullptr) {
-            Serial.println("SD: Failed to allocate memory for BMP");
-            return false;
-        }
-    }
-    Serial.printf("  Buffer allocated at %p\n", bmpData);
-    
-    // Open and read the file
-    FsFile bmpFile;
-    char fullPath[72];
-    snprintf(fullPath, sizeof(fullPath), "/%s", selectedName);
-    
-    if (!bmpFile.open(fullPath, O_RDONLY)) {
-        Serial.printf("SD: Failed to open %s\n", fullPath);
-        free(bmpData);
-        return false;
-    }
-    
-    Serial.println("  Reading file...");
-    uint32_t readStart = millis();
-    size_t bytesRead = bmpFile.read(bmpData, (size_t)selectedSize);
-    uint32_t readTime = millis() - readStart;
-    bmpFile.close();
-    
-    if (bytesRead != selectedSize) {
-        Serial.printf("SD: Read error - got %zu of %llu bytes\n", bytesRead, selectedSize);
-        free(bmpData);
-        return false;
-    }
-    
-    float readSpeedKBs = (bytesRead / 1024.0f) / (readTime / 1000.0f);
-    Serial.printf("  Read %zu bytes in %lu ms (%.1f KB/s)\n", bytesRead, readTime, readSpeedKBs);
-    
-    // Display the BMP
-    Serial.println("  Displaying BMP...");
-    bmp.begin(&display);
-    
-    BMPResult result = bmp.drawFullscreen(bmpData, bytesRead);
-    
-    // Free the buffer
-    free(bmpData);
-    
-    if (result != BMP_OK) {
-        Serial.printf("SD: BMP display error: %s\n", bmp.getErrorString(result));
-        return false;
-    }
-    
-    Serial.printf("  Successfully displayed: %s\n", selectedName);
-    Serial.println("=====================================\n");
-    return true;
+    Serial.println("SD: Failed to find selected BMP");
+    return false;
 }
 #endif // DISABLE_SDIO_TEST
 

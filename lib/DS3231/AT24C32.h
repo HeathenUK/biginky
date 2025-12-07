@@ -29,6 +29,7 @@
 #define EEPROM_LAST_UPDATE    0x0212  // 2 bytes: last update number
 #define EEPROM_LAST_WAKE_TIME 0x0214  // 4 bytes: last wake time (unix)
 #define EEPROM_OPENAI_KEY     0x0300  // 200 bytes: OpenAI API key (sk-proj-... keys are ~164 chars)
+#define EEPROM_GETIMG_KEY     0x0400  // 200 bytes: getimg.ai API key
 #define EEPROM_TEMP_LOG_START 0x0800  // Temperature log (to end of EEPROM)
 #define EEPROM_TEMP_LOG_SIZE  (AT24C32_SIZE - EEPROM_TEMP_LOG_START)
 
@@ -91,6 +92,11 @@ public:
     bool getOpenAIKey(char* key, size_t keyLen);
     void setOpenAIKey(const char* key);
     bool hasOpenAIKey();
+    
+    // getimg.ai API key
+    bool getGetimgKey(char* key, size_t keyLen);
+    void setGetimgKey(const char* key);
+    bool hasGetimgKey();
     
     // Temperature logging
     void logTemperature(float temp);

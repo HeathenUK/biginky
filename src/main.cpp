@@ -40,6 +40,7 @@
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
 #include "OpenAIImage.h"
+#include "GetimgAI.h"
 #include "fonts/opensans.h"
 #include "pico_sleep.h"
 #include "DS3231.h"
@@ -104,9 +105,10 @@ EL133UF1_TTF ttf;
 // BMP image loader
 EL133UF1_BMP bmp;
 
-// PNG decoder and OpenAI image generator
+// PNG decoder and AI image generators
 EL133UF1_PNG png;
 OpenAIImage openai;
+GetimgAI getimgai;
 
 // AI-generated image stored in PSRAM (persists between updates)
 static uint8_t* aiImageData = nullptr;
@@ -370,7 +372,7 @@ void enterConfigMode() {
     }
     
     // --- OpenAI API Key Configuration ---
-    Serial.println("\n--- OpenAI API Key (for AI image generation) ---");
+    Serial.println("\n--- OpenAI API Key (for DALL-E image generation) ---");
     
     if (eeprom.isPresent() && eeprom.hasOpenAIKey()) {
         char currentKey[200];
@@ -396,6 +398,36 @@ void enterConfigMode() {
             Serial.println("WARNING: Key doesn't start with 'sk-', not saved.");
         }
     } else if (eeprom.hasOpenAIKey()) {
+        Serial.println("(keeping existing key)");
+    }
+    
+    // --- getimg.ai API Key Configuration ---
+    Serial.println("\n--- getimg.ai API Key (for Stable Diffusion/Flux image generation) ---");
+    
+    if (eeprom.isPresent() && eeprom.hasGetimgKey()) {
+        char currentKey[200];
+        eeprom.getGetimgKey(currentKey, sizeof(currentKey));
+        // Show only first/last few chars for security
+        Serial.printf("Current key: %.7s...%s\n", currentKey, currentKey + strlen(currentKey) - 4);
+        Serial.println("(Press Enter to keep current, or paste new key)");
+    } else {
+        Serial.println("No API key configured.");
+        Serial.println("Get one at: https://getimg.ai/dashboard");
+    }
+    
+    Serial.print("getimg.ai API Key: ");
+    String getimgKey = serialReadLine(true);  // Masked input
+    
+    if (getimgKey.length() > 0) {
+        if (getimgKey.startsWith("key-")) {
+            if (eeprom.isPresent()) {
+                eeprom.setGetimgKey(getimgKey.c_str());
+                Serial.println("API key saved!");
+            }
+        } else {
+            Serial.println("WARNING: Key doesn't start with 'key-', not saved.");
+        }
+    } else if (eeprom.hasGetimgKey()) {
         Serial.println("(keeping existing key)");
     }
     
@@ -842,10 +874,11 @@ void setup() {
     // Connect WiFi for AI image generation (if needed)
     // ================================================================
     // On cold boot, if we have an API key but skipped NTP sync (RTC had valid time),
-    // we still need to connect WiFi for the OpenAI API call
+    // we still need to connect WiFi for the AI image API call
     if (!sleep_woke_from_deep_sleep() && WiFi.status() != WL_CONNECTED) {
-        // Check if we have an API key and might need to generate an image
-        if (eeprom.isPresent() && eeprom.hasOpenAIKey() && aiImageData == nullptr) {
+        // Check if we have an API key (OpenAI or getimg.ai) and might need to generate an image
+        bool hasAnyKey = eeprom.isPresent() && (eeprom.hasOpenAIKey() || eeprom.hasGetimgKey());
+        if (hasAnyKey && aiImageData == nullptr) {
             Serial.println("\n=== Connecting WiFi for AI image generation ===");
             if (strlen(wifiSSID) > 0) {
                 WiFi.begin(wifiSSID, wifiPSK);
@@ -1196,57 +1229,97 @@ void doDisplayUpdate(int updateNumber) {
     // Generate new AI image on first boot, or if we don't have one cached
     bool needNewImage = (aiImageData == nullptr);
     
-    // Check if we have an API key configured
-    char apiKey[200] = {0};
-    bool hasApiKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
-                     eeprom.getOpenAIKey(apiKey, sizeof(apiKey));
+    // Check if we have API keys configured (prefer getimg.ai for speed/cost)
+    char apiKeyOpenAI[200] = {0};
+    char apiKeyGetimg[200] = {0};
+    bool hasOpenAIKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
+                        eeprom.getOpenAIKey(apiKeyOpenAI, sizeof(apiKeyOpenAI));
+    bool hasGetimgKey = eeprom.isPresent() && eeprom.hasGetimgKey() && 
+                        eeprom.getGetimgKey(apiKeyGetimg, sizeof(apiKeyGetimg));
+    bool hasAnyKey = hasOpenAIKey || hasGetimgKey;
     
     // Debug: show AI image generation status
     Serial.println("--- AI Image Status ---");
     Serial.printf("  Need new image: %s\n", needNewImage ? "YES" : "NO (cached)");
     Serial.printf("  EEPROM present: %s\n", eeprom.isPresent() ? "YES" : "NO");
-    Serial.printf("  Has API key: %s\n", hasApiKey ? "YES" : "NO");
+    Serial.printf("  Has OpenAI key: %s\n", hasOpenAIKey ? "YES" : "NO");
+    Serial.printf("  Has getimg.ai key: %s\n", hasGetimgKey ? "YES" : "NO");
     Serial.printf("  WiFi status: %d (connected=%d)\n", WiFi.status(), WL_CONNECTED);
-    if (hasApiKey) {
-        Serial.printf("  API key: %.7s...%s\n", apiKey, apiKey + strlen(apiKey) - 4);
+    if (hasOpenAIKey) {
+        Serial.printf("  OpenAI key: %.7s...%s\n", apiKeyOpenAI, apiKeyOpenAI + strlen(apiKeyOpenAI) - 4);
+    }
+    if (hasGetimgKey) {
+        Serial.printf("  getimg.ai key: %.7s...%s\n", apiKeyGetimg, apiKeyGetimg + strlen(apiKeyGetimg) - 4);
     }
     
-    if (needNewImage && hasApiKey && WiFi.status() == WL_CONNECTED) {
+    // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
+    const char* prompt = 
+        "A beautiful wide landscape nature scene in 16:9 aspect ratio, "
+        "designed for a 6-color e-ink display. "
+        "Use ONLY these colors: pure black, pure white, bright red, bright yellow, "
+        "bright blue, and bright green. No gradients, no shading, no intermediate colors. "
+        "Bold graphic style like a vintage travel poster or woodblock print. "
+        "High contrast with clear separation between color regions. "
+        "Simple shapes, no fine details. A serene forest landscape with mountains.";
+    
+    if (needNewImage && hasAnyKey && WiFi.status() == WL_CONNECTED) {
         Serial.println("Generating AI background image...");
         
-        // Initialize OpenAI client
-        openai.begin(apiKey);
-        openai.setModel(DALLE_3);
-        openai.setSize(DALLE_1792x1024);  // Landscape format for 1600x1200 display
-        openai.setQuality(DALLE_STANDARD);
+        // Prefer getimg.ai (faster, cheaper) over OpenAI
+        if (hasGetimgKey) {
+            Serial.println("  Using getimg.ai (Flux-Schnell)...");
+            
+            // Initialize getimg.ai client
+            getimgai.begin(apiKeyGetimg);
+            getimgai.setModel(GETIMG_FLUX_SCHNELL);  // Very fast model
+            getimgai.setSize(1024, 1024);  // Flux-schnell supports up to 1024x1024
+            getimgai.setFormat(GETIMG_PNG);
+            
+            t0 = millis();
+            GetimgResult result = getimgai.generate(prompt, &aiImageData, &aiImageLen, 90000);
+            t1 = millis() - t0;
+            
+            if (result == GETIMG_OK && aiImageData != nullptr) {
+                Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+            } else {
+                Serial.printf("  getimg.ai generation failed: %s\n", getimgai.getLastError());
+                aiImageData = nullptr;
+                aiImageLen = 0;
+                
+                // Fall back to OpenAI if available
+                if (hasOpenAIKey) {
+                    Serial.println("  Falling back to OpenAI DALL-E...");
+                }
+            }
+        }
         
-        // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
-        // Note: requesting landscape 1792x1024 to better fill the 1600x1200 display
-        const char* prompt = 
-            "A beautiful wide landscape nature scene in 16:9 aspect ratio, "
-            "designed for a 6-color e-ink display. "
-            "Use ONLY these colors: pure black, pure white, bright red, bright yellow, "
-            "bright blue, and bright green. No gradients, no shading, no intermediate colors. "
-            "Bold graphic style like a vintage travel poster or woodblock print. "
-            "High contrast with clear separation between color regions. "
-            "Simple shapes, no fine details. A serene forest landscape with mountains.";
-        
-        t0 = millis();
-        OpenAIResult result = openai.generate(prompt, &aiImageData, &aiImageLen, 90000);
-        t1 = millis() - t0;
-        
-        if (result == OPENAI_OK && aiImageData != nullptr) {
-            Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
-        } else {
-            Serial.printf("  AI generation failed: %s\n", openai.getLastError());
-            aiImageData = nullptr;
-            aiImageLen = 0;
+        // Try OpenAI if getimg.ai failed or wasn't available
+        if (aiImageData == nullptr && hasOpenAIKey) {
+            Serial.println("  Using OpenAI DALL-E 3...");
+            
+            // Initialize OpenAI client
+            openai.begin(apiKeyOpenAI);
+            openai.setModel(DALLE_3);
+            openai.setSize(DALLE_1792x1024);  // Landscape format for 1600x1200 display
+            openai.setQuality(DALLE_STANDARD);
+            
+            t0 = millis();
+            OpenAIResult result = openai.generate(prompt, &aiImageData, &aiImageLen, 90000);
+            t1 = millis() - t0;
+            
+            if (result == OPENAI_OK && aiImageData != nullptr) {
+                Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+            } else {
+                Serial.printf("  OpenAI generation failed: %s\n", openai.getLastError());
+                aiImageData = nullptr;
+                aiImageLen = 0;
+            }
         }
     } else if (needNewImage) {
         // Explain why we're not generating
-        if (!hasApiKey) {
+        if (!hasAnyKey) {
             Serial.println("  Skipping AI generation: No API key configured");
-            Serial.println("  (Press 'c' on boot to configure)");
+            Serial.println("  (Press 'c' on boot to configure OpenAI or getimg.ai key)");
         } else if (WiFi.status() != WL_CONNECTED) {
             Serial.println("  Skipping AI generation: WiFi not connected");
         }
@@ -1279,8 +1352,8 @@ void doDisplayUpdate(int updateNumber) {
         bitmapTotal = millis() - t0;
         Serial.printf("  Fallback background: %lu ms\n", bitmapTotal);
         
-        if (!hasApiKey) {
-            Serial.println("  (No OpenAI API key configured - press 'c' on boot to set)");
+        if (!hasAnyKey) {
+            Serial.println("  (No API key configured - press 'c' on boot to set OpenAI or getimg.ai key)");
         }
     }
 #endif  // AI image generation disabled

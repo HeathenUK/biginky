@@ -314,6 +314,25 @@ void AT24C32::setOpenAIKey(const char* key) {
     Serial.printf("AT24C32: Saved OpenAI API key (%d chars)\n", strlen(key));
 }
 
+bool AT24C32::hasGetimgKey() {
+    uint8_t first = readByte(EEPROM_GETIMG_KEY);
+    // Valid API key starts with 'k' (from "key-...")
+    return (first == 'k');
+}
+
+bool AT24C32::getGetimgKey(char* key, size_t keyLen) {
+    if (!hasGetimgKey()) {
+        return false;
+    }
+    readString(EEPROM_GETIMG_KEY, key, keyLen);
+    return true;
+}
+
+void AT24C32::setGetimgKey(const char* key) {
+    writeString(EEPROM_GETIMG_KEY, key, 200);
+    Serial.printf("AT24C32: Saved getimg.ai API key (%d chars)\n", strlen(key));
+}
+
 void AT24C32::logTemperature(float temp) {
     Serial.printf("  [logTemperature] temp=%.2f\n", temp);
     

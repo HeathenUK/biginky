@@ -42,11 +42,18 @@
 static bool _rtc_present = false;
 static int _rtc_int_pin = -1;
 
+// Additional GPIO wake sources (slots 1-3, slot 0 is for RTC)
+#define MAX_GPIO_WAKE_SOURCES 3
+static int _gpio_wake_pins[MAX_GPIO_WAKE_SOURCES] = {-1, -1, -1};
+static bool _gpio_wake_active_high[MAX_GPIO_WAKE_SOURCES] = {false, false, false};
+static int _gpio_wake_count = 0;
+
 // ========================================================================
 // Sleep state - use powman scratch registers (preserved across reset!)
 // ========================================================================
 
-#define SLEEP_SCRATCH_MAGIC    0xDEE95EE7  // Magic value to detect wake
+// Sleep magic is now computed dynamically with compile time embedded
+// This ensures new firmware is detected automatically
 #define SLEEP_SCRATCH_REG      0           // Which scratch register to use
 
 // Drift calibration scratch registers
@@ -117,17 +124,52 @@ int sleep_get_rtc_int_pin(void) {
     return _rtc_int_pin;
 }
 
+// Compute a magic value that includes compile time - changes with each build
+// This ensures stale scratch registers from old firmware are detected
+static uint32_t getSleepMagic() {
+    const char* timeStr = __TIME__;  // "HH:MM:SS"
+    uint32_t hash = 0xDEE90000;  // Base magic with room for hash
+    // Just use hours and minutes to keep it simple but unique per build
+    hash |= ((timeStr[0] - '0') << 12);  // Hour tens
+    hash |= ((timeStr[1] - '0') << 8);   // Hour ones
+    hash |= ((timeStr[3] - '0') << 4);   // Minute tens
+    hash |= ((timeStr[4] - '0'));        // Minute ones
+    return hash;
+}
+
 // Check if we woke from deep sleep by looking at scratch register
+// The magic includes compile time, so new firmware = different magic = cold boot
 bool sleep_woke_from_deep_sleep(void) {
-    return (powman_hw->scratch[SLEEP_SCRATCH_REG] == SLEEP_SCRATCH_MAGIC);
+    uint32_t expectedMagic = getSleepMagic();
+    uint32_t storedMagic = powman_hw->scratch[SLEEP_SCRATCH_REG];
+    
+    if (storedMagic != expectedMagic) {
+        // Either never slept, or firmware changed
+        if (storedMagic != 0 && (storedMagic & 0xFFFF0000) == 0xDEE90000) {
+            // Had old firmware's magic - this is a reflash
+            Serial.println("  [sleep] New firmware detected - clearing stale sleep state");
+            sleep_clear_all_state();
+        }
+        return false;
+    }
+    
+    return true;
 }
 
 void sleep_clear_wake_flag(void) {
     powman_hw->scratch[SLEEP_SCRATCH_REG] = 0;
 }
 
+void sleep_clear_all_state(void) {
+    // Clear all scratch registers (0-7) used by sleep module
+    for (int i = 0; i < 8; i++) {
+        powman_hw->scratch[i] = 0;
+    }
+    Serial.println("Sleep state cleared (all scratch registers reset)");
+}
+
 static void sleep_set_wake_flag(void) {
-    powman_hw->scratch[SLEEP_SCRATCH_REG] = SLEEP_SCRATCH_MAGIC;
+    powman_hw->scratch[SLEEP_SCRATCH_REG] = getSleepMagic();
 }
 
 // ========================================================================
@@ -383,22 +425,60 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
         Serial.println("  [sleep] Using DS3231 RTC for wake");
         Serial.flush();
         
-        // Set alarm on DS3231
+        // CRITICAL: Clear any existing alarm BEFORE setting new one
+        // The INT pin won't go HIGH until the alarm flag is cleared
+        Serial.println("  [sleep] Clearing any existing alarm...");
+        rtc.clearAlarm1();
+        delay(5);  // Give the RTC time to release INT
+        
+        // Verify the INT pin is now HIGH (alarm cleared)
+        int intState = digitalRead(_rtc_int_pin);
+        Serial.printf("  [sleep] GPIO%d state after clear: %s\n", 
+                      _rtc_int_pin, intState ? "HIGH (good)" : "LOW (alarm still active!)");
+        
+        if (intState == LOW) {
+            // INT pin is still low - try clearing again
+            Serial.println("  [sleep] WARNING: INT still low, trying again...");
+            rtc.clearAlarm1();
+            delay(10);
+            intState = digitalRead(_rtc_int_pin);
+            Serial.printf("  [sleep] GPIO%d state after 2nd clear: %s\n", 
+                          _rtc_int_pin, intState ? "HIGH" : "LOW");
+            
+            if (intState == LOW) {
+                Serial.println("  ERROR: Cannot clear RTC alarm - INT pin stuck low!");
+                Serial.println("  This would cause immediate wake. Aborting sleep.");
+                sleep_clear_wake_flag();
+                return;
+            }
+        }
+        
+        // Now set the new alarm
         rtc.setAlarm1(delay_ms);
         
+        // Verify INT is still HIGH (alarm not triggered yet)
+        intState = digitalRead(_rtc_int_pin);
+        Serial.printf("  [sleep] GPIO%d after setting alarm: %s\n", 
+                      _rtc_int_pin, intState ? "HIGH (good)" : "LOW (triggered already?!)");
+        
         // Configure GPIO wake on the INT pin (active low when alarm triggers)
-        // The DS3231 INT pin goes LOW when alarm fires and stays low until cleared
         Serial.printf("  [sleep] Configuring GPIO%d for wake (low level)\n", _rtc_int_pin);
         Serial.flush();
         
-        // Enable GPIO wake in powman
-        // powman_enable_gpio_wakeup(slot, gpio, edge, high)
-        // slot: 0-3 (which GPIO wake source to use)
-        // gpio: the GPIO pin number
-        // edge: true = edge triggered, false = level triggered
-        // high: true = high/rising, false = low/falling
-        // DS3231 INT is active-low and stays low, so use level-triggered low
+        // Enable GPIO wake in powman - Slot 0 for RTC
         powman_enable_gpio_wakeup(0, _rtc_int_pin, false, false);  // Slot 0, level-triggered, low
+        
+        // Enable additional GPIO wake sources (slots 1-3)
+        for (int i = 0; i < _gpio_wake_count; i++) {
+            if (_gpio_wake_pins[i] >= 0) {
+                Serial.printf("  [sleep] Configuring GPIO%d for wake (slot %d, %s)\n",
+                              _gpio_wake_pins[i], i + 1, 
+                              _gpio_wake_active_high[i] ? "high" : "low");
+                powman_enable_gpio_wakeup(i + 1, _gpio_wake_pins[i], 
+                                          false,  // level-triggered (not edge)
+                                          _gpio_wake_active_high[i]);  // high or low
+            }
+        }
         
         bool valid = powman_configure_wakeup_state(sleep_state, wake_state);
         if (!valid) {
@@ -649,4 +729,64 @@ uint64_t sleep_get_corrected_time_ms(void) {
     uint64_t corrected_time = last_sync_ntp + lposc_elapsed - correction;
     
     return corrected_time;
+}
+
+// ========================================================================
+// Additional GPIO wake sources
+// ========================================================================
+
+int sleep_add_gpio_wake_source(int pin, bool active_high) {
+    if (_gpio_wake_count >= MAX_GPIO_WAKE_SOURCES) {
+        Serial.println("  [sleep] ERROR: No more GPIO wake slots available");
+        return -1;
+    }
+    
+    int slot = _gpio_wake_count;
+    _gpio_wake_pins[slot] = pin;
+    _gpio_wake_active_high[slot] = active_high;
+    _gpio_wake_count++;
+    
+    // Configure the pin with appropriate pull resistor
+    if (active_high) {
+        pinMode(pin, INPUT_PULLDOWN);
+    } else {
+        pinMode(pin, INPUT_PULLUP);
+    }
+    
+    Serial.printf("  [sleep] Added GPIO%d as wake source (slot %d, active-%s)\n",
+                  pin, slot + 1, active_high ? "high" : "low");
+    
+    return slot + 1;  // Return 1-based slot number (slot 0 is RTC)
+}
+
+void sleep_clear_gpio_wake_sources(void) {
+    for (int i = 0; i < MAX_GPIO_WAKE_SOURCES; i++) {
+        _gpio_wake_pins[i] = -1;
+        _gpio_wake_active_high[i] = false;
+    }
+    _gpio_wake_count = 0;
+    Serial.println("  [sleep] Cleared all additional GPIO wake sources");
+}
+
+int sleep_get_wake_gpio(void) {
+    // Check RTC INT pin first
+    if (_rtc_int_pin >= 0) {
+        bool rtc_active = (digitalRead(_rtc_int_pin) == LOW);  // RTC INT is active-low
+        if (rtc_active) {
+            return _rtc_int_pin;
+        }
+    }
+    
+    // Check additional GPIO wake sources
+    for (int i = 0; i < _gpio_wake_count; i++) {
+        if (_gpio_wake_pins[i] >= 0) {
+            bool pin_state = digitalRead(_gpio_wake_pins[i]);
+            bool is_active = _gpio_wake_active_high[i] ? pin_state : !pin_state;
+            if (is_active) {
+                return _gpio_wake_pins[i];
+            }
+        }
+    }
+    
+    return -1;  // Timer wake or unknown
 }

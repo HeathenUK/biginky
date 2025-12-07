@@ -118,8 +118,10 @@ bool EL133UF1_TTF::enableGlyphCache(float fontSize, const char* characters) {
         size_t bitmapSize = width * height;
         uint8_t* bitmap = (uint8_t*)malloc(bitmapSize);
         if (!bitmap) {
-            Serial.println("\nTTF: Cache allocation failed");
-            break;
+            Serial.println("\nTTF: Cache allocation failed, cleaning up");
+            // Clean up any glyphs we already cached in this call
+            clearGlyphCache();
+            return false;
         }
         
         // Render glyph
@@ -158,7 +160,7 @@ EL133UF1_TTF::CachedGlyph* EL133UF1_TTF::findCachedGlyph(int codepoint) {
 }
 
 void EL133UF1_TTF::renderCachedGlyph(CachedGlyph* glyph, int16_t x, int16_t baseline, uint8_t color) {
-    if (!glyph || !glyph->bitmap) return;
+    if (!_display || !glyph || !glyph->bitmap) return;
     
     int16_t screenX = x + glyph->xOffset;
     int16_t screenY = baseline + glyph->yOffset;

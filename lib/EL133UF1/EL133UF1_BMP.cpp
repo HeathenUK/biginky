@@ -4,26 +4,7 @@
  */
 
 #include "EL133UF1_BMP.h"
-
-// Spectra 6 reference colors (approximate RGB values)
-static const uint8_t SPECTRA_COLORS[6][3] = {
-    {0,   0,   0  },  // BLACK  (0)
-    {255, 255, 255},  // WHITE  (1)
-    {255, 255, 0  },  // YELLOW (2)
-    {255, 0,   0  },  // RED    (3)
-    {0,   0,   255},  // BLUE   (5) - note: index 4 is unused
-    {0,   255, 0  }   // GREEN  (6)
-};
-
-// Map from our array index to actual Spectra color code
-static const uint8_t SPECTRA_CODE[6] = {
-    EL133UF1_BLACK,   // 0
-    EL133UF1_WHITE,   // 1
-    EL133UF1_YELLOW,  // 2
-    EL133UF1_RED,     // 3
-    EL133UF1_BLUE,    // 5
-    EL133UF1_GREEN    // 6
-};
+#include "EL133UF1_Color.h"
 
 EL133UF1_BMP::EL133UF1_BMP() : _display(nullptr) {}
 
@@ -34,25 +15,8 @@ bool EL133UF1_BMP::begin(EL133UF1* display) {
 }
 
 uint8_t EL133UF1_BMP::mapToSpectra6(uint8_t r, uint8_t g, uint8_t b) {
-    // Find closest Spectra 6 color using simple distance
-    uint32_t minDist = UINT32_MAX;
-    uint8_t bestColor = EL133UF1_WHITE;
-    
-    for (int i = 0; i < 6; i++) {
-        int32_t dr = (int32_t)r - SPECTRA_COLORS[i][0];
-        int32_t dg = (int32_t)g - SPECTRA_COLORS[i][1];
-        int32_t db = (int32_t)b - SPECTRA_COLORS[i][2];
-        
-        // Weighted distance (human eye is more sensitive to green)
-        uint32_t dist = (dr * dr * 2) + (dg * dg * 4) + (db * db);
-        
-        if (dist < minDist) {
-            minDist = dist;
-            bestColor = SPECTRA_CODE[i];
-        }
-    }
-    
-    return bestColor;
+    // Use the global color mapper with Lab perceptual matching
+    return spectra6Color.mapColor(r, g, b);
 }
 
 BMPResult EL133UF1_BMP::parseHeaders(const uint8_t* data, size_t len,

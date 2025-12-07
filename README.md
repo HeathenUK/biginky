@@ -53,6 +53,29 @@ pio run --target upload
 pio device monitor
 ```
 
+## WiFi Configuration
+
+WiFi credentials are stored in the on-board EEPROM and configured via serial:
+
+1. **First boot**: The device will prompt for WiFi credentials via serial
+2. **Reconfigure anytime**: Press 'c' within 3 seconds of boot to enter config mode
+3. **Serial settings**: 115200 baud, 8N1
+
+### Development Convenience
+
+For development, you can set default credentials via build flags without committing them:
+
+1. Create `platformio_local.ini` (this file is gitignored):
+   ```ini
+   [env:pico_plus_2w]
+   build_flags = 
+       ${env.build_flags}
+       -DWIFI_SSID_DEFAULT=\"YourNetworkName\"
+       -DWIFI_PSK_DEFAULT=\"YourPassword\"
+   ```
+
+2. The device will use these as fallback if EEPROM is empty
+
 ### Manual Installation
 
 Copy the `lib/EL133UF1` folder to your Arduino libraries folder or PlatformIO lib folder.

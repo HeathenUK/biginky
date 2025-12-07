@@ -129,6 +129,9 @@ EL133UF1::EL133UF1(SPIClass* spi) :
 
 bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin, 
                      int8_t resetPin, int8_t busyPin) {
+    Serial.println("EL133UF1::begin() starting...");
+    Serial.flush();
+    
     _cs0Pin = cs0Pin;
     _cs1Pin = cs1Pin;
     _dcPin = dcPin;
@@ -136,19 +139,44 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     _busyPin = busyPin;
 
     // Allocate frame buffer in PSRAM (1.92MB)
+    // Free old buffer if exists (prevents leak on repeated begin() calls)
+    if (_buffer != nullptr) {
+        Serial.printf("  Freeing old buffer at %p\n", _buffer);
+        free(_buffer);
+        _buffer = nullptr;
+    }
+    if (_bufferRight != nullptr) {
+        free(_bufferRight);
+        _bufferRight = nullptr;
+    }
+    
+    Serial.printf("  Allocating %u bytes in PSRAM...\n", EL133UF1_WIDTH * EL133UF1_HEIGHT);
+    Serial.flush();
+    
     _buffer = (uint8_t*)pmalloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
     _packedMode = false;
     _bufferRight = nullptr;
     
     if (_buffer == nullptr) {
-        Serial.println("EL133UF1: PSRAM allocation failed!");
+        Serial.println("  ERROR: PSRAM allocation failed!");
         return false;
     }
+    Serial.printf("  Buffer allocated at %p\n", _buffer);
+    Serial.flush();
     
-    // Clear to white
+    // Clear to white and verify write
+    Serial.println("  Clearing buffer...");
     memset(_buffer, EL133UF1_WHITE, EL133UF1_WIDTH * EL133UF1_HEIGHT);
+    
+    // Verify buffer is accessible
+    if (_buffer[0] != EL133UF1_WHITE || _buffer[1000000] != EL133UF1_WHITE) {
+        Serial.println("  ERROR: Buffer verification failed!");
+        return false;
+    }
+    Serial.println("  Buffer verified OK");
 
     // Configure GPIO pins
+    Serial.println("  Configuring GPIO...");
     pinMode(_cs0Pin, OUTPUT);
     pinMode(_cs1Pin, OUTPUT);
     pinMode(_dcPin, OUTPUT);
@@ -161,14 +189,58 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     digitalWrite(_resetPin, HIGH);
 
     // Initialize SPI
+    Serial.println("  Starting SPI...");
     _spi->begin();
 
     // Hardware reset and init sequence
+    Serial.println("  Resetting display...");
+    Serial.flush();
     _reset();
+    
+    Serial.println("  Waiting for display ready...");
+    Serial.flush();
     _busyWait(1000);
+    
+    Serial.println("  Running init sequence...");
+    Serial.flush();
     _initSequence();
 
     _initialized = true;
+    _initDone = true;  // Mark init as done so update() doesn't repeat it
+    
+    Serial.println("EL133UF1::begin() complete!");
+    return true;
+}
+
+bool EL133UF1::reconnect() {
+    // Warm boot reconnection - skip reset and init sequence
+    // Display controller retains configuration during sleep
+    
+    if (_buffer == nullptr) {
+        // Buffer not allocated - need full init
+        Serial.println("EL133UF1: reconnect() called but no buffer - use begin()");
+        return false;
+    }
+    
+    // Reconfigure GPIO (states lost during deep sleep)
+    pinMode(_cs0Pin, OUTPUT);
+    pinMode(_cs1Pin, OUTPUT);
+    pinMode(_dcPin, OUTPUT);
+    pinMode(_resetPin, OUTPUT);
+    pinMode(_busyPin, INPUT_PULLUP);
+
+    digitalWrite(_cs0Pin, HIGH);
+    digitalWrite(_cs1Pin, HIGH);
+    digitalWrite(_dcPin, LOW);
+    digitalWrite(_resetPin, HIGH);  // Keep HIGH - don't reset!
+
+    // Reinitialize SPI
+    _spi->begin();
+
+    _initialized = true;
+    // Keep _initDone as-is (should still be true from before sleep)
+    
+    Serial.println("EL133UF1: Reconnected (skipped reset/init)");
     return true;
 }
 
@@ -326,20 +398,28 @@ void EL133UF1::setPreRotatedMode(bool enable) {
     
     if (enable && !_packedMode) {
         // Switching to pre-rotated mode: reallocate buffers
-        // Free old unpacked buffer
-        if (_buffer) {
-            free(_buffer);
-            _buffer = nullptr;
-        }
+        // Allocate new buffers first before freeing old one
+        uint8_t* newBuffer = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
+        uint8_t* newBufferRight = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
         
-        // Allocate two packed buffers (480KB each)
-        _buffer = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
-        _bufferRight = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
-        
-        if (_buffer && _bufferRight) {
+        if (newBuffer && newBufferRight) {
+            // Success - free old buffer and switch
+            if (_buffer) {
+                free(_buffer);
+            }
+            _buffer = newBuffer;
+            _bufferRight = newBufferRight;
+            
             // Clear to white
             memset(_buffer, 0x11, PACKED_HALF_SIZE);
             memset(_bufferRight, 0x11, PACKED_HALF_SIZE);
+        } else {
+            // Allocation failed - clean up and keep current mode
+            if (newBuffer) free(newBuffer);
+            if (newBufferRight) free(newBufferRight);
+            Serial.println("EL133UF1: Failed to allocate pre-rotated buffers");
+            _preRotatedMode = !enable;  // Revert the mode flag
+            return;
         }
     } else if (!enable && !_packedMode) {
         // Switching back to unpacked mode
@@ -660,15 +740,36 @@ void EL133UF1::_sendBuffer() {
 
     const size_t SEND_HALF_SIZE = PACKED_HALF_SIZE;
     
+    // Debug: show PSRAM state before allocation
+    Serial.printf("    PSRAM total:    %lu KB\n", rp2040.getPSRAMSize() / 1024);
+    Serial.printf("    Need:           %lu KB (2x %lu)\n", 
+                  (SEND_HALF_SIZE * 2) / 1024, SEND_HALF_SIZE / 1024);
+    
     stepStart = millis();
     uint8_t* bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
     uint8_t* bufB = (uint8_t*)pmalloc(SEND_HALF_SIZE);
     
+    bool singleBufferMode = false;
+    
     if (bufA == nullptr || bufB == nullptr) {
-        Serial.println("EL133UF1: Failed to allocate send buffers in PSRAM");
+        // Fallback: try single buffer mode - process one half at a time
+        Serial.println("    Two-buffer alloc failed, trying single-buffer fallback...");
         if (bufA) free(bufA);
         if (bufB) free(bufB);
-        return;
+        bufA = nullptr;
+        bufB = nullptr;
+        
+        // Try to allocate just one buffer
+        bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+        if (bufA == nullptr) {
+            Serial.printf("EL133UF1: FATAL - Cannot allocate even single send buffer (%lu KB)\n", 
+                         SEND_HALF_SIZE / 1024);
+            return;
+        }
+        singleBufferMode = true;
+        Serial.printf("    Single buffer:  %p (%lu KB) - slower but works\n", bufA, SEND_HALF_SIZE / 1024);
+    } else {
+        Serial.printf("    Dual buffers:   %p, %p\n", bufA, bufB);
     }
     Serial.printf("    Buffer alloc:   %4lu ms\n", millis() - stepStart);
 
@@ -796,11 +897,9 @@ void EL133UF1::_sendBuffer() {
             currentBuf = 1 - currentBuf;
         }
         
-        free(sramStrip[0]);
-        free(sramStrip[1]);
         Serial.printf("    Rotate/pack:    %4lu ms (DMA+SIMD)\n", millis() - stepStart);
     } else {
-        // Single buffer mode with DMA
+        // Single SRAM strip buffer mode with DMA
         stepStart = millis();
         
         // Process bufA (source rows 0-599) in strips
@@ -814,17 +913,18 @@ void EL133UF1::_sendBuffer() {
             processStrip(sramStrip[0], bufA, stripStart, stripH, 0);
         }
         
-        // Process bufB (source rows 600-1199) in strips
-        for (int stripStart = 600; stripStart < 1200; stripStart += STRIP_ROWS) {
-            int stripH = min(STRIP_ROWS, 1200 - stripStart);
-            
-            dmaMemcpy(sramStrip[0], _buffer + stripStart * EL133UF1_WIDTH,
-                     stripH * EL133UF1_WIDTH);
-            
-            processStrip(sramStrip[0], bufB, stripStart, stripH, 300);
+        // Process bufB (source rows 600-1199) in strips - only if we have bufB
+        if (!singleBufferMode) {
+            for (int stripStart = 600; stripStart < 1200; stripStart += STRIP_ROWS) {
+                int stripH = min(STRIP_ROWS, 1200 - stripStart);
+                
+                dmaMemcpy(sramStrip[0], _buffer + stripStart * EL133UF1_WIDTH,
+                         stripH * EL133UF1_WIDTH);
+                
+                processStrip(sramStrip[0], bufB, stripStart, stripH, 300);
+            }
         }
         
-        free(sramStrip[0]);
         Serial.printf("    Rotate/pack:    %4lu ms (DMA+SIMD single)\n", millis() - stepStart);
     }
 
@@ -833,20 +933,66 @@ void EL133UF1::_sendBuffer() {
     _sendCommand(CMD_DTM, CS0_SEL, bufA, SEND_HALF_SIZE);
     uint32_t spiA = millis() - stepStart;
     
-    stepStart = millis();
-    _sendCommand(CMD_DTM, CS1_SEL, bufB, SEND_HALF_SIZE);
-    uint32_t spiB = millis() - stepStart;
+    uint32_t spiB = 0;
+    if (singleBufferMode) {
+        // Single buffer mode: reuse bufA for second half
+        // We need to re-process rows 600-1199 into bufA
+        Serial.println("    Reprocessing for CS1 (single buffer mode)...");
+        uint32_t reprocessStart = millis();
+        
+        if (sramStrip[0] != nullptr) {
+            // Use SRAM-accelerated path
+            for (int stripStart = 600; stripStart < 1200; stripStart += STRIP_ROWS) {
+                int stripH = min(STRIP_ROWS, 1200 - stripStart);
+                dmaMemcpy(sramStrip[0], _buffer + stripStart * EL133UF1_WIDTH,
+                         stripH * EL133UF1_WIDTH);
+                processStrip(sramStrip[0], bufA, stripStart, stripH, 300);
+            }
+        } else {
+            // Direct PSRAM fallback for second half
+            for (int srcCol = 1599; srcCol >= 0; srcCol--) {
+                int outRow = 1599 - srcCol;
+                uint8_t* outPtr = bufA + outRow * 300;
+                const uint8_t* srcPtr = _buffer + srcCol + 600 * EL133UF1_WIDTH;
+                for (int i = 0; i < 300; i += 4) {
+                    packPixels8_SIMD(srcPtr, EL133UF1_WIDTH, outPtr);
+                    srcPtr += EL133UF1_WIDTH * 8;
+                    outPtr += 4;
+                }
+            }
+        }
+        Serial.printf("    Reprocess:      %4lu ms\n", millis() - reprocessStart);
+        
+        stepStart = millis();
+        _sendCommand(CMD_DTM, CS1_SEL, bufA, SEND_HALF_SIZE);
+        spiB = millis() - stepStart;
+    } else {
+        stepStart = millis();
+        _sendCommand(CMD_DTM, CS1_SEL, bufB, SEND_HALF_SIZE);
+        spiB = millis() - stepStart;
+    }
     
     Serial.printf("    SPI transmit:   %4lu ms (CS0: %lu, CS1: %lu)\n", 
                   spiA + spiB, spiA, spiB);
 
     free(bufA);
-    free(bufB);
+    if (bufB) free(bufB);
+    if (sramStrip[0]) free(sramStrip[0]);
+    if (sramStrip[1]) free(sramStrip[1]);
 }
 
 void EL133UF1::update(bool skipInit) {
+    Serial.printf("EL133UF1::update(skipInit=%d) - _initialized=%d, _buffer=%p\n", 
+                  skipInit, _initialized, _buffer);
+    Serial.flush();
+    
     if (!_initialized) {
         Serial.println("EL133UF1: Not initialized!");
+        return;
+    }
+    
+    if (_buffer == nullptr) {
+        Serial.println("EL133UF1: No buffer allocated!");
         return;
     }
 
@@ -870,24 +1016,33 @@ void EL133UF1::update(bool skipInit) {
     Serial.printf("  Send buffer:      %4lu ms\n", millis() - stepStart);
 
     // Power on
+    Serial.println("  Powering on...");
+    Serial.flush();
     stepStart = millis();
     _sendCommand(CMD_PON, CS_BOTH_SEL);
-    _busyWait(200);
-    Serial.printf("  Power on:         %4lu ms\n", millis() - stepStart);
+    bool ponOk = _busyWait(200);
+    Serial.printf("  Power on:         %4lu ms (busy=%d)\n", millis() - stepStart, ponOk);
+    Serial.flush();
 
     // Display refresh
+    Serial.println("  Starting refresh (this takes 20-30s)...");
+    Serial.flush();
     stepStart = millis();
     const uint8_t drf[] = {0x00};
     _sendCommand(CMD_DRF, CS_BOTH_SEL, drf, sizeof(drf));
-    _busyWait(32000);
-    Serial.printf("  Panel refresh:    %4lu ms\n", millis() - stepStart);
+    bool drfOk = _busyWait(32000);
+    Serial.printf("  Panel refresh:    %4lu ms (busy=%d)\n", millis() - stepStart, drfOk);
+    Serial.flush();
 
     // Power off
+    Serial.println("  Powering off...");
+    Serial.flush();
     stepStart = millis();
     const uint8_t pof[] = {0x00};
     _sendCommand(CMD_POF, CS_BOTH_SEL, pof, sizeof(pof));
-    _busyWait(200);
-    Serial.printf("  Power off:        %4lu ms\n", millis() - stepStart);
+    bool pofOk = _busyWait(200);
+    Serial.printf("  Power off:        %4lu ms (busy=%d)\n", millis() - stepStart, pofOk);
+    Serial.flush();
 
     Serial.printf("  TOTAL:            %4lu ms (%.1f sec)\n", 
                   millis() - totalStart, (millis() - totalStart) / 1000.0);

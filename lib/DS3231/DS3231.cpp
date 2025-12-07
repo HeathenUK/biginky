@@ -94,10 +94,19 @@ uint8_t DS3231::readRegister(uint8_t reg) {
 }
 
 void DS3231::writeRegister(uint8_t reg, uint8_t value) {
-    _wire->beginTransmission(_address);
-    _wire->write(reg);
-    _wire->write(value);
-    _wire->endTransmission();
+    // Retry up to 3 times on I2C errors
+    for (int attempt = 0; attempt < 3; attempt++) {
+        _wire->beginTransmission(_address);
+        _wire->write(reg);
+        _wire->write(value);
+        uint8_t err = _wire->endTransmission();
+        if (err == 0) return;  // Success
+        
+        Serial.printf("DS3231: I2C write error %d at reg 0x%02X (attempt %d)\n", 
+                      err, reg, attempt + 1);
+        delay(5);  // Brief pause before retry
+    }
+    Serial.println("DS3231: WARNING - write failed after 3 attempts!");
 }
 
 void DS3231::readRegisters(uint8_t reg, uint8_t* buffer, uint8_t len) {
@@ -112,12 +121,21 @@ void DS3231::readRegisters(uint8_t reg, uint8_t* buffer, uint8_t len) {
 }
 
 void DS3231::writeRegisters(uint8_t reg, uint8_t* buffer, uint8_t len) {
-    _wire->beginTransmission(_address);
-    _wire->write(reg);
-    for (uint8_t i = 0; i < len; i++) {
-        _wire->write(buffer[i]);
+    // Retry up to 3 times on I2C errors
+    for (int attempt = 0; attempt < 3; attempt++) {
+        _wire->beginTransmission(_address);
+        _wire->write(reg);
+        for (uint8_t i = 0; i < len; i++) {
+            _wire->write(buffer[i]);
+        }
+        uint8_t err = _wire->endTransmission();
+        if (err == 0) return;  // Success
+        
+        Serial.printf("DS3231: I2C write error %d at reg 0x%02X len %d (attempt %d)\n", 
+                      err, reg, len, attempt + 1);
+        delay(5);  // Brief pause before retry
     }
-    _wire->endTransmission();
+    Serial.println("DS3231: WARNING - multi-write failed after 3 attempts!");
 }
 
 void DS3231::setTime(time_t unixTime) {
@@ -191,18 +209,48 @@ void DS3231::setAlarm1(uint32_t delayMs) {
 }
 
 void DS3231::setAlarm1At(time_t alarmTime) {
+    // Get current time for comparison
+    time_t now = getTime();
+    int32_t delta = (int32_t)(alarmTime - now);
+    Serial.printf("DS3231: Setting alarm %ld seconds from now\n", (long)delta);
+    
+    if (delta <= 0) {
+        Serial.println("DS3231: WARNING - alarm time is in the past!");
+    }
+    
     struct tm* t = gmtime(&alarmTime);
     
-    // Alarm 1 has seconds, minutes, hours, day/date
-    // We'll use "match hours, minutes, seconds" mode (A1M4=1, A1M3=0, A1M2=0, A1M1=0)
-    // Actually, let's use "match day, hours, minutes, seconds" for full matching
+    // Alarm 1 modes (A1M4, A1M3, A1M2, A1M1):
+    // 1,1,1,1 = every second
+    // 1,1,1,0 = match seconds
+    // 1,1,0,0 = match minutes and seconds
+    // 1,0,0,0 = match hours, minutes, seconds  ← We use this!
+    // 0,0,0,0 = match day/date, hours, minutes, seconds
+    //
+    // For short intervals (< 24 hours), matching only hours/minutes/seconds is 
+    // simpler and more robust (no day-of-month boundary issues)
+    
     uint8_t data[4];
     data[0] = decToBcd(t->tm_sec) & 0x7F;       // A1M1=0 (match seconds)
     data[1] = decToBcd(t->tm_min) & 0x7F;       // A1M2=0 (match minutes)
     data[2] = decToBcd(t->tm_hour) & 0x3F;      // A1M3=0 (match hours), 24hr format
-    data[3] = decToBcd(t->tm_mday) & 0x3F;      // A1M4=0, DY/DT=0 (match date)
+    data[3] = 0x80;                              // A1M4=1 (ignore day/date)
     
     writeRegisters(DS3231_REG_ALARM1_SEC, data, 4);
+    
+    // Verify the alarm was set correctly by reading it back
+    uint8_t verify[4];
+    readRegisters(DS3231_REG_ALARM1_SEC, verify, 4);
+    bool match = (verify[0] == data[0]) && (verify[1] == data[1]) && 
+                 (verify[2] == data[2]) && (verify[3] == data[3]);
+    
+    if (!match) {
+        Serial.println("DS3231: ERROR - Alarm verification failed!");
+        Serial.printf("  Expected: %02X %02X %02X %02X\n", data[0], data[1], data[2], data[3]);
+        Serial.printf("  Got:      %02X %02X %02X %02X\n", verify[0], verify[1], verify[2], verify[3]);
+        // Retry once
+        writeRegisters(DS3231_REG_ALARM1_SEC, data, 4);
+    }
     
     // Clear any existing alarm flag
     clearAlarm1();
@@ -210,13 +258,40 @@ void DS3231::setAlarm1At(time_t alarmTime) {
     // Enable alarm 1 interrupt
     enableAlarm1Interrupt(true);
     
-    Serial.printf("DS3231: Alarm 1 set for %02d:%02d:%02d on day %d\n",
-                  t->tm_hour, t->tm_min, t->tm_sec, t->tm_mday);
+    // Verify interrupt is enabled
+    uint8_t ctrl = readRegister(DS3231_REG_CONTROL);
+    if (!(ctrl & DS3231_CTRL_A1IE)) {
+        Serial.println("DS3231: WARNING - Alarm 1 interrupt not enabled, retrying...");
+        enableAlarm1Interrupt(true);
+    }
+    
+    Serial.printf("DS3231: Alarm 1 set for %02d:%02d:%02d (matches H:M:S only)\n",
+                  t->tm_hour, t->tm_min, t->tm_sec);
 }
 
 void DS3231::clearAlarm1() {
     uint8_t status = readRegister(DS3231_REG_STATUS);
+    Serial.printf("  [clearAlarm1] status before: 0x%02X (A1F=%d)\n", 
+                  status, (status & DS3231_STAT_A1F) ? 1 : 0);
+    
+    // Clear the alarm flag (and preserve EN32KHZ state)
     writeRegister(DS3231_REG_STATUS, status & ~DS3231_STAT_A1F);
+    
+    // Verify it was cleared - retry if not
+    for (int attempt = 0; attempt < 3; attempt++) {
+        delay(2);  // Small delay for register to update
+        status = readRegister(DS3231_REG_STATUS);
+        
+        if (!(status & DS3231_STAT_A1F)) {
+            Serial.printf("  [clearAlarm1] status after:  0x%02X (cleared)\n", status);
+            return;  // Success
+        }
+        
+        Serial.printf("  [clearAlarm1] still set, retry %d...\n", attempt + 1);
+        writeRegister(DS3231_REG_STATUS, status & ~DS3231_STAT_A1F);
+    }
+    
+    Serial.println("  [clearAlarm1] WARNING - could not clear after 3 attempts!");
 }
 
 bool DS3231::alarm1Triggered() {

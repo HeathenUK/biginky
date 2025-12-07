@@ -24,6 +24,11 @@
 #define EEPROM_WIFI_SSID      0x0100  // 33 bytes: WiFi SSID (32 + null)
 #define EEPROM_WIFI_PSK       0x0140  // 65 bytes: WiFi password (64 + null)
 #define EEPROM_SLEEP_SEC      0x0200  // 2 bytes: sleep duration in seconds
+#define EEPROM_LAST_STATUS    0x0210  // 1 byte: last update status code
+#define EEPROM_LAST_STAGE     0x0211  // 1 byte: last stage reached
+#define EEPROM_LAST_UPDATE    0x0212  // 2 bytes: last update number
+#define EEPROM_LAST_WAKE_TIME 0x0214  // 4 bytes: last wake time (unix)
+#define EEPROM_OPENAI_KEY     0x0300  // 200 bytes: OpenAI API key (sk-proj-... keys are ~164 chars)
 #define EEPROM_TEMP_LOG_START 0x0800  // Temperature log (to end of EEPROM)
 #define EEPROM_TEMP_LOG_SIZE  (AT24C32_SIZE - EEPROM_TEMP_LOG_START)
 
@@ -82,12 +87,23 @@ public:
     uint16_t getSleepSeconds();
     void setSleepSeconds(uint16_t seconds);
     
+    // OpenAI API key
+    bool getOpenAIKey(char* key, size_t keyLen);
+    void setOpenAIKey(const char* key);
+    bool hasOpenAIKey();
+    
     // Temperature logging
     void logTemperature(float temp);
     uint16_t getTemperatureLogCount();
     float getLoggedTemperature(uint16_t index);
     
     void printStatus();
+    
+    // Debug: dump internal state
+    void debugState() {
+        Serial.printf("  [EEPROM state] _wire=%p, _addr=0x%02X, _present=%d\n",
+                      (void*)_wire, _addr, _present);
+    }
 
 private:
     TwoWire* _wire;

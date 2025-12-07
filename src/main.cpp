@@ -3,20 +3,33 @@
  * @brief Example application for EL133UF1 13.3" Spectra 6 E-Ink Display
  * 
  * This example demonstrates driving the EL133UF1 e-ink panel with a
- * Pimoroni Pico Plus 2 W using the Arduino-Pico framework.
+ * Pimoroni Pico LiPo 2 XL W (RP2350) using the Arduino-Pico framework.
+ * Build target: pimoroni_pico_plus_2w (compatible)
  * 
- * Wiring:
- *   Display      Pico Plus 2 W
- *   -------      -------------
- *   MOSI    ->   GP19 (SPI0 TX)
- *   SCLK    ->   GP18 (SPI0 SCK)
- *   CS0     ->   GP17
- *   CS1     ->   GP16
- *   DC      ->   GP20
- *   RESET   ->   GP21
- *   BUSY    ->   GP22
+ * Wiring (Pimoroni Inky Impression 13.3" + Pico LiPo 2 XL W):
+ *   Display      Pico LiPo 2 XL W
+ *   -------      ----------------
+ *   MOSI    ->   GP11 (SPI1 TX)
+ *   SCLK    ->   GP10 (SPI1 SCK)
+ *   CS0     ->   GP26 (left half)
+ *   CS1     ->   GP16 (right half)
+ *   DC      ->   GP22
+ *   RESET   ->   GP27
+ *   BUSY    ->   GP17
  *   GND     ->   GND
  *   3.3V    ->   3V3
+ * 
+ * DS3231 RTC (optional, for accurate timekeeping):
+ *   SDA     ->   GP2 (I2C1)
+ *   SCL     ->   GP3 (I2C1)
+ *   INT     ->   GP18 (wake from sleep)
+ * 
+ * Battery Monitoring:
+ *   VBAT    ->   GP43 (ADC, via voltage divider)
+ * 
+ * WiFi Configuration:
+ *   On first boot (or press 'c' within 3 seconds), enter config mode
+ *   to set WiFi credentials via serial. Credentials are stored in EEPROM.
  */
 
 #include <Arduino.h>
@@ -24,6 +37,9 @@
 #include <time.h>
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
+#include "EL133UF1_BMP.h"
+#include "EL133UF1_PNG.h"
+#include "OpenAIImage.h"
 #include "fonts/opensans.h"
 #include "pico_sleep.h"
 #include "DS3231.h"
@@ -31,14 +47,20 @@
 #include "hardware/structs/powman.h"
 #include "hardware/powman.h"
 
-// WiFi credentials
-const char* WIFI_SSID = "JELLING";
-const char* WIFI_PSK = "Crusty jugglers";
+// WiFi credentials - loaded from EEPROM or set via serial config
+// Compile-time fallback (optional, for development only)
+// Set via platformio_local.ini (not committed to git):
+//   build_flags = -DWIFI_SSID_DEFAULT=\"YourSSID\" -DWIFI_PSK_DEFAULT=\"YourPassword\"
+#ifndef WIFI_SSID_DEFAULT
+#define WIFI_SSID_DEFAULT ""
+#endif
+#ifndef WIFI_PSK_DEFAULT
+#define WIFI_PSK_DEFAULT ""
+#endif
 
-// NTP servers - use pool.ntp.org which is more reliable than NIST
-// NIST servers often rate-limit and can be slow
-const char* NTP_SERVER1_NAME = "pool.ntp.org";
-const char* NTP_SERVER2_NAME = "time.google.com";
+// Runtime credential buffers
+static char wifiSSID[33] = {0};
+static char wifiPSK[65] = {0};
 
 // Pin definitions for Pimoroni Pico Plus 2 W with Inky Impression 13.3"
 // These match the working CircuitPython reference
@@ -55,6 +77,23 @@ const char* NTP_SERVER2_NAME = "time.google.com";
 #define PIN_RTC_SCL    3    // I2C1 SCL (GP3)
 #define PIN_RTC_INT   18    // DS3231 INT/SQW pin for wake (GP18)
 
+// Button pins (directly active-low buttons to GND)
+#define PIN_BTN_WAKE   1    // Wake button (GP1) - press to wake from sleep
+
+// Battery voltage monitoring (Pimoroni Pico LiPo 2 XL W)
+// GP43 is the battery voltage ADC pin
+#define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
+
+// Voltage divider ratio - adjust based on actual circuit
+// If battery shows wrong voltage, measure with multimeter and calibrate
+#define VBAT_DIVIDER_RATIO  3.0f
+// ADC reference voltage (3.3V for RP2350)
+#define VBAT_ADC_REF  3.3f
+
+// Unix timestamp validation bounds
+#define TIMESTAMP_MIN_VALID 1700000000UL  // ~2023, older means RTC not set
+#define TIMESTAMP_MAX_VALID 4102444800UL  // ~2100, sanity check
+
 // Create display instance using SPI1
 // (SPI1 is the correct bus for GP10/GP11 on Pico)
 EL133UF1 display(&SPI1);
@@ -62,19 +101,357 @@ EL133UF1 display(&SPI1);
 // TTF font renderer
 EL133UF1_TTF ttf;
 
+// BMP image loader
+EL133UF1_BMP bmp;
+
+// PNG decoder and OpenAI image generator
+EL133UF1_PNG png;
+OpenAIImage openai;
+
+// AI-generated image stored in PSRAM (persists between updates)
+static uint8_t* aiImageData = nullptr;
+static size_t aiImageLen = 0;
+
+// ================================================================
+// Battery voltage monitoring
+// ================================================================
+
+float readBatteryVoltage() {
+    // Set ADC resolution to 12-bit
+    analogReadResolution(12);
+    
+    // Read battery voltage from GP43
+    static bool firstRead = true;
+    if (firstRead) {
+        // Just read GP43 - the designated battery ADC pin
+        // Note: Battery reading may only work when running on battery (not USB)
+        pinMode(PIN_VBAT_ADC, INPUT);
+        uint16_t raw = analogRead(PIN_VBAT_ADC);
+        Serial.printf("  [Battery] GP%d raw=%u -> %.2fV\n", 
+                      PIN_VBAT_ADC, raw, raw * 3.3f / 4095.0f * VBAT_DIVIDER_RATIO);
+        firstRead = false;
+    }
+    
+    // Use the configured pin
+    pinMode(PIN_VBAT_ADC, INPUT);
+    
+    // Take multiple readings and average for stability
+    uint32_t sum = 0;
+    const int samples = 16;
+    for (int i = 0; i < samples; i++) {
+        sum += analogRead(PIN_VBAT_ADC);
+        delayMicroseconds(100);
+    }
+    uint16_t adcValue = sum / samples;
+    
+    // Convert to voltage
+    // ADC is 12-bit (0-4095), reference is 3.3V
+    float adcVoltage = (adcValue / 4095.0f) * VBAT_ADC_REF;
+    
+    // Apply voltage divider ratio to get actual battery voltage
+    float batteryVoltage = adcVoltage * VBAT_DIVIDER_RATIO;
+    
+    return batteryVoltage;
+}
+
+// Get battery percentage (rough estimate for LiPo)
+// LiPo: 4.2V = 100%, 3.7V = ~50%, 3.0V = 0%
+int getBatteryPercent(float voltage) {
+    if (voltage >= 4.2f) return 100;
+    if (voltage <= 3.0f) return 0;
+    
+    // Linear interpolation between 3.0V and 4.2V
+    return (int)((voltage - 3.0f) / 1.2f * 100.0f);
+}
+
 // Forward declarations
 void drawDemoPattern();
 bool connectWiFiAndGetNTP();
 void formatTime(uint64_t time_ms, char* buf, size_t len);
+void logStage(uint8_t stage);
+void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime);
+void reportLastUpdate();
+
+// Default time from wake to display completion (boot + draw + refresh)
+// This is the initial estimate; actual measured value is used after first cycle
+#define DEFAULT_WAKE_TO_DISPLAY_SECONDS  32  // ~2s boot + ~1s draw + ~28s refresh
+
+// Powman scratch register for storing measured wake-to-display time
+#define WAKE_DURATION_REG  3  // Stores measured seconds (uses scratch[3])
+
+// Get the measured wake-to-display duration from scratch register
+// Returns the stored value, or default if not yet measured
+uint32_t getWakeToDisplaySeconds() {
+    uint32_t stored = powman_hw->scratch[WAKE_DURATION_REG];
+    // Sanity check: should be between 20 and 60 seconds
+    if (stored >= 20 && stored <= 60) {
+        return stored;
+    }
+    return DEFAULT_WAKE_TO_DISPLAY_SECONDS;
+}
+
+// Store the measured wake-to-display duration
+void setWakeToDisplaySeconds(uint32_t seconds) {
+    // Sanity check and clamp
+    if (seconds < 20) seconds = 20;
+    if (seconds > 60) seconds = 60;
+    powman_hw->scratch[WAKE_DURATION_REG] = seconds;
+}
+
+// Calculate sleep duration so display update COMPLETES at the next even minute
+// Returns sleep duration in seconds and optionally fills displayHour/displayMin
+// (the time that will be shown on the display when refresh completes)
+uint32_t calculateNextWakeTime(int currentMin, int currentSec, int currentHour,
+                                int* displayHour = nullptr, int* displayMin = nullptr) {
+    // Get the measured (or default) wake-to-display duration
+    uint32_t wakeToDisplay = getWakeToDisplaySeconds();
+    
+    // Find the next even minute (this is when we want the display to SHOW)
+    int targetMin = (currentMin % 2 == 0) ? currentMin + 2 : currentMin + 1;
+    int secsUntilTarget = (targetMin - currentMin) * 60 - currentSec;
+    
+    // We need to wake wakeToDisplay seconds before the target time
+    // so the display refresh completes right at the even minute
+    int sleepDuration = secsUntilTarget - (int)wakeToDisplay;
+    
+    // If we don't have enough time (would need to wake in the past or too soon),
+    // skip to the next even minute
+    if (sleepDuration < 5) {  // Need at least 5 seconds of sleep
+        sleepDuration += 120;  // Add 2 minutes
+        targetMin += 2;
+    }
+    
+    // Calculate the display time (what will be shown)
+    if (displayHour || displayMin) {
+        int hour = currentHour;
+        int min = targetMin % 60;
+        if (targetMin >= 60) {
+            hour = (hour + 1) % 24;
+        }
+        if (displayHour) *displayHour = hour;
+        if (displayMin) *displayMin = min;
+    }
+    
+    return (uint32_t)sleepDuration;
+}
+
+// ================================================================
+// WiFi Credential Management
+// ================================================================
+
+// Load credentials from EEPROM or compiled fallback
+bool loadWifiCredentials() {
+    Serial.printf("loadWifiCredentials: eeprom.isPresent()=%d\n", eeprom.isPresent());
+    
+    if (eeprom.isPresent()) {
+        bool hasCreds = eeprom.hasWifiCredentials();
+        Serial.printf("loadWifiCredentials: hasWifiCredentials()=%d\n", hasCreds);
+        
+        if (hasCreds) {
+            eeprom.getWifiCredentials(wifiSSID, sizeof(wifiSSID), wifiPSK, sizeof(wifiPSK));
+            Serial.printf("WiFi: Loaded from EEPROM: '%s'\n", wifiSSID);
+            return true;
+        }
+    }
+    
+    // Fallback to compiled defaults (if any)
+    if (strlen(WIFI_SSID_DEFAULT) > 0) {
+        strncpy(wifiSSID, WIFI_SSID_DEFAULT, sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, WIFI_PSK_DEFAULT, sizeof(wifiPSK) - 1);
+        Serial.printf("WiFi: Using compiled fallback: '%s'\n", wifiSSID);
+        return true;
+    }
+    
+    Serial.println("WiFi: No credentials available");
+    return false;
+}
+
+// Read a line from Serial with echo
+String serialReadLine(bool maskInput = false) {
+    // Flush any pending newlines from previous input
+    while (Serial.available()) {
+        char c = Serial.peek();
+        if (c == '\n' || c == '\r') {
+            Serial.read();  // Consume it
+        } else {
+            break;
+        }
+    }
+    
+    String result = "";
+    while (true) {
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == '\n' || c == '\r') {
+                // End of line - consume any trailing \n after \r
+                delay(10);  // Brief delay for trailing chars to arrive
+                while (Serial.available()) {
+                    char next = Serial.peek();
+                    if (next == '\n' || next == '\r') {
+                        Serial.read();
+                    } else {
+                        break;
+                    }
+                }
+                Serial.println();
+                break;
+            } else if (c == '\b' || c == 127) {  // Backspace
+                if (result.length() > 0) {
+                    result.remove(result.length() - 1);
+                    Serial.print("\b \b");
+                }
+            } else if (c >= 32 && c < 127) {  // Printable
+                result += c;
+                Serial.print(maskInput ? '*' : c);
+            }
+        }
+        delay(10);
+    }
+    return result;
+}
+
+// Interactive serial configuration mode
+void enterConfigMode() {
+    Serial.println("\n========================================");
+    Serial.println("       Configuration Mode");
+    Serial.println("========================================");
+    
+    // --- WiFi Configuration ---
+    Serial.println("\n--- WiFi Settings ---");
+    
+    // Load existing credentials if any
+    char existingSSID[33] = {0};
+    char existingPSK[65] = {0};
+    bool hasExisting = eeprom.isPresent() && eeprom.hasWifiCredentials();
+    if (hasExisting) {
+        eeprom.getWifiCredentials(existingSSID, sizeof(existingSSID), 
+                                   existingPSK, sizeof(existingPSK));
+        Serial.printf("Current SSID: '%s'\n", existingSSID);
+        Serial.println("(Press Enter to keep current, or type new value)");
+    }
+    
+    // Get SSID
+    Serial.print("WiFi SSID: ");
+    String ssid = serialReadLine(false);
+    
+    // If empty and we have existing, keep it
+    if (ssid.length() == 0 && hasExisting) {
+        Serial.println("(keeping existing SSID)");
+        ssid = existingSSID;
+    }
+    
+    if (ssid.length() == 0) {
+        Serial.println("ERROR: SSID cannot be empty!");
+        return;
+    }
+    
+    // Get PSK
+    Serial.print("WiFi Password: ");
+    String psk = serialReadLine(true);  // Masked input
+    
+    // If empty and we have existing, keep it
+    if (psk.length() == 0 && hasExisting) {
+        Serial.println("(keeping existing password)");
+        psk = existingPSK;
+    }
+    
+    // Save WiFi to EEPROM
+    if (eeprom.isPresent()) {
+        eeprom.setWifiCredentials(ssid.c_str(), psk.c_str());
+        Serial.println("WiFi credentials saved!");
+        
+        // Load into active buffers
+        strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+    } else {
+        Serial.println("WARNING: EEPROM not available, using for this session only");
+        strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+    }
+    
+    // --- OpenAI API Key Configuration ---
+    Serial.println("\n--- OpenAI API Key (for AI image generation) ---");
+    
+    if (eeprom.isPresent() && eeprom.hasOpenAIKey()) {
+        char currentKey[200];
+        eeprom.getOpenAIKey(currentKey, sizeof(currentKey));
+        // Show only first/last few chars for security
+        Serial.printf("Current key: %.7s...%s\n", currentKey, currentKey + strlen(currentKey) - 4);
+        Serial.println("(Press Enter to keep current, or paste new key)");
+    } else {
+        Serial.println("No API key configured.");
+        Serial.println("Get one at: https://platform.openai.com/api-keys");
+    }
+    
+    Serial.print("OpenAI API Key: ");
+    String apiKey = serialReadLine(true);  // Masked input
+    
+    if (apiKey.length() > 0) {
+        if (apiKey.startsWith("sk-")) {
+            if (eeprom.isPresent()) {
+                eeprom.setOpenAIKey(apiKey.c_str());
+                Serial.println("API key saved!");
+            }
+        } else {
+            Serial.println("WARNING: Key doesn't start with 'sk-', not saved.");
+        }
+    } else if (eeprom.hasOpenAIKey()) {
+        Serial.println("(keeping existing key)");
+    }
+    
+    Serial.println("\n========================================\n");
+}
+
+// Check for config mode trigger during boot
+// Returns true if config mode was entered
+bool checkConfigMode() {
+    // Skip on wake from deep sleep
+    if (sleep_woke_from_deep_sleep()) {
+        return false;
+    }
+    
+    Serial.println("\nPress 'c' for config (WiFi/API key), 'r' to reset sleep state (3s)...");
+    Serial.flush();
+    
+    uint32_t start = millis();
+    while (millis() - start < 3000) {
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == 'c' || c == 'C') {
+                enterConfigMode();
+                return true;
+            } else if (c == 'r' || c == 'R') {
+                sleep_clear_all_state();
+                Serial.println("Reboot to apply clean state.");
+                return true;
+            }
+        }
+        // Show countdown
+        uint32_t remaining = 3 - (millis() - start) / 1000;
+        static uint32_t lastShown = 99;
+        if (remaining != lastShown) {
+            Serial.printf("\r%lu... ", remaining);
+            lastShown = remaining;
+        }
+        delay(50);
+    }
+    Serial.println("continuing.");
+    return false;
+}
 
 // ================================================================
 // Connect to WiFi and sync NTP time (arduino-pico native)
 // ================================================================
 bool connectWiFiAndGetNTP() {
-    Serial.println("\n=== Connecting to WiFi ===");
-    Serial.printf("SSID: %s\n", WIFI_SSID);
+    if (strlen(wifiSSID) == 0) {
+        Serial.println("ERROR: No WiFi credentials configured!");
+        return false;
+    }
     
-    WiFi.begin(WIFI_SSID, WIFI_PSK);
+    Serial.println("\n=== Connecting to WiFi ===");
+    Serial.printf("SSID: %s\n", wifiSSID);
+    
+    WiFi.begin(wifiSSID, wifiPSK);
     
     Serial.print("Connecting");
     uint32_t start = millis();
@@ -177,9 +554,9 @@ bool connectWiFiAndGetNTP() {
         Serial.println("NTP sync time saved to EEPROM");
     }
     
-    // Disconnect WiFi to save power
-    WiFi.disconnect(true);
-    Serial.println("WiFi disconnected (saving power)");
+    // Keep WiFi connected - we may need it for AI image generation
+    // WiFi will be disconnected after display update
+    Serial.println("WiFi staying connected for potential API calls");
     
     return true;
 }
@@ -210,19 +587,32 @@ void setUpdateCount(int count) {
     powman_hw->scratch[UPDATE_COUNT_REG] = (uint32_t)count;
 }
 
+// Boot timestamp for measuring wake-to-display duration
+static uint32_t g_bootTimestamp = 0;
+
 void setup() {
+    // Record boot time immediately (before any delays)
+    // We'll use this to measure actual wake-to-display duration
+    g_bootTimestamp = millis();
+    
     // Initialize serial for debugging
     Serial.begin(115200);
     
-    // Wait for serial connection (longer timeout for reliability)
+    // Wait for serial connection
+    // After deep sleep, USB needs time to re-enumerate (can take 5-10 seconds)
+    // Blink LED to show we're alive while waiting
+    pinMode(LED_BUILTIN, OUTPUT);
     uint32_t startWait = millis();
-    while (!Serial && (millis() - startWait < 3000)) {
-        delay(100);
+    while (!Serial && (millis() - startWait < 10000)) {
+        digitalWrite(LED_BUILTIN, (millis() / 200) % 2);  // Fast blink while waiting
+        delay(50);
     }
+    digitalWrite(LED_BUILTIN, HIGH);  // LED on when serial ready
     delay(500);  // Extra delay for serial to stabilize
     
     // Immediate sign of life
     Serial.println("\n\n>>> BOOT <<<");
+    Serial.printf("Serial ready after %lu ms\n", millis() - startWait);
     Serial.flush();
     delay(100);
     
@@ -260,6 +650,9 @@ void setup() {
     bool hasRTC = sleep_init_rtc(PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
     if (hasRTC) {
         Serial.println("DS3231 RTC found - using for timekeeping");
+        
+        // Add button as additional wake source (active-low)
+        sleep_add_gpio_wake_source(PIN_BTN_WAKE, false);  // false = active-low
         // Read current RTC time
         uint64_t rtcTime = sleep_get_time_ms();
         char timeBuf[32];
@@ -271,8 +664,16 @@ void setup() {
         if (eeprom.begin(&Wire1, 0x57)) {
             eeprom.printStatus();
             
+            // Report what happened in the previous session
+            reportLastUpdate();
+            
             // Log temperature
             eeprom.logTemperature(rtc.getTemperature());
+            
+            // Debug: verify EEPROM still readable after logTemperature
+            Serial.println("--- After logTemperature ---");
+            uint8_t test1 = eeprom.readByte(0x0100);
+            Serial.printf("  Read 0x0100 = 0x%02X ('%c')\n", test1, (test1 >= 32 && test1 < 127) ? test1 : '?');
         }
     } else {
         Serial.println("No DS3231 found - using LPOSC (less accurate)");
@@ -289,6 +690,77 @@ void setup() {
     if (eeprom.isPresent()) {
         eeprom.incrementBootCount();
         totalBoots = eeprom.getBootCount();
+        
+        // Debug: verify EEPROM still readable after write
+        Serial.println("--- EEPROM read test after incrementBootCount ---");
+        uint8_t testByte = eeprom.readByte(0x0100);  // EEPROM_WIFI_SSID
+        Serial.printf("  Direct read of 0x0100 = 0x%02X ('%c')\n", 
+                      testByte, (testByte >= 32 && testByte < 127) ? testByte : '?');
+    }
+    
+    // ================================================================
+    // WiFi credential management
+    // ================================================================
+    Serial.println("\n--- WiFi Credential Check ---");
+    
+    // Debug: check EEPROM object state
+    eeprom.debugState();
+    
+    // Try a direct read first WITHOUT any I2C reinit
+    Serial.println("  Direct read attempt 1:");
+    uint8_t directTest = eeprom.readByte(0x0100);
+    Serial.printf("  0x0100 = 0x%02X ('%c')\n", directTest, (directTest >= 32 && directTest < 127) ? directTest : '?');
+    
+    // If we got 0xFF, the bus might be stuck - try to recover
+    if (directTest == 0xFF && eeprom.isPresent()) {
+        Serial.println("  Got 0xFF - trying I2C bus recovery...");
+        
+        // Toggle SDA/SCL to try to unstick any slave device
+        Wire1.end();
+        delay(5);
+        
+        // Manually toggle SCL to free any stuck slave
+        pinMode(3, OUTPUT);  // SCL
+        for (int i = 0; i < 16; i++) {
+            digitalWrite(3, HIGH);
+            delayMicroseconds(50);
+            digitalWrite(3, LOW);
+            delayMicroseconds(50);
+        }
+        digitalWrite(3, HIGH);
+        delay(5);
+        
+        // Reinit I2C
+        Wire1.setSDA(2);
+        Wire1.setSCL(3);
+        Wire1.begin();
+        Wire1.setClock(100000);
+        delay(10);
+        
+        // Try again
+        Serial.println("  Direct read attempt 2 after recovery:");
+        directTest = eeprom.readByte(0x0100);
+        Serial.printf("  0x0100 = 0x%02X ('%c')\n", directTest, (directTest >= 32 && directTest < 127) ? directTest : '?');
+    }
+    
+    Serial.printf("eeprom.isPresent() = %d\n", eeprom.isPresent());
+    if (eeprom.isPresent()) {
+        Serial.printf("eeprom.hasWifiCredentials() = %d\n", eeprom.hasWifiCredentials());
+    }
+    Serial.flush();
+    
+    // Check for config mode (only on cold boot, not wake from sleep)
+    checkConfigMode();
+    
+    // Load WiFi credentials
+    if (!loadWifiCredentials()) {
+        Serial.println("No WiFi credentials - entering config mode");
+        enterConfigMode();
+        
+        // Check again after config
+        if (!loadWifiCredentials()) {
+            Serial.println("WARNING: Still no WiFi credentials, NTP sync will fail");
+        }
     }
     
     // ================================================================
@@ -365,6 +837,36 @@ void setup() {
         }
     }
     
+#if 0  // AI image generation disabled for demo
+    // ================================================================
+    // Connect WiFi for AI image generation (if needed)
+    // ================================================================
+    // On cold boot, if we have an API key but skipped NTP sync (RTC had valid time),
+    // we still need to connect WiFi for the OpenAI API call
+    if (!sleep_woke_from_deep_sleep() && WiFi.status() != WL_CONNECTED) {
+        // Check if we have an API key and might need to generate an image
+        if (eeprom.isPresent() && eeprom.hasOpenAIKey() && aiImageData == nullptr) {
+            Serial.println("\n=== Connecting WiFi for AI image generation ===");
+            if (strlen(wifiSSID) > 0) {
+                WiFi.begin(wifiSSID, wifiPSK);
+                Serial.print("Connecting to ");
+                Serial.print(wifiSSID);
+                uint32_t start = millis();
+                while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
+                    Serial.print(".");
+                    delay(500);
+                }
+                if (WiFi.status() == WL_CONNECTED) {
+                    Serial.println(" connected!");
+                    Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+                } else {
+                    Serial.println(" FAILED");
+                }
+            }
+        }
+    }
+#endif
+    
     // ================================================================
     // Common setup
     // ================================================================
@@ -412,48 +914,86 @@ void setup() {
     Serial.printf("  BUSY:     GP%d\n", PIN_BUSY);
     Serial.println();
 
-    // Test: Read BUSY pin state before anything
-    pinMode(PIN_BUSY, INPUT_PULLUP);
-    Serial.printf("BUSY pin initial state: %s\n", digitalRead(PIN_BUSY) ? "HIGH" : "LOW");
-
-    // Configure SPI1 pins BEFORE initializing display
-    // arduino-pico requires pin configuration before SPI.begin()
-    Serial.println("Configuring SPI1 pins...");
-    SPI1.setSCK(PIN_SPI_SCK);
-    SPI1.setTX(PIN_SPI_MOSI);
-    Serial.println("SPI1 pins configured");
-
-    // Initialize the display
-    Serial.println("Initializing display...");
-    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
-        Serial.println("ERROR: Display initialization failed!");
-        Serial.println("Check wiring and connections.");
-        while (1) {
-            delay(1000);
-        }
-    }
-    
-    Serial.printf("Display initialized: %dx%d pixels\n", 
-                  display.width(), display.height());
-    
-    // Initialize TTF font renderer
-    ttf.begin(&display);
-    if (ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
-        Serial.println("TTF font loaded successfully");
-    } else {
-        Serial.println("WARNING: TTF font failed to load");
-    }
-    Serial.println();
-
-    // Do display update
+    // Do display update (handles SPI/display/TTF initialization internally)
     updateCount++;
     setUpdateCount(updateCount);
     doDisplayUpdate(updateCount);
     
-    // Enter deep sleep for 10 seconds
-    Serial.println("\n=== Entering deep sleep for 10 seconds ===");
-    Serial.printf("RTC time: %lu seconds\n", sleep_get_uptime_seconds());
+    // Measure actual wake-to-display duration and store for next cycle
+    uint32_t actualWakeDuration = (millis() - g_bootTimestamp) / 1000;
+    uint32_t previousEstimate = getWakeToDisplaySeconds();
+    
+    // Use exponential moving average to smooth out variations
+    // New = 0.7 * measured + 0.3 * previous (weights recent measurement more)
+    uint32_t smoothed = (actualWakeDuration * 7 + previousEstimate * 3) / 10;
+    setWakeToDisplaySeconds(smoothed);
+    
+    Serial.printf("\n=== Wake-to-Display Timing ===\n");
+    Serial.printf("  Boot to display ready: %lu seconds\n", actualWakeDuration);
+    Serial.printf("  Previous estimate:     %lu seconds\n", previousEstimate);
+    Serial.printf("  New estimate (EMA):    %lu seconds\n", smoothed);
+    Serial.println("===============================");
+    
+    // Disconnect WiFi to save power before sleep
+    if (WiFi.status() == WL_CONNECTED) {
+        WiFi.disconnect(true);
+        Serial.println("WiFi disconnected (saving power for sleep)");
+    }
+    
+    // Calculate sleep so display update COMPLETES at next even minute
+    time_t now = rtc.getTime();
+    struct tm* tm = gmtime(&now);
+    
+    int displayHour, displayMin;
+    uint32_t sleepSecs = calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, 
+                                                &displayHour, &displayMin);
+    uint32_t sleepMs = sleepSecs * 1000;
+    
+    // Get the offset we're using (measured or default)
+    uint32_t wakeOffset = getWakeToDisplaySeconds();
+    
+    // Calculate actual wake time for logging
+    // We wake wakeOffset seconds before displayHour:displayMin:00
+    int totalDisplaySecs = displayHour * 3600 + displayMin * 60;
+    int totalWakeSecs = totalDisplaySecs - (int)wakeOffset;
+    if (totalWakeSecs < 0) totalWakeSecs += 24 * 3600;
+    int wakeHour = (totalWakeSecs / 3600) % 24;
+    int wakeMin = (totalWakeSecs / 60) % 60;
+    int wakeSec = totalWakeSecs % 60;
+    
+    Serial.printf("\n=== Entering deep sleep ===\n");
+    Serial.printf("Current time:   %02d:%02d:%02d\n", tm->tm_hour, tm->tm_min, tm->tm_sec);
+    Serial.printf("Sleep duration: %lu seconds\n", sleepSecs);
+    Serial.printf("Wake offset:    %lu seconds (measured)\n", wakeOffset);
+    Serial.printf("Will wake at:   ~%02d:%02d:%02d\n", wakeHour, wakeMin, wakeSec);
+    Serial.printf("Display ready:  %02d:%02d:00\n", displayHour, displayMin);
     Serial.println("Using RP2350 powman - TRUE deep sleep (core powers down)");
+    
+    // Verify RTC is still responding before sleep (catch I2C lockup)
+    if (sleep_has_rtc()) {
+        time_t rtcTime = rtc.getTime();
+        if (rtcTime < 1700000000) {
+            Serial.println("WARNING: RTC not responding or time invalid!");
+            Serial.println("Attempting I2C bus recovery...");
+            Wire1.end();
+            delay(10);
+            Wire1.setSDA(PIN_RTC_SDA);
+            Wire1.setSCL(PIN_RTC_SCL);
+            Wire1.begin();
+            Wire1.setClock(100000);
+            delay(10);
+            rtcTime = rtc.getTime();
+            if (rtcTime < 1700000000) {
+                Serial.println("ERROR: RTC still not responding after I2C recovery!");
+                Serial.println("Cannot safely enter sleep - hanging here");
+                while(1) {
+                    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+                    delay(100);  // Fast blink indicates error
+                }
+            }
+        }
+        Serial.printf("RTC verified OK: %lu\n", (unsigned long)rtcTime);
+    }
     
     Serial.flush();
     delay(100);
@@ -468,8 +1008,8 @@ void setup() {
         sleep_run_from_lposc();
     }
     
-    // Go to deep sleep for 10 seconds
-    sleep_goto_dormant_for_ms(10000);
+    // Go to deep sleep until next even minute
+    sleep_goto_dormant_for_ms(sleepMs);
     
     // We should never reach here
     Serial.println("ERROR: Should not reach here after deep sleep!");
@@ -480,17 +1020,75 @@ void setup() {
 // Perform a display update (called on each wake cycle)
 // ================================================================
 // Expected time for FULL display update cycle (from reading time to display complete)
-// This includes: drawing (~0.5s) + rotate/pack (~0.7s) + SPI (~0.5s) + panel refresh (~20-32s)
-// Cold boot (with init):  ~35 seconds (init 1.5s + panel refresh is slower first time)
-// Warm update (skipInit): ~26 seconds (no init, faster refresh)
-#define DISPLAY_REFRESH_COLD_MS  35000  // First update after power-on
-#define DISPLAY_REFRESH_WARM_MS  26000  // Subsequent updates (skipInit=true)
+// This includes: init (~1.5s) + drawing (~0.5s) + rotate/pack (~0.7s) + SPI (~0.5s) + panel refresh (~20-32s)
+// First update after power-on may be slightly slower due to panel warmup
+#define DISPLAY_REFRESH_COLD_MS  32000  // First update after power-on
+#define DISPLAY_REFRESH_WARM_MS  28000  // Subsequent updates
+
+// Stage codes for EEPROM logging
+#define STAGE_START       0x01
+#define STAGE_PSRAM_OK    0x02
+#define STAGE_DISPLAY_OK  0x03
+#define STAGE_TTF_OK      0x04
+#define STAGE_DRAWING     0x05
+#define STAGE_UPDATING    0x06
+#define STAGE_COMPLETE    0x07
+#define STAGE_ERROR       0xFF
+
+void logStage(uint8_t stage) {
+    if (eeprom.isPresent()) {
+        eeprom.writeByte(EEPROM_LAST_STAGE, stage);
+    }
+}
+
+void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime) {
+    if (eeprom.isPresent()) {
+        eeprom.writeUInt16(EEPROM_LAST_UPDATE, updateNum);
+        eeprom.writeUInt32(EEPROM_LAST_WAKE_TIME, wakeTime);
+    }
+}
+
+void reportLastUpdate() {
+    if (eeprom.isPresent()) {
+        uint8_t lastStage = eeprom.readByte(EEPROM_LAST_STAGE);
+        uint16_t lastUpdate = eeprom.readUInt16(EEPROM_LAST_UPDATE);
+        uint32_t lastWakeTime = eeprom.readUInt32(EEPROM_LAST_WAKE_TIME);
+        
+        Serial.println("=== Previous Session Info ===");
+        Serial.printf("  Last update #: %u\n", lastUpdate);
+        Serial.printf("  Last stage:    0x%02X", lastStage);
+        switch(lastStage) {
+            case 0x01: Serial.println(" (START)"); break;
+            case 0x02: Serial.println(" (PSRAM_OK)"); break;
+            case 0x03: Serial.println(" (DISPLAY_OK)"); break;
+            case 0x04: Serial.println(" (TTF_OK)"); break;
+            case 0x05: Serial.println(" (DRAWING)"); break;
+            case 0x06: Serial.println(" (UPDATING)"); break;
+            case 0x07: Serial.println(" (COMPLETE)"); break;
+            case 0xFF: Serial.println(" (ERROR)"); break;
+            default: Serial.println(" (unknown)"); break;
+        }
+        if (lastWakeTime > 1700000000) {
+            // Valid unix time
+            time_t t = (time_t)lastWakeTime;
+            struct tm* tm = gmtime(&t);
+            Serial.printf("  Last wake:     %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                         tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+                         tm->tm_hour, tm->tm_min, tm->tm_sec);
+        }
+        Serial.println("=============================");
+    }
+}
 
 void doDisplayUpdate(int updateNumber) {
     Serial.printf("\n=== Display Update #%d ===\n", updateNumber);
+    logStage(STAGE_START);
+    
+    // Log this update's info for post-mortem analysis
+    uint64_t now_ms = sleep_get_corrected_time_ms();
+    logUpdateInfo((uint16_t)updateNumber, (uint32_t)(now_ms / 1000));
     
     // Get current time with drift correction applied
-    uint64_t now_ms = sleep_get_corrected_time_ms();
     char timeStr[32];
     formatTime(now_ms, timeStr, sizeof(timeStr));
     Serial.printf("Drift correction: %d ppm\n", sleep_get_drift_ppm());
@@ -513,31 +1111,182 @@ void doDisplayUpdate(int updateNumber) {
     SPI1.setTX(PIN_SPI_MOSI);
     SPI1.begin();
     
-    // Initialize display
-    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
-        Serial.println("ERROR: Display initialization failed!");
-        return;
+    // Check PSRAM availability after wake
+    Serial.println("Checking PSRAM...");
+    size_t psramSize = rp2040.getPSRAMSize();
+    Serial.printf("  PSRAM size: %u bytes (%u MB)\n", psramSize, psramSize / (1024*1024));
+    
+    if (psramSize == 0) {
+        Serial.println("  ERROR: PSRAM not detected after wake!");
+        logStage(STAGE_ERROR);
+        // Blink error: 1 long blink
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(1000);
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(500);
     }
     
-    // Reinitialize TTF (display was reinitialized)
+    // Test PSRAM accessibility
+    void* testPtr = pmalloc(1024);
+    if (testPtr) {
+        memset(testPtr, 0xAA, 1024);
+        uint8_t* p = (uint8_t*)testPtr;
+        bool ok = (p[0] == 0xAA && p[512] == 0xAA && p[1023] == 0xAA);
+        Serial.printf("  PSRAM alloc test: %s (ptr=%p)\n", ok ? "OK" : "FAILED", testPtr);
+        free(testPtr);
+        if (!ok) {
+            Serial.println("  ERROR: PSRAM read/write failed!");
+            logStage(STAGE_ERROR);
+            return;
+        }
+    } else {
+        Serial.println("  PSRAM alloc test: ALLOCATION FAILED!");
+        logStage(STAGE_ERROR);
+        return;
+    }
+    logStage(STAGE_PSRAM_OK);
+    
+    // Always do full display initialization
+    Serial.println("Initializing display...");
+    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+        Serial.println("ERROR: Display initialization failed!");
+        logStage(STAGE_ERROR);
+        // Blink error pattern: 2 blinks
+        for (int i = 0; i < 10; i++) {
+            digitalWrite(LED_BUILTIN, (i < 4) ? (i % 2) : LOW);
+            delay(200);
+        }
+        return;
+    }
+    Serial.printf("Display buffer: %p\n", display.getBuffer());
+    logStage(STAGE_DISPLAY_OK);
+    
+    // Initialize TTF renderer
+    Serial.println("Initializing TTF...");
     ttf.begin(&display);
-    ttf.loadFont(opensans_ttf, opensans_ttf_len);
+    if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+        Serial.println("ERROR: TTF font load failed!");
+        logStage(STAGE_ERROR);
+    }
+    logStage(STAGE_TTF_OK);
     
     // Enable glyph cache for time display (160px digits)
-    // This pre-renders 0-9, colon, space - used repeatedly
     ttf.enableGlyphCache(160.0, "0123456789: ");
+    
+    // Initialize PNG decoder with dithering for better gradient handling
+    png.begin(&display);
+    png.setDithering(true);  // Floyd-Steinberg dithering for AI images
     
     // Draw update info with performance profiling
     uint32_t drawStart = millis();
     uint32_t t0, t1;
     uint32_t ttfTotal = 0, bitmapTotal = 0;
     
+    // ================================================================
+    // BACKGROUND
+    // ================================================================
+    
+    // Simple white background for demo
     t0 = millis();
     display.clear(EL133UF1_WHITE);
-    Serial.printf("  clear:          %lu ms\n", millis() - t0);
+    bitmapTotal = millis() - t0;
+    Serial.printf("  Background clear: %lu ms\n", bitmapTotal);
+    
+#if 0  // AI image generation - disabled for demo, enable with #if 1
+    // Generate new AI image on first boot, or if we don't have one cached
+    bool needNewImage = (aiImageData == nullptr);
+    
+    // Check if we have an API key configured
+    char apiKey[200] = {0};
+    bool hasApiKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
+                     eeprom.getOpenAIKey(apiKey, sizeof(apiKey));
+    
+    // Debug: show AI image generation status
+    Serial.println("--- AI Image Status ---");
+    Serial.printf("  Need new image: %s\n", needNewImage ? "YES" : "NO (cached)");
+    Serial.printf("  EEPROM present: %s\n", eeprom.isPresent() ? "YES" : "NO");
+    Serial.printf("  Has API key: %s\n", hasApiKey ? "YES" : "NO");
+    Serial.printf("  WiFi status: %d (connected=%d)\n", WiFi.status(), WL_CONNECTED);
+    if (hasApiKey) {
+        Serial.printf("  API key: %.7s...%s\n", apiKey, apiKey + strlen(apiKey) - 4);
+    }
+    
+    if (needNewImage && hasApiKey && WiFi.status() == WL_CONNECTED) {
+        Serial.println("Generating AI background image...");
+        
+        // Initialize OpenAI client
+        openai.begin(apiKey);
+        openai.setModel(DALLE_3);
+        openai.setSize(DALLE_1792x1024);  // Landscape format for 1600x1200 display
+        openai.setQuality(DALLE_STANDARD);
+        
+        // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
+        // Note: requesting landscape 1792x1024 to better fill the 1600x1200 display
+        const char* prompt = 
+            "A beautiful wide landscape nature scene in 16:9 aspect ratio, "
+            "designed for a 6-color e-ink display. "
+            "Use ONLY these colors: pure black, pure white, bright red, bright yellow, "
+            "bright blue, and bright green. No gradients, no shading, no intermediate colors. "
+            "Bold graphic style like a vintage travel poster or woodblock print. "
+            "High contrast with clear separation between color regions. "
+            "Simple shapes, no fine details. A serene forest landscape with mountains.";
+        
+        t0 = millis();
+        OpenAIResult result = openai.generate(prompt, &aiImageData, &aiImageLen, 90000);
+        t1 = millis() - t0;
+        
+        if (result == OPENAI_OK && aiImageData != nullptr) {
+            Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+        } else {
+            Serial.printf("  AI generation failed: %s\n", openai.getLastError());
+            aiImageData = nullptr;
+            aiImageLen = 0;
+        }
+    } else if (needNewImage) {
+        // Explain why we're not generating
+        if (!hasApiKey) {
+            Serial.println("  Skipping AI generation: No API key configured");
+            Serial.println("  (Press 'c' on boot to configure)");
+        } else if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("  Skipping AI generation: WiFi not connected");
+        }
+    } else {
+        Serial.printf("  Using cached AI image: %zu bytes\n", aiImageLen);
+    }
+    
+    // Draw the background
+    t0 = millis();
+    if (aiImageData != nullptr && aiImageLen > 0) {
+        // Draw AI-generated PNG
+        PNGResult pngResult = png.drawFullscreen(aiImageData, aiImageLen);
+        bitmapTotal = millis() - t0;
+        if (pngResult != PNG_OK) {
+            Serial.printf("  PNG error: %s\n", png.getErrorString(pngResult));
+            display.clear(EL133UF1_WHITE);
+        }
+        Serial.printf("  PNG background: %lu ms\n", bitmapTotal);
+    } else {
+        // No AI image available - use a simple colored background
+        display.clear(EL133UF1_WHITE);
+        
+        // Draw a simple decorative pattern using the 6 colors
+        int bandHeight = display.height() / 6;
+        uint8_t colors[] = {EL133UF1_RED, EL133UF1_YELLOW, EL133UF1_GREEN, 
+                            EL133UF1_BLUE, EL133UF1_WHITE, EL133UF1_BLACK};
+        for (int i = 0; i < 6; i++) {
+            display.fillRect(0, i * bandHeight, display.width(), bandHeight / 4, colors[i]);
+        }
+        bitmapTotal = millis() - t0;
+        Serial.printf("  Fallback background: %lu ms\n", bitmapTotal);
+        
+        if (!hasApiKey) {
+            Serial.println("  (No OpenAI API key configured - press 'c' on boot to set)");
+        }
+    }
+#endif  // AI image generation disabled
     
     // ================================================================
-    // MAIN TIME DISPLAY - centered with outline for readability
+    // TIME - Large outlined text, centered
     // ================================================================
     
     // Display the PREDICTED time (what it will be when refresh completes)
@@ -546,189 +1295,81 @@ void doDisplayUpdate(int updateNumber) {
     char timeBuf[16];
     strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", tm);
     
-    // Cycle through background colors based on update number
-    uint8_t colors[] = {EL133UF1_RED, EL133UF1_GREEN, EL133UF1_BLUE, EL133UF1_YELLOW};
-    uint8_t bgColor = colors[(updateNumber - 1) % 4];
-    
-    // Large colored banner for time
+    // Time - large outlined text for readability on any background
     t0 = millis();
-    display.fillRect(0, 80, display.width(), 220, bgColor);
-    Serial.printf("  fillRect:       %lu ms\n", millis() - t0);
-    
-    // Time - large outlined text, centered on anchor point
-    // Using anchor at center of banner (800, 190)
-    t0 = millis();
-    ttf.drawTextAlignedOutlined(display.width() / 2, 190, timeBuf, 160.0,
+    ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2 - 50, timeBuf, 160.0,
                                  EL133UF1_WHITE, EL133UF1_BLACK,
-                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
+                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     t1 = millis() - t0;
     ttfTotal += t1;
     Serial.printf("  TTF time 160px: %lu ms\n", t1);
     
-    // Date - centered below banner
+    // ================================================================
+    // DATE - Below time, also outlined for readability
+    // ================================================================
     char dateBuf[32];
     strftime(dateBuf, sizeof(dateBuf), "%A, %d %B %Y", tm);
     t0 = millis();
-    ttf.drawTextAligned(display.width() / 2, 340, dateBuf, 48.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
+    ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2 + 100, dateBuf, 48.0,
+                                 EL133UF1_WHITE, EL133UF1_BLACK,
+                                 ALIGN_CENTER, ALIGN_TOP, 2);
     t1 = millis() - t0;
     ttfTotal += t1;
     Serial.printf("  TTF date 48px:  %lu ms\n", t1);
     
-    // Update count
+    // ================================================================
+    // BATTERY - Bottom right corner, outlined
+    // ================================================================
     char buf[64];
-    snprintf(buf, sizeof(buf), "Update #%d", updateNumber);
+    float batteryV = readBatteryVoltage();
+    int batteryPct = getBatteryPercent(batteryV);
+    Serial.printf("  Battery: %.2fV (%d%%)\n", batteryV, batteryPct);
+    
+    snprintf(buf, sizeof(buf), "%.1fV %d%%", batteryV, batteryPct);
     t0 = millis();
-    ttf.drawTextAligned(display.width() / 2, 410, buf, 36.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    Serial.printf("  TTF count 36px: %lu ms\n", t1);
-    
-    // ================================================================
-    // ALIGNMENT DEMO - show anchor points and alignment modes
-    // ================================================================
-    
-    int16_t demoY = 500;
-    int16_t anchorX = display.width() / 2;  // Center of screen
-    
-    // Draw vertical anchor line
-    display.drawVLine(anchorX, demoY, 180, EL133UF1_BLACK);
-    
-    // Draw horizontal baseline indicators
-    int16_t baselineY = demoY + 90;
-    display.drawHLine(anchorX - 300, baselineY, 600, EL133UF1_BLACK);
-    
-    // Small marker at anchor point
-    display.fillRect(anchorX - 3, baselineY - 3, 6, 6, EL133UF1_RED);
-    
-    // Left-aligned text (anchor on left edge, baseline)
-    t0 = millis();
-    ttf.drawTextAligned(anchorX - 280, baselineY, "Left", 32.0, EL133UF1_BLACK,
-                        ALIGN_LEFT, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    
-    // Center-aligned text (anchor at center, baseline)
-    t0 = millis();
-    ttf.drawTextAligned(anchorX, baselineY, "Center", 32.0, EL133UF1_RED,
-                        ALIGN_CENTER, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    
-    // Right-aligned text (anchor on right edge, baseline)
-    t0 = millis();
-    ttf.drawTextAligned(anchorX + 280, baselineY, "Right", 32.0, EL133UF1_BLACK,
-                        ALIGN_RIGHT, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    Serial.printf("  Alignment demo: %lu ms\n", t1 * 3);
-    
-    // ================================================================
-    // VERTICAL ALIGNMENT DEMO - showing descenders
-    // ================================================================
-    
-    int16_t vdemoX = 200;
-    int16_t vdemoY = 750;
-    
-    // Draw anchor line
-    display.drawHLine(vdemoX, vdemoY, 500, EL133UF1_RED);
-    display.fillRect(vdemoX - 3, vdemoY - 3, 6, 6, EL133UF1_RED);
-    
-    // Demonstrate baseline alignment with descenders (g, y, p)
-    t0 = millis();
-    ttf.drawTextAligned(vdemoX, vdemoY, "gyp Baseline", 36.0, EL133UF1_BLACK,
-                        ALIGN_LEFT, ALIGN_BASELINE);
-    t1 = millis() - t0;
-    ttfTotal += t1;
-    
-    // Show different vertical alignments side by side
-    int16_t vX2 = 900;
-    display.drawHLine(vX2, vdemoY, 400, EL133UF1_BLUE);
-    
-    ttf.drawTextAligned(vX2, vdemoY, "Top", 28.0, EL133UF1_BLUE,
-                        ALIGN_LEFT, ALIGN_TOP);
-    ttf.drawTextAligned(vX2 + 100, vdemoY, "Mid", 28.0, EL133UF1_GREEN,
-                        ALIGN_LEFT, ALIGN_MIDDLE);
-    ttf.drawTextAligned(vX2 + 200, vdemoY, "Base", 28.0, EL133UF1_RED,
-                        ALIGN_LEFT, ALIGN_BASELINE);
-    ttf.drawTextAligned(vX2 + 320, vdemoY, "Bot", 28.0, EL133UF1_BLACK,
-                        ALIGN_LEFT, ALIGN_BOTTOM);
-    Serial.printf("  V-align demo:   %lu ms\n", millis() - t0);
-    
-    // ================================================================
-    // OUTLINED TEXT DEMO
-    // ================================================================
-    
-    // Gradient background for outline demo
-    for (int i = 0; i < 6; i++) {
-        display.fillRect(0, 850 + i * 25, display.width(), 25, i);
-    }
-    
-    t0 = millis();
-    ttf.drawTextAlignedOutlined(display.width() / 2, 925, "Outlined Text on Any Background", 40.0,
+    ttf.drawTextAlignedOutlined(display.width() - 30, display.height() - 30, buf, 36.0,
                                  EL133UF1_WHITE, EL133UF1_BLACK,
-                                 ALIGN_CENTER, ALIGN_MIDDLE, 1);
+                                 ALIGN_RIGHT, ALIGN_BOTTOM, 2);
     t1 = millis() - t0;
     ttfTotal += t1;
-    Serial.printf("  Outlined demo:  %lu ms\n", t1);
+    Serial.printf("  TTF battery:    %lu ms\n", t1);
     
     // ================================================================
-    // INFO FOOTER
+    // NEXT UPDATE - Bottom left corner, outlined
+    // Shows when the next display update will complete (the even minute)
     // ================================================================
-    
+    int nextDisplayHour, nextDisplayMin;
+    calculateNextWakeTime(tm->tm_min, tm->tm_sec, tm->tm_hour, &nextDisplayHour, &nextDisplayMin);
+    snprintf(buf, sizeof(buf), "Next: %02d:%02d", nextDisplayHour, nextDisplayMin);
     t0 = millis();
-    
-    // Line 1: Time source info
-    if (sleep_has_rtc()) {
-        // DS3231 RTC present
-        snprintf(buf, sizeof(buf), "DS3231 RTC: crystal accurate (~2ppm), battery-backed");
-    } else {
-        // LPOSC fallback
-        uint32_t lposcFreq = sleep_get_lposc_freq_hz();
-        int32_t lposcDev = sleep_get_lposc_deviation_centipercent();
-        if (lposcFreq > 0) {
-            snprintf(buf, sizeof(buf), "LPOSC: %lu Hz (%+ld.%02ld%% from 32768)", 
-                     lposcFreq, lposcDev / 100, abs(lposcDev) % 100);
-        } else {
-            snprintf(buf, sizeof(buf), "LPOSC: not calibrated");
-        }
-    }
-    ttf.drawTextAligned(display.width() / 2, 1020, buf, 22.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
-    
-    // Line 2: Status
-    if (sleep_has_rtc()) {
-        snprintf(buf, sizeof(buf), "Wake: DS3231 alarm | Sleep: 10s | Update #%d", updateNumber);
-    } else {
-        int32_t driftPpm = sleep_get_drift_ppm();
-        snprintf(buf, sizeof(buf), "Drift: %+ld ppm | Sleep: 10s | Update #%d", 
-                 (long)driftPpm, updateNumber);
-    }
-    ttf.drawTextAligned(display.width() / 2, 1055, buf, 22.0, EL133UF1_BLACK,
-                        ALIGN_CENTER, ALIGN_TOP);
-    ttfTotal += millis() - t0;
-
-    // Line 3: Status
-    const char* statusMsg = sleep_has_rtc() 
-        ? "DS3231 RTC maintains time during deep sleep"
-        : "NTP synced on boot, time maintained during deep sleep";
-    ttf.drawTextAligned(display.width() / 2, 1090, statusMsg, 
-                        20.0, EL133UF1_BLACK, ALIGN_CENTER, ALIGN_TOP);
-    
-    // Version/tech info - right aligned at bottom
-    ttf.drawTextAligned(display.width() - 20, 1150, "RP2350 + EL133UF1 + Open Sans TTF", 
-                        18.0, EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_BOTTOM);
+    ttf.drawTextAlignedOutlined(30, display.height() - 30, buf, 36.0,
+                                 EL133UF1_WHITE, EL133UF1_BLACK,
+                                 ALIGN_LEFT, ALIGN_BOTTOM, 2);
+    t1 = millis() - t0;
+    ttfTotal += t1;
+    Serial.printf("  TTF next wake:  %lu ms\n", t1);
     
     Serial.printf("--- Drawing summary ---\n");
     Serial.printf("  TTF total:      %lu ms\n", ttfTotal);
     Serial.printf("  Bitmap total:   %lu ms\n", bitmapTotal);
     Serial.printf("  All drawing:    %lu ms\n", millis() - drawStart);
+    logStage(STAGE_DRAWING);
     
     // Update display and measure actual refresh time
-    // Skip init sequence on warm updates (saves ~1.7 seconds)
+    // Always skip init in update() since begin() already ran it
+    Serial.println("Starting display.update()...");
+    Serial.flush();
+    logStage(STAGE_UPDATING);
+    
+    // LED feedback: turn off during update, on when done
+    digitalWrite(LED_BUILTIN, LOW);
+    
     uint32_t refreshStart = millis();
-    display.update(!isColdBoot);  // skipInit=true for warm updates
+    display.update(true);  // skipInit=true - begin() handles init
+    
+    digitalWrite(LED_BUILTIN, HIGH);  // LED on = update complete
+    Serial.println("display.update() complete.");
+    logStage(STAGE_COMPLETE);
     uint32_t actualRefreshMs = millis() - refreshStart;
     
     // Get actual time now for comparison (with drift correction)

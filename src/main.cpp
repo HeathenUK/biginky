@@ -40,6 +40,8 @@
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
 #include "OpenAIImage.h"
+#include "GetimgAI.h"
+#include "ModelsLabAI.h"
 #include "fonts/opensans.h"
 #include "pico_sleep.h"
 #include "DS3231.h"
@@ -104,9 +106,11 @@ EL133UF1_TTF ttf;
 // BMP image loader
 EL133UF1_BMP bmp;
 
-// PNG decoder and OpenAI image generator
+// PNG decoder and AI image generators
 EL133UF1_PNG png;
 OpenAIImage openai;
+GetimgAI getimgai;
+ModelsLabAI modelslab;
 
 // AI-generated image stored in PSRAM (persists between updates)
 static uint8_t* aiImageData = nullptr;
@@ -171,6 +175,144 @@ void formatTime(uint64_t time_ms, char* buf, size_t len);
 void logStage(uint8_t stage);
 void logUpdateInfo(uint16_t updateNum, uint32_t wakeTime);
 void reportLastUpdate();
+
+// ================================================================
+// Generate AI background image using ModelsLab Qwen at exact display resolution
+// ================================================================
+/**
+ * @brief Generate a 1600x1200 image using ModelsLab's Qwen model
+ * 
+ * This function generates an image at the exact resolution of the EL133UF1
+ * display, optimized for the 6-color Spectra palette.
+ * 
+ * @param apiKey ModelsLab API key
+ * @param outData Pointer to receive allocated image data (caller must free!)
+ * @param outLen Pointer to receive image data length
+ * @param customPrompt Optional custom prompt (nullptr for default)
+ * @return true if successful
+ * 
+ * @note Requires WiFi to be connected before calling
+ */
+bool generateDisplayImage_ModelsLabQwen(const char* apiKey, 
+                                         uint8_t** outData, 
+                                         size_t* outLen,
+                                         const char* customPrompt = nullptr) {
+    if (!apiKey || !outData || !outLen) {
+        Serial.println("ModelsLabQwen: Invalid parameters");
+        return false;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("ModelsLabQwen: WiFi not connected");
+        return false;
+    }
+    
+    *outData = nullptr;
+    *outLen = 0;
+    
+    // Default prompt optimized for 6-color e-ink display
+    const char* defaultPrompt = 
+        "A beautiful landscape scene with bold, flat colors. "
+        "Use only pure black, pure white, bright red, bright yellow, "
+        "bright blue, and bright green. No gradients or shading. "
+        "Graphic poster style with high contrast and clear color separation. "
+        "Simple shapes, clean lines, vintage travel poster aesthetic. "
+        "Mountains, forest, and sky in a serene composition.";
+    
+    const char* prompt = customPrompt ? customPrompt : defaultPrompt;
+    
+    Serial.println("=== ModelsLab Qwen Image Generation ===");
+    Serial.printf("  Resolution: 1600x1200 (exact display size)\n");
+    Serial.printf("  Model: qwen2-vl-flux\n");
+    Serial.printf("  Prompt: %.60s...\n", prompt);
+    
+    // Configure ModelsLab client
+    modelslab.begin(apiKey);
+    modelslab.setModel(MODELSLAB_QWEN);      // Use Qwen model
+    modelslab.setSize(1600, 1200);            // Exact display resolution
+    modelslab.setSteps(25);                   // Good balance of quality/speed
+    modelslab.setGuidance(7.5f);              // Standard CFG
+    modelslab.setNegativePrompt(
+        "blurry, gradient, photorealistic, complex details, "
+        "fine textures, shadows, 3d render, photograph"
+    );
+    
+    Serial.println("  Generating image...");
+    uint32_t startTime = millis();
+    
+    ModelsLabResult result = modelslab.generate(prompt, outData, outLen, 120000);  // 2 min timeout
+    
+    uint32_t elapsed = millis() - startTime;
+    
+    if (result == MODELSLAB_OK && *outData != nullptr && *outLen > 0) {
+        Serial.printf("  Success! %zu bytes in %lu ms\n", *outLen, elapsed);
+        Serial.println("========================================");
+        return true;
+    } else {
+        Serial.printf("  Failed: %s\n", modelslab.getLastError());
+        Serial.printf("  Result code: %d\n", result);
+        Serial.println("========================================");
+        return false;
+    }
+}
+
+/**
+ * @brief Example: Generate and display a Qwen-generated background
+ * 
+ * Call this from setup() or doDisplayUpdate() when you want to 
+ * generate a fresh AI background at exact display resolution.
+ */
+void exampleGenerateAndDisplayQwenImage() {
+    // Get API key from EEPROM
+    char apiKey[200] = {0};
+    if (!eeprom.isPresent() || !eeprom.hasModelsLabKey()) {
+        Serial.println("No ModelsLab API key configured");
+        Serial.println("Press 'c' on boot to configure");
+        return;
+    }
+    eeprom.getModelsLabKey(apiKey, sizeof(apiKey));
+    
+    // Ensure WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, skipping image generation");
+        return;
+    }
+    
+    // Generate the image
+    uint8_t* imageData = nullptr;
+    size_t imageLen = 0;
+    
+    // Option 1: Use default prompt
+    bool success = generateDisplayImage_ModelsLabQwen(apiKey, &imageData, &imageLen);
+    
+    // Option 2: Use custom prompt
+    // const char* myPrompt = "A cozy cabin in snowy mountains, flat colors, poster style";
+    // bool success = generateDisplayImage_ModelsLabQwen(apiKey, &imageData, &imageLen, myPrompt);
+    
+    if (success && imageData != nullptr) {
+        Serial.println("Drawing generated image to display...");
+        
+        // Initialize PNG decoder if not already done
+        png.begin(&display);
+        png.setDithering(true);  // Floyd-Steinberg for better color mapping
+        
+        // Draw at 0,0 - image is already 1600x1200 so no scaling needed
+        PNGResult pngResult = png.draw(0, 0, imageData, imageLen);
+        
+        if (pngResult == PNG_OK) {
+            Serial.println("Image drawn successfully!");
+        } else {
+            Serial.printf("PNG decode error: %s\n", png.getErrorString(pngResult));
+            display.clear(EL133UF1_WHITE);  // Fallback to white
+        }
+        
+        // Free the image data
+        free(imageData);
+    } else {
+        Serial.println("Image generation failed, using fallback");
+        display.clear(EL133UF1_WHITE);
+    }
+}
 
 // Default time from wake to display completion (boot + draw + refresh)
 // This is the initial estimate; actual measured value is used after first cycle
@@ -370,7 +512,7 @@ void enterConfigMode() {
     }
     
     // --- OpenAI API Key Configuration ---
-    Serial.println("\n--- OpenAI API Key (for AI image generation) ---");
+    Serial.println("\n--- OpenAI API Key (for DALL-E image generation) ---");
     
     if (eeprom.isPresent() && eeprom.hasOpenAIKey()) {
         char currentKey[200];
@@ -396,6 +538,67 @@ void enterConfigMode() {
             Serial.println("WARNING: Key doesn't start with 'sk-', not saved.");
         }
     } else if (eeprom.hasOpenAIKey()) {
+        Serial.println("(keeping existing key)");
+    }
+    
+    // --- getimg.ai API Key Configuration ---
+    Serial.println("\n--- getimg.ai API Key (for Stable Diffusion/Flux image generation) ---");
+    
+    if (eeprom.isPresent() && eeprom.hasGetimgKey()) {
+        char currentKey[200];
+        eeprom.getGetimgKey(currentKey, sizeof(currentKey));
+        // Show only first/last few chars for security
+        Serial.printf("Current key: %.7s...%s\n", currentKey, currentKey + strlen(currentKey) - 4);
+        Serial.println("(Press Enter to keep current, or paste new key)");
+    } else {
+        Serial.println("No API key configured.");
+        Serial.println("Get one at: https://getimg.ai/dashboard");
+    }
+    
+    Serial.print("getimg.ai API Key: ");
+    String getimgKey = serialReadLine(true);  // Masked input
+    
+    if (getimgKey.length() > 0) {
+        if (getimgKey.startsWith("key-")) {
+            if (eeprom.isPresent()) {
+                eeprom.setGetimgKey(getimgKey.c_str());
+                Serial.println("API key saved!");
+            }
+        } else {
+            Serial.println("WARNING: Key doesn't start with 'key-', not saved.");
+        }
+    } else if (eeprom.hasGetimgKey()) {
+        Serial.println("(keeping existing key)");
+    }
+    
+    // --- ModelsLab API Key Configuration ---
+    Serial.println("\n--- ModelsLab API Key (for Stable Diffusion/Flux image generation) ---");
+    
+    if (eeprom.isPresent() && eeprom.hasModelsLabKey()) {
+        char currentKey[200];
+        eeprom.getModelsLabKey(currentKey, sizeof(currentKey));
+        // Show only first/last few chars for security
+        Serial.printf("Current key: %.7s...%s\n", currentKey, currentKey + strlen(currentKey) - 4);
+        Serial.println("(Press Enter to keep current, or paste new key)");
+    } else {
+        Serial.println("No API key configured.");
+        Serial.println("Get one at: https://modelslab.com/dashboard");
+    }
+    
+    Serial.print("ModelsLab API Key: ");
+    String modelslabKey = serialReadLine(true);  // Masked input
+    
+    if (modelslabKey.length() > 0) {
+        // ModelsLab keys are alphanumeric, no specific prefix
+        if (modelslabKey.length() >= 10) {
+            if (eeprom.isPresent()) {
+                eeprom.setModelsLabKey(modelslabKey.c_str());
+                Serial.println("API key saved!");
+            }
+        } else {
+            Serial.println("WARNING: Key too short, not saved.");
+        }
+    } else if (eeprom.hasModelsLabKey()) {
         Serial.println("(keeping existing key)");
     }
     
@@ -842,10 +1045,12 @@ void setup() {
     // Connect WiFi for AI image generation (if needed)
     // ================================================================
     // On cold boot, if we have an API key but skipped NTP sync (RTC had valid time),
-    // we still need to connect WiFi for the OpenAI API call
+    // we still need to connect WiFi for the AI image API call
     if (!sleep_woke_from_deep_sleep() && WiFi.status() != WL_CONNECTED) {
-        // Check if we have an API key and might need to generate an image
-        if (eeprom.isPresent() && eeprom.hasOpenAIKey() && aiImageData == nullptr) {
+        // Check if we have an API key (OpenAI, getimg.ai, or ModelsLab) and might need to generate an image
+        bool hasAnyKey = eeprom.isPresent() && 
+                         (eeprom.hasOpenAIKey() || eeprom.hasGetimgKey() || eeprom.hasModelsLabKey());
+        if (hasAnyKey && aiImageData == nullptr) {
             Serial.println("\n=== Connecting WiFi for AI image generation ===");
             if (strlen(wifiSSID) > 0) {
                 WiFi.begin(wifiSSID, wifiPSK);
@@ -1196,57 +1401,122 @@ void doDisplayUpdate(int updateNumber) {
     // Generate new AI image on first boot, or if we don't have one cached
     bool needNewImage = (aiImageData == nullptr);
     
-    // Check if we have an API key configured
-    char apiKey[200] = {0};
-    bool hasApiKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
-                     eeprom.getOpenAIKey(apiKey, sizeof(apiKey));
+    // Check if we have API keys configured (prefer getimg.ai/modelslab for speed/cost)
+    char apiKeyOpenAI[200] = {0};
+    char apiKeyGetimg[200] = {0};
+    char apiKeyModelsLab[200] = {0};
+    bool hasOpenAIKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
+                        eeprom.getOpenAIKey(apiKeyOpenAI, sizeof(apiKeyOpenAI));
+    bool hasGetimgKey = eeprom.isPresent() && eeprom.hasGetimgKey() && 
+                        eeprom.getGetimgKey(apiKeyGetimg, sizeof(apiKeyGetimg));
+    bool hasModelsLabKey = eeprom.isPresent() && eeprom.hasModelsLabKey() && 
+                           eeprom.getModelsLabKey(apiKeyModelsLab, sizeof(apiKeyModelsLab));
+    bool hasAnyKey = hasOpenAIKey || hasGetimgKey || hasModelsLabKey;
     
     // Debug: show AI image generation status
     Serial.println("--- AI Image Status ---");
     Serial.printf("  Need new image: %s\n", needNewImage ? "YES" : "NO (cached)");
     Serial.printf("  EEPROM present: %s\n", eeprom.isPresent() ? "YES" : "NO");
-    Serial.printf("  Has API key: %s\n", hasApiKey ? "YES" : "NO");
+    Serial.printf("  Has OpenAI key: %s\n", hasOpenAIKey ? "YES" : "NO");
+    Serial.printf("  Has getimg.ai key: %s\n", hasGetimgKey ? "YES" : "NO");
+    Serial.printf("  Has ModelsLab key: %s\n", hasModelsLabKey ? "YES" : "NO");
     Serial.printf("  WiFi status: %d (connected=%d)\n", WiFi.status(), WL_CONNECTED);
-    if (hasApiKey) {
-        Serial.printf("  API key: %.7s...%s\n", apiKey, apiKey + strlen(apiKey) - 4);
+    if (hasOpenAIKey) {
+        Serial.printf("  OpenAI key: %.7s...%s\n", apiKeyOpenAI, apiKeyOpenAI + strlen(apiKeyOpenAI) - 4);
+    }
+    if (hasGetimgKey) {
+        Serial.printf("  getimg.ai key: %.7s...%s\n", apiKeyGetimg, apiKeyGetimg + strlen(apiKeyGetimg) - 4);
+    }
+    if (hasModelsLabKey) {
+        Serial.printf("  ModelsLab key: %.7s...%s\n", apiKeyModelsLab, apiKeyModelsLab + strlen(apiKeyModelsLab) - 4);
     }
     
-    if (needNewImage && hasApiKey && WiFi.status() == WL_CONNECTED) {
+    // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
+    const char* prompt = 
+        "A beautiful wide landscape nature scene in 16:9 aspect ratio, "
+        "designed for a 6-color e-ink display. "
+        "Use ONLY these colors: pure black, pure white, bright red, bright yellow, "
+        "bright blue, and bright green. No gradients, no shading, no intermediate colors. "
+        "Bold graphic style like a vintage travel poster or woodblock print. "
+        "High contrast with clear separation between color regions. "
+        "Simple shapes, no fine details. A serene forest landscape with mountains.";
+    
+    if (needNewImage && hasAnyKey && WiFi.status() == WL_CONNECTED) {
         Serial.println("Generating AI background image...");
         
-        // Initialize OpenAI client
-        openai.begin(apiKey);
-        openai.setModel(DALLE_3);
-        openai.setSize(DALLE_1792x1024);  // Landscape format for 1600x1200 display
-        openai.setQuality(DALLE_STANDARD);
+        // Priority order: getimg.ai (fastest) > ModelsLab > OpenAI (most expensive)
         
-        // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
-        // Note: requesting landscape 1792x1024 to better fill the 1600x1200 display
-        const char* prompt = 
-            "A beautiful wide landscape nature scene in 16:9 aspect ratio, "
-            "designed for a 6-color e-ink display. "
-            "Use ONLY these colors: pure black, pure white, bright red, bright yellow, "
-            "bright blue, and bright green. No gradients, no shading, no intermediate colors. "
-            "Bold graphic style like a vintage travel poster or woodblock print. "
-            "High contrast with clear separation between color regions. "
-            "Simple shapes, no fine details. A serene forest landscape with mountains.";
+        // Try getimg.ai first (fastest, good quality)
+        if (hasGetimgKey && aiImageData == nullptr) {
+            Serial.println("  Using getimg.ai (Flux-Schnell)...");
+            
+            getimgai.begin(apiKeyGetimg);
+            getimgai.setModel(GETIMG_FLUX_SCHNELL);  // Very fast model
+            getimgai.setSize(1024, 1024);
+            getimgai.setFormat(GETIMG_PNG);
+            
+            t0 = millis();
+            GetimgResult result = getimgai.generate(prompt, &aiImageData, &aiImageLen, 90000);
+            t1 = millis() - t0;
+            
+            if (result == GETIMG_OK && aiImageData != nullptr) {
+                Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+            } else {
+                Serial.printf("  getimg.ai generation failed: %s\n", getimgai.getLastError());
+                aiImageData = nullptr;
+                aiImageLen = 0;
+            }
+        }
         
-        t0 = millis();
-        OpenAIResult result = openai.generate(prompt, &aiImageData, &aiImageLen, 90000);
-        t1 = millis() - t0;
+        // Try ModelsLab if getimg.ai failed or wasn't available
+        if (hasModelsLabKey && aiImageData == nullptr) {
+            Serial.println("  Using ModelsLab (Flux-Schnell)...");
+            
+            modelslab.begin(apiKeyModelsLab);
+            modelslab.setModel(MODELSLAB_FLUX_SCHNELL);
+            modelslab.setSize(1024, 1024);
+            modelslab.setSteps(4);  // Flux-schnell uses 4 steps
+            modelslab.setGuidance(3.5f);
+            
+            t0 = millis();
+            ModelsLabResult result = modelslab.generate(prompt, &aiImageData, &aiImageLen, 90000);
+            t1 = millis() - t0;
+            
+            if (result == MODELSLAB_OK && aiImageData != nullptr) {
+                Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+            } else {
+                Serial.printf("  ModelsLab generation failed: %s\n", modelslab.getLastError());
+                aiImageData = nullptr;
+                aiImageLen = 0;
+            }
+        }
         
-        if (result == OPENAI_OK && aiImageData != nullptr) {
-            Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
-        } else {
-            Serial.printf("  AI generation failed: %s\n", openai.getLastError());
-            aiImageData = nullptr;
-            aiImageLen = 0;
+        // Try OpenAI as last resort (highest quality but most expensive)
+        if (hasOpenAIKey && aiImageData == nullptr) {
+            Serial.println("  Using OpenAI DALL-E 3...");
+            
+            openai.begin(apiKeyOpenAI);
+            openai.setModel(DALLE_3);
+            openai.setSize(DALLE_1792x1024);  // Landscape format for 1600x1200 display
+            openai.setQuality(DALLE_STANDARD);
+            
+            t0 = millis();
+            OpenAIResult result = openai.generate(prompt, &aiImageData, &aiImageLen, 90000);
+            t1 = millis() - t0;
+            
+            if (result == OPENAI_OK && aiImageData != nullptr) {
+                Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+            } else {
+                Serial.printf("  OpenAI generation failed: %s\n", openai.getLastError());
+                aiImageData = nullptr;
+                aiImageLen = 0;
+            }
         }
     } else if (needNewImage) {
         // Explain why we're not generating
-        if (!hasApiKey) {
+        if (!hasAnyKey) {
             Serial.println("  Skipping AI generation: No API key configured");
-            Serial.println("  (Press 'c' on boot to configure)");
+            Serial.println("  (Press 'c' on boot to configure getimg.ai, ModelsLab, or OpenAI key)");
         } else if (WiFi.status() != WL_CONNECTED) {
             Serial.println("  Skipping AI generation: WiFi not connected");
         }
@@ -1279,8 +1549,8 @@ void doDisplayUpdate(int updateNumber) {
         bitmapTotal = millis() - t0;
         Serial.printf("  Fallback background: %lu ms\n", bitmapTotal);
         
-        if (!hasApiKey) {
-            Serial.println("  (No OpenAI API key configured - press 'c' on boot to set)");
+        if (!hasAnyKey) {
+            Serial.println("  (No API key configured - press 'c' on boot to set)");
         }
     }
 #endif  // AI image generation disabled

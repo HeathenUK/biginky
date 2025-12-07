@@ -41,6 +41,7 @@
 #include "EL133UF1_PNG.h"
 #include "OpenAIImage.h"
 #include "GetimgAI.h"
+#include "ModelsLabAI.h"
 #include "fonts/opensans.h"
 #include "pico_sleep.h"
 #include "DS3231.h"
@@ -109,6 +110,7 @@ EL133UF1_BMP bmp;
 EL133UF1_PNG png;
 OpenAIImage openai;
 GetimgAI getimgai;
+ModelsLabAI modelslab;
 
 // AI-generated image stored in PSRAM (persists between updates)
 static uint8_t* aiImageData = nullptr;
@@ -428,6 +430,37 @@ void enterConfigMode() {
             Serial.println("WARNING: Key doesn't start with 'key-', not saved.");
         }
     } else if (eeprom.hasGetimgKey()) {
+        Serial.println("(keeping existing key)");
+    }
+    
+    // --- ModelsLab API Key Configuration ---
+    Serial.println("\n--- ModelsLab API Key (for Stable Diffusion/Flux image generation) ---");
+    
+    if (eeprom.isPresent() && eeprom.hasModelsLabKey()) {
+        char currentKey[200];
+        eeprom.getModelsLabKey(currentKey, sizeof(currentKey));
+        // Show only first/last few chars for security
+        Serial.printf("Current key: %.7s...%s\n", currentKey, currentKey + strlen(currentKey) - 4);
+        Serial.println("(Press Enter to keep current, or paste new key)");
+    } else {
+        Serial.println("No API key configured.");
+        Serial.println("Get one at: https://modelslab.com/dashboard");
+    }
+    
+    Serial.print("ModelsLab API Key: ");
+    String modelslabKey = serialReadLine(true);  // Masked input
+    
+    if (modelslabKey.length() > 0) {
+        // ModelsLab keys are alphanumeric, no specific prefix
+        if (modelslabKey.length() >= 10) {
+            if (eeprom.isPresent()) {
+                eeprom.setModelsLabKey(modelslabKey.c_str());
+                Serial.println("API key saved!");
+            }
+        } else {
+            Serial.println("WARNING: Key too short, not saved.");
+        }
+    } else if (eeprom.hasModelsLabKey()) {
         Serial.println("(keeping existing key)");
     }
     
@@ -876,8 +909,9 @@ void setup() {
     // On cold boot, if we have an API key but skipped NTP sync (RTC had valid time),
     // we still need to connect WiFi for the AI image API call
     if (!sleep_woke_from_deep_sleep() && WiFi.status() != WL_CONNECTED) {
-        // Check if we have an API key (OpenAI or getimg.ai) and might need to generate an image
-        bool hasAnyKey = eeprom.isPresent() && (eeprom.hasOpenAIKey() || eeprom.hasGetimgKey());
+        // Check if we have an API key (OpenAI, getimg.ai, or ModelsLab) and might need to generate an image
+        bool hasAnyKey = eeprom.isPresent() && 
+                         (eeprom.hasOpenAIKey() || eeprom.hasGetimgKey() || eeprom.hasModelsLabKey());
         if (hasAnyKey && aiImageData == nullptr) {
             Serial.println("\n=== Connecting WiFi for AI image generation ===");
             if (strlen(wifiSSID) > 0) {
@@ -1229,14 +1263,17 @@ void doDisplayUpdate(int updateNumber) {
     // Generate new AI image on first boot, or if we don't have one cached
     bool needNewImage = (aiImageData == nullptr);
     
-    // Check if we have API keys configured (prefer getimg.ai for speed/cost)
+    // Check if we have API keys configured (prefer getimg.ai/modelslab for speed/cost)
     char apiKeyOpenAI[200] = {0};
     char apiKeyGetimg[200] = {0};
+    char apiKeyModelsLab[200] = {0};
     bool hasOpenAIKey = eeprom.isPresent() && eeprom.hasOpenAIKey() && 
                         eeprom.getOpenAIKey(apiKeyOpenAI, sizeof(apiKeyOpenAI));
     bool hasGetimgKey = eeprom.isPresent() && eeprom.hasGetimgKey() && 
                         eeprom.getGetimgKey(apiKeyGetimg, sizeof(apiKeyGetimg));
-    bool hasAnyKey = hasOpenAIKey || hasGetimgKey;
+    bool hasModelsLabKey = eeprom.isPresent() && eeprom.hasModelsLabKey() && 
+                           eeprom.getModelsLabKey(apiKeyModelsLab, sizeof(apiKeyModelsLab));
+    bool hasAnyKey = hasOpenAIKey || hasGetimgKey || hasModelsLabKey;
     
     // Debug: show AI image generation status
     Serial.println("--- AI Image Status ---");
@@ -1244,12 +1281,16 @@ void doDisplayUpdate(int updateNumber) {
     Serial.printf("  EEPROM present: %s\n", eeprom.isPresent() ? "YES" : "NO");
     Serial.printf("  Has OpenAI key: %s\n", hasOpenAIKey ? "YES" : "NO");
     Serial.printf("  Has getimg.ai key: %s\n", hasGetimgKey ? "YES" : "NO");
+    Serial.printf("  Has ModelsLab key: %s\n", hasModelsLabKey ? "YES" : "NO");
     Serial.printf("  WiFi status: %d (connected=%d)\n", WiFi.status(), WL_CONNECTED);
     if (hasOpenAIKey) {
         Serial.printf("  OpenAI key: %.7s...%s\n", apiKeyOpenAI, apiKeyOpenAI + strlen(apiKeyOpenAI) - 4);
     }
     if (hasGetimgKey) {
         Serial.printf("  getimg.ai key: %.7s...%s\n", apiKeyGetimg, apiKeyGetimg + strlen(apiKeyGetimg) - 4);
+    }
+    if (hasModelsLabKey) {
+        Serial.printf("  ModelsLab key: %.7s...%s\n", apiKeyModelsLab, apiKeyModelsLab + strlen(apiKeyModelsLab) - 4);
     }
     
     // Prompt optimized for Spectra 6 display (6 colors: black, white, red, yellow, blue, green)
@@ -1265,14 +1306,15 @@ void doDisplayUpdate(int updateNumber) {
     if (needNewImage && hasAnyKey && WiFi.status() == WL_CONNECTED) {
         Serial.println("Generating AI background image...");
         
-        // Prefer getimg.ai (faster, cheaper) over OpenAI
-        if (hasGetimgKey) {
+        // Priority order: getimg.ai (fastest) > ModelsLab > OpenAI (most expensive)
+        
+        // Try getimg.ai first (fastest, good quality)
+        if (hasGetimgKey && aiImageData == nullptr) {
             Serial.println("  Using getimg.ai (Flux-Schnell)...");
             
-            // Initialize getimg.ai client
             getimgai.begin(apiKeyGetimg);
             getimgai.setModel(GETIMG_FLUX_SCHNELL);  // Very fast model
-            getimgai.setSize(1024, 1024);  // Flux-schnell supports up to 1024x1024
+            getimgai.setSize(1024, 1024);
             getimgai.setFormat(GETIMG_PNG);
             
             t0 = millis();
@@ -1285,19 +1327,36 @@ void doDisplayUpdate(int updateNumber) {
                 Serial.printf("  getimg.ai generation failed: %s\n", getimgai.getLastError());
                 aiImageData = nullptr;
                 aiImageLen = 0;
-                
-                // Fall back to OpenAI if available
-                if (hasOpenAIKey) {
-                    Serial.println("  Falling back to OpenAI DALL-E...");
-                }
             }
         }
         
-        // Try OpenAI if getimg.ai failed or wasn't available
-        if (aiImageData == nullptr && hasOpenAIKey) {
+        // Try ModelsLab if getimg.ai failed or wasn't available
+        if (hasModelsLabKey && aiImageData == nullptr) {
+            Serial.println("  Using ModelsLab (Flux-Schnell)...");
+            
+            modelslab.begin(apiKeyModelsLab);
+            modelslab.setModel(MODELSLAB_FLUX_SCHNELL);
+            modelslab.setSize(1024, 1024);
+            modelslab.setSteps(4);  // Flux-schnell uses 4 steps
+            modelslab.setGuidance(3.5f);
+            
+            t0 = millis();
+            ModelsLabResult result = modelslab.generate(prompt, &aiImageData, &aiImageLen, 90000);
+            t1 = millis() - t0;
+            
+            if (result == MODELSLAB_OK && aiImageData != nullptr) {
+                Serial.printf("  AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+            } else {
+                Serial.printf("  ModelsLab generation failed: %s\n", modelslab.getLastError());
+                aiImageData = nullptr;
+                aiImageLen = 0;
+            }
+        }
+        
+        // Try OpenAI as last resort (highest quality but most expensive)
+        if (hasOpenAIKey && aiImageData == nullptr) {
             Serial.println("  Using OpenAI DALL-E 3...");
             
-            // Initialize OpenAI client
             openai.begin(apiKeyOpenAI);
             openai.setModel(DALLE_3);
             openai.setSize(DALLE_1792x1024);  // Landscape format for 1600x1200 display
@@ -1319,7 +1378,7 @@ void doDisplayUpdate(int updateNumber) {
         // Explain why we're not generating
         if (!hasAnyKey) {
             Serial.println("  Skipping AI generation: No API key configured");
-            Serial.println("  (Press 'c' on boot to configure OpenAI or getimg.ai key)");
+            Serial.println("  (Press 'c' on boot to configure getimg.ai, ModelsLab, or OpenAI key)");
         } else if (WiFi.status() != WL_CONNECTED) {
             Serial.println("  Skipping AI generation: WiFi not connected");
         }
@@ -1353,7 +1412,7 @@ void doDisplayUpdate(int updateNumber) {
         Serial.printf("  Fallback background: %lu ms\n", bitmapTotal);
         
         if (!hasAnyKey) {
-            Serial.println("  (No API key configured - press 'c' on boot to set OpenAI or getimg.ai key)");
+            Serial.println("  (No API key configured - press 'c' on boot to set)");
         }
     }
 #endif  // AI image generation disabled

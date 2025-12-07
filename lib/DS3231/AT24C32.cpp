@@ -333,6 +333,28 @@ void AT24C32::setGetimgKey(const char* key) {
     Serial.printf("AT24C32: Saved getimg.ai API key (%d chars)\n", strlen(key));
 }
 
+bool AT24C32::hasModelsLabKey() {
+    // ModelsLab keys are typically alphanumeric strings
+    uint8_t first = readByte(EEPROM_MODELSLAB_KEY);
+    // Valid if it's an alphanumeric character (not 0x00 or 0xFF)
+    return (first >= '0' && first <= '9') || 
+           (first >= 'A' && first <= 'Z') || 
+           (first >= 'a' && first <= 'z');
+}
+
+bool AT24C32::getModelsLabKey(char* key, size_t keyLen) {
+    if (!hasModelsLabKey()) {
+        return false;
+    }
+    readString(EEPROM_MODELSLAB_KEY, key, keyLen);
+    return true;
+}
+
+void AT24C32::setModelsLabKey(const char* key) {
+    writeString(EEPROM_MODELSLAB_KEY, key, 200);
+    Serial.printf("AT24C32: Saved ModelsLab API key (%d chars)\n", strlen(key));
+}
+
 void AT24C32::logTemperature(float temp) {
     Serial.printf("  [logTemperature] temp=%.2f\n", temp);
     

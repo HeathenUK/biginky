@@ -27,6 +27,15 @@
  * Battery Monitoring:
  *   VBAT    ->   GP43 (ADC, via voltage divider)
  * 
+ * SDIO SD Card (Pico LiPo 2 XL W):
+ *   CLK     ->   GP31
+ *   CMD     ->   GP36
+ *   DAT0    ->   GP32
+ *   DAT1    ->   GP33
+ *   DAT2    ->   GP34
+ *   DAT3    ->   GP35
+ *   DET     ->   GP37 (card detect, active low)
+ * 
  * WiFi Configuration:
  *   On first boot (or press 'c' within 3 seconds), enter config mode
  *   to set WiFi credentials via serial. Credentials are stored in EEPROM.
@@ -89,15 +98,15 @@ static char wifiPSK[65] = {0};
 // GP43 is the battery voltage ADC pin
 #define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
 
-// SDIO SD Card pins (directly wired microSD card)
-// These pins must be consecutive for PIO SDIO on RP2350
-// Using GPIO 4-9 as they are not used by display or RTC
-#define PIN_SDIO_CLK   5    // SDIO CLK (GPIO 5)
-#define PIN_SDIO_CMD   4    // SDIO CMD (GPIO 4)
-#define PIN_SDIO_DAT0  6    // SDIO DAT0 (GPIO 6)
-#define PIN_SDIO_DAT1  7    // SDIO DAT1 (GPIO 7) - optional for 4-bit mode
-#define PIN_SDIO_DAT2  8    // SDIO DAT2 (GPIO 8) - optional for 4-bit mode
-#define PIN_SDIO_DAT3  9    // SDIO DAT3 (GPIO 9) - optional for 4-bit mode
+// SDIO SD Card pins (Pico LiPo 2 XL W microSD slot)
+// Directly wired to the on-board or connected microSD card
+#define PIN_SDIO_CLK   31   // SDIO CLK (GP31)
+#define PIN_SDIO_CMD   36   // SDIO CMD (GP36)
+#define PIN_SDIO_DAT0  32   // SDIO DAT0 (GP32)
+#define PIN_SDIO_DAT1  33   // SDIO DAT1 (GP33)
+#define PIN_SDIO_DAT2  34   // SDIO DAT2 (GP34)
+#define PIN_SDIO_DAT3  35   // SDIO DAT3 (GP35)
+#define PIN_SDIO_DET   37   // Card Detect (GP37) - active low when card inserted
 
 // Voltage divider ratio - adjust based on actual circuit
 // If battery shows wrong voltage, measure with multimeter and calibrate
@@ -826,14 +835,25 @@ static uint32_t g_bootTimestamp = 0;
  */
 bool testSdioSdCard() {
     Serial.println("\n=== SDIO SD Card Debug ===");
-    Serial.printf("  SDIO Pins: CLK=%d, CMD=%d, DAT0=%d, DAT1=%d, DAT2=%d, DAT3=%d\n",
-                  PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 
-                  PIN_SDIO_DAT1, PIN_SDIO_DAT2, PIN_SDIO_DAT3);
+    Serial.printf("  SDIO Pins: CLK=GP%d, CMD=GP%d, DAT0-3=GP%d-%d, DET=GP%d\n",
+                  PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, PIN_SDIO_DAT3, PIN_SDIO_DET);
+    
+    // Check card detect pin first (active low - LOW when card inserted)
+    pinMode(PIN_SDIO_DET, INPUT_PULLUP);
+    delay(10);  // Let pin settle
+    bool cardDetected = (digitalRead(PIN_SDIO_DET) == LOW);
+    Serial.printf("  Card Detect (GP%d): %s\n", PIN_SDIO_DET, 
+                  cardDetected ? "CARD PRESENT" : "NO CARD (or DET not connected)");
+    
+    if (!cardDetected) {
+        Serial.println("  WARNING: Card detect pin shows no card inserted");
+        Serial.println("  (Continuing anyway in case DET is not wired)");
+    }
     
     // Configure SDIO pins for RP2350 PIO-based SDIO
     // The SdFat library uses PIO for SDIO on RP2040/RP2350
-    // Pin configuration: CLK pin and CMD pin define the bus location
-    // DAT0-3 must follow CMD consecutively
+    // Pin configuration: CLK pin, CMD pin, and D0 pin
+    // DAT1-3 are expected to be consecutive after DAT0
     
     Serial.println("  Attempting SDIO initialization...");
     Serial.flush();

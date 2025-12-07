@@ -846,26 +846,9 @@ bool testSdioSdCard() {
                   PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, PIN_SDIO_DAT3, PIN_SDIO_DET);
     Serial.flush();
     
-    // Check card detect pin
-    // Note: Card detect polarity varies by socket design
-    // Some are active-low (LOW=inserted), some are active-high (HIGH=inserted)
-    Serial.println("  Checking card detect pin...");
-    Serial.flush();
-    pinMode(PIN_SDIO_DET, INPUT_PULLUP);
-    delay(10);  // Let pin settle
-    int detState = digitalRead(PIN_SDIO_DET);
-    Serial.printf("  Card Detect (GP%d): pin is %s\n", PIN_SDIO_DET, 
-                  detState == HIGH ? "HIGH" : "LOW");
-    // Try active-high (HIGH = card inserted) based on user feedback
-    bool cardDetected = (detState == HIGH);
-    Serial.printf("  Interpretation: %s\n", 
-                  cardDetected ? "CARD PRESENT (active-high)" : "NO CARD (or check wiring)");
-    Serial.flush();
-    
-    // Continue anyway - user can insert card or DET might not be wired
-    if (!cardDetected) {
-        Serial.println("  NOTE: Continuing with SDIO init anyway...");
-    }
+    // Card detect already checked before calling this function
+    // Just log for debugging
+    Serial.printf("  Card Detect (GP%d): confirmed present\n", PIN_SDIO_DET);
     
     // Allocate SD object dynamically to avoid global constructor issues
     Serial.println("  Allocating SdFs object...");
@@ -904,11 +887,10 @@ bool testSdioSdCard() {
     uint32_t startTime = millis();
     
     // Create SDIO config with our pins
-    // Using slower clock divider (2.0) for initial testing - more stable
-    // Can reduce to 1.0 once working for faster speeds
+    // clkDiv=1.0 for maximum speed (can increase to 2.0 if unstable)
     Serial.println("  Creating SdioConfig...");
     Serial.flush();
-    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 2.0);
+    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 1.0);
     
     Serial.println("  Calling sd->begin()...");
     Serial.flush();
@@ -1094,10 +1076,10 @@ struct BmpInfoHeader {
 #pragma pack(pop)
 
 /**
- * @brief Stream a BMP file from SD card directly to display
+ * @brief Stream a BMP file from SD card directly to display (optimized)
  * 
- * Reads and processes one row at a time, using minimal memory.
- * Only needs ~6KB buffer for a 1600px wide 24-bit row.
+ * Reads multiple rows at once to minimize SD card seeks.
+ * Uses ~200KB buffer for batched reading (50 rows at 1600px 24bpp).
  * 
  * @param file Open file handle positioned at start
  * @param filename For logging
@@ -1136,7 +1118,8 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
     if (topDown) height = -height;
     uint16_t bpp = infoHeader.bitsPerPixel;
     
-    Serial.printf("  BMP: %ldx%ld, %d bpp\n", width, height, bpp);
+    Serial.printf("  BMP: %ldx%ld, %d bpp, %s\n", width, height, bpp,
+                  topDown ? "top-down" : "bottom-up");
     
     if (bpp != 24 && bpp != 32) {
         Serial.println("  Only 24/32-bit BMPs supported for streaming");
@@ -1147,16 +1130,21 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
     int bytesPerPixel = bpp / 8;
     uint32_t rowSize = ((width * bytesPerPixel + 3) / 4) * 4;
     
-    // Allocate row buffer (only ~6KB for 1600px @ 24bpp)
-    uint8_t* rowBuffer = (uint8_t*)malloc(rowSize);
-    if (rowBuffer == nullptr) {
-        Serial.println("  Failed to allocate row buffer");
+    // Batch size - read multiple rows at once for speed
+    // Target ~200KB buffer = ~50 rows for 1600px 24bpp
+    const int ROWS_PER_BATCH = 50;
+    uint32_t batchSize = rowSize * ROWS_PER_BATCH;
+    
+    // Try to allocate batch buffer (use PSRAM if available)
+    uint8_t* batchBuffer = (uint8_t*)pmalloc(batchSize);
+    if (batchBuffer == nullptr) {
+        batchBuffer = (uint8_t*)malloc(batchSize);
+    }
+    if (batchBuffer == nullptr) {
+        Serial.println("  Failed to allocate batch buffer");
         return false;
     }
-    Serial.printf("  Row buffer: %lu bytes\n", rowSize);
-    
-    // Read palette if present (for indexed formats - not used here but skip past it)
-    // For 24/32 bit, there's no palette, dataOffset points directly to pixel data
+    Serial.printf("  Batch buffer: %lu bytes (%d rows)\n", batchSize, ROWS_PER_BATCH);
     
     // Calculate centering offset
     int16_t offsetX = (display.width() - width) / 2;
@@ -1171,59 +1159,83 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
     uint32_t streamStart = millis();
     uint64_t totalBytesRead = 0;
     
-    // Process each row
-    for (int32_t row = 0; row < height; row++) {
-        // Calculate which row to read from file
-        // BMP is bottom-up by default, top-down if height was negative
-        int32_t srcRow = topDown ? row : (height - 1 - row);
+    // For bottom-up BMPs: read batches from end to start, but process in display order
+    // For top-down BMPs: read and process sequentially
+    
+    int32_t totalBatches = (height + ROWS_PER_BATCH - 1) / ROWS_PER_BATCH;
+    
+    for (int32_t batch = 0; batch < totalBatches; batch++) {
+        // Calculate which rows this batch covers
+        int32_t displayRowStart = batch * ROWS_PER_BATCH;
+        int32_t displayRowEnd = min((int32_t)((batch + 1) * ROWS_PER_BATCH), height);
+        int32_t rowsInBatch = displayRowEnd - displayRowStart;
         
-        // Seek to row position
-        uint64_t rowOffset = fileHeader.dataOffset + (uint64_t)srcRow * rowSize;
-        if (!file.seek(rowOffset)) {
-            Serial.printf("  Seek failed at row %ld\n", row);
-            free(rowBuffer);
+        // Calculate file position for this batch
+        int32_t fileRowStart;
+        if (topDown) {
+            // Top-down: file order matches display order
+            fileRowStart = displayRowStart;
+        } else {
+            // Bottom-up: last display row is first file row
+            fileRowStart = height - displayRowEnd;
+        }
+        
+        uint64_t batchOffset = fileHeader.dataOffset + (uint64_t)fileRowStart * rowSize;
+        
+        // Seek and read entire batch
+        if (!file.seek(batchOffset)) {
+            Serial.printf("  Seek failed at batch %ld\n", batch);
+            free(batchBuffer);
             return false;
         }
         
-        // Read the row
-        if (file.read(rowBuffer, rowSize) != (int)rowSize) {
-            Serial.printf("  Read failed at row %ld\n", row);
-            free(rowBuffer);
+        uint32_t bytesToRead = rowsInBatch * rowSize;
+        if (file.read(batchBuffer, bytesToRead) != (int)bytesToRead) {
+            Serial.printf("  Read failed at batch %ld\n", batch);
+            free(batchBuffer);
             return false;
         }
-        totalBytesRead += rowSize;
+        totalBytesRead += bytesToRead;
         
-        // Calculate destination Y
-        int16_t dstY = offsetY + row;
-        if (dstY < 0 || dstY >= display.height()) continue;
-        
-        // Process pixels in this row
-        for (int32_t col = 0; col < width; col++) {
-            int16_t dstX = offsetX + col;
-            if (dstX < 0 || dstX >= display.width()) continue;
+        // Process rows in this batch
+        for (int32_t i = 0; i < rowsInBatch; i++) {
+            // Calculate display row
+            int32_t displayRow = displayRowStart + i;
+            int16_t dstY = offsetY + displayRow;
+            if (dstY < 0 || dstY >= display.height()) continue;
             
-            // BMP stores as BGR (or BGRA for 32-bit)
-            uint8_t b = rowBuffer[col * bytesPerPixel + 0];
-            uint8_t g = rowBuffer[col * bytesPerPixel + 1];
-            uint8_t r = rowBuffer[col * bytesPerPixel + 2];
+            // Calculate buffer offset for this row
+            // For bottom-up: rows in buffer are reversed relative to display
+            int32_t bufferRow = topDown ? i : (rowsInBatch - 1 - i);
+            uint8_t* rowPtr = batchBuffer + bufferRow * rowSize;
             
-            // Map to Spectra 6 color and set pixel
-            uint8_t spectraColor = spectra6Color.mapColor(r, g, b);
-            display.setPixel(dstX, dstY, spectraColor);
+            // Process pixels in this row
+            for (int32_t col = 0; col < width; col++) {
+                int16_t dstX = offsetX + col;
+                if (dstX < 0 || dstX >= display.width()) continue;
+                
+                // BMP stores as BGR (or BGRA for 32-bit)
+                uint8_t b = rowPtr[col * bytesPerPixel + 0];
+                uint8_t g = rowPtr[col * bytesPerPixel + 1];
+                uint8_t r = rowPtr[col * bytesPerPixel + 2];
+                
+                // Map to Spectra 6 color and set pixel
+                uint8_t spectraColor = spectra6Color.mapColor(r, g, b);
+                display.setPixel(dstX, dstY, spectraColor);
+            }
         }
         
-        // Progress update every 100 rows
-        if (row % 200 == 0) {
-            Serial.printf("  Row %ld/%ld\r", row, height);
-        }
+        // Progress update
+        Serial.printf("  Batch %ld/%ld (rows %ld-%ld)\r", 
+                      batch + 1, totalBatches, displayRowStart, displayRowEnd - 1);
     }
     
     uint32_t streamTime = millis() - streamStart;
-    float speedKBs = (totalBytesRead / 1024.0f) / (streamTime / 1000.0f);
-    Serial.printf("  Streamed %llu bytes in %lu ms (%.1f KB/s)\n", 
-                  totalBytesRead, streamTime, speedKBs);
+    float speedMBs = (totalBytesRead / (1024.0f * 1024.0f)) / (streamTime / 1000.0f);
+    Serial.printf("\n  Streamed %.1f MB in %lu ms (%.1f MB/s)\n", 
+                  totalBytesRead / (1024.0f * 1024.0f), streamTime, speedMBs);
     
-    free(rowBuffer);
+    free(batchBuffer);
     return true;
 }
 
@@ -1444,14 +1456,23 @@ void setup() {
     // SDIO SD Card Test
     // ================================================================
     #ifndef DISABLE_SDIO_TEST
-    Serial.println("\n>>> About to test SDIO SD card...");
-    Serial.flush();
-    delay(100);
-    bool hasSDCard = testSdioSdCard();
-    if (hasSDCard) {
-        Serial.println("SD Card: Available and working");
+    // Quick card detect check BEFORE slow SDIO init
+    pinMode(PIN_SDIO_DET, INPUT_PULLUP);
+    delay(5);
+    bool cardDetectState = (digitalRead(PIN_SDIO_DET) == HIGH);  // Active high
+    
+    bool hasSDCard = false;
+    if (!cardDetectState) {
+        Serial.println("SD Card: No card detected (skipping SDIO init)");
     } else {
-        Serial.println("SD Card: Not available (continuing without SD)");
+        Serial.println("\n>>> Card detected, initializing SDIO...");
+        Serial.flush();
+        hasSDCard = testSdioSdCard();
+        if (hasSDCard) {
+            Serial.println("SD Card: Available and working");
+        } else {
+            Serial.println("SD Card: Init failed (continuing without SD)");
+        }
     }
     #else
     Serial.println("\n>>> SDIO test disabled (DISABLE_SDIO_TEST defined)");

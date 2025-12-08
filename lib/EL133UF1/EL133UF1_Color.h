@@ -18,8 +18,15 @@
 enum ColorMapMode {
     COLOR_MAP_NEAREST,      // Simple nearest color (fastest)
     COLOR_MAP_LAB,          // CIE Lab perceptual matching (better quality)
-    COLOR_MAP_DITHER        // Floyd-Steinberg dithering (best for photos)
+    COLOR_MAP_DITHER,       // Floyd-Steinberg dithering (best for photos)
+    COLOR_MAP_LUT           // Pre-computed LUT (fastest, uses ~32KB RAM)
 };
+
+// LUT configuration: 5 bits per channel = 32x32x32 = 32KB
+#define COLOR_LUT_BITS 5
+#define COLOR_LUT_SIZE (1 << COLOR_LUT_BITS)
+#define COLOR_LUT_TOTAL (COLOR_LUT_SIZE * COLOR_LUT_SIZE * COLOR_LUT_SIZE)
+#define COLOR_LUT_SHIFT (8 - COLOR_LUT_BITS)
 
 /**
  * @brief Spectra 6 color mapper with perceptual color matching
@@ -43,6 +50,43 @@ public:
      * @return Spectra 6 color code
      */
     uint8_t mapColor(uint8_t r, uint8_t g, uint8_t b);
+    
+    /**
+     * @brief Fast color mapping using pre-computed LUT
+     * Falls back to Lab if LUT not built. Call buildLUT() first for best performance.
+     * @param r Red component (0-255)
+     * @param g Green component (0-255)
+     * @param b Blue component (0-255)
+     * @return Spectra 6 color code
+     */
+    inline uint8_t mapColorFast(uint8_t r, uint8_t g, uint8_t b) {
+        if (_lut) {
+            // Direct LUT lookup - single array access, no computation
+            uint32_t idx = ((uint32_t)(r >> COLOR_LUT_SHIFT) << (COLOR_LUT_BITS * 2)) |
+                          ((uint32_t)(g >> COLOR_LUT_SHIFT) << COLOR_LUT_BITS) |
+                          (b >> COLOR_LUT_SHIFT);
+            return _lut[idx];
+        }
+        return findNearestLab(r, g, b);
+    }
+    
+    /**
+     * @brief Build the RGB→Spectra lookup table
+     * Takes ~100-200ms but makes mapColorFast() extremely fast.
+     * Call once during setup after setting palette.
+     * @return true if LUT was built successfully
+     */
+    bool buildLUT();
+    
+    /**
+     * @brief Free the LUT memory
+     */
+    void freeLUT();
+    
+    /**
+     * @brief Check if LUT is available
+     */
+    bool hasLUT() const { return _lut != nullptr; }
     
     /**
      * @brief Map RGB to Spectra 6 with dithering
@@ -90,6 +134,9 @@ private:
     
     // Pre-computed Lab values for palette
     float _paletteLab[6][3];
+    
+    // Pre-computed RGB→Spectra LUT (32KB, allocated on demand)
+    uint8_t* _lut;
     
     // Dithering error buffer (for current and next row)
     // Dynamically allocated only when dithering is enabled to save ~21KB RAM

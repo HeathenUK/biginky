@@ -20,7 +20,7 @@ const uint8_t Spectra6ColorMap::SPECTRA_CODE[6] = {
 Spectra6ColorMap spectra6Color;
 
 Spectra6ColorMap::Spectra6ColorMap() 
-    : _mode(COLOR_MAP_LAB), _currentRow(0), _ditherWidth(0), _ditherAllocated(false) {
+    : _mode(COLOR_MAP_LAB), _lut(nullptr), _currentRow(0), _ditherWidth(0), _ditherAllocated(false) {
     // Initialize error buffer pointers to null
     _errorR[0] = _errorR[1] = nullptr;
     _errorG[0] = _errorG[1] = nullptr;
@@ -29,6 +29,9 @@ Spectra6ColorMap::Spectra6ColorMap()
 }
 
 Spectra6ColorMap::~Spectra6ColorMap() {
+    // Free LUT if allocated
+    freeLUT();
+    
     // Free dither buffers if allocated
     if (_ditherAllocated) {
         for (int i = 0; i < 2; i++) {
@@ -36,6 +39,50 @@ Spectra6ColorMap::~Spectra6ColorMap() {
             if (_errorG[i]) free(_errorG[i]);
             if (_errorB[i]) free(_errorB[i]);
         }
+    }
+}
+
+bool Spectra6ColorMap::buildLUT() {
+    // Free existing LUT if any
+    freeLUT();
+    
+    Serial.println("Building RGB->Spectra LUT (32KB)...");
+    uint32_t t0 = millis();
+    
+    // Allocate LUT - try PSRAM first, fall back to regular RAM
+    _lut = (uint8_t*)pmalloc(COLOR_LUT_TOTAL);
+    if (_lut == nullptr) {
+        _lut = (uint8_t*)malloc(COLOR_LUT_TOTAL);
+    }
+    
+    if (_lut == nullptr) {
+        Serial.println("  LUT allocation failed!");
+        return false;
+    }
+    
+    // Pre-compute all RGB combinations
+    // This takes ~100-200ms but makes color mapping essentially free
+    uint32_t idx = 0;
+    for (int ri = 0; ri < COLOR_LUT_SIZE; ri++) {
+        uint8_t r = (ri << COLOR_LUT_SHIFT) | (ri >> (COLOR_LUT_BITS - COLOR_LUT_SHIFT));
+        for (int gi = 0; gi < COLOR_LUT_SIZE; gi++) {
+            uint8_t g = (gi << COLOR_LUT_SHIFT) | (gi >> (COLOR_LUT_BITS - COLOR_LUT_SHIFT));
+            for (int bi = 0; bi < COLOR_LUT_SIZE; bi++) {
+                uint8_t b = (bi << COLOR_LUT_SHIFT) | (bi >> (COLOR_LUT_BITS - COLOR_LUT_SHIFT));
+                // Use Lab-based nearest neighbor for best quality
+                _lut[idx++] = findNearestLab(r, g, b);
+            }
+        }
+    }
+    
+    Serial.printf("  LUT built in %lu ms (%lu entries)\n", millis() - t0, (unsigned long)COLOR_LUT_TOTAL);
+    return true;
+}
+
+void Spectra6ColorMap::freeLUT() {
+    if (_lut) {
+        free(_lut);
+        _lut = nullptr;
     }
 }
 
@@ -199,9 +246,16 @@ void Spectra6ColorMap::getPaletteRGB(uint8_t spectraCode, uint8_t* r, uint8_t* g
 }
 
 uint8_t Spectra6ColorMap::mapColor(uint8_t r, uint8_t g, uint8_t b) {
+    // Fast path: use LUT if available (regardless of mode, LUT uses Lab quality)
+    if (_lut) {
+        return mapColorFast(r, g, b);
+    }
+    
     switch (_mode) {
         case COLOR_MAP_NEAREST:
             return findNearestRGB(r, g, b);
+        case COLOR_MAP_LUT:
+            // LUT not built yet, fall back to Lab
         case COLOR_MAP_LAB:
         case COLOR_MAP_DITHER:
         default:

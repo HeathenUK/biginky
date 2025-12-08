@@ -15,8 +15,8 @@ bool EL133UF1_BMP::begin(EL133UF1* display) {
 }
 
 uint8_t EL133UF1_BMP::mapToSpectra6(uint8_t r, uint8_t g, uint8_t b) {
-    // Use the global color mapper with Lab perceptual matching
-    return spectra6Color.mapColor(r, g, b);
+    // Use fast LUT-based color mapping (Lab perceptual matching pre-computed)
+    return spectra6Color.mapColorFast(r, g, b);
 }
 
 BMPResult EL133UF1_BMP::parseHeaders(const uint8_t* data, size_t len,
@@ -140,6 +140,16 @@ void EL133UF1_BMP::draw24bit(int16_t x, int16_t y, const uint8_t* data,
     
     const uint8_t* pixelData = data + dataOffset;
     
+    // Check if we can use fast row access
+    bool useFastPath = _display->canUseFastRowAccess();
+    
+    // Allocate row color buffer for batch writes
+    uint8_t* rowColors = nullptr;
+    if (useFastPath) {
+        rowColors = (uint8_t*)malloc(width);
+        if (!rowColors) useFastPath = false;  // Fall back to per-pixel
+    }
+    
     for (int32_t row = 0; row < height; row++) {
         // BMP is bottom-up by default, top-down if height is negative
         int32_t srcRow = topDown ? row : (height - 1 - row);
@@ -149,19 +159,32 @@ void EL133UF1_BMP::draw24bit(int16_t x, int16_t y, const uint8_t* data,
         
         const uint8_t* rowPtr = pixelData + srcRow * rowSize;
         
-        for (int32_t col = 0; col < width; col++) {
-            int16_t dstX = x + col;
-            if (dstX < 0 || dstX >= _display->width()) continue;
-            
-            // BMP stores as BGR (or BGRA for 32-bit)
-            uint8_t b = rowPtr[col * bytesPerPixel + 0];
-            uint8_t g = rowPtr[col * bytesPerPixel + 1];
-            uint8_t r = rowPtr[col * bytesPerPixel + 2];
-            
-            uint8_t spectraColor = mapToSpectra6(r, g, b);
-            _display->setPixel(dstX, dstY, spectraColor);
+        if (useFastPath && x >= 0 && x + width <= _display->width()) {
+            // FAST PATH: Convert entire row then batch write
+            for (int32_t col = 0; col < width; col++) {
+                uint8_t b = rowPtr[col * bytesPerPixel + 0];
+                uint8_t g = rowPtr[col * bytesPerPixel + 1];
+                uint8_t r = rowPtr[col * bytesPerPixel + 2];
+                rowColors[col] = mapToSpectra6(r, g, b);
+            }
+            _display->writeRowFast(x, dstY, rowColors, width);
+        } else {
+            // FALLBACK: Per-pixel with bounds checking
+            for (int32_t col = 0; col < width; col++) {
+                int16_t dstX = x + col;
+                if (dstX < 0 || dstX >= _display->width()) continue;
+                
+                uint8_t b = rowPtr[col * bytesPerPixel + 0];
+                uint8_t g = rowPtr[col * bytesPerPixel + 1];
+                uint8_t r = rowPtr[col * bytesPerPixel + 2];
+                
+                uint8_t spectraColor = mapToSpectra6(r, g, b);
+                _display->setPixel(dstX, dstY, spectraColor);
+            }
         }
     }
+    
+    if (rowColors) free(rowColors);
 }
 
 void EL133UF1_BMP::draw8bit(int16_t x, int16_t y, const uint8_t* data,
@@ -188,6 +211,16 @@ void EL133UF1_BMP::draw8bit(int16_t x, int16_t y, const uint8_t* data,
     
     const uint8_t* pixelData = data + dataOffset;
     
+    // Check if we can use fast row access
+    bool useFastPath = _display->canUseFastRowAccess();
+    
+    // Allocate row color buffer for batch writes
+    uint8_t* rowColors = nullptr;
+    if (useFastPath) {
+        rowColors = (uint8_t*)malloc(width);
+        if (!rowColors) useFastPath = false;
+    }
+    
     for (int32_t row = 0; row < height; row++) {
         int32_t srcRow = topDown ? row : (height - 1 - row);
         int16_t dstY = y + row;
@@ -196,14 +229,25 @@ void EL133UF1_BMP::draw8bit(int16_t x, int16_t y, const uint8_t* data,
         
         const uint8_t* rowPtr = pixelData + srcRow * rowSize;
         
-        for (int32_t col = 0; col < width; col++) {
-            int16_t dstX = x + col;
-            if (dstX < 0 || dstX >= _display->width()) continue;
-            
-            uint8_t index = rowPtr[col];
-            _display->setPixel(dstX, dstY, paletteMap[index]);
+        if (useFastPath && x >= 0 && x + width <= _display->width()) {
+            // FAST PATH: Map entire row then batch write
+            for (int32_t col = 0; col < width; col++) {
+                rowColors[col] = paletteMap[rowPtr[col]];
+            }
+            _display->writeRowFast(x, dstY, rowColors, width);
+        } else {
+            // FALLBACK: Per-pixel with bounds checking
+            for (int32_t col = 0; col < width; col++) {
+                int16_t dstX = x + col;
+                if (dstX < 0 || dstX >= _display->width()) continue;
+                
+                uint8_t index = rowPtr[col];
+                _display->setPixel(dstX, dstY, paletteMap[index]);
+            }
         }
     }
+    
+    if (rowColors) free(rowColors);
 }
 
 void EL133UF1_BMP::draw4bit(int16_t x, int16_t y, const uint8_t* data,
@@ -230,6 +274,16 @@ void EL133UF1_BMP::draw4bit(int16_t x, int16_t y, const uint8_t* data,
     
     const uint8_t* pixelData = data + dataOffset;
     
+    // Check if we can use fast row access
+    bool useFastPath = _display->canUseFastRowAccess();
+    
+    // Allocate row color buffer for batch writes
+    uint8_t* rowColors = nullptr;
+    if (useFastPath) {
+        rowColors = (uint8_t*)malloc(width);
+        if (!rowColors) useFastPath = false;
+    }
+    
     for (int32_t row = 0; row < height; row++) {
         int32_t srcRow = topDown ? row : (height - 1 - row);
         int16_t dstY = y + row;
@@ -238,15 +292,28 @@ void EL133UF1_BMP::draw4bit(int16_t x, int16_t y, const uint8_t* data,
         
         const uint8_t* rowPtr = pixelData + srcRow * rowSize;
         
-        for (int32_t col = 0; col < width; col++) {
-            int16_t dstX = x + col;
-            if (dstX < 0 || dstX >= _display->width()) continue;
-            
-            uint8_t byteVal = rowPtr[col / 2];
-            uint8_t index = (col & 1) ? (byteVal & 0x0F) : (byteVal >> 4);
-            _display->setPixel(dstX, dstY, paletteMap[index]);
+        if (useFastPath && x >= 0 && x + width <= _display->width()) {
+            // FAST PATH: Decode entire row then batch write
+            for (int32_t col = 0; col < width; col++) {
+                uint8_t byteVal = rowPtr[col / 2];
+                uint8_t index = (col & 1) ? (byteVal & 0x0F) : (byteVal >> 4);
+                rowColors[col] = paletteMap[index];
+            }
+            _display->writeRowFast(x, dstY, rowColors, width);
+        } else {
+            // FALLBACK: Per-pixel with bounds checking
+            for (int32_t col = 0; col < width; col++) {
+                int16_t dstX = x + col;
+                if (dstX < 0 || dstX >= _display->width()) continue;
+                
+                uint8_t byteVal = rowPtr[col / 2];
+                uint8_t index = (col & 1) ? (byteVal & 0x0F) : (byteVal >> 4);
+                _display->setPixel(dstX, dstY, paletteMap[index]);
+            }
         }
     }
+    
+    if (rowColors) free(rowColors);
 }
 
 void EL133UF1_BMP::draw1bit(int16_t x, int16_t y, const uint8_t* data,
@@ -272,6 +339,16 @@ void EL133UF1_BMP::draw1bit(int16_t x, int16_t y, const uint8_t* data,
     
     const uint8_t* pixelData = data + dataOffset;
     
+    // Check if we can use fast row access
+    bool useFastPath = _display->canUseFastRowAccess();
+    
+    // Allocate row color buffer for batch writes
+    uint8_t* rowColors = nullptr;
+    if (useFastPath) {
+        rowColors = (uint8_t*)malloc(width);
+        if (!rowColors) useFastPath = false;
+    }
+    
     for (int32_t row = 0; row < height; row++) {
         int32_t srcRow = topDown ? row : (height - 1 - row);
         int16_t dstY = y + row;
@@ -280,15 +357,28 @@ void EL133UF1_BMP::draw1bit(int16_t x, int16_t y, const uint8_t* data,
         
         const uint8_t* rowPtr = pixelData + srcRow * rowSize;
         
-        for (int32_t col = 0; col < width; col++) {
-            int16_t dstX = x + col;
-            if (dstX < 0 || dstX >= _display->width()) continue;
-            
-            uint8_t byteVal = rowPtr[col / 8];
-            uint8_t bit = (byteVal >> (7 - (col & 7))) & 1;
-            _display->setPixel(dstX, dstY, bit ? color1 : color0);
+        if (useFastPath && x >= 0 && x + width <= _display->width()) {
+            // FAST PATH: Decode entire row then batch write
+            for (int32_t col = 0; col < width; col++) {
+                uint8_t byteVal = rowPtr[col / 8];
+                uint8_t bit = (byteVal >> (7 - (col & 7))) & 1;
+                rowColors[col] = bit ? color1 : color0;
+            }
+            _display->writeRowFast(x, dstY, rowColors, width);
+        } else {
+            // FALLBACK: Per-pixel with bounds checking
+            for (int32_t col = 0; col < width; col++) {
+                int16_t dstX = x + col;
+                if (dstX < 0 || dstX >= _display->width()) continue;
+                
+                uint8_t byteVal = rowPtr[col / 8];
+                uint8_t bit = (byteVal >> (7 - (col & 7))) & 1;
+                _display->setPixel(dstX, dstY, bit ? color1 : color0);
+            }
         }
     }
+    
+    if (rowColors) free(rowColors);
 }
 
 const char* EL133UF1_BMP::getErrorString(BMPResult result) {

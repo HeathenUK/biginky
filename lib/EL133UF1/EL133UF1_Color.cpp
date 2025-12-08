@@ -361,8 +361,8 @@ uint8_t Spectra6ColorMap::mapColorDithered(int x, int y, uint8_t r, uint8_t g, u
     if (newG < 0) newG = 0; else if (newG > 255) newG = 255;
     if (newB < 0) newB = 0; else if (newB > 255) newB = 255;
     
-    // Find nearest palette color
-    uint8_t spectraColor = findNearestLab((uint8_t)newR, (uint8_t)newG, (uint8_t)newB);
+    // Find nearest palette color using fast LUT (already Lab-based)
+    uint8_t spectraColor = mapColorFast((uint8_t)newR, (uint8_t)newG, (uint8_t)newB);
     
     // Get the actual palette RGB for error calculation
     uint8_t palR, palG, palB;

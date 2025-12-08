@@ -8,7 +8,8 @@
  * This LUT maps 5-bit-per-channel RGB values to Spectra 6 colors
  * using CIE Lab perceptual color matching.
  * 
- * Size: 32768 bytes (32x32x32)
+ * Size: 32KB (32x32x32)
+ * 5-bit is optimal - larger LUTs offer no benefit for 6-color output
  */
 
 #ifndef EL133UF1_COLORLUT_H

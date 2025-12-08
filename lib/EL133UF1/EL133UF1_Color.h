@@ -22,17 +22,12 @@ enum ColorMapMode {
     COLOR_MAP_LUT           // Pre-computed LUT (fastest, zero runtime cost)
 };
 
-// LUT configuration: bits per channel determines size vs precision tradeoff
-// 4 bits = 16x16x16 =   4KB (fastest, may show banding in gradients)
-// 5 bits = 32x32x32 =  32KB (good balance, recommended)
-// 6 bits = 64x64x64 = 256KB (overkill for 6-color output)
-#ifndef COLOR_LUT_BITS
-#define COLOR_LUT_BITS 5  // Default: 32KB LUT
-#endif
-
-#define COLOR_LUT_SIZE (1 << COLOR_LUT_BITS)
-#define COLOR_LUT_TOTAL (COLOR_LUT_SIZE * COLOR_LUT_SIZE * COLOR_LUT_SIZE)
-#define COLOR_LUT_SHIFT (8 - COLOR_LUT_BITS)
+// LUT configuration: 5 bits per channel = 32x32x32 = 32KB
+// This is optimal for 6-color output - larger LUTs offer no benefit
+#define COLOR_LUT_BITS  5
+#define COLOR_LUT_SIZE  32   // 2^5
+#define COLOR_LUT_TOTAL 32768  // 32^3
+#define COLOR_LUT_SHIFT 3    // 8 - 5
 
 // Include pre-generated PROGMEM LUT (32KB in flash, zero RAM cost)
 #include "EL133UF1_ColorLUT.h"

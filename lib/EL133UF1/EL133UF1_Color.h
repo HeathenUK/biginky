@@ -19,7 +19,7 @@ enum ColorMapMode {
     COLOR_MAP_NEAREST,      // Simple nearest color (fastest)
     COLOR_MAP_LAB,          // CIE Lab perceptual matching (better quality)
     COLOR_MAP_DITHER,       // Floyd-Steinberg dithering (best for photos)
-    COLOR_MAP_LUT           // Pre-computed LUT (fastest, uses ~32KB RAM)
+    COLOR_MAP_LUT           // Pre-computed LUT (fastest, zero runtime cost)
 };
 
 // LUT configuration: 5 bits per channel = 32x32x32 = 32KB
@@ -27,6 +27,9 @@ enum ColorMapMode {
 #define COLOR_LUT_SIZE (1 << COLOR_LUT_BITS)
 #define COLOR_LUT_TOTAL (COLOR_LUT_SIZE * COLOR_LUT_SIZE * COLOR_LUT_SIZE)
 #define COLOR_LUT_SHIFT (8 - COLOR_LUT_BITS)
+
+// Include pre-generated PROGMEM LUT (32KB in flash, zero RAM cost)
+#include "EL133UF1_ColorLUT.h"
 
 /**
  * @brief Spectra 6 color mapper with perceptual color matching
@@ -53,40 +56,49 @@ public:
     
     /**
      * @brief Fast color mapping using pre-computed LUT
-     * Falls back to Lab if LUT not built. Call buildLUT() first for best performance.
+     * Uses PROGMEM LUT for default palette (zero runtime cost).
+     * Uses custom RAM LUT if palette has been modified.
      * @param r Red component (0-255)
      * @param g Green component (0-255)
      * @param b Blue component (0-255)
      * @return Spectra 6 color code
      */
     inline uint8_t mapColorFast(uint8_t r, uint8_t g, uint8_t b) {
+        uint32_t idx = ((uint32_t)(r >> COLOR_LUT_SHIFT) << (COLOR_LUT_BITS * 2)) |
+                      ((uint32_t)(g >> COLOR_LUT_SHIFT) << COLOR_LUT_BITS) |
+                      (b >> COLOR_LUT_SHIFT);
+        
+        // Use custom RAM LUT if available (for modified palettes)
         if (_lut) {
-            // Direct LUT lookup - single array access, no computation
-            uint32_t idx = ((uint32_t)(r >> COLOR_LUT_SHIFT) << (COLOR_LUT_BITS * 2)) |
-                          ((uint32_t)(g >> COLOR_LUT_SHIFT) << COLOR_LUT_BITS) |
-                          (b >> COLOR_LUT_SHIFT);
             return _lut[idx];
         }
-        return findNearestLab(r, g, b);
+        // Use pre-generated PROGMEM LUT (32KB in flash, default palette)
+        return pgm_read_byte(&SPECTRA6_COLOR_LUT[idx]);
     }
     
     /**
-     * @brief Build the RGB→Spectra lookup table
-     * Takes ~100-200ms but makes mapColorFast() extremely fast.
-     * Call once during setup after setting palette.
+     * @brief Build a custom runtime LUT (only needed if using non-default palette)
+     * For default palette, use mapColorFast() directly - it uses PROGMEM LUT.
      * @return true if LUT was built successfully
      */
     bool buildLUT();
     
     /**
-     * @brief Free the LUT memory
+     * @brief Free the custom runtime LUT memory
      */
     void freeLUT();
     
     /**
-     * @brief Check if LUT is available
+     * @brief Check if custom runtime LUT is available
+     * Note: PROGMEM LUT is always available via mapColorFast()
      */
     bool hasLUT() const { return _lut != nullptr; }
+    
+    /**
+     * @brief Check if using custom palette (non-default)
+     * If true, buildLUT() should be called for optimal mapColorFast() with custom colors
+     */
+    bool hasCustomPalette() const { return _customPalette; }
     
     /**
      * @brief Map RGB to Spectra 6 with dithering
@@ -135,8 +147,12 @@ private:
     // Pre-computed Lab values for palette
     float _paletteLab[6][3];
     
-    // Pre-computed RGB→Spectra LUT (32KB, allocated on demand)
+    // Custom runtime LUT (32KB, only allocated if palette modified)
+    // If null, mapColorFast() uses the PROGMEM LUT for default palette
     uint8_t* _lut;
+    
+    // Track if palette has been customized (requires runtime LUT rebuild)
+    bool _customPalette;
     
     // Dithering error buffer (for current and next row)
     // Dynamically allocated only when dithering is enabled to save ~21KB RAM

@@ -1127,8 +1127,8 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
         return false;
     }
     
-    // Build color LUT if not already done (one-time ~150ms cost, huge speedup)
-    if (!spectra6Color.hasLUT()) {
+    // Build custom LUT if using non-default palette (otherwise PROGMEM LUT is used)
+    if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
         spectra6Color.buildLUT();
     }
     

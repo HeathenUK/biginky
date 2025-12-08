@@ -151,8 +151,8 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     if (_display == nullptr) return PNG_ERR_NO_DISPLAY;
     if (data == nullptr || len == 0) return PNG_ERR_NULL_DATA;
     
-    // Build color LUT if not already done (one-time cost, huge speedup)
-    if (!spectra6Color.hasLUT()) {
+    // Build custom LUT if using non-default palette (otherwise PROGMEM LUT is used)
+    if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
         spectra6Color.buildLUT();
     }
     

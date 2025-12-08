@@ -27,6 +27,15 @@
  * Battery Monitoring:
  *   VBAT    ->   GP43 (ADC, via voltage divider)
  * 
+ * SDIO SD Card (Pico LiPo 2 XL W):
+ *   CLK     ->   GP31
+ *   CMD     ->   GP36
+ *   DAT0    ->   GP32
+ *   DAT1    ->   GP33
+ *   DAT2    ->   GP34
+ *   DAT3    ->   GP35
+ *   DET     ->   GP37 (card detect, active low)
+ * 
  * WiFi Configuration:
  *   On first boot (or press 'c' within 3 seconds), enter config mode
  *   to set WiFi credentials via serial. Credentials are stored in EEPROM.
@@ -39,6 +48,7 @@
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
+#include "EL133UF1_Color.h"
 #include "OpenAIImage.h"
 #include "GetimgAI.h"
 #include "ModelsLabAI.h"
@@ -48,6 +58,11 @@
 #include "AT24C32.h"
 #include "hardware/structs/powman.h"
 #include "hardware/powman.h"
+
+// SdFat for SDIO SD card support (can disable with -DDISABLE_SDIO_TEST)
+#ifndef DISABLE_SDIO_TEST
+#include <SdFat.h>
+#endif
 
 // WiFi credentials - loaded from EEPROM or set via serial config
 // Compile-time fallback (optional, for development only)
@@ -86,6 +101,16 @@ static char wifiPSK[65] = {0};
 // GP43 is the battery voltage ADC pin
 #define PIN_VBAT_ADC  43    // Battery voltage ADC pin (GP43 on Pico LiPo)
 
+// SDIO SD Card pins (Pico LiPo 2 XL W microSD slot)
+// Directly wired to the on-board or connected microSD card
+#define PIN_SDIO_CLK   31   // SDIO CLK (GP31)
+#define PIN_SDIO_CMD   36   // SDIO CMD (GP36)
+#define PIN_SDIO_DAT0  32   // SDIO DAT0 (GP32)
+#define PIN_SDIO_DAT1  33   // SDIO DAT1 (GP33)
+#define PIN_SDIO_DAT2  34   // SDIO DAT2 (GP34)
+#define PIN_SDIO_DAT3  35   // SDIO DAT3 (GP35)
+#define PIN_SDIO_DET   37   // Card Detect (GP37) - active low when card inserted
+
 // Voltage divider ratio - adjust based on actual circuit
 // If battery shows wrong voltage, measure with multimeter and calibrate
 #define VBAT_DIVIDER_RATIO  3.0f
@@ -115,6 +140,16 @@ ModelsLabAI modelslab;
 // AI-generated image stored in PSRAM (persists between updates)
 static uint8_t* aiImageData = nullptr;
 static size_t aiImageLen = 0;
+
+// ================================================================
+// SDIO SD Card support
+// ================================================================
+#ifndef DISABLE_SDIO_TEST
+// Use SdFs for FAT16/FAT32/exFAT support
+// Note: These are created as pointers to avoid crashes from global object construction
+static SdFs* sd = nullptr;
+static FsFile* sdFile = nullptr;
+#endif
 
 // ================================================================
 // Battery voltage monitoring
@@ -793,6 +828,522 @@ void setUpdateCount(int count) {
 // Boot timestamp for measuring wake-to-display duration
 static uint32_t g_bootTimestamp = 0;
 
+// ================================================================
+// SDIO SD Card Debug Function
+// ================================================================
+/**
+ * @brief Test SDIO SD card connectivity and print debug info
+ * 
+ * This function attempts to initialize an SD card via SDIO interface
+ * and prints detailed debug information about the card and filesystem.
+ * 
+ * @return true if SD card was successfully initialized
+ */
+#ifndef DISABLE_SDIO_TEST
+bool testSdioSdCard() {
+    Serial.println("\n=== SDIO SD Card Debug ===");
+    Serial.printf("  SDIO Pins: CLK=GP%d, CMD=GP%d, DAT0-3=GP%d-%d, DET=GP%d\n",
+                  PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, PIN_SDIO_DAT3, PIN_SDIO_DET);
+    Serial.flush();
+    
+    // Card detect already checked before calling this function
+    // Just log for debugging
+    Serial.printf("  Card Detect (GP%d): confirmed present\n", PIN_SDIO_DET);
+    
+    // Allocate SD object dynamically to avoid global constructor issues
+    Serial.println("  Allocating SdFs object...");
+    Serial.flush();
+    
+    if (sd == nullptr) {
+        sd = new SdFs();
+        if (sd == nullptr) {
+            Serial.println("  ERROR: Failed to allocate SdFs object!");
+            Serial.println("=============================\n");
+            return false;
+        }
+    }
+    Serial.println("  SdFs object allocated OK");
+    Serial.flush();
+    
+    // Configure SDIO pins for RP2350 PIO-based SDIO
+    // The SdFat library uses PIO for SDIO on RP2040/RP2350
+    // PioSdioConfig(clkPin, cmdPin, dat0Pin, clkDiv)
+    // DAT1-3 must be consecutive after DAT0 (dat0+1, dat0+2, dat0+3)
+    Serial.println("  Creating SDIO configuration...");
+    Serial.printf("    CLK=GP%d, CMD=GP%d, DAT0=GP%d (DAT1-3 consecutive)\n",
+                  PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0);
+    Serial.flush();
+    
+    // Verify DAT pins are consecutive (required by PIO SDIO driver)
+    static_assert(PIN_SDIO_DAT1 == PIN_SDIO_DAT0 + 1, "DAT1 must be DAT0+1");
+    static_assert(PIN_SDIO_DAT2 == PIN_SDIO_DAT0 + 2, "DAT2 must be DAT0+2");
+    static_assert(PIN_SDIO_DAT3 == PIN_SDIO_DAT0 + 3, "DAT3 must be DAT0+3");
+    
+    Serial.println("  Attempting SDIO initialization...");
+    Serial.println("  NOTE: If device crashes here, SDIO pins may be incompatible with PIO driver");
+    Serial.flush();
+    delay(100);  // Give time for serial to flush
+    
+    uint32_t startTime = millis();
+    
+    // Create SDIO config with our pins
+    // clkDiv=1.0 for maximum speed (can increase to 2.0 if unstable)
+    Serial.println("  Creating SdioConfig...");
+    Serial.flush();
+    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 1.0);
+    
+    Serial.println("  Calling sd->begin()...");
+    Serial.flush();
+    delay(100);
+    
+    bool success = sd->begin(sdioConfig);
+    uint32_t initTime = millis() - startTime;
+    
+    if (!success) {
+        Serial.printf("  SDIO init FAILED after %lu ms\n", initTime);
+        Serial.println("  Possible causes:");
+        Serial.println("    - No SD card inserted");
+        Serial.println("    - SD card not properly seated");
+        Serial.println("    - Wrong pin configuration");
+        Serial.println("    - Card not compatible with SDIO mode");
+        Serial.println("    - Card requires SPI mode instead");
+        
+        // Try to get more error info
+        if (sd->sdErrorCode()) {
+            Serial.printf("  SD Error Code: 0x%02X\n", sd->sdErrorCode());
+            Serial.printf("  SD Error Data: 0x%02X\n", sd->sdErrorData());
+        }
+        Serial.println("=============================\n");
+        return false;
+    }
+    
+    Serial.printf("  SDIO init SUCCESS in %lu ms\n", initTime);
+    
+    // Get card info
+    cid_t cid;
+    csd_t csd;
+    
+    if (sd->card()->readCID(&cid)) {
+        Serial.println("  --- Card Identification (CID) ---");
+        Serial.printf("    Manufacturer ID: 0x%02X\n", cid.mid);
+        Serial.printf("    OEM ID: %c%c\n", cid.oid[0], cid.oid[1]);
+        Serial.printf("    Product: %.5s\n", cid.pnm);
+        Serial.printf("    Revision: %d.%d\n", cid.prvN(), cid.prvM());
+        Serial.printf("    Serial: 0x%08lX\n", (unsigned long)cid.psn());
+        Serial.printf("    Mfg Date: %d/%d\n", cid.mdtMonth(), 2000 + cid.mdtYear());
+    } else {
+        Serial.println("  Failed to read CID");
+    }
+    
+    if (sd->card()->readCSD(&csd)) {
+        Serial.println("  --- Card Specific Data (CSD) ---");
+        // CSD version is in the first byte
+        uint8_t csdVersion = (csd.csd[0] >> 6) & 0x03;
+        Serial.printf("    CSD Version: %d\n", csdVersion + 1);
+    } else {
+        Serial.println("  Failed to read CSD");
+    }
+    
+    // Card capacity and type
+    uint64_t cardSize = sd->card()->sectorCount() * 512ULL;
+    Serial.println("  --- Card Info ---");
+    Serial.printf("    Card Size: %.2f GB\n", cardSize / (1024.0 * 1024.0 * 1024.0));
+    Serial.printf("    Sectors: %lu\n", (unsigned long)sd->card()->sectorCount());
+    Serial.printf("    Card Type: ");
+    switch (sd->card()->type()) {
+        case SD_CARD_TYPE_SD1:  Serial.println("SD1 (<=2GB)"); break;
+        case SD_CARD_TYPE_SD2:  Serial.println("SD2"); break;
+        case SD_CARD_TYPE_SDHC: 
+            if (cardSize > 32ULL * 1024 * 1024 * 1024) {
+                Serial.println("SDXC (>32GB)");
+            } else {
+                Serial.println("SDHC (4-32GB)");
+            }
+            break;
+        default: Serial.printf("Unknown (%d)\n", sd->card()->type()); break;
+    }
+    
+    // Filesystem info
+    Serial.println("  --- Filesystem Info ---");
+    Serial.printf("    FAT Type: ");
+    switch (sd->fatType()) {
+        case FAT_TYPE_FAT12: Serial.println("FAT12"); break;
+        case FAT_TYPE_FAT16: Serial.println("FAT16"); break;
+        case FAT_TYPE_FAT32: Serial.println("FAT32"); break;
+        case FAT_TYPE_EXFAT: Serial.println("exFAT"); break;
+        default: Serial.printf("Unknown (%d)\n", sd->fatType()); break;
+    }
+    
+    uint64_t freeSpace = sd->freeClusterCount() * sd->bytesPerCluster();
+    uint64_t totalSpace = sd->clusterCount() * sd->bytesPerCluster();
+    Serial.printf("    Cluster Size: %lu bytes\n", (unsigned long)sd->bytesPerCluster());
+    Serial.printf("    Total Clusters: %lu\n", (unsigned long)sd->clusterCount());
+    Serial.printf("    Free Clusters: %lu\n", (unsigned long)sd->freeClusterCount());
+    Serial.printf("    Total Space: %.2f GB\n", totalSpace / (1024.0 * 1024.0 * 1024.0));
+    Serial.printf("    Free Space: %.2f GB (%.1f%%)\n", 
+                  freeSpace / (1024.0 * 1024.0 * 1024.0),
+                  100.0 * freeSpace / totalSpace);
+    
+    // List root directory (first 10 entries)
+    Serial.println("  --- Root Directory (first 10 entries) ---");
+    FsFile root;
+    if (root.open("/")) {
+        FsFile entry;
+        int count = 0;
+        while (entry.openNext(&root, O_RDONLY) && count < 10) {
+            char name[64];
+            entry.getName(name, sizeof(name));
+            
+            if (entry.isDirectory()) {
+                Serial.printf("    [DIR]  %s/\n", name);
+            } else {
+                uint64_t size = entry.fileSize();
+                if (size >= 1024 * 1024) {
+                    Serial.printf("    [FILE] %s (%.2f MB)\n", name, size / (1024.0 * 1024.0));
+                } else if (size >= 1024) {
+                    Serial.printf("    [FILE] %s (%.2f KB)\n", name, size / 1024.0);
+                } else {
+                    Serial.printf("    [FILE] %s (%llu bytes)\n", name, size);
+                }
+            }
+            entry.close();
+            count++;
+        }
+        if (count == 0) {
+            Serial.println("    (empty)");
+        }
+        root.close();
+    } else {
+        Serial.println("    Failed to open root directory");
+    }
+    
+    // Speed test - read first sector
+    Serial.println("  --- Speed Test (read 100 sectors) ---");
+    uint8_t* testBuf = (uint8_t*)malloc(512 * 100);
+    if (testBuf) {
+        startTime = millis();
+        bool readOk = true;
+        for (int i = 0; i < 100 && readOk; i++) {
+            readOk = sd->card()->readSector(i, testBuf + i * 512);
+        }
+        uint32_t readTime = millis() - startTime;
+        free(testBuf);
+        
+        if (readOk) {
+            float speedKBs = (100 * 512.0 / 1024.0) / (readTime / 1000.0);
+            Serial.printf("    Read 100 sectors (50KB) in %lu ms\n", readTime);
+            Serial.printf("    Read Speed: %.1f KB/s\n", speedKBs);
+        } else {
+            Serial.println("    Read test FAILED");
+        }
+    } else {
+        Serial.println("    Could not allocate test buffer");
+    }
+    
+    Serial.println("=============================\n");
+    return true;
+}
+#endif // DISABLE_SDIO_TEST
+
+// ================================================================
+// SD Card BMP Image Display (Streaming - no large buffer needed)
+// ================================================================
+#ifndef DISABLE_SDIO_TEST
+
+// BMP header structures for streaming reader
+#pragma pack(push, 1)
+struct BmpFileHeader {
+    uint16_t signature;      // 'BM' = 0x4D42
+    uint32_t fileSize;
+    uint16_t reserved1;
+    uint16_t reserved2;
+    uint32_t dataOffset;
+};
+
+struct BmpInfoHeader {
+    uint32_t headerSize;
+    int32_t  width;
+    int32_t  height;
+    uint16_t planes;
+    uint16_t bitsPerPixel;
+    uint32_t compression;
+    uint32_t imageSize;
+    int32_t  xPixelsPerMeter;
+    int32_t  yPixelsPerMeter;
+    uint32_t colorsUsed;
+    uint32_t colorsImportant;
+};
+#pragma pack(pop)
+
+/**
+ * @brief Stream a BMP file from SD card directly to display (optimized)
+ * 
+ * Reads multiple rows at once to minimize SD card seeks.
+ * Uses ~200KB buffer for batched reading (50 rows at 1600px 24bpp).
+ * 
+ * @param file Open file handle positioned at start
+ * @param filename For logging
+ * @return true if successful
+ */
+bool streamBmpToDisplay(FsFile& file, const char* filename) {
+    // Read file header
+    BmpFileHeader fileHeader;
+    if (file.read(&fileHeader, sizeof(fileHeader)) != sizeof(fileHeader)) {
+        Serial.println("  Failed to read BMP file header");
+        return false;
+    }
+    
+    // Verify BMP signature
+    if (fileHeader.signature != 0x4D42) {
+        Serial.println("  Invalid BMP signature");
+        return false;
+    }
+    
+    // Read info header
+    BmpInfoHeader infoHeader;
+    if (file.read(&infoHeader, sizeof(infoHeader)) != sizeof(infoHeader)) {
+        Serial.println("  Failed to read BMP info header");
+        return false;
+    }
+    
+    // Check format support
+    if (infoHeader.compression != 0) {
+        Serial.println("  Compressed BMPs not supported");
+        return false;
+    }
+    
+    int32_t width = infoHeader.width;
+    int32_t height = infoHeader.height;
+    bool topDown = (height < 0);
+    if (topDown) height = -height;
+    uint16_t bpp = infoHeader.bitsPerPixel;
+    
+    Serial.printf("  BMP: %ldx%ld, %d bpp, %s\n", width, height, bpp,
+                  topDown ? "top-down" : "bottom-up");
+    
+    if (bpp != 24 && bpp != 32) {
+        Serial.println("  Only 24/32-bit BMPs supported for streaming");
+        return false;
+    }
+    
+    // Calculate row size (padded to 4-byte boundary)
+    int bytesPerPixel = bpp / 8;
+    uint32_t rowSize = ((width * bytesPerPixel + 3) / 4) * 4;
+    
+    // Batch size - read multiple rows at once for speed
+    // Target ~200KB buffer = ~50 rows for 1600px 24bpp
+    const int ROWS_PER_BATCH = 50;
+    uint32_t batchSize = rowSize * ROWS_PER_BATCH;
+    
+    // Try to allocate batch buffer (use PSRAM if available)
+    uint8_t* batchBuffer = (uint8_t*)pmalloc(batchSize);
+    if (batchBuffer == nullptr) {
+        batchBuffer = (uint8_t*)malloc(batchSize);
+    }
+    if (batchBuffer == nullptr) {
+        Serial.println("  Failed to allocate batch buffer");
+        return false;
+    }
+    Serial.printf("  Batch buffer: %lu bytes (%d rows)\n", batchSize, ROWS_PER_BATCH);
+    
+    // Calculate centering offset
+    int16_t offsetX = (display.width() - width) / 2;
+    int16_t offsetY = (display.height() - height) / 2;
+    if (offsetX < 0) offsetX = 0;
+    if (offsetY < 0) offsetY = 0;
+    
+    // Clear display first (in case image doesn't cover everything)
+    display.clear(EL133UF1_WHITE);
+    
+    Serial.println("  Streaming to display...");
+    uint32_t streamStart = millis();
+    uint64_t totalBytesRead = 0;
+    
+    // For bottom-up BMPs: read batches from end to start, but process in display order
+    // For top-down BMPs: read and process sequentially
+    
+    int32_t totalBatches = (height + ROWS_PER_BATCH - 1) / ROWS_PER_BATCH;
+    
+    for (int32_t batch = 0; batch < totalBatches; batch++) {
+        // Calculate which rows this batch covers
+        int32_t displayRowStart = batch * ROWS_PER_BATCH;
+        int32_t displayRowEnd = min((int32_t)((batch + 1) * ROWS_PER_BATCH), height);
+        int32_t rowsInBatch = displayRowEnd - displayRowStart;
+        
+        // Calculate file position for this batch
+        int32_t fileRowStart;
+        if (topDown) {
+            // Top-down: file order matches display order
+            fileRowStart = displayRowStart;
+        } else {
+            // Bottom-up: last display row is first file row
+            fileRowStart = height - displayRowEnd;
+        }
+        
+        uint64_t batchOffset = fileHeader.dataOffset + (uint64_t)fileRowStart * rowSize;
+        
+        // Seek and read entire batch
+        if (!file.seek(batchOffset)) {
+            Serial.printf("  Seek failed at batch %ld\n", batch);
+            free(batchBuffer);
+            return false;
+        }
+        
+        uint32_t bytesToRead = rowsInBatch * rowSize;
+        if (file.read(batchBuffer, bytesToRead) != (int)bytesToRead) {
+            Serial.printf("  Read failed at batch %ld\n", batch);
+            free(batchBuffer);
+            return false;
+        }
+        totalBytesRead += bytesToRead;
+        
+        // Process rows in this batch
+        for (int32_t i = 0; i < rowsInBatch; i++) {
+            // Calculate display row
+            int32_t displayRow = displayRowStart + i;
+            int16_t dstY = offsetY + displayRow;
+            if (dstY < 0 || dstY >= display.height()) continue;
+            
+            // Calculate buffer offset for this row
+            // For bottom-up: rows in buffer are reversed relative to display
+            int32_t bufferRow = topDown ? i : (rowsInBatch - 1 - i);
+            uint8_t* rowPtr = batchBuffer + bufferRow * rowSize;
+            
+            // Process pixels in this row
+            for (int32_t col = 0; col < width; col++) {
+                int16_t dstX = offsetX + col;
+                if (dstX < 0 || dstX >= display.width()) continue;
+                
+                // BMP stores as BGR (or BGRA for 32-bit)
+                uint8_t b = rowPtr[col * bytesPerPixel + 0];
+                uint8_t g = rowPtr[col * bytesPerPixel + 1];
+                uint8_t r = rowPtr[col * bytesPerPixel + 2];
+                
+                // Map to Spectra 6 color and set pixel
+                uint8_t spectraColor = spectra6Color.mapColor(r, g, b);
+                display.setPixel(dstX, dstY, spectraColor);
+            }
+        }
+        
+        // Progress update
+        Serial.printf("  Batch %ld/%ld (rows %ld-%ld)\r", 
+                      batch + 1, totalBatches, displayRowStart, displayRowEnd - 1);
+    }
+    
+    uint32_t streamTime = millis() - streamStart;
+    float speedMBs = (totalBytesRead / (1024.0f * 1024.0f)) / (streamTime / 1000.0f);
+    Serial.printf("\n  Streamed %.1f MB in %lu ms (%.1f MB/s)\n", 
+                  totalBytesRead / (1024.0f * 1024.0f), streamTime, speedMBs);
+    
+    free(batchBuffer);
+    return true;
+}
+
+/**
+ * @brief Scan SD card root for BMP files and display a random one
+ * 
+ * Scans the root directory for .bmp files, picks one at random,
+ * and streams it directly to the display (no large buffer needed).
+ * 
+ * @return true if a BMP was found and displayed successfully
+ */
+bool displayRandomBmpFromSd() {
+    if (sd == nullptr) {
+        Serial.println("SD: Card not initialized");
+        return false;
+    }
+    
+    Serial.println("\n=== Scanning SD Card for BMP files ===");
+    
+    // First pass: count BMP files
+    FsFile root;
+    if (!root.open("/")) {
+        Serial.println("SD: Failed to open root directory");
+        return false;
+    }
+    
+    int bmpCount = 0;
+    FsFile entry;
+    while (entry.openNext(&root, O_RDONLY)) {
+        if (!entry.isDirectory()) {
+            char name[64];
+            entry.getName(name, sizeof(name));
+            size_t len = strlen(name);
+            // Check for .bmp extension (case insensitive)
+            if (len > 4 && strcasecmp(name + len - 4, ".bmp") == 0) {
+                bmpCount++;
+                Serial.printf("  Found: %s (%llu bytes)\n", name, entry.fileSize());
+            }
+        }
+        entry.close();
+    }
+    root.close();
+    
+    if (bmpCount == 0) {
+        Serial.println("  No BMP files found in root directory");
+        Serial.println("=====================================\n");
+        return false;
+    }
+    
+    Serial.printf("  Total BMP files: %d\n", bmpCount);
+    
+    // Pick a random file
+    int targetIndex = micros() % bmpCount;
+    Serial.printf("  Randomly selected index: %d\n", targetIndex);
+    
+    // Second pass: find and open the selected file
+    if (!root.open("/")) {
+        Serial.println("SD: Failed to reopen root directory");
+        return false;
+    }
+    
+    char selectedName[64] = {0};
+    int currentIndex = 0;
+    FsFile selectedFile;
+    
+    while (entry.openNext(&root, O_RDONLY)) {
+        if (!entry.isDirectory()) {
+            char name[64];
+            entry.getName(name, sizeof(name));
+            size_t len = strlen(name);
+            if (len > 4 && strcasecmp(name + len - 4, ".bmp") == 0) {
+                if (currentIndex == targetIndex) {
+                    strncpy(selectedName, name, sizeof(selectedName) - 1);
+                    Serial.printf("  Selected: %s (%llu bytes)\n", name, entry.fileSize());
+                    
+                    // Open the file for streaming
+                    char fullPath[72];
+                    snprintf(fullPath, sizeof(fullPath), "/%s", name);
+                    entry.close();
+                    root.close();
+                    
+                    if (!selectedFile.open(fullPath, O_RDONLY)) {
+                        Serial.printf("SD: Failed to open %s\n", fullPath);
+                        return false;
+                    }
+                    
+                    // Stream directly to display
+                    bool success = streamBmpToDisplay(selectedFile, selectedName);
+                    selectedFile.close();
+                    
+                    if (success) {
+                        Serial.printf("  Successfully displayed: %s\n", selectedName);
+                    }
+                    Serial.println("=====================================\n");
+                    return success;
+                }
+                currentIndex++;
+            }
+        }
+        entry.close();
+    }
+    root.close();
+    
+    Serial.println("SD: Failed to find selected BMP");
+    return false;
+}
+#endif // DISABLE_SDIO_TEST
+
 void setup() {
     // Record boot time immediately (before any delays)
     // We'll use this to measure actual wake-to-display duration
@@ -900,6 +1451,33 @@ void setup() {
         Serial.printf("  Direct read of 0x0100 = 0x%02X ('%c')\n", 
                       testByte, (testByte >= 32 && testByte < 127) ? testByte : '?');
     }
+    
+    // ================================================================
+    // SDIO SD Card Test
+    // ================================================================
+    #ifndef DISABLE_SDIO_TEST
+    // Quick card detect check BEFORE slow SDIO init
+    pinMode(PIN_SDIO_DET, INPUT_PULLUP);
+    delay(5);
+    bool cardDetectState = (digitalRead(PIN_SDIO_DET) == HIGH);  // Active high
+    
+    bool hasSDCard = false;
+    if (!cardDetectState) {
+        Serial.println("SD Card: No card detected (skipping SDIO init)");
+    } else {
+        Serial.println("\n>>> Card detected, initializing SDIO...");
+        Serial.flush();
+        hasSDCard = testSdioSdCard();
+        if (hasSDCard) {
+            Serial.println("SD Card: Available and working");
+        } else {
+            Serial.println("SD Card: Init failed (continuing without SD)");
+        }
+    }
+    #else
+    Serial.println("\n>>> SDIO test disabled (DISABLE_SDIO_TEST defined)");
+    bool hasSDCard = false;
+    #endif
     
     // ================================================================
     // WiFi credential management
@@ -1391,11 +1969,24 @@ void doDisplayUpdate(int updateNumber) {
     // BACKGROUND
     // ================================================================
     
-    // Simple white background for demo
     t0 = millis();
-    display.clear(EL133UF1_WHITE);
+    bool backgroundSet = false;
+    
+    #ifndef DISABLE_SDIO_TEST
+    // Try to display a random BMP from SD card
+    if (sd != nullptr) {
+        backgroundSet = displayRandomBmpFromSd();
+    }
+    #endif
+    
+    // Fallback to white background if no BMP displayed
+    if (!backgroundSet) {
+        Serial.println("  Using white background (no SD BMP)");
+        display.clear(EL133UF1_WHITE);
+    }
+    
     bitmapTotal = millis() - t0;
-    Serial.printf("  Background clear: %lu ms\n", bitmapTotal);
+    Serial.printf("  Background: %lu ms\n", bitmapTotal);
     
 #if 0  // AI image generation - disabled for demo, enable with #if 1
     // Generate new AI image on first boot, or if we don't have one cached

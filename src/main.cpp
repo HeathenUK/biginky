@@ -887,10 +887,13 @@ bool testSdioSdCard() {
     uint32_t startTime = millis();
     
     // Create SDIO config with our pins
-    // clkDiv=1.0 for maximum speed (can increase to 2.0 if unstable)
-    Serial.println("  Creating SdioConfig...");
+    // Scale clock divider based on CPU overclock to maintain stable SDIO timing
+    // Base: 150MHz with clkDiv=1.0, scale proportionally for higher clocks
+    float sdioClkDiv = (float)rp2040.f_cpu() / 150000000.0f;
+    Serial.printf("  Creating SdioConfig (clkDiv=%.2f for %luMHz)...\n", 
+                  sdioClkDiv, rp2040.f_cpu() / 1000000);
     Serial.flush();
-    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 1.0);
+    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, sdioClkDiv);
     
     Serial.println("  Calling sd->begin()...");
     Serial.flush();

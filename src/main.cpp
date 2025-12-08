@@ -887,10 +887,13 @@ bool testSdioSdCard() {
     uint32_t startTime = millis();
     
     // Create SDIO config with our pins
-    // clkDiv=1.0 for maximum speed (can increase to 2.0 if unstable)
-    Serial.println("  Creating SdioConfig...");
+    // Scale clock divider based on CPU overclock to maintain stable SDIO timing
+    // Base: 150MHz with clkDiv=1.0, scale proportionally for higher clocks
+    float sdioClkDiv = (float)rp2040.f_cpu() / 150000000.0f;
+    Serial.printf("  Creating SdioConfig (clkDiv=%.2f for %luMHz)...\n", 
+                  sdioClkDiv, rp2040.f_cpu() / 1000000);
     Serial.flush();
-    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, 1.0);
+    SdioConfig sdioConfig(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_DAT0, sdioClkDiv);
     
     Serial.println("  Calling sd->begin()...");
     Serial.flush();
@@ -1080,6 +1083,7 @@ struct BmpInfoHeader {
  * 
  * Reads multiple rows at once to minimize SD card seeks.
  * Uses ~200KB buffer for batched reading (50 rows at 1600px 24bpp).
+ * Uses fast row-wise color mapping with LUT for maximum throughput.
  * 
  * @param file Open file handle positioned at start
  * @param filename For logging
@@ -1126,6 +1130,11 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
         return false;
     }
     
+    // Build custom LUT if using non-default palette (otherwise PROGMEM LUT is used)
+    if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+        spectra6Color.buildLUT();
+    }
+    
     // Calculate row size (padded to 4-byte boundary)
     int bytesPerPixel = bpp / 8;
     uint32_t rowSize = ((width * bytesPerPixel + 3) / 4) * 4;
@@ -1144,7 +1153,18 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
         Serial.println("  Failed to allocate batch buffer");
         return false;
     }
-    Serial.printf("  Batch buffer: %lu bytes (%d rows)\n", batchSize, ROWS_PER_BATCH);
+    
+    // Allocate row color buffer for batch writes
+    uint8_t* rowColors = (uint8_t*)malloc(width);
+    if (rowColors == nullptr) {
+        Serial.println("  Failed to allocate row color buffer");
+        free(batchBuffer);
+        return false;
+    }
+    
+    Serial.printf("  Batch buffer: %lu bytes (%d rows), fast row access: %s\n", 
+                  batchSize, ROWS_PER_BATCH,
+                  display.canUseFastRowAccess() ? "YES" : "no");
     
     // Calculate centering offset
     int16_t offsetX = (display.width() - width) / 2;
@@ -1159,8 +1179,8 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
     uint32_t streamStart = millis();
     uint64_t totalBytesRead = 0;
     
-    // For bottom-up BMPs: read batches from end to start, but process in display order
-    // For top-down BMPs: read and process sequentially
+    // Check if we can use fast row access
+    bool useFastPath = display.canUseFastRowAccess();
     
     int32_t totalBatches = (height + ROWS_PER_BATCH - 1) / ROWS_PER_BATCH;
     
@@ -1173,10 +1193,8 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
         // Calculate file position for this batch
         int32_t fileRowStart;
         if (topDown) {
-            // Top-down: file order matches display order
             fileRowStart = displayRowStart;
         } else {
-            // Bottom-up: last display row is first file row
             fileRowStart = height - displayRowEnd;
         }
         
@@ -1186,6 +1204,7 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
         if (!file.seek(batchOffset)) {
             Serial.printf("  Seek failed at batch %ld\n", batch);
             free(batchBuffer);
+            free(rowColors);
             return false;
         }
         
@@ -1193,41 +1212,55 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
         if (file.read(batchBuffer, bytesToRead) != (int)bytesToRead) {
             Serial.printf("  Read failed at batch %ld\n", batch);
             free(batchBuffer);
+            free(rowColors);
             return false;
         }
         totalBytesRead += bytesToRead;
         
         // Process rows in this batch
         for (int32_t i = 0; i < rowsInBatch; i++) {
-            // Calculate display row
             int32_t displayRow = displayRowStart + i;
             int16_t dstY = offsetY + displayRow;
             if (dstY < 0 || dstY >= display.height()) continue;
             
-            // Calculate buffer offset for this row
-            // For bottom-up: rows in buffer are reversed relative to display
             int32_t bufferRow = topDown ? i : (rowsInBatch - 1 - i);
             uint8_t* rowPtr = batchBuffer + bufferRow * rowSize;
             
-            // Process pixels in this row
-            for (int32_t col = 0; col < width; col++) {
-                int16_t dstX = offsetX + col;
-                if (dstX < 0 || dstX >= display.width()) continue;
+            if (useFastPath && offsetX >= 0 && offsetX + width <= display.width()) {
+                // FAST PATH: Convert entire row to spectra colors, then batch write
+                int32_t pixelsToWrite = min((int32_t)width, (int32_t)(display.width() - offsetX));
                 
-                // BMP stores as BGR (or BGRA for 32-bit)
-                uint8_t b = rowPtr[col * bytesPerPixel + 0];
-                uint8_t g = rowPtr[col * bytesPerPixel + 1];
-                uint8_t r = rowPtr[col * bytesPerPixel + 2];
+                // Convert BGR to Spectra colors using LUT (vectorizable loop)
+                for (int32_t col = 0; col < pixelsToWrite; col++) {
+                    uint8_t b = rowPtr[col * bytesPerPixel + 0];
+                    uint8_t g = rowPtr[col * bytesPerPixel + 1];
+                    uint8_t r = rowPtr[col * bytesPerPixel + 2];
+                    rowColors[col] = spectra6Color.mapColorFast(r, g, b);
+                }
                 
-                // Map to Spectra 6 color and set pixel
-                uint8_t spectraColor = spectra6Color.mapColor(r, g, b);
-                display.setPixel(dstX, dstY, spectraColor);
+                // Batch write entire row
+                display.writeRowFast(offsetX, dstY, rowColors, pixelsToWrite);
+            } else {
+                // FALLBACK: Per-pixel with bounds checking
+                for (int32_t col = 0; col < width; col++) {
+                    int16_t dstX = offsetX + col;
+                    if (dstX < 0 || dstX >= display.width()) continue;
+                    
+                    uint8_t b = rowPtr[col * bytesPerPixel + 0];
+                    uint8_t g = rowPtr[col * bytesPerPixel + 1];
+                    uint8_t r = rowPtr[col * bytesPerPixel + 2];
+                    
+                    uint8_t spectraColor = spectra6Color.mapColorFast(r, g, b);
+                    display.setPixel(dstX, dstY, spectraColor);
+                }
             }
         }
         
-        // Progress update
-        Serial.printf("  Batch %ld/%ld (rows %ld-%ld)\r", 
-                      batch + 1, totalBatches, displayRowStart, displayRowEnd - 1);
+        // Progress update every 10 batches
+        if (batch % 10 == 0 || batch == totalBatches - 1) {
+            Serial.printf("  Batch %ld/%ld (rows %ld-%ld)\r", 
+                          batch + 1, totalBatches, displayRowStart, displayRowEnd - 1);
+        }
     }
     
     uint32_t streamTime = millis() - streamStart;
@@ -1236,6 +1269,7 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
                   totalBytesRead / (1024.0f * 1024.0f), streamTime, speedMBs);
     
     free(batchBuffer);
+    free(rowColors);
     return true;
 }
 
@@ -1941,6 +1975,7 @@ void doDisplayUpdate(int updateNumber) {
         }
         return;
     }
+    display.setRotation180(true);  // Rotate display 180 degrees
     Serial.printf("Display buffer: %p\n", display.getBuffer());
     logStage(STAGE_DISPLAY_OK);
     

@@ -48,7 +48,8 @@ static void pngle_draw_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t
 }
 
 EL133UF1_PNG::EL133UF1_PNG() 
-    : _display(nullptr), _offsetX(0), _offsetY(0), _width(0), _height(0), _useDithering(false) {}
+    : _display(nullptr), _offsetX(0), _offsetY(0), _width(0), _height(0), _useDithering(false),
+      _rowBuffer(nullptr), _rowBufferSize(0), _currentRow(-1), _rowMinX(0), _rowMaxX(0), _rowBufferValid(false) {}
 
 bool EL133UF1_PNG::begin(EL133UF1* display) {
     if (display == nullptr) return false;
@@ -57,39 +58,90 @@ bool EL133UF1_PNG::begin(EL133UF1* display) {
 }
 
 uint8_t EL133UF1_PNG::mapToSpectra6(uint8_t r, uint8_t g, uint8_t b) {
-    // Use the global color mapper (Lab color space by default)
-    return spectra6Color.mapColor(r, g, b);
+    // Use the global color mapper with fast LUT lookup if available
+    return spectra6Color.mapColorFast(r, g, b);
+}
+
+void EL133UF1_PNG::_flushRow() {
+    if (!_rowBufferValid || !_display || _currentRow < 0) return;
+    if (_rowMinX > _rowMaxX) return;  // No pixels in this row
+    
+    int16_t dstY = _offsetY + _currentRow;
+    if (dstY < 0 || dstY >= _display->height()) return;
+    
+    // Calculate display coordinates
+    int16_t dstX = _offsetX + _rowMinX;
+    int32_t count = _rowMaxX - _rowMinX + 1;
+    
+    // Clamp to display bounds
+    if (dstX < 0) {
+        count += dstX;
+        dstX = 0;
+    }
+    if (dstX + count > _display->width()) {
+        count = _display->width() - dstX;
+    }
+    
+    if (count > 0 && _display->canUseFastRowAccess()) {
+        // Fast path: batch write entire row segment
+        _display->writeRowFast(dstX, dstY, _rowBuffer + _rowMinX, count);
+    } else if (count > 0) {
+        // Fallback: write pixels individually
+        for (int32_t i = 0; i < count; i++) {
+            _display->setPixel(dstX + i, dstY, _rowBuffer[_rowMinX + i]);
+        }
+    }
+    
+    // Reset row tracking
+    _rowMinX = _rowBufferSize;
+    _rowMaxX = -1;
 }
 
 void EL133UF1_PNG::_onDraw(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]) {
     if (_display == nullptr) return;
     
-    // Apply offset
-    int16_t dstX = _offsetX + (int16_t)x;
-    int16_t dstY = _offsetY + (int16_t)y;
+    // Check if we've moved to a new row - flush previous row
+    if (_rowBufferValid && (int32_t)y != _currentRow && _currentRow >= 0) {
+        _flushRow();
+    }
+    _currentRow = (int32_t)y;
     
-    // Bounds check
-    if (dstX < 0 || dstX >= _display->width()) return;
-    if (dstY < 0 || dstY >= _display->height()) return;
-    
-    // Map RGBA to Spectra 6 color
-    uint8_t color;
-    if (rgba[3] < 128) {
-        // Transparent - use white (background)
-        color = EL133UF1_WHITE;
-    } else if (_useDithering) {
-        // Use Floyd-Steinberg dithering for better gradients
-        color = spectra6Color.mapColorDithered(x, y, rgba[0], rgba[1], rgba[2], _width);
+    // Bounds check for row buffer
+    if (_rowBufferValid && (int32_t)x < _rowBufferSize) {
+        // Map RGBA to Spectra 6 color
+        uint8_t color;
+        if (rgba[3] < 128) {
+            // Transparent - use white (background)
+            color = EL133UF1_WHITE;
+        } else if (_useDithering) {
+            // Use Floyd-Steinberg dithering for better gradients
+            color = spectra6Color.mapColorDithered(x, y, rgba[0], rgba[1], rgba[2], _width);
+        } else {
+            // Fast LUT-based color mapping
+            color = mapToSpectra6(rgba[0], rgba[1], rgba[2]);
+        }
+        
+        // Store in row buffer
+        _rowBuffer[x] = color;
+        
+        // Track min/max X for this row
+        if ((int32_t)x < _rowMinX) _rowMinX = (int32_t)x;
+        if ((int32_t)x > _rowMaxX) _rowMaxX = (int32_t)x;
     } else {
-        // Standard color mapping (Lab perceptual)
-        color = mapToSpectra6(rgba[0], rgba[1], rgba[2]);
+        // Fallback: direct pixel write (shouldn't happen with proper setup)
+        int16_t dstX = _offsetX + (int16_t)x;
+        int16_t dstY = _offsetY + (int16_t)y;
+        
+        if (dstX >= 0 && dstX < _display->width() && 
+            dstY >= 0 && dstY < _display->height()) {
+            uint8_t color = (rgba[3] < 128) ? EL133UF1_WHITE : mapToSpectra6(rgba[0], rgba[1], rgba[2]);
+            _display->setPixel(dstX, dstY, color);
+        }
     }
     
-    _display->setPixel(dstX, dstY, color);
-    
 #if PNG_DEBUG_STATS
-    // Track what we actually drew
     g_drawnCount++;
+    int16_t dstY = _offsetY + (int16_t)y;
     if ((uint32_t)dstY < g_drawnMinY) g_drawnMinY = dstY;
     if ((uint32_t)dstY > g_drawnMaxY) g_drawnMaxY = dstY;
 #endif
@@ -98,6 +150,11 @@ void EL133UF1_PNG::_onDraw(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const
 PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t len) {
     if (_display == nullptr) return PNG_ERR_NO_DISPLAY;
     if (data == nullptr || len == 0) return PNG_ERR_NULL_DATA;
+    
+    // Build custom LUT if using non-default palette (otherwise PROGMEM LUT is used)
+    if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+        spectra6Color.buildLUT();
+    }
     
     // Set offset for callback
     _offsetX = x;
@@ -130,10 +187,37 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
         return PNG_ERR_ALLOC_FAILED;
     }
     
+    // Pre-parse PNG header to get dimensions for row buffer allocation
+    // PNG header: 8 bytes signature + IHDR chunk (length + type + data)
+    // Width is at bytes 16-19, height at bytes 20-23 (big-endian)
+    int32_t preWidth = 0;
+    if (len >= 24) {
+        preWidth = ((int32_t)data[16] << 24) | ((int32_t)data[17] << 16) | 
+                   ((int32_t)data[18] << 8) | data[19];
+    }
+    
+    // Allocate row buffer for batch writes
+    _rowBuffer = nullptr;
+    _rowBufferSize = 0;
+    _rowBufferValid = false;
+    _currentRow = -1;
+    _rowMinX = 0;
+    _rowMaxX = -1;
+    
+    if (preWidth > 0 && preWidth <= 4096) {  // Reasonable max width
+        _rowBuffer = (uint8_t*)malloc(preWidth);
+        if (_rowBuffer) {
+            _rowBufferSize = preWidth;
+            _rowBufferValid = true;
+            memset(_rowBuffer, EL133UF1_WHITE, preWidth);  // Default to white
+        }
+    }
+    
     // Set draw callback
     pngle_set_draw_callback(pngle, pngle_draw_callback);
     
-    Serial.printf("PNG: Decoding %zu bytes...\n", len);
+    Serial.printf("PNG: Decoding %zu bytes (row buffer: %s)...\n", len, 
+                  _rowBufferValid ? "enabled" : "disabled");
     uint32_t t0 = millis();
     
     // Feed data to decoder
@@ -151,6 +235,9 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
             Serial.printf("PNG: Pixels drawn before error: %lu, Y range: [%lu-%lu]\n",
                           g_pixelCount, g_minY, g_maxY);
 #endif
+            // Cleanup
+            if (_rowBuffer) { free(_rowBuffer); _rowBuffer = nullptr; }
+            _rowBufferValid = false;
             pngle_destroy(pngle);
             g_pngInstance = nullptr;
             return PNG_ERR_DECODE_FAILED;
@@ -162,6 +249,11 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
         } else {
             fed += result;
         }
+    }
+    
+    // Flush final row
+    if (_rowBufferValid) {
+        _flushRow();
     }
     
     // Store dimensions
@@ -179,6 +271,9 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
                   _width * _height, g_pixelCount, g_drawnCount);
 #endif
     
+    // Cleanup
+    if (_rowBuffer) { free(_rowBuffer); _rowBuffer = nullptr; }
+    _rowBufferValid = false;
     pngle_destroy(pngle);
     g_pngInstance = nullptr;
     

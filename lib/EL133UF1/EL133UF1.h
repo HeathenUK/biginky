@@ -283,6 +283,12 @@ public:
      * @param flip Enable/disable vertical flip
      */
     void setVFlip(bool flip) { _vFlip = flip; }
+    
+    /**
+     * @brief Set 180° rotation (equivalent to both H and V flip)
+     * @param enable True for 180° rotation
+     */
+    void setRotation180(bool enable) { _hFlip = _vFlip = enable; }
 
     /**
      * @brief Get pointer to frame buffer
@@ -299,6 +305,93 @@ public:
      * @return true if using packed buffers (no PSRAM)
      */
     bool isPackedMode() { return _packedMode; }
+    
+    /**
+     * @brief Get pointer to a specific row in the frame buffer
+     * 
+     * Returns a pointer to the start of the specified row for direct
+     * pixel writes. Only valid in unpacked mode.
+     * 
+     * @param y Row index (0 to HEIGHT-1)
+     * @return uint8_t* Pointer to row, or nullptr if invalid/packed mode
+     */
+    inline uint8_t* getRowPtr(int16_t y) {
+        // Disable direct row access when flipped (would need pixel reversal)
+        if (_packedMode || _preRotatedMode || _hFlip || _buffer == nullptr) return nullptr;
+        if (y < 0 || y >= EL133UF1_HEIGHT) return nullptr;
+        int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
+        return _buffer + dstY * EL133UF1_WIDTH;
+    }
+    
+    /**
+     * @brief Write a row of pixels directly (bypasses bounds checking)
+     * 
+     * Fast path for writing multiple pixels in a row. Caller must ensure:
+     * - y is valid (0 to HEIGHT-1)
+     * - x + count does not exceed WIDTH
+     * - colors array has at least 'count' elements
+     * - Not in packed/pre-rotated mode
+     * 
+     * @param x Starting X coordinate
+     * @param y Y coordinate
+     * @param colors Array of color values (3-bit, will be masked)
+     * @param count Number of pixels to write
+     */
+    inline void writeRowFast(int16_t x, int16_t y, const uint8_t* colors, int16_t count) {
+        if (_packedMode || _preRotatedMode || _buffer == nullptr) return;
+        if (y < 0 || y >= EL133UF1_HEIGHT) return;
+        if (x < 0) { colors -= x; count += x; x = 0; }
+        if (x + count > EL133UF1_WIDTH) count = EL133UF1_WIDTH - x;
+        if (count <= 0) return;
+        
+        if (!_hFlip && !_vFlip) {
+            // Fast path: direct memcpy
+            memcpy(_buffer + y * EL133UF1_WIDTH + x, colors, count);
+        } else {
+            // Flip path: transform coordinates and reverse if needed
+            int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
+            if (_hFlip) {
+                // Write in reverse order from the right side
+                uint8_t* dst = _buffer + dstY * EL133UF1_WIDTH + (EL133UF1_WIDTH - 1 - x);
+                for (int16_t i = 0; i < count; i++) {
+                    *dst-- = colors[i];
+                }
+            } else {
+                // Just Y flip, normal X order
+                memcpy(_buffer + dstY * EL133UF1_WIDTH + x, colors, count);
+            }
+        }
+    }
+    
+    /**
+     * @brief Fill a row with a single color (fast memset)
+     * 
+     * @param x Starting X coordinate
+     * @param y Y coordinate
+     * @param count Number of pixels to fill
+     * @param color Color value
+     */
+    inline void fillRowFast(int16_t x, int16_t y, int16_t count, uint8_t color) {
+        if (_packedMode || _preRotatedMode || _buffer == nullptr) return;
+        if (y < 0 || y >= EL133UF1_HEIGHT) return;
+        if (x < 0) { count += x; x = 0; }
+        if (x + count > EL133UF1_WIDTH) count = EL133UF1_WIDTH - x;
+        if (count <= 0) return;
+        
+        // Apply flip transformations
+        int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
+        int16_t dstX = _hFlip ? (EL133UF1_WIDTH - x - count) : x;
+        
+        memset(_buffer + dstY * EL133UF1_WIDTH + dstX, color & 0x07, count);
+    }
+    
+    /**
+     * @brief Check if fast row access is available
+     * @return true if getRowPtr/writeRowFast can be used
+     */
+    inline bool canUseFastRowAccess() const {
+        return !_packedMode && !_preRotatedMode && _buffer != nullptr;
+    }
 
     /**
      * @brief Set an image from a raw buffer

@@ -81,6 +81,9 @@ public:
     // Internal callback - public for C callback access
     void _onDraw(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]);
     
+    // Internal: flush buffered row to display (called at row boundaries)
+    void _flushRow();
+    
 private:
     EL133UF1* _display;
     int16_t _offsetX;
@@ -88,6 +91,14 @@ private:
     int32_t _width;
     int32_t _height;
     bool _useDithering;
+    
+    // Row buffering for batch writes (allocated per-decode)
+    uint8_t* _rowBuffer;        // Spectra color values for current row
+    int32_t _rowBufferSize;     // Size of row buffer (width)
+    int32_t _currentRow;        // Current row being accumulated
+    int32_t _rowMinX;           // Min X written in current row
+    int32_t _rowMaxX;           // Max X written in current row
+    bool _rowBufferValid;       // Is row buffer allocated and valid?
     
     uint8_t mapToSpectra6(uint8_t r, uint8_t g, uint8_t b);
 };

@@ -438,6 +438,10 @@ void EL133UF1::setPixel(int16_t x, int16_t y, uint8_t color) {
     if (_buffer == nullptr) return;
     if (x < 0 || x >= EL133UF1_WIDTH || y < 0 || y >= EL133UF1_HEIGHT) return;
     
+    // Apply 180° rotation if both flips enabled
+    if (_hFlip) x = EL133UF1_WIDTH - 1 - x;
+    if (_vFlip) y = EL133UF1_HEIGHT - 1 - y;
+    
     if (_packedMode || _preRotatedMode) {
         // Pre-rotated/packed mode: write directly to panel format
         // Transform: (x,y) -> panel row = 1599-x, panel col = y
@@ -485,8 +489,8 @@ void EL133UF1::drawHLine(int16_t x, int16_t y, int16_t w, uint8_t color) {
     if (w <= 0) return;
     
     if (!_packedMode && !_preRotatedMode && _buffer) {
-        // Fast path: direct memset for unpacked mode
-        memset(_buffer + y * EL133UF1_WIDTH + x, color & 0x07, w);
+        // Fast path: use fillRowFast which handles flip
+        fillRowFast(x, y, w, color);
     } else {
         // Use setPixel for packed/pre-rotated modes
         for (int16_t i = 0; i < w; i++) {
@@ -504,7 +508,10 @@ void EL133UF1::drawVLine(int16_t x, int16_t y, int16_t h, uint8_t color) {
     uint8_t c = color & 0x07;
     if (!_packedMode && !_preRotatedMode && _buffer) {
         // Fast path: direct buffer access for unpacked mode
-        uint8_t* ptr = _buffer + y * EL133UF1_WIDTH + x;
+        // Apply flip transformations
+        int16_t dstX = _hFlip ? (EL133UF1_WIDTH - 1 - x) : x;
+        int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - h - y) : y;
+        uint8_t* ptr = _buffer + dstY * EL133UF1_WIDTH + dstX;
         for (int16_t i = 0; i < h; i++) {
             *ptr = c;
             ptr += EL133UF1_WIDTH;
@@ -533,12 +540,9 @@ void EL133UF1::fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t colo
     if (w <= 0 || h <= 0) return;
     
     if (!_packedMode && !_preRotatedMode && _buffer) {
-        // Fast path: direct memset for each row in unpacked mode
-        uint8_t c = color & 0x07;
-        uint8_t* ptr = _buffer + y * EL133UF1_WIDTH + x;
+        // Fast path: use fillRowFast which handles flip
         for (int16_t i = 0; i < h; i++) {
-            memset(ptr, c, w);
-            ptr += EL133UF1_WIDTH;
+            fillRowFast(x, y + i, w, color);
         }
     } else {
         // Slow path for packed mode

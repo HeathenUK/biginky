@@ -20,7 +20,8 @@ const uint8_t Spectra6ColorMap::SPECTRA_CODE[6] = {
 Spectra6ColorMap spectra6Color;
 
 Spectra6ColorMap::Spectra6ColorMap() 
-    : _mode(COLOR_MAP_LAB), _currentRow(0), _ditherWidth(0), _ditherAllocated(false) {
+    : _mode(COLOR_MAP_LAB), _lut(nullptr), _customPalette(false), 
+      _currentRow(0), _ditherWidth(0), _ditherAllocated(false) {
     // Initialize error buffer pointers to null
     _errorR[0] = _errorR[1] = nullptr;
     _errorG[0] = _errorG[1] = nullptr;
@@ -29,6 +30,9 @@ Spectra6ColorMap::Spectra6ColorMap()
 }
 
 Spectra6ColorMap::~Spectra6ColorMap() {
+    // Free LUT if allocated
+    freeLUT();
+    
     // Free dither buffers if allocated
     if (_ditherAllocated) {
         for (int i = 0; i < 2; i++) {
@@ -39,10 +43,61 @@ Spectra6ColorMap::~Spectra6ColorMap() {
     }
 }
 
+bool Spectra6ColorMap::buildLUT() {
+    // If using default palette, no need to build - PROGMEM LUT is available
+    if (!_customPalette) {
+        Serial.println("Using pre-generated PROGMEM LUT (default palette)");
+        return true;
+    }
+    
+    // Free existing LUT if any
+    freeLUT();
+    
+    Serial.println("Building custom RGB->Spectra LUT (32KB)...");
+    uint32_t t0 = millis();
+    
+    // Allocate LUT - try PSRAM first, fall back to regular RAM
+    _lut = (uint8_t*)pmalloc(COLOR_LUT_TOTAL);
+    if (_lut == nullptr) {
+        _lut = (uint8_t*)malloc(COLOR_LUT_TOTAL);
+    }
+    
+    if (_lut == nullptr) {
+        Serial.println("  LUT allocation failed!");
+        return false;
+    }
+    
+    // Pre-compute all RGB combinations
+    // This takes ~100-200ms but makes color mapping essentially free
+    uint32_t idx = 0;
+    for (int ri = 0; ri < COLOR_LUT_SIZE; ri++) {
+        uint8_t r = (ri << COLOR_LUT_SHIFT) | (ri >> (COLOR_LUT_BITS - COLOR_LUT_SHIFT));
+        for (int gi = 0; gi < COLOR_LUT_SIZE; gi++) {
+            uint8_t g = (gi << COLOR_LUT_SHIFT) | (gi >> (COLOR_LUT_BITS - COLOR_LUT_SHIFT));
+            for (int bi = 0; bi < COLOR_LUT_SIZE; bi++) {
+                uint8_t b = (bi << COLOR_LUT_SHIFT) | (bi >> (COLOR_LUT_BITS - COLOR_LUT_SHIFT));
+                // Use Lab-based nearest neighbor for best quality
+                _lut[idx++] = findNearestLab(r, g, b);
+            }
+        }
+    }
+    
+    Serial.printf("  Custom LUT built in %lu ms (%lu entries)\n", millis() - t0, (unsigned long)COLOR_LUT_TOTAL);
+    return true;
+}
+
+void Spectra6ColorMap::freeLUT() {
+    if (_lut) {
+        free(_lut);
+        _lut = nullptr;
+    }
+}
+
 void Spectra6ColorMap::useDefaultPalette() {
     // Calibrated Spectra 6 colors - realistic e-ink values
     // These are estimates based on typical e-ink color characteristics
     // E-ink colors are generally less saturated than LCD/OLED
+    // MUST match DEFAULT_PALETTE in scripts/generate_color_lut.py
     
     // Black - quite dark but not pure black
     _palette[0][0] = 10;   _palette[0][1] = 10;   _palette[0][2] = 10;
@@ -62,6 +117,10 @@ void Spectra6ColorMap::useDefaultPalette() {
     // Green - teal/forest green
     _palette[5][0] = 55;   _palette[5][1] = 140;  _palette[5][2] = 85;
     
+    // Mark as default palette - can use PROGMEM LUT
+    _customPalette = false;
+    freeLUT();  // Free any custom LUT since we're using default now
+    
     updatePaletteLab();
 }
 
@@ -74,6 +133,9 @@ void Spectra6ColorMap::useIdealizedPalette() {
     _palette[4][0] = 0;    _palette[4][1] = 0;    _palette[4][2] = 255;   // Blue
     _palette[5][0] = 0;    _palette[5][1] = 255;  _palette[5][2] = 0;     // Green
     
+    // Mark as custom palette - PROGMEM LUT won't work, need runtime LUT
+    _customPalette = true;
+    
     updatePaletteLab();
 }
 
@@ -82,6 +144,10 @@ void Spectra6ColorMap::setCalibratedColor(int index, uint8_t r, uint8_t g, uint8
     _palette[index][0] = r;
     _palette[index][1] = g;
     _palette[index][2] = b;
+    
+    // Mark as custom palette - PROGMEM LUT won't work, need runtime LUT
+    _customPalette = true;
+    
     updatePaletteLab();
 }
 
@@ -202,9 +268,17 @@ uint8_t Spectra6ColorMap::mapColor(uint8_t r, uint8_t g, uint8_t b) {
     switch (_mode) {
         case COLOR_MAP_NEAREST:
             return findNearestRGB(r, g, b);
+        case COLOR_MAP_LUT:
+            // Always use LUT - either custom RAM LUT or PROGMEM LUT
+            return mapColorFast(r, g, b);
         case COLOR_MAP_LAB:
         case COLOR_MAP_DITHER:
         default:
+            // For Lab mode, use LUT if not using custom palette (PROGMEM is pre-computed with Lab)
+            // For custom palette without LUT built, fall back to runtime Lab computation
+            if (!_customPalette || _lut) {
+                return mapColorFast(r, g, b);
+            }
             return findNearestLab(r, g, b);
     }
 }
@@ -287,8 +361,8 @@ uint8_t Spectra6ColorMap::mapColorDithered(int x, int y, uint8_t r, uint8_t g, u
     if (newG < 0) newG = 0; else if (newG > 255) newG = 255;
     if (newB < 0) newB = 0; else if (newB > 255) newB = 255;
     
-    // Find nearest palette color
-    uint8_t spectraColor = findNearestLab((uint8_t)newR, (uint8_t)newG, (uint8_t)newB);
+    // Find nearest palette color using fast LUT (already Lab-based)
+    uint8_t spectraColor = mapColorFast((uint8_t)newR, (uint8_t)newG, (uint8_t)newB);
     
     // Get the actual palette RGB for error calculation
     uint8_t palR, palG, palB;

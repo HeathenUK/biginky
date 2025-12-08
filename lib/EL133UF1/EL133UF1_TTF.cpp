@@ -587,7 +587,8 @@ void EL133UF1_TTF::drawTextAlignedOutlined(int16_t x, int16_t y, const char* tex
 // Outlined Text
 // ============================================================================
 
-// Render a single glyph with outline (optimized single-pass)
+// Render a single glyph with outline using optimized 2-pass separable dilation
+// This is O(w*h*outlineWidth) instead of O(w*h*outlineWidth²)
 void EL133UF1_TTF::renderGlyphOutlined(int codepoint, int16_t x, int16_t baseline,
                                         float scale, uint8_t color, uint8_t outlineColor,
                                         int outlineWidth) {
@@ -608,20 +609,55 @@ void EL133UF1_TTF::renderGlyphOutlined(int codepoint, int16_t x, int16_t baselin
     int bufHeight = glyphHeight + pad * 2;
     size_t bufSize = bufWidth * bufHeight;
     
+    // Allocate glyph buffer and dilation buffer
     uint8_t* glyphBuf = (uint8_t*)malloc(bufSize);
-    if (!glyphBuf) return;
+    uint8_t* dilatedH = (uint8_t*)malloc(bufSize);  // Horizontal dilation result
+    
+    if (!glyphBuf || !dilatedH) {
+        if (glyphBuf) free(glyphBuf);
+        if (dilatedH) free(dilatedH);
+        return;
+    }
     
     memset(glyphBuf, 0, bufSize);
+    memset(dilatedH, 0, bufSize);
     
     // Render glyph centered in padded buffer
     stbtt_MakeCodepointBitmap(info, glyphBuf + pad * bufWidth + pad,
                                glyphWidth, glyphHeight, bufWidth, scale, scale, codepoint);
     
-    // Screen position (adjusted for padding)
+    // Convert to binary (threshold at 127) for faster dilation
+    for (size_t i = 0; i < bufSize; i++) {
+        glyphBuf[i] = (glyphBuf[i] > 127) ? 1 : 0;
+    }
+    
+    // ========================================================================
+    // Pass 1: Horizontal dilation - for each pixel, check outlineWidth neighbors left/right
+    // ========================================================================
+    for (int py = 0; py < bufHeight; py++) {
+        uint8_t* srcRow = glyphBuf + py * bufWidth;
+        uint8_t* dstRow = dilatedH + py * bufWidth;
+        
+        for (int px = 0; px < bufWidth; px++) {
+            // Check if any pixel in horizontal window is set
+            int xStart = (px - outlineWidth < 0) ? 0 : px - outlineWidth;
+            int xEnd = (px + outlineWidth >= bufWidth) ? bufWidth - 1 : px + outlineWidth;
+            
+            uint8_t found = 0;
+            for (int nx = xStart; nx <= xEnd && !found; nx++) {
+                found = srcRow[nx];
+            }
+            dstRow[px] = found;
+        }
+    }
+    
+    // ========================================================================
+    // Pass 2: Vertical dilation on dilatedH + draw directly to display
+    // For each pixel, check outlineWidth neighbors above/below in dilatedH
+    // ========================================================================
     int16_t screenX = x + x0 - pad;
     int16_t screenY = baseline + y0 - pad;
     
-    // Single pass: for each pixel, check if it's glyph, outline, or skip
     for (int py = 0; py < bufHeight; py++) {
         int16_t drawY = screenY + py;
         if (drawY < 0 || drawY >= _display->height()) continue;
@@ -630,26 +666,20 @@ void EL133UF1_TTF::renderGlyphOutlined(int codepoint, int16_t x, int16_t baselin
             int16_t drawX = screenX + px;
             if (drawX < 0 || drawX >= _display->width()) continue;
             
-            uint8_t alpha = glyphBuf[py * bufWidth + px];
-            
-            // Is this a glyph pixel?
-            if (alpha > 127) {
+            // Original glyph pixel - draw foreground color
+            if (glyphBuf[py * bufWidth + px]) {
                 _display->setPixel(drawX, drawY, color);
                 continue;
             }
             
-            // Check if any neighbor within outlineWidth is a glyph pixel (dilation)
+            // Check vertical dilation on horizontal-dilated result
+            int yStart = (py - outlineWidth < 0) ? 0 : py - outlineWidth;
+            int yEnd = (py + outlineWidth >= bufHeight) ? bufHeight - 1 : py + outlineWidth;
+            
             bool isOutline = false;
-            for (int oy = -outlineWidth; oy <= outlineWidth && !isOutline; oy++) {
-                for (int ox = -outlineWidth; ox <= outlineWidth && !isOutline; ox++) {
-                    if (ox == 0 && oy == 0) continue;
-                    int nx = px + ox;
-                    int ny = py + oy;
-                    if (nx >= 0 && nx < bufWidth && ny >= 0 && ny < bufHeight) {
-                        if (glyphBuf[ny * bufWidth + nx] > 127) {
-                            isOutline = true;
-                        }
-                    }
+            for (int ny = yStart; ny <= yEnd && !isOutline; ny++) {
+                if (dilatedH[ny * bufWidth + px]) {
+                    isOutline = true;
                 }
             }
             
@@ -660,6 +690,7 @@ void EL133UF1_TTF::renderGlyphOutlined(int codepoint, int16_t x, int16_t baselin
     }
     
     free(glyphBuf);
+    free(dilatedH);
 }
 
 void EL133UF1_TTF::drawTextOutlined(int16_t x, int16_t y, const char* text, 

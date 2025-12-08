@@ -1975,6 +1975,7 @@ void doDisplayUpdate(int updateNumber) {
         }
         return;
     }
+    display.setRotation180(true);  // Rotate display 180 degrees
     Serial.printf("Display buffer: %p\n", display.getBuffer());
     logStage(STAGE_DISPLAY_OK);
     

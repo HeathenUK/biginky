@@ -20,14 +20,28 @@ bool DS3231::begin(TwoWire* wire, int sda, int scl) {
     Serial.flush();
     
     // Initialize I2C with custom pins if specified
+    // Platform-specific pin configuration
     if (sda >= 0 && scl >= 0) {
+#if defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350)
+        // RP2040/RP2350: Use setSDA/setSCL before begin()
         _wire->setSDA(sda);
         _wire->setSCL(scl);
+        _wire->begin();
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+        // ESP32: Pass pins directly to begin()
+        _wire->begin(sda, scl);
+#else
+        // Generic: Try begin() with pins (Arduino standard since 1.8.13)
+        _wire->begin(sda, scl);
+#endif
+    } else {
+        _wire->begin();
     }
     
-    _wire->begin();
     _wire->setClock(100000);  // 100kHz for reliability
-    _wire->setTimeout(1000);  // 1 second timeout
+#if defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350)
+    _wire->setTimeout(1000);  // 1 second timeout (RP2040 specific)
+#endif
     
     Serial.println("DS3231: I2C initialized, scanning...");
     Serial.flush();

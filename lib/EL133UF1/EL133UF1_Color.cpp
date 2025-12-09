@@ -4,6 +4,7 @@
  */
 
 #include "EL133UF1_Color.h"
+#include "platform_hal.h"
 #include <math.h>
 
 // Map palette index to Spectra color code
@@ -57,7 +58,7 @@ bool Spectra6ColorMap::buildLUT() {
     uint32_t t0 = millis();
     
     // Allocate LUT - try PSRAM first, fall back to regular RAM
-    _lut = (uint8_t*)pmalloc(COLOR_LUT_TOTAL);
+    _lut = (uint8_t*)hal_psram_malloc(COLOR_LUT_TOTAL);
     if (_lut == nullptr) {
         _lut = (uint8_t*)malloc(COLOR_LUT_TOTAL);
     }

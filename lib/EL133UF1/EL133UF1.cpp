@@ -308,8 +308,19 @@ void EL133UF1::_sendCommand(uint8_t cmd, uint8_t csSel, const uint8_t* data, siz
         for (size_t offset = 0; offset < len; offset += chunkSize) {
             size_t remaining = len - offset;
             size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
-            // Use transfer with nullptr for write-only
+            // Platform-specific SPI transfer (write-only)
+#if defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350)
+            // RP2040/RP2350: Use transfer with nullptr for write-only
             _spi->transfer(data + offset, nullptr, toSend);
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+            // ESP32: Use writeBytes for write-only bulk transfer
+            _spi->writeBytes(data + offset, toSend);
+#else
+            // Generic fallback: byte-by-byte transfer
+            for (size_t i = 0; i < toSend; i++) {
+                _spi->transfer(data[offset + i]);
+            }
+#endif
         }
         _spi->endTransaction();
     }

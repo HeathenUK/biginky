@@ -3,19 +3,18 @@
  * @brief TrueType font rendering implementation for EL133UF1 display
  * 
  * Uses stb_truetype for TTF parsing and glyph rasterization.
- * Optimized for RP2350 with PSRAM support.
+ * Supports RP2350 and ESP32 with PSRAM.
  */
 
 #include "EL133UF1_TTF.h"
+#include "platform_hal.h"
 
 // Define implementation before including stb_truetype
 #define STB_TRUETYPE_IMPLEMENTATION
 
-// Use PSRAM-aware allocation on RP2350 (pmalloc is declared in Arduino.h)
-#ifdef ARDUINO_ARCH_RP2040
-#define STBTT_malloc(x,u)  ((void)(u), pmalloc(x))
-#define STBTT_free(x,u)    ((void)(u), free(x))
-#endif
+// Use PSRAM-aware allocation via platform HAL
+#define STBTT_malloc(x,u)  ((void)(u), hal_psram_malloc(x))
+#define STBTT_free(x,u)    ((void)(u), hal_psram_free(x))
 
 #include "stb_truetype.h"
 

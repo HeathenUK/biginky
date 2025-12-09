@@ -48,6 +48,15 @@
 #define WIFI_ENABLED 0
 #endif
 
+// SD Card support via SDMMC
+#if !defined(DISABLE_SDMMC)
+#include <SD_MMC.h>
+#include <FS.h>
+#define SDMMC_ENABLED 1
+#else
+#define SDMMC_ENABLED 0
+#endif
+
 // ============================================================================
 // Pin definitions for ESP32-P4
 // Override these with build flags or edit for your specific board
@@ -85,6 +94,26 @@
 #endif
 #ifndef PIN_RTC_INT
 #define PIN_RTC_INT   46    // GPIO46 = Pico GP18 (pin 24)
+#endif
+
+// SDMMC SD Card pins (ESP32-P4 Slot 0 IOMUX pins)
+#ifndef PIN_SD_CLK
+#define PIN_SD_CLK    43
+#endif
+#ifndef PIN_SD_CMD
+#define PIN_SD_CMD    44
+#endif
+#ifndef PIN_SD_D0
+#define PIN_SD_D0     39
+#endif
+#ifndef PIN_SD_D1
+#define PIN_SD_D1     40
+#endif
+#ifndef PIN_SD_D2
+#define PIN_SD_D2     41
+#endif
+#ifndef PIN_SD_D3
+#define PIN_SD_D3     42
 #endif
 
 // ============================================================================
@@ -278,6 +307,217 @@ void wifiNtpSync() {
     }
     Serial.println("====================\n");
 }
+
+// ============================================================================
+// SD Card Functions (SDMMC)
+// ============================================================================
+
+#if SDMMC_ENABLED
+static bool sdCardMounted = false;
+
+bool sdInit() {
+    if (sdCardMounted) {
+        Serial.println("SD card already mounted");
+        return true;
+    }
+    
+    Serial.println("\n=== Initializing SD Card (SDMMC) ===");
+    Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
+                  PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+    
+    // Set custom pins (for GPIO matrix mode)
+    // Note: ESP32-P4 Slot 0 uses IOMUX, so pins must match the IOMUX pins
+    if (!SD_MMC.setPins(PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3)) {
+        Serial.println("SD_MMC.setPins failed!");
+        return false;
+    }
+    
+    // Try 4-bit mode first, fall back to 1-bit if that fails
+    Serial.println("Trying 4-bit mode...");
+    if (!SD_MMC.begin("/sdcard", false, false, SDMMC_FREQ_DEFAULT)) {
+        Serial.println("4-bit mode failed, trying 1-bit mode...");
+        if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT)) {
+            Serial.println("SD_MMC.begin failed!");
+            return false;
+        }
+        Serial.println("Mounted in 1-bit mode");
+    } else {
+        Serial.println("Mounted in 4-bit mode");
+    }
+    
+    sdCardMounted = true;
+    Serial.println("SD card mounted successfully!");
+    Serial.println("==================================\n");
+    return true;
+}
+
+void sdInfo() {
+    if (!sdCardMounted) {
+        Serial.println("SD card not mounted. Use 'M' to mount.");
+        return;
+    }
+    
+    Serial.println("\n=== SD Card Info ===");
+    
+    uint8_t cardType = SD_MMC.cardType();
+    Serial.printf("Card Type: ");
+    switch (cardType) {
+        case CARD_NONE: Serial.println("No card"); break;
+        case CARD_MMC: Serial.println("MMC"); break;
+        case CARD_SD: Serial.println("SD"); break;
+        case CARD_SDHC: Serial.println("SDHC"); break;
+        default: Serial.println("Unknown"); break;
+    }
+    
+    uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+    uint64_t totalBytes = SD_MMC.totalBytes() / (1024 * 1024);
+    uint64_t usedBytes = SD_MMC.usedBytes() / (1024 * 1024);
+    
+    Serial.printf("Card Size: %llu MB\n", cardSize);
+    Serial.printf("Total Space: %llu MB\n", totalBytes);
+    Serial.printf("Used Space: %llu MB\n", usedBytes);
+    Serial.printf("Free Space: %llu MB\n", totalBytes - usedBytes);
+    Serial.println("====================\n");
+}
+
+void sdList(const char* dirname = "/") {
+    if (!sdCardMounted) {
+        Serial.println("SD card not mounted. Use 'M' to mount.");
+        return;
+    }
+    
+    Serial.printf("\n=== Listing: %s ===\n", dirname);
+    
+    File root = SD_MMC.open(dirname);
+    if (!root) {
+        Serial.println("Failed to open directory");
+        return;
+    }
+    if (!root.isDirectory()) {
+        Serial.println("Not a directory");
+        return;
+    }
+    
+    File file = root.openNextFile();
+    int count = 0;
+    while (file && count < 50) {
+        if (file.isDirectory()) {
+            Serial.printf("  [DIR]  %s/\n", file.name());
+        } else {
+            uint64_t size = file.size();
+            if (size >= 1024 * 1024) {
+                Serial.printf("  [FILE] %-30s  %.2f MB\n", file.name(), size / (1024.0 * 1024.0));
+            } else if (size >= 1024) {
+                Serial.printf("  [FILE] %-30s  %.2f KB\n", file.name(), size / 1024.0);
+            } else {
+                Serial.printf("  [FILE] %-30s  %llu bytes\n", file.name(), size);
+            }
+        }
+        file = root.openNextFile();
+        count++;
+    }
+    
+    if (count == 0) {
+        Serial.println("  (empty)");
+    } else if (count >= 50) {
+        Serial.println("  ... (truncated at 50 entries)");
+    }
+    
+    Serial.println("======================\n");
+}
+
+void sdReadTest() {
+    if (!sdCardMounted) {
+        Serial.println("SD card not mounted. Use 'M' to mount.");
+        return;
+    }
+    
+    Serial.println("\n=== SD Read Speed Test ===");
+    
+    // Try to find a file to read
+    File root = SD_MMC.open("/");
+    File testFile;
+    
+    File file = root.openNextFile();
+    while (file) {
+        if (!file.isDirectory() && file.size() > 100000) {
+            testFile = SD_MMC.open(file.path());
+            break;
+        }
+        file = root.openNextFile();
+    }
+    
+    if (!testFile) {
+        Serial.println("No suitable file found for speed test (need >100KB)");
+        Serial.println("Creating test file...");
+        
+        // Create a test file
+        File writeFile = SD_MMC.open("/speedtest.bin", FILE_WRITE);
+        if (!writeFile) {
+            Serial.println("Failed to create test file");
+            return;
+        }
+        
+        uint8_t* buf = (uint8_t*)malloc(4096);
+        if (!buf) {
+            Serial.println("Failed to allocate buffer");
+            writeFile.close();
+            return;
+        }
+        
+        memset(buf, 0xAA, 4096);
+        uint32_t writeStart = millis();
+        for (int i = 0; i < 256; i++) {  // 1MB
+            writeFile.write(buf, 4096);
+        }
+        writeFile.flush();
+        uint32_t writeTime = millis() - writeStart;
+        writeFile.close();
+        free(buf);
+        
+        Serial.printf("Write: 1MB in %lu ms = %.2f MB/s\n", writeTime, 1000.0 / writeTime);
+        
+        testFile = SD_MMC.open("/speedtest.bin");
+    }
+    
+    // Read speed test
+    uint8_t* buf = (uint8_t*)malloc(4096);
+    if (!buf) {
+        Serial.println("Failed to allocate buffer");
+        testFile.close();
+        return;
+    }
+    
+    size_t bytesToRead = min((size_t)1048576, (size_t)testFile.size());  // Max 1MB
+    size_t bytesRead = 0;
+    
+    uint32_t readStart = millis();
+    while (bytesRead < bytesToRead) {
+        size_t read = testFile.read(buf, 4096);
+        if (read == 0) break;
+        bytesRead += read;
+    }
+    uint32_t readTime = millis() - readStart;
+    
+    testFile.close();
+    free(buf);
+    
+    float speedMBs = (bytesRead / (1024.0 * 1024.0)) / (readTime / 1000.0);
+    Serial.printf("Read: %zu bytes in %lu ms = %.2f MB/s\n", bytesRead, readTime, speedMBs);
+    Serial.println("===========================\n");
+}
+
+void sdUnmount() {
+    if (!sdCardMounted) {
+        Serial.println("SD card not mounted");
+        return;
+    }
+    
+    SD_MMC.end();
+    sdCardMounted = false;
+    Serial.println("SD card unmounted");
+}
+#endif // SDMMC_ENABLED
 
 void wifiVersionInfo() {
     Serial.println("\n=== ESP-Hosted Version Info ===");
@@ -503,6 +743,9 @@ void setup() {
 #if WIFI_ENABLED
     Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
 #endif
+#if SDMMC_ENABLED
+    Serial.println("  SD Card: 'M'=mount, 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount");
+#endif
     
     // Initialize WiFi (just check status, don't connect yet)
 #if WIFI_ENABLED
@@ -671,6 +914,29 @@ void loop() {
         }
         else if (c == 'n' || c == 'N') {
             wifiNtpSync();
+        }
+#endif
+#if SDMMC_ENABLED
+        else if (c == 'M') {
+            sdInit();
+        }
+        else if (c == 'L') {
+            sdList("/");
+        }
+        else if (c == 'I') {
+            sdInfo();
+        }
+        else if (c == 'T') {
+            if (!sdCardMounted) {
+                Serial.println("Mounting SD card first...");
+                sdInit();
+            }
+            if (sdCardMounted) {
+                sdReadTest();
+            }
+        }
+        else if (c == 'U') {
+            sdUnmount();
         }
 #endif
     }

@@ -3,6 +3,11 @@
  * @brief Deep Sleep functionality implementation for ESP32
  * 
  * Uses ESP32's deep sleep with RTC memory for persistent data.
+ * 
+ * IMPORTANT for ESP32-P4:
+ * - ext0 wake is NOT supported, only ext1
+ * - Only GPIO 0-15 (LP GPIOs) can wake from deep sleep
+ * - RTC INT pin must be on GPIO 0-15 for wake functionality
  */
 
 #include "esp32_sleep.h"
@@ -11,6 +16,8 @@
 
 #include <esp_sleep.h>
 #include <esp_system.h>
+#include <esp_chip_info.h>
+#include <soc/soc_caps.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -20,6 +27,32 @@
 #define HAS_DS3231 1
 #else
 #define HAS_DS3231 0
+#endif
+
+// ========================================================================
+// Platform detection and wake source support
+// ========================================================================
+
+// ESP32-P4 has 16 LP GPIOs (0-15) that can be used for deep sleep wake
+#if CONFIG_IDF_TARGET_ESP32P4
+    #define ESP32P4_LP_GPIO_MAX 15
+    #define HAS_EXT0_WAKE 0  // ESP32-P4 does NOT support ext0
+    #define HAS_EXT1_WAKE 1
+#elif CONFIG_IDF_TARGET_ESP32S3
+    #define HAS_EXT0_WAKE 1
+    #define HAS_EXT1_WAKE 1
+#elif CONFIG_IDF_TARGET_ESP32S2
+    #define HAS_EXT0_WAKE 1
+    #define HAS_EXT1_WAKE 1
+#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
+    // ESP32-C3/C6 use gpio_wakeup instead
+    #define HAS_EXT0_WAKE 0
+    #define HAS_EXT1_WAKE 0
+    #define HAS_GPIO_WAKEUP 1
+#else
+    // Original ESP32
+    #define HAS_EXT0_WAKE 1
+    #define HAS_EXT1_WAKE 1
 #endif
 
 // ========================================================================
@@ -69,6 +102,48 @@ static void init_rtc_data_if_needed(void) {
     }
 }
 
+/**
+ * @brief Check if a GPIO can be used for deep sleep wake
+ * 
+ * On ESP32-P4, only GPIO 0-15 (LP GPIOs) can wake from deep sleep.
+ * On other ESP32 variants, RTC GPIOs can be used.
+ */
+static bool is_valid_wake_gpio(int gpio) {
+#if CONFIG_IDF_TARGET_ESP32P4
+    // ESP32-P4: Only LP GPIOs 0-15 can wake from deep sleep
+    if (gpio < 0 || gpio > ESP32P4_LP_GPIO_MAX) {
+        return false;
+    }
+    return true;
+#elif defined(SOC_RTCIO_PIN_COUNT)
+    // Other ESP32 variants: Check if it's an RTC GPIO
+    // This is a simplification - proper check would use rtc_io_number_get()
+    return gpio >= 0 && gpio < SOC_RTCIO_PIN_COUNT;
+#else
+    return gpio >= 0;
+#endif
+}
+
+static const char* get_chip_name(void) {
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+    
+    switch (chip_info.model) {
+        case CHIP_ESP32:   return "ESP32";
+        case CHIP_ESP32S2: return "ESP32-S2";
+        case CHIP_ESP32S3: return "ESP32-S3";
+        case CHIP_ESP32C3: return "ESP32-C3";
+        case CHIP_ESP32C6: return "ESP32-C6";
+#if defined(CHIP_ESP32H2)
+        case CHIP_ESP32H2: return "ESP32-H2";
+#endif
+#if defined(CHIP_ESP32P4)
+        case CHIP_ESP32P4: return "ESP32-P4";
+#endif
+        default: return "Unknown ESP32";
+    }
+}
+
 // ========================================================================
 // DS3231 External RTC functions
 // ========================================================================
@@ -76,8 +151,18 @@ static void init_rtc_data_if_needed(void) {
 bool sleep_init_rtc(int sda_pin, int scl_pin, int int_pin) {
     init_rtc_data_if_needed();
     
-    Serial.printf("[ESP32_SLEEP] sleep_init_rtc: SDA=%d, SCL=%d, INT=%d\n", 
-                  sda_pin, scl_pin, int_pin);
+    Serial.printf("[ESP32_SLEEP] %s: sleep_init_rtc(SDA=%d, SCL=%d, INT=%d)\n", 
+                  get_chip_name(), sda_pin, scl_pin, int_pin);
+    
+    // Validate wake pin for deep sleep wake capability
+    if (int_pin >= 0 && !is_valid_wake_gpio(int_pin)) {
+#if CONFIG_IDF_TARGET_ESP32P4
+        Serial.printf("[ESP32_SLEEP] WARNING: GPIO%d cannot wake from deep sleep on ESP32-P4!\n", int_pin);
+        Serial.println("[ESP32_SLEEP] ESP32-P4 can only wake from GPIO 0-15 (LP GPIOs)");
+        Serial.println("[ESP32_SLEEP] Suggest moving RTC INT to GPIO4, GPIO5, GPIO7, or GPIO8");
+        // Don't fail - the RTC can still be used for timekeeping, just not wake
+#endif
+    }
     
 #if HAS_DS3231
     // Initialize I2C for DS3231
@@ -90,11 +175,14 @@ bool sleep_init_rtc(int sda_pin, int scl_pin, int int_pin) {
     
     if (_rtc_present) {
         Serial.println("[ESP32_SLEEP] DS3231 RTC detected");
-        rtc.printStatus();
         
         if (int_pin >= 0) {
             pinMode(int_pin, INPUT_PULLUP);
             rtc.clearAlarm1();
+            
+            if (is_valid_wake_gpio(int_pin)) {
+                Serial.printf("[ESP32_SLEEP] GPIO%d configured for wake\n", int_pin);
+            }
         }
         return true;
     }
@@ -154,40 +242,81 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
     // Update uptime
     rtc_data.uptime_seconds += millis() / 1000;
     
-    Serial.printf("[ESP32_SLEEP] Entering deep sleep for %lu ms\n", delay_ms);
-    Serial.flush();
+    Serial.printf("[ESP32_SLEEP] Entering deep sleep for %lu ms on %s\n", delay_ms, get_chip_name());
+    
+    bool timer_enabled = false;
+    bool gpio_wake_configured = false;
     
 #if HAS_DS3231
-    // If we have DS3231, use its alarm for wake
-    if (_rtc_present && _rtc_int_pin >= 0) {
-        Serial.println("[ESP32_SLEEP] Using DS3231 alarm for wake");
+    // If we have DS3231 with valid wake pin, use its alarm
+    if (_rtc_present && _rtc_int_pin >= 0 && is_valid_wake_gpio(_rtc_int_pin)) {
+        Serial.printf("[ESP32_SLEEP] Using DS3231 alarm + GPIO%d for wake\n", _rtc_int_pin);
         
         // Clear any existing alarm and set new one
         rtc.clearAlarm1();
         rtc.setAlarm1(delay_ms);
+        rtc.enableAlarm1Interrupt(true);
         
-        // Configure GPIO wake on RTC INT pin (active low)
-        esp_sleep_enable_ext0_wakeup((gpio_num_t)_rtc_int_pin, 0);
-    } else
+#if CONFIG_IDF_TARGET_ESP32P4
+        // ESP32-P4: Use ext1 (ext0 not supported)
+        uint64_t gpio_mask = (1ULL << _rtc_int_pin);
+        esp_err_t err = esp_sleep_enable_ext1_wakeup(gpio_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+        if (err != ESP_OK) {
+            Serial.printf("[ESP32_SLEEP] WARNING: ext1 wake config failed: %d\n", err);
+        } else {
+            gpio_wake_configured = true;
+        }
+#elif HAS_EXT0_WAKE
+        // Other ESP32 variants: Use ext0 for single pin wake
+        esp_err_t err = esp_sleep_enable_ext0_wakeup((gpio_num_t)_rtc_int_pin, 0);
+        if (err != ESP_OK) {
+            Serial.printf("[ESP32_SLEEP] WARNING: ext0 wake config failed: %d\n", err);
+        } else {
+            gpio_wake_configured = true;
+        }
 #endif
-    {
-        // Use ESP32's internal timer for wake
+    } else if (_rtc_present && _rtc_int_pin >= 0) {
+        // RTC present but INT pin can't wake - still use alarm but fall back to timer
+        Serial.println("[ESP32_SLEEP] WARNING: RTC INT pin cannot wake, using timer fallback");
+        rtc.clearAlarm1();
+        rtc.setAlarm1(delay_ms);
+    }
+#endif
+
+    // If GPIO wake not configured, use timer
+    if (!gpio_wake_configured) {
+        Serial.println("[ESP32_SLEEP] Using ESP32 timer for wake");
         esp_sleep_enable_timer_wakeup((uint64_t)delay_ms * 1000ULL);
+        timer_enabled = true;
     }
     
     // Configure additional GPIO wake sources if any
-    uint64_t gpio_mask = 0;
+    uint64_t extra_gpio_mask = 0;
     for (int i = 0; i < rtc_data.wake_gpio_count; i++) {
-        if (rtc_data.wake_gpio_pins[i] >= 0) {
-            gpio_mask |= (1ULL << rtc_data.wake_gpio_pins[i]);
+        int pin = rtc_data.wake_gpio_pins[i];
+        if (pin >= 0 && is_valid_wake_gpio(pin)) {
+            extra_gpio_mask |= (1ULL << pin);
+            Serial.printf("[ESP32_SLEEP] Adding GPIO%d to wake mask\n", pin);
         }
     }
     
-    if (gpio_mask != 0) {
-        // Use ext1 for multiple GPIO wake sources
-        // Note: All pins must have same wake level with ext1
-        esp_sleep_enable_ext1_wakeup(gpio_mask, ESP_EXT1_WAKEUP_ALL_LOW);
+    if (extra_gpio_mask != 0) {
+#if CONFIG_IDF_TARGET_ESP32P4 || HAS_EXT1_WAKE
+        // Combine with RTC INT pin mask if configured
+        if (gpio_wake_configured && _rtc_int_pin >= 0) {
+            extra_gpio_mask |= (1ULL << _rtc_int_pin);
+        }
+        esp_err_t err = esp_sleep_enable_ext1_wakeup(extra_gpio_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+        if (err != ESP_OK) {
+            Serial.printf("[ESP32_SLEEP] WARNING: ext1 additional GPIOs failed: %d\n", err);
+        }
+#endif
     }
+    
+    Serial.printf("[ESP32_SLEEP] Boot count: %lu, total uptime: %lu s\n", 
+                  rtc_data.boot_count, rtc_data.uptime_seconds);
+    Serial.flush();
+    delay(10);  // Ensure serial output completes
     
     // Enter deep sleep
     esp_deep_sleep_start();
@@ -290,6 +419,17 @@ int sleep_add_gpio_wake_source(int pin, bool active_high) {
         return -1;
     }
     
+    // Validate the GPIO can wake from deep sleep
+    if (!is_valid_wake_gpio(pin)) {
+#if CONFIG_IDF_TARGET_ESP32P4
+        Serial.printf("[ESP32_SLEEP] ERROR: GPIO%d cannot wake from deep sleep on ESP32-P4\n", pin);
+        Serial.println("[ESP32_SLEEP] Only GPIO 0-15 (LP GPIOs) can wake from deep sleep");
+#else
+        Serial.printf("[ESP32_SLEEP] WARNING: GPIO%d may not support deep sleep wake\n", pin);
+#endif
+        return -1;
+    }
+    
     int slot = rtc_data.wake_gpio_count;
     rtc_data.wake_gpio_pins[slot] = pin;
     rtc_data.wake_gpio_active_high[slot] = active_high;
@@ -323,10 +463,12 @@ void sleep_clear_gpio_wake_sources(void) {
 int sleep_get_wake_gpio(void) {
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     
+#if HAS_EXT0_WAKE
     if (cause == ESP_SLEEP_WAKEUP_EXT0) {
         // EXT0 is the DS3231 INT pin
         return _rtc_int_pin;
     }
+#endif
     
     if (cause == ESP_SLEEP_WAKEUP_EXT1) {
         // Check which GPIO triggered
@@ -339,6 +481,77 @@ int sleep_get_wake_gpio(void) {
     }
     
     return -1;  // Timer wake or unknown
+}
+
+/**
+ * @brief Get a string describing the wake cause
+ */
+const char* sleep_get_wake_cause_string(void) {
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    
+    switch (cause) {
+        case ESP_SLEEP_WAKEUP_UNDEFINED: return "Power on / reset";
+        case ESP_SLEEP_WAKEUP_ALL: return "Unknown";
+        case ESP_SLEEP_WAKEUP_EXT0: return "EXT0 (single GPIO)";
+        case ESP_SLEEP_WAKEUP_EXT1: return "EXT1 (GPIO mask)";
+        case ESP_SLEEP_WAKEUP_TIMER: return "Timer";
+        case ESP_SLEEP_WAKEUP_TOUCHPAD: return "Touchpad";
+        case ESP_SLEEP_WAKEUP_ULP: return "ULP program";
+        case ESP_SLEEP_WAKEUP_GPIO: return "GPIO";
+        case ESP_SLEEP_WAKEUP_UART: return "UART";
+        case ESP_SLEEP_WAKEUP_WIFI: return "WiFi";
+        case ESP_SLEEP_WAKEUP_COCPU: return "Co-CPU";
+        case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG: return "Co-CPU trap";
+        case ESP_SLEEP_WAKEUP_BT: return "Bluetooth";
+        default: return "Unknown";
+    }
+}
+
+/**
+ * @brief Print detailed sleep/wake information
+ */
+void sleep_print_info(void) {
+    init_rtc_data_if_needed();
+    
+    Serial.println("\n=== ESP32 Sleep Info ===");
+    Serial.printf("  Chip: %s\n", get_chip_name());
+    Serial.printf("  Boot count: %lu\n", rtc_data.boot_count);
+    Serial.printf("  Total uptime: %lu seconds\n", sleep_get_uptime_seconds());
+    Serial.printf("  Wake cause: %s\n", sleep_get_wake_cause_string());
+    
+    int wake_gpio = sleep_get_wake_gpio();
+    if (wake_gpio >= 0) {
+        Serial.printf("  Wake GPIO: %d\n", wake_gpio);
+    }
+    
+#if HAS_DS3231
+    Serial.printf("  External RTC: %s\n", _rtc_present ? "DS3231 present" : "Not found");
+    if (_rtc_present) {
+        Serial.printf("  RTC INT pin: GPIO%d", _rtc_int_pin);
+        if (_rtc_int_pin >= 0 && !is_valid_wake_gpio(_rtc_int_pin)) {
+            Serial.print(" (CANNOT wake - not an LP GPIO!)");
+        }
+        Serial.println();
+    }
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32P4
+    Serial.println("  Wake GPIOs: GPIO 0-15 only (LP GPIOs)");
+    Serial.println("  Wake mode: ext1 (ext0 not supported)");
+#elif HAS_EXT0_WAKE && HAS_EXT1_WAKE
+    Serial.println("  Wake modes: ext0, ext1, timer");
+#endif
+    
+    Serial.printf("  Configured wake sources: %d\n", rtc_data.wake_gpio_count);
+    for (int i = 0; i < rtc_data.wake_gpio_count; i++) {
+        if (rtc_data.wake_gpio_pins[i] >= 0) {
+            Serial.printf("    Slot %d: GPIO%d (active-%s)\n", 
+                          i, rtc_data.wake_gpio_pins[i],
+                          rtc_data.wake_gpio_active_high[i] ? "high" : "low");
+        }
+    }
+    
+    Serial.println("========================\n");
 }
 
 #endif // ESP32 || ARDUINO_ARCH_ESP32

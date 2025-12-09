@@ -278,6 +278,37 @@ void wifiNtpSync() {
     }
     Serial.println("====================\n");
 }
+
+void wifiVersionInfo() {
+    Serial.println("\n=== ESP-Hosted Version Info ===");
+    
+    // Get version info from esp32-hal-hosted
+    extern void hostedGetHostVersion(uint32_t *major, uint32_t *minor, uint32_t *patch);
+    extern void hostedGetSlaveVersion(uint32_t *major, uint32_t *minor, uint32_t *patch);
+    extern char* hostedGetUpdateURL();
+    extern bool hostedHasUpdate();
+    
+    uint32_t hMajor, hMinor, hPatch;
+    uint32_t sMajor, sMinor, sPatch;
+    
+    hostedGetHostVersion(&hMajor, &hMinor, &hPatch);
+    Serial.printf("Host (ESP32-P4) expects:  v%lu.%lu.%lu\n", hMajor, hMinor, hPatch);
+    
+    hostedGetSlaveVersion(&sMajor, &sMinor, &sPatch);
+    Serial.printf("Slave (ESP32-C6) version: v%lu.%lu.%lu\n", sMajor, sMinor, sPatch);
+    
+    if (hostedHasUpdate()) {
+        Serial.println("\n*** FIRMWARE UPDATE NEEDED ***");
+        Serial.printf("Download URL: %s\n", hostedGetUpdateURL());
+        Serial.println("\nTo update the ESP32-C6:");
+        Serial.println("1. Connect USB to the ESP32-C6 port (separate from P4)");
+        Serial.println("2. Hold BOOT button on C6, press RESET");
+        Serial.println("3. Flash with: esptool.py --chip esp32c6 write_flash 0x0 <firmware.bin>");
+    } else {
+        Serial.println("Firmware versions match!");
+    }
+    Serial.println("================================\n");
+}
 #endif // WIFI_ENABLED
 
 // ============================================================================

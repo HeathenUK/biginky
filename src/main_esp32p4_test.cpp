@@ -315,6 +315,34 @@ void wifiNtpSync() {
 #if SDMMC_ENABLED
 static bool sdCardMounted = false;
 
+void sdDiagnostics() {
+    Serial.println("\n=== SD Card Pin Diagnostics ===");
+    Serial.printf("Expected IOMUX pins for Slot 0:\n");
+    Serial.printf("  CLK=43, CMD=44, D0=39, D1=40, D2=41, D3=42\n");
+    Serial.printf("Configured pins:\n");
+    Serial.printf("  CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
+                  PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+    
+    // Read pin states (configure as inputs with pull-ups first)
+    Serial.println("\nPin states (with internal pull-up):");
+    int pins[] = {PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3};
+    const char* names[] = {"CLK", "CMD", "D0", "D1", "D2", "D3"};
+    
+    for (int i = 0; i < 6; i++) {
+        pinMode(pins[i], INPUT_PULLUP);
+    }
+    delay(10);
+    
+    for (int i = 0; i < 6; i++) {
+        int state = digitalRead(pins[i]);
+        Serial.printf("  GPIO%d (%s): %s\n", pins[i], names[i], state ? "HIGH" : "LOW");
+    }
+    
+    Serial.println("\nIf all pins are HIGH, card may not be inserted or wrong pins.");
+    Serial.println("If CMD/D0-D3 are LOW with card inserted, wiring is likely correct.");
+    Serial.println("================================\n");
+}
+
 bool sdInit(bool mode1bit = false) {
     if (sdCardMounted) {
         Serial.println("SD card already mounted");
@@ -342,6 +370,7 @@ bool sdInit(bool mode1bit = false) {
         Serial.println("SD_MMC.begin failed!");
         Serial.println("Error 0x107 = timeout - check if card is inserted");
         Serial.println("Make sure SD card lines have pull-up resistors");
+        Serial.println("\nRun 'D' for pin diagnostics");
         return false;
     }
     
@@ -745,7 +774,7 @@ void setup() {
     Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
 #endif
 #if SDMMC_ENABLED
-    Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount");
+    Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount, 'D'=diagnostics");
 #endif
     
     // Initialize WiFi (just check status, don't connect yet)
@@ -941,6 +970,9 @@ void loop() {
         }
         else if (c == 'U') {
             sdUnmount();
+        }
+        else if (c == 'D') {
+            sdDiagnostics();
         }
 #endif
     }

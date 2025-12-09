@@ -32,11 +32,13 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <Wire.h>
 #include "platform_hal.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_Color.h"
 #include "fonts/opensans.h"
+#include "DS3231.h"
 
 // ============================================================================
 // Pin definitions for ESP32-P4
@@ -64,6 +66,17 @@
 #endif
 #ifndef PIN_BUSY
 #define PIN_BUSY      47    // GPIO47 = Pico GP17 (pin 22)
+#endif
+
+// RTC I2C pins
+#ifndef PIN_RTC_SDA
+#define PIN_RTC_SDA   31    // GPIO31 = Pico GP2 (pin 4)
+#endif
+#ifndef PIN_RTC_SCL
+#define PIN_RTC_SCL   30    // GPIO30 = Pico GP3 (pin 5)
+#endif
+#ifndef PIN_RTC_INT
+#define PIN_RTC_INT   46    // GPIO46 = Pico GP18 (pin 24)
 #endif
 
 // ============================================================================
@@ -263,7 +276,32 @@ void setup() {
     Serial.println("\n========================================");
     Serial.println("Test complete!");
     Serial.println("========================================");
-    Serial.println("\nPress 'c' for color bars, 't' for TTF test");
+    Serial.println("\nCommands: 'c'=color bars, 't'=TTF, 'p'=pattern, 'r'=RTC test, 'i'=info");
+    
+    // Initialize RTC
+    Serial.println("\n--- Initializing RTC ---");
+    Serial.printf("RTC pins: SDA=%d, SCL=%d, INT=%d\n", PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
+    
+    if (rtc.begin(&Wire, PIN_RTC_SDA, PIN_RTC_SCL)) {
+        Serial.println("DS3231 RTC found!");
+        rtc.printStatus();
+        
+        // Read current time
+        time_t now = rtc.getTime();
+        Serial.printf("Current RTC time: %lu (Unix timestamp)\n", (unsigned long)now);
+        
+        // Convert to human readable
+        struct tm* timeinfo = gmtime(&now);
+        Serial.printf("  UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
+                      timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
+                      timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+        
+        // Read temperature
+        float temp = rtc.getTemperature();
+        Serial.printf("RTC temperature: %.2f °C\n", temp);
+    } else {
+        Serial.println("DS3231 RTC not found - check wiring");
+    }
 }
 
 void loop() {
@@ -295,6 +333,88 @@ void loop() {
         else if (c == 'i' || c == 'I') {
             Serial.println("\n--- Platform Info ---");
             hal_print_info();
+        }
+        else if (c == 'r' || c == 'R') {
+            Serial.println("\n--- RTC Test ---");
+            
+            if (!rtc.isPresent()) {
+                Serial.println("RTC not initialized, trying again...");
+                if (!rtc.begin(&Wire, PIN_RTC_SDA, PIN_RTC_SCL)) {
+                    Serial.println("DS3231 RTC not found!");
+                    return;
+                }
+            }
+            
+            // Print full status
+            rtc.printStatus();
+            
+            // Read current time
+            time_t now = rtc.getTime();
+            Serial.printf("\nCurrent RTC time: %lu\n", (unsigned long)now);
+            struct tm* timeinfo = gmtime(&now);
+            Serial.printf("  UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
+                          timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
+                          timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+            
+            // Temperature
+            Serial.printf("Temperature: %.2f °C\n", rtc.getTemperature());
+            
+            // Test alarm (set 5 second alarm)
+            Serial.println("\nSetting 5-second alarm test...");
+            rtc.clearAlarm1();
+            rtc.setAlarm1(5000);  // 5 seconds
+            rtc.enableAlarm1Interrupt(true);
+            Serial.println("Alarm set! INT pin should go LOW in 5 seconds.");
+            Serial.printf("INT pin (GPIO%d) current state: %s\n", 
+                          PIN_RTC_INT, digitalRead(PIN_RTC_INT) ? "HIGH" : "LOW");
+            
+            // Wait for alarm
+            Serial.println("Waiting for alarm...");
+            unsigned long start = millis();
+            pinMode(PIN_RTC_INT, INPUT_PULLUP);
+            while (millis() - start < 7000) {
+                if (digitalRead(PIN_RTC_INT) == LOW) {
+                    Serial.printf("Alarm triggered after %lu ms!\n", millis() - start);
+                    rtc.clearAlarm1();
+                    Serial.println("Alarm cleared.");
+                    break;
+                }
+                delay(100);
+            }
+            if (millis() - start >= 7000) {
+                Serial.println("Alarm did not trigger within timeout");
+                Serial.printf("Alarm1 flag: %d\n", rtc.alarm1Triggered());
+            }
+        }
+        else if (c == 's' || c == 'S') {
+            // Set RTC time from serial input
+            Serial.println("\n--- Set RTC Time ---");
+            Serial.println("Enter Unix timestamp (seconds since 1970):");
+            Serial.println("Example: 1733673600 = 2024-12-08 12:00:00 UTC");
+            
+            // Wait for input
+            while (!Serial.available()) delay(10);
+            delay(100);  // Wait for full input
+            
+            String input = Serial.readStringUntil('\n');
+            input.trim();
+            unsigned long timestamp = input.toInt();
+            
+            if (timestamp > 0) {
+                Serial.printf("Setting RTC to: %lu\n", timestamp);
+                rtc.setTime((time_t)timestamp);
+                delay(100);
+                
+                // Verify
+                time_t now = rtc.getTime();
+                Serial.printf("RTC now reads: %lu\n", (unsigned long)now);
+                struct tm* timeinfo = gmtime(&now);
+                Serial.printf("  UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
+                              timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
+                              timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+            } else {
+                Serial.println("Invalid timestamp");
+            }
         }
     }
     

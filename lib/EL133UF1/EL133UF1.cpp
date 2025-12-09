@@ -958,29 +958,60 @@ void EL133UF1::_sendBuffer() {
             // Row i of rotated = original column (WIDTH-1-i) 
             // We need to split columns 0-599 to left, 600-1199 to right
             
+            // Fast inline ARGB to 3-bit color conversion
+            // Uses bit manipulation instead of if-else chains
+            #define FAST_ARGB_TO_COLOR(argb) ({ \
+                uint32_t _a = (argb); \
+                uint8_t _r = (_a >> 16) & 0xFF; \
+                uint8_t _g = (_a >> 8) & 0xFF; \
+                uint8_t _b = _a & 0xFF; \
+                uint8_t _result; \
+                if ((_r | _g | _b) < 64) _result = 0; /* BLACK */ \
+                else if ((_r & _g & _b) > 192) _result = 1; /* WHITE */ \
+                else if (_r > 192 && _g > 192) _result = 2; /* YELLOW */ \
+                else if (_r > 192) _result = 3; /* RED */ \
+                else if (_b > 192) _result = 5; /* BLUE */ \
+                else _result = 6; /* GREEN */ \
+                _result; \
+            })
+            
             for (int outRow = 0; outRow < WIDTH; outRow++) {
-                uint8_t* outPtrLeft = bufLeft + outRow * OUT_ROW_BYTES;
-                uint8_t* outPtrRight = bufRight + outRow * OUT_ROW_BYTES;
-                const uint32_t* rowPtr = rotatedBuf + outRow * HEIGHT;
+                uint8_t* __restrict__ outPtrLeft = bufLeft + outRow * OUT_ROW_BYTES;
+                uint8_t* __restrict__ outPtrRight = bufRight + outRow * OUT_ROW_BYTES;
+                const uint32_t* __restrict__ rowPtr = rotatedBuf + outRow * HEIGHT;
                 
-                // Left panel: columns 0-599 of rotated image
-                for (int i = 0; i < OUT_ROW_BYTES; i++) {
-                    uint8_t c0 = argbToColor(rowPtr[i * 2]);
-                    uint8_t c1 = argbToColor(rowPtr[i * 2 + 1]);
-                    outPtrLeft[i] = (c0 << 4) | c1;
+                // Left panel: columns 0-599 of rotated image (unrolled 4x)
+                int i = 0;
+                for (; i < OUT_ROW_BYTES - 3; i += 4) {
+                    const uint32_t* p = rowPtr + i * 2;
+                    outPtrLeft[i]   = (FAST_ARGB_TO_COLOR(p[0]) << 4) | FAST_ARGB_TO_COLOR(p[1]);
+                    outPtrLeft[i+1] = (FAST_ARGB_TO_COLOR(p[2]) << 4) | FAST_ARGB_TO_COLOR(p[3]);
+                    outPtrLeft[i+2] = (FAST_ARGB_TO_COLOR(p[4]) << 4) | FAST_ARGB_TO_COLOR(p[5]);
+                    outPtrLeft[i+3] = (FAST_ARGB_TO_COLOR(p[6]) << 4) | FAST_ARGB_TO_COLOR(p[7]);
+                }
+                for (; i < OUT_ROW_BYTES; i++) {
+                    outPtrLeft[i] = (FAST_ARGB_TO_COLOR(rowPtr[i*2]) << 4) | FAST_ARGB_TO_COLOR(rowPtr[i*2+1]);
                 }
                 
-                // Right panel: columns 600-1199 of rotated image
-                const uint32_t* rowPtrRight = rowPtr + 600;
-                for (int i = 0; i < OUT_ROW_BYTES; i++) {
-                    uint8_t c0 = argbToColor(rowPtrRight[i * 2]);
-                    uint8_t c1 = argbToColor(rowPtrRight[i * 2 + 1]);
-                    outPtrRight[i] = (c0 << 4) | c1;
+                // Right panel: columns 600-1199 of rotated image (unrolled 4x)
+                const uint32_t* __restrict__ rowPtrRight = rowPtr + 600;
+                i = 0;
+                for (; i < OUT_ROW_BYTES - 3; i += 4) {
+                    const uint32_t* p = rowPtrRight + i * 2;
+                    outPtrRight[i]   = (FAST_ARGB_TO_COLOR(p[0]) << 4) | FAST_ARGB_TO_COLOR(p[1]);
+                    outPtrRight[i+1] = (FAST_ARGB_TO_COLOR(p[2]) << 4) | FAST_ARGB_TO_COLOR(p[3]);
+                    outPtrRight[i+2] = (FAST_ARGB_TO_COLOR(p[4]) << 4) | FAST_ARGB_TO_COLOR(p[5]);
+                    outPtrRight[i+3] = (FAST_ARGB_TO_COLOR(p[6]) << 4) | FAST_ARGB_TO_COLOR(p[7]);
+                }
+                for (; i < OUT_ROW_BYTES; i++) {
+                    outPtrRight[i] = (FAST_ARGB_TO_COLOR(rowPtrRight[i*2]) << 4) | FAST_ARGB_TO_COLOR(rowPtrRight[i*2+1]);
                 }
             }
             
+            #undef FAST_ARGB_TO_COLOR
+            
             hal_psram_free(rotatedBuf);
-            Serial.printf("    Pack:           %4lu ms (linear after PPA)\n", millis() - stepStart);
+            Serial.printf("    Pack:           %4lu ms (optimized linear)\n", millis() - stepStart);
         } else {
             // Software fallback: combined rotate + pack
             // Source: ARGB8888 at (x, y) where x=0..1599, y=0..1199

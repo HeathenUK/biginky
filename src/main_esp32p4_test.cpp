@@ -486,8 +486,6 @@ void sdInfo() {
     
     // If using direct ESP-IDF mount
     if (sd_card != nullptr) {
-        Serial.printf("Card Type: %s\n", 
-            (sd_card->ocr & SD_OCR_SDHC_CAP) ? "SDHC/SDXC" : "SD");
         Serial.printf("Card Size: %llu MB\n", 
             ((uint64_t)sd_card->csd.capacity * sd_card->csd.sector_size) / (1024 * 1024));
         Serial.printf("Sector Size: %d bytes\n", sd_card->csd.sector_size);

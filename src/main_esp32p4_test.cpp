@@ -8,22 +8,22 @@
  * 
  * Build with: pio run -e esp32p4_minimal
  * 
- * === PIN MAPPING (ADJUST FOR YOUR BOARD) ===
- * These are example pins - check your ESP32-P4-WIFI6 schematic!
+ * === PIN MAPPING FOR WAVESHARE ESP32-P4-WIFI6 ===
+ * Configured via build flags in platformio.ini
  * 
  * Display SPI:
- *   MOSI    ->   GPIO11
- *   SCLK    ->   GPIO12
- *   CS0     ->   GPIO10 (left half)
- *   CS1     ->   GPIO9  (right half)
- *   DC      ->   GPIO46
- *   RESET   ->   GPIO3
- *   BUSY    ->   GPIO8
+ *   SCLK    ->   GPIO20
+ *   MOSI    ->   GPIO21
+ *   CS0     ->   GPIO22 (left half)
+ *   CS1     ->   GPIO23 (right half)
+ *   DC      ->   GPIO26
+ *   RESET   ->   GPIO27
+ *   BUSY    ->   GPIO32
  *
  * DS3231 RTC (optional):
- *   SDA     ->   GPIO4
- *   SCL     ->   GPIO5
- *   INT     ->   GPIO6
+ *   SDA     ->   GPIO7  (labeled on board)
+ *   SCL     ->   GPIO8  (labeled on board)
+ *   INT     ->   GPIO33
  */
 
 // Only compile this file for ESP32 builds
@@ -42,26 +42,27 @@
 // Override these with build flags or edit for your specific board
 // ============================================================================
 
+// Defaults for Waveshare ESP32-P4-WIFI6 - override via platformio.ini build_flags
 #ifndef PIN_SPI_SCK
-#define PIN_SPI_SCK   12    // SPI Clock
+#define PIN_SPI_SCK   20    // SPI Clock
 #endif
 #ifndef PIN_SPI_MOSI
-#define PIN_SPI_MOSI  11    // SPI MOSI
+#define PIN_SPI_MOSI  21    // SPI MOSI
 #endif
 #ifndef PIN_CS0
-#define PIN_CS0       10    // Chip Select 0 - left half
+#define PIN_CS0       22    // Chip Select 0 - left half
 #endif
 #ifndef PIN_CS1
-#define PIN_CS1       9     // Chip Select 1 - right half
+#define PIN_CS1       23    // Chip Select 1 - right half
 #endif
 #ifndef PIN_DC
-#define PIN_DC        46    // Data/Command
+#define PIN_DC        26    // Data/Command
 #endif
 #ifndef PIN_RESET
-#define PIN_RESET     3     // Reset
+#define PIN_RESET     27    // Reset
 #endif
 #ifndef PIN_BUSY
-#define PIN_BUSY      8     // Busy
+#define PIN_BUSY      32    // Busy
 #endif
 
 // ============================================================================

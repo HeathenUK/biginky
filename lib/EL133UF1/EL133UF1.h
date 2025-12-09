@@ -392,7 +392,10 @@ public:
      * @return uint8_t* Pointer to row, or nullptr if invalid/packed mode
      */
     inline uint8_t* getRowPtr(int16_t y) {
-        // Disable direct row access when flipped (would need pixel reversal)
+        // Disable direct row access when flipped or in ARGB mode (different buffer layout)
+#if EL133UF1_USE_ARGB8888
+        if (_argbMode) return nullptr;  // Use getRowPtrARGB instead
+#endif
         if (_packedMode || _preRotatedMode || _hFlip || _buffer == nullptr) return nullptr;
         if (y < 0 || y >= EL133UF1_HEIGHT) return nullptr;
         int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
@@ -414,11 +417,31 @@ public:
      * @param count Number of pixels to write
      */
     inline void writeRowFast(int16_t x, int16_t y, const uint8_t* colors, int16_t count) {
-        if (_packedMode || _preRotatedMode || _buffer == nullptr) return;
+        if (_packedMode || _preRotatedMode) return;
         if (y < 0 || y >= EL133UF1_HEIGHT) return;
         if (x < 0) { colors -= x; count += x; x = 0; }
         if (x + count > EL133UF1_WIDTH) count = EL133UF1_WIDTH - x;
         if (count <= 0) return;
+        
+#if EL133UF1_USE_ARGB8888
+        if (_argbMode && _bufferARGB != nullptr) {
+            // ARGB mode: convert each color to ARGB32
+            int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
+            if (!_hFlip) {
+                uint32_t* dst = _bufferARGB + dstY * EL133UF1_WIDTH + x;
+                for (int16_t i = 0; i < count; i++) {
+                    dst[i] = colorToARGB(colors[i]);
+                }
+            } else {
+                uint32_t* dst = _bufferARGB + dstY * EL133UF1_WIDTH + (EL133UF1_WIDTH - 1 - x);
+                for (int16_t i = 0; i < count; i++) {
+                    *dst-- = colorToARGB(colors[i]);
+                }
+            }
+            return;
+        }
+#endif
+        if (_buffer == nullptr) return;
         
         if (!_hFlip && !_vFlip) {
             // Fast path: direct memcpy
@@ -448,7 +471,7 @@ public:
      * @param color Color value
      */
     inline void fillRowFast(int16_t x, int16_t y, int16_t count, uint8_t color) {
-        if (_packedMode || _preRotatedMode || _buffer == nullptr) return;
+        if (_packedMode || _preRotatedMode) return;
         if (y < 0 || y >= EL133UF1_HEIGHT) return;
         if (x < 0) { count += x; x = 0; }
         if (x + count > EL133UF1_WIDTH) count = EL133UF1_WIDTH - x;
@@ -458,6 +481,18 @@ public:
         int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
         int16_t dstX = _hFlip ? (EL133UF1_WIDTH - x - count) : x;
         
+#if EL133UF1_USE_ARGB8888
+        if (_argbMode && _bufferARGB != nullptr) {
+            // ARGB mode: write 32-bit values
+            uint32_t argbColor = colorToARGB(color);
+            uint32_t* dst = _bufferARGB + dstY * EL133UF1_WIDTH + dstX;
+            for (int16_t i = 0; i < count; i++) {
+                dst[i] = argbColor;
+            }
+            return;
+        }
+#endif
+        if (_buffer == nullptr) return;
         memset(_buffer + dstY * EL133UF1_WIDTH + dstX, color & 0x07, count);
     }
     

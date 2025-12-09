@@ -52,6 +52,7 @@
 #if !defined(DISABLE_SDMMC)
 #include <SD_MMC.h>
 #include <FS.h>
+#include "driver/gpio.h"  // For gpio_pullup_en
 #define SDMMC_ENABLED 1
 #else
 #define SDMMC_ENABLED 0
@@ -352,6 +353,22 @@ bool sdInit(bool mode1bit = false) {
     Serial.println("\n=== Initializing SD Card (SDMMC) ===");
     Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
                   PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+    
+    // Enable internal pull-ups on all SD card pins
+    // The Waveshare ESP32-P4-WIFI6 requires SDMMC_SLOT_FLAG_INTERNAL_PULLUP
+    // but Arduino SD_MMC library doesn't set this, so we enable pull-ups manually
+    Serial.println("Enabling internal pull-ups...");
+    gpio_num_t sd_pins[] = {
+        (gpio_num_t)PIN_SD_CLK,
+        (gpio_num_t)PIN_SD_CMD,
+        (gpio_num_t)PIN_SD_D0,
+        (gpio_num_t)PIN_SD_D1,
+        (gpio_num_t)PIN_SD_D2,
+        (gpio_num_t)PIN_SD_D3
+    };
+    for (int i = 0; i < 6; i++) {
+        gpio_pullup_en(sd_pins[i]);
+    }
     
     // Set custom pins (for GPIO matrix mode)
     // Note: ESP32-P4 Slot 0 uses IOMUX, so pins must match the IOMUX pins

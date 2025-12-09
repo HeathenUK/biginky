@@ -40,6 +40,14 @@
 #include "fonts/opensans.h"
 #include "DS3231.h"
 
+// WiFi support for ESP32-P4 (via ESP32-C6 companion chip)
+#if !defined(DISABLE_WIFI) || defined(ENABLE_WIFI_TEST)
+#include <WiFi.h>
+#define WIFI_ENABLED 1
+#else
+#define WIFI_ENABLED 0
+#endif
+
 // ============================================================================
 // Pin definitions for ESP32-P4
 // Override these with build flags or edit for your specific board
@@ -90,6 +98,187 @@ EL133UF1 display(&displaySPI);
 
 // TTF font renderer
 EL133UF1_TTF ttf;
+
+// ============================================================================
+// WiFi Functions
+// ============================================================================
+
+#if WIFI_ENABLED
+// WiFi credentials - set via serial or compile-time
+static char wifiSSID[33] = "";
+static char wifiPSK[65] = "";
+
+void wifiScan() {
+    Serial.println("\n=== WiFi Scan ===");
+    Serial.println("Scanning for networks...");
+    
+    int n = WiFi.scanNetworks();
+    
+    if (n == 0) {
+        Serial.println("No networks found!");
+    } else {
+        Serial.printf("Found %d networks:\n", n);
+        for (int i = 0; i < n; i++) {
+            Serial.printf("  %2d: %-32s  Ch:%2d  RSSI:%4d dBm  %s\n",
+                         i + 1,
+                         WiFi.SSID(i).c_str(),
+                         WiFi.channel(i),
+                         WiFi.RSSI(i),
+                         (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "Open" : "Encrypted");
+        }
+    }
+    
+    WiFi.scanDelete();
+    Serial.println("=================\n");
+}
+
+void wifiConnect() {
+    if (strlen(wifiSSID) == 0) {
+        Serial.println("No WiFi credentials set. Use 'W' to configure.");
+        return;
+    }
+    
+    Serial.printf("\n=== Connecting to WiFi ===\n");
+    Serial.printf("SSID: %s\n", wifiSSID);
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(wifiSSID, wifiPSK);
+    
+    Serial.print("Connecting");
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 30000)) {
+        Serial.print(".");
+        delay(500);
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println(" Connected!");
+        Serial.printf("  IP Address: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("  Gateway:    %s\n", WiFi.gatewayIP().toString().c_str());
+        Serial.printf("  DNS:        %s\n", WiFi.dnsIP().toString().c_str());
+        Serial.printf("  RSSI:       %d dBm\n", WiFi.RSSI());
+        Serial.printf("  Channel:    %d\n", WiFi.channel());
+        Serial.printf("  MAC:        %s\n", WiFi.macAddress().c_str());
+    } else {
+        Serial.println(" FAILED!");
+        Serial.printf("  Status: %d\n", WiFi.status());
+    }
+    Serial.println("==========================\n");
+}
+
+void wifiDisconnect() {
+    Serial.println("\n=== Disconnecting WiFi ===");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    Serial.println("WiFi disconnected and radio off.");
+    Serial.println("===========================\n");
+}
+
+void wifiStatus() {
+    Serial.println("\n=== WiFi Status ===");
+    Serial.printf("Mode: ");
+    switch (WiFi.getMode()) {
+        case WIFI_OFF: Serial.println("OFF"); break;
+        case WIFI_STA: Serial.println("Station"); break;
+        case WIFI_AP: Serial.println("Access Point"); break;
+        case WIFI_AP_STA: Serial.println("AP+Station"); break;
+        default: Serial.println("Unknown"); break;
+    }
+    
+    Serial.printf("Status: ");
+    switch (WiFi.status()) {
+        case WL_IDLE_STATUS: Serial.println("Idle"); break;
+        case WL_NO_SSID_AVAIL: Serial.println("No SSID available"); break;
+        case WL_SCAN_COMPLETED: Serial.println("Scan completed"); break;
+        case WL_CONNECTED: Serial.println("Connected"); break;
+        case WL_CONNECT_FAILED: Serial.println("Connect failed"); break;
+        case WL_CONNECTION_LOST: Serial.println("Connection lost"); break;
+        case WL_DISCONNECTED: Serial.println("Disconnected"); break;
+        default: Serial.printf("Unknown (%d)\n", WiFi.status()); break;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("SSID:     %s\n", WiFi.SSID().c_str());
+        Serial.printf("IP:       %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("RSSI:     %d dBm\n", WiFi.RSSI());
+        Serial.printf("Channel:  %d\n", WiFi.channel());
+    }
+    
+    Serial.printf("MAC:      %s\n", WiFi.macAddress().c_str());
+    Serial.println("===================\n");
+}
+
+void wifiSetCredentials() {
+    Serial.println("\n=== Set WiFi Credentials ===");
+    Serial.println("Enter SSID:");
+    
+    // Wait for input
+    while (!Serial.available()) delay(10);
+    delay(100);  // Wait for full input
+    
+    String ssid = Serial.readStringUntil('\n');
+    ssid.trim();
+    
+    if (ssid.length() == 0) {
+        Serial.println("Cancelled.");
+        return;
+    }
+    
+    strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+    Serial.printf("SSID set to: %s\n", wifiSSID);
+    
+    Serial.println("Enter password (or empty for open network):");
+    while (!Serial.available()) delay(10);
+    delay(100);
+    
+    String psk = Serial.readStringUntil('\n');
+    psk.trim();
+    
+    strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+    Serial.println("Password set.");
+    Serial.println("============================\n");
+    Serial.println("Use 'w' to connect with these credentials.");
+}
+
+void wifiNtpSync() {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected! Connect first with 'w'");
+        return;
+    }
+    
+    Serial.println("\n=== NTP Time Sync ===");
+    
+    // Configure NTP
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    
+    Serial.print("Waiting for NTP sync");
+    time_t now = time(nullptr);
+    uint32_t start = millis();
+    while (now < 1700000000 && (millis() - start < 30000)) {
+        Serial.print(".");
+        delay(500);
+        now = time(nullptr);
+    }
+    
+    if (now >= 1700000000) {
+        Serial.println(" OK!");
+        struct tm* timeinfo = gmtime(&now);
+        Serial.printf("UTC Time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                     timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
+                     timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+        Serial.printf("Unix timestamp: %lu\n", (unsigned long)now);
+        
+        // If we have RTC, sync it
+        if (rtc.isPresent()) {
+            rtc.setTime(now);
+            Serial.println("RTC synchronized!");
+        }
+    } else {
+        Serial.println(" FAILED!");
+    }
+    Serial.println("====================\n");
+}
+#endif // WIFI_ENABLED
 
 // ============================================================================
 // Test patterns
@@ -276,8 +465,25 @@ void setup() {
     Serial.println("\n========================================");
     Serial.println("Test complete!");
     Serial.println("========================================");
-    Serial.println("\nCommands: 'c'=color bars, 't'=TTF, 'p'=pattern, 'r'=RTC test, 'i'=info");
+    Serial.println("\nCommands:");
+    Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
+    Serial.println("  RTC:     'r'=RTC test, 's'=set RTC time");
+    Serial.println("  System:  'i'=info");
+#if WIFI_ENABLED
+    Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
+#endif
     
+    // Initialize WiFi (just check status, don't connect yet)
+#if WIFI_ENABLED
+    Serial.println("\n--- WiFi Status ---");
+    Serial.printf("WiFi library available: YES\n");
+    Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
+    Serial.println("WiFi not connected (use 'W' to set credentials, 'w' to connect)");
+#else
+    Serial.println("\n--- WiFi Status ---");
+    Serial.println("WiFi: DISABLED (DISABLE_WIFI defined)");
+#endif
+
     // Initialize RTC
     Serial.println("\n--- Initializing RTC ---");
     Serial.printf("RTC pins: SDA=%d, SCL=%d, INT=%d\n", PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
@@ -416,6 +622,26 @@ void loop() {
                 Serial.println("Invalid timestamp");
             }
         }
+#if WIFI_ENABLED
+        else if (c == 'q' || c == 'Q') {
+            wifiScan();
+        }
+        else if (c == 'w') {
+            wifiConnect();
+        }
+        else if (c == 'W') {
+            wifiSetCredentials();
+        }
+        else if (c == 'd' || c == 'D') {
+            wifiDisconnect();
+        }
+        else if (c == 'x' || c == 'X') {
+            wifiStatus();
+        }
+        else if (c == 'n' || c == 'N') {
+            wifiNtpSync();
+        }
+#endif
     }
     
     delay(100);

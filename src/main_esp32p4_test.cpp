@@ -52,7 +52,10 @@
 #if !defined(DISABLE_SDMMC)
 #include <SD_MMC.h>
 #include <FS.h>
-#include "driver/gpio.h"  // For gpio_pullup_en
+#include "driver/gpio.h"
+#include "driver/sdmmc_host.h"
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
 #define SDMMC_ENABLED 1
 #else
 #define SDMMC_ENABLED 0
@@ -344,6 +347,81 @@ void sdDiagnostics() {
     Serial.println("================================\n");
 }
 
+// ESP-IDF based SD card handle for direct initialization
+static sdmmc_card_t* sd_card = nullptr;
+
+// Direct ESP-IDF SD card initialization with internal pull-ups
+bool sdInitDirect(bool mode1bit = false) {
+    if (sd_card != nullptr) {
+        Serial.println("SD card already mounted (direct)");
+        return true;
+    }
+    
+    Serial.println("\n=== Initializing SD Card (ESP-IDF Direct) ===");
+    Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
+                  PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+    
+    // Configure SDMMC host
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;  // 20 MHz
+    if (mode1bit) {
+        host.flags = SDMMC_HOST_FLAG_1BIT;
+    }
+    
+    // Configure slot with internal pull-ups (as per Waveshare docs)
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = mode1bit ? 1 : 4;
+    slot_config.clk = (gpio_num_t)PIN_SD_CLK;
+    slot_config.cmd = (gpio_num_t)PIN_SD_CMD;
+    slot_config.d0 = (gpio_num_t)PIN_SD_D0;
+    slot_config.d1 = (gpio_num_t)PIN_SD_D1;
+    slot_config.d2 = (gpio_num_t)PIN_SD_D2;
+    slot_config.d3 = (gpio_num_t)PIN_SD_D3;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;  // KEY: Enable internal pull-ups!
+    
+    Serial.println("Internal pull-ups ENABLED via SDMMC_SLOT_FLAG_INTERNAL_PULLUP");
+    Serial.printf("Trying %s mode at %d kHz...\n", mode1bit ? "1-bit" : "4-bit", host.max_freq_khz);
+    
+    // Mount filesystem
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+    
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &sd_card);
+    
+    if (ret != ESP_OK) {
+        Serial.printf("Mount failed: %s (0x%x)\n", esp_err_to_name(ret), ret);
+        if (ret == ESP_ERR_TIMEOUT) {
+            Serial.println("Timeout - check if card is inserted");
+        }
+        sd_card = nullptr;
+        return false;
+    }
+    
+    // Print card info
+    Serial.println("\nSD card mounted successfully!");
+    sdmmc_card_print_info(stdout, sd_card);
+    Serial.println("==================================\n");
+    
+    sdCardMounted = true;
+    return true;
+}
+
+void sdUnmountDirect() {
+    if (sd_card == nullptr) {
+        Serial.println("SD card not mounted");
+        return;
+    }
+    
+    esp_vfs_fat_sdcard_unmount("/sdcard", sd_card);
+    sd_card = nullptr;
+    sdCardMounted = false;
+    Serial.println("SD card unmounted");
+}
+
 bool sdInit(bool mode1bit = false) {
     if (sdCardMounted) {
         Serial.println("SD card already mounted");
@@ -406,24 +484,35 @@ void sdInfo() {
     
     Serial.println("\n=== SD Card Info ===");
     
-    uint8_t cardType = SD_MMC.cardType();
-    Serial.printf("Card Type: ");
-    switch (cardType) {
-        case CARD_NONE: Serial.println("No card"); break;
-        case CARD_MMC: Serial.println("MMC"); break;
-        case CARD_SD: Serial.println("SD"); break;
-        case CARD_SDHC: Serial.println("SDHC"); break;
-        default: Serial.println("Unknown"); break;
+    // If using direct ESP-IDF mount
+    if (sd_card != nullptr) {
+        Serial.printf("Card Type: %s\n", 
+            (sd_card->ocr & SD_OCR_SDHC_CAP) ? "SDHC/SDXC" : "SD");
+        Serial.printf("Card Size: %llu MB\n", 
+            ((uint64_t)sd_card->csd.capacity * sd_card->csd.sector_size) / (1024 * 1024));
+        Serial.printf("Sector Size: %d bytes\n", sd_card->csd.sector_size);
+        Serial.printf("Speed: %d kHz\n", sd_card->max_freq_khz);
+    } else {
+        // Using Arduino SD_MMC wrapper
+        uint8_t cardType = SD_MMC.cardType();
+        Serial.printf("Card Type: ");
+        switch (cardType) {
+            case CARD_NONE: Serial.println("No card"); break;
+            case CARD_MMC: Serial.println("MMC"); break;
+            case CARD_SD: Serial.println("SD"); break;
+            case CARD_SDHC: Serial.println("SDHC"); break;
+            default: Serial.println("Unknown"); break;
+        }
+        
+        uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+        uint64_t totalBytes = SD_MMC.totalBytes() / (1024 * 1024);
+        uint64_t usedBytes = SD_MMC.usedBytes() / (1024 * 1024);
+        
+        Serial.printf("Card Size: %llu MB\n", cardSize);
+        Serial.printf("Total Space: %llu MB\n", totalBytes);
+        Serial.printf("Used Space: %llu MB\n", usedBytes);
+        Serial.printf("Free Space: %llu MB\n", totalBytes - usedBytes);
     }
-    
-    uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-    uint64_t totalBytes = SD_MMC.totalBytes() / (1024 * 1024);
-    uint64_t usedBytes = SD_MMC.usedBytes() / (1024 * 1024);
-    
-    Serial.printf("Card Size: %llu MB\n", cardSize);
-    Serial.printf("Total Space: %llu MB\n", totalBytes);
-    Serial.printf("Used Space: %llu MB\n", usedBytes);
-    Serial.printf("Free Space: %llu MB\n", totalBytes - usedBytes);
     Serial.println("====================\n");
 }
 
@@ -791,7 +880,7 @@ void setup() {
     Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
 #endif
 #if SDMMC_ENABLED
-    Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount, 'D'=diagnostics");
+    Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount, 'D'=diagnostics, 'A/a'=Arduino mount");
 #endif
     
     // Initialize WiFi (just check status, don't connect yet)
@@ -965,10 +1054,16 @@ void loop() {
 #endif
 #if SDMMC_ENABLED
         else if (c == 'M') {
-            sdInit(false);  // 4-bit mode
+            sdInitDirect(false);  // 4-bit mode via ESP-IDF with internal pull-ups
         }
         else if (c == 'm') {
-            sdInit(true);   // 1-bit mode
+            sdInitDirect(true);   // 1-bit mode via ESP-IDF with internal pull-ups
+        }
+        else if (c == 'A') {
+            sdInit(false);  // 4-bit mode via Arduino wrapper (for comparison)
+        }
+        else if (c == 'a') {
+            sdInit(true);   // 1-bit mode via Arduino wrapper (for comparison)
         }
         else if (c == 'L') {
             sdList("/");
@@ -978,15 +1073,19 @@ void loop() {
         }
         else if (c == 'T') {
             if (!sdCardMounted) {
-                Serial.println("Mounting SD card first (4-bit mode)...");
-                sdInit(false);
+                Serial.println("Mounting SD card first (4-bit mode via ESP-IDF)...");
+                sdInitDirect(false);
             }
             if (sdCardMounted) {
                 sdReadTest();
             }
         }
         else if (c == 'U') {
-            sdUnmount();
+            if (sd_card != nullptr) {
+                sdUnmountDirect();  // Unmount ESP-IDF direct mount
+            } else {
+                sdUnmount();  // Unmount Arduino mount
+            }
         }
         else if (c == 'D') {
             sdDiagnostics();

@@ -315,7 +315,7 @@ void wifiNtpSync() {
 #if SDMMC_ENABLED
 static bool sdCardMounted = false;
 
-bool sdInit() {
+bool sdInit(bool mode1bit = false) {
     if (sdCardMounted) {
         Serial.println("SD card already mounted");
         return true;
@@ -332,19 +332,20 @@ bool sdInit() {
         return false;
     }
     
-    // Try 4-bit mode first, fall back to 1-bit if that fails
-    Serial.println("Trying 4-bit mode...");
-    if (!SD_MMC.begin("/sdcard", false, false, SDMMC_FREQ_DEFAULT)) {
-        Serial.println("4-bit mode failed, trying 1-bit mode...");
-        if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT)) {
-            Serial.println("SD_MMC.begin failed!");
-            return false;
-        }
-        Serial.println("Mounted in 1-bit mode");
-    } else {
-        Serial.println("Mounted in 4-bit mode");
+    // Use external power (power_channel = -1) since Waveshare board has its own regulator
+    // This avoids conflicts with LDO channels used by PSRAM/Flash
+    SD_MMC.setPowerChannel(-1);
+    Serial.println("Using external power for SD card");
+    
+    Serial.printf("Trying %s mode...\n", mode1bit ? "1-bit" : "4-bit");
+    if (!SD_MMC.begin("/sdcard", mode1bit, false, SDMMC_FREQ_DEFAULT)) {
+        Serial.println("SD_MMC.begin failed!");
+        Serial.println("Error 0x107 = timeout - check if card is inserted");
+        Serial.println("Make sure SD card lines have pull-up resistors");
+        return false;
     }
     
+    Serial.printf("Mounted in %s mode\n", mode1bit ? "1-bit" : "4-bit");
     sdCardMounted = true;
     Serial.println("SD card mounted successfully!");
     Serial.println("==================================\n");
@@ -744,7 +745,7 @@ void setup() {
     Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
 #endif
 #if SDMMC_ENABLED
-    Serial.println("  SD Card: 'M'=mount, 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount");
+    Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount");
 #endif
     
     // Initialize WiFi (just check status, don't connect yet)
@@ -918,7 +919,10 @@ void loop() {
 #endif
 #if SDMMC_ENABLED
         else if (c == 'M') {
-            sdInit();
+            sdInit(false);  // 4-bit mode
+        }
+        else if (c == 'm') {
+            sdInit(true);   // 1-bit mode
         }
         else if (c == 'L') {
             sdList("/");
@@ -928,8 +932,8 @@ void loop() {
         }
         else if (c == 'T') {
             if (!sdCardMounted) {
-                Serial.println("Mounting SD card first...");
-                sdInit();
+                Serial.println("Mounting SD card first (4-bit mode)...");
+                sdInit(false);
             }
             if (sdCardMounted) {
                 sdReadTest();

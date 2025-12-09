@@ -874,6 +874,9 @@ void EL133UF1::_sendBuffer() {
         Serial.println("    Using ARGB8888 + PPA acceleration");
         
         const size_t SEND_HALF_SIZE = PACKED_HALF_SIZE;
+        const int WIDTH = EL133UF1_WIDTH;   // 1600
+        const int HEIGHT = EL133UF1_HEIGHT; // 1200
+        const int OUT_ROW_BYTES = 300;      // 600 pixels / 2 per byte
         
         // Allocate output buffers for packed panel data
         stepStart = millis();
@@ -895,47 +898,106 @@ void EL133UF1::_sendBuffer() {
             Serial.printf("    PPA init:       %s\n", ppaInitialized ? "OK" : "FAILED");
         }
         
-        // Rotate ARGB8888 buffer 90° CCW using PPA and pack to 3-bit
-        stepStart = millis();
+        // Try PPA hardware rotation
+        bool usedPPA = false;
+        uint32_t* rotatedBuf = nullptr;
         
-        // The image_hal doesn't directly support ARGB->3bit conversion,
-        // so we do rotation conceptually and pack manually.
-        // For now: Direct ARGB8888 to packed 3-bit conversion with rotation
-        //
-        // Source: ARGB8888 at (x, y) where x=0..1599, y=0..1199
-        // After 90° CCW rotation: output row = 1599-x, output col = y
-        // Output is split: cols 0-599 -> bufLeft, cols 600-1199 -> bufRight
-        // Each output byte = 2 packed pixels (high nibble, low nibble)
-        
-        const int WIDTH = EL133UF1_WIDTH;   // 1600
-        const int HEIGHT = EL133UF1_HEIGHT; // 1200
-        const int OUT_ROW_BYTES = 300;      // 600 pixels / 2 per byte
-        
-        for (int srcCol = WIDTH - 1; srcCol >= 0; srcCol--) {
-            int outRow = WIDTH - 1 - srcCol;
-            uint8_t* outPtrLeft = bufLeft + outRow * OUT_ROW_BYTES;
-            uint8_t* outPtrRight = bufRight + outRow * OUT_ROW_BYTES;
-            const uint32_t* srcPtr = _bufferARGB + srcCol;
+        if (ppaInitialized && hal_image_hw_accel_available()) {
+            // Allocate rotated buffer (1200x1600 ARGB8888 = same size, different dimensions)
+            // After 90° CCW rotation: width becomes height, height becomes width
+            rotatedBuf = (uint32_t*)hal_psram_malloc(WIDTH * HEIGHT * sizeof(uint32_t));
             
-            // Process left panel (source rows 0-599)
-            for (int i = 0; i < OUT_ROW_BYTES; i++) {
-                uint8_t c0 = argbToColor(srcPtr[0]);
-                uint8_t c1 = argbToColor(srcPtr[WIDTH]);
-                outPtrLeft[i] = (c0 << 4) | c1;
-                srcPtr += WIDTH * 2;
-            }
-            
-            // Process right panel (source rows 600-1199)
-            for (int i = 0; i < OUT_ROW_BYTES; i++) {
-                uint8_t c0 = argbToColor(srcPtr[0]);
-                uint8_t c1 = argbToColor(srcPtr[WIDTH]);
-                outPtrRight[i] = (c0 << 4) | c1;
-                srcPtr += WIDTH * 2;
+            if (rotatedBuf != nullptr) {
+                stepStart = millis();
+                
+                // Setup PPA rotation: 90° CCW = 270° CW
+                image_desc_t src = {
+                    .buffer = _bufferARGB,
+                    .width = (uint32_t)WIDTH,
+                    .height = (uint32_t)HEIGHT,
+                    .stride = (uint32_t)(WIDTH * sizeof(uint32_t)),
+                    .format = IMAGE_FORMAT_ARGB8888
+                };
+                image_desc_t dst = {
+                    .buffer = rotatedBuf,
+                    .width = (uint32_t)HEIGHT,  // After 90° rotation: 1200
+                    .height = (uint32_t)WIDTH,  // After 90° rotation: 1600
+                    .stride = (uint32_t)(HEIGHT * sizeof(uint32_t)),
+                    .format = IMAGE_FORMAT_ARGB8888
+                };
+                
+                usedPPA = hal_image_rotate(&src, &dst, IMAGE_ROTATE_270, true);
+                
+                if (usedPPA) {
+                    Serial.printf("    PPA rotate:     %4lu ms (hardware)\n", millis() - stepStart);
+                } else {
+                    Serial.println("    PPA rotate:     FAILED, using software");
+                    hal_psram_free(rotatedBuf);
+                    rotatedBuf = nullptr;
+                }
             }
         }
         
-        uint32_t rotateTime = millis() - stepStart;
-        Serial.printf("    Rotate+pack:    %4lu ms (ARGB8888)\n", rotateTime);
+        stepStart = millis();
+        
+        if (usedPPA && rotatedBuf != nullptr) {
+            // PPA rotated the buffer - now just pack linearly
+            // Rotated buffer is 1200 wide x 1600 tall (HEIGHT x WIDTH)
+            // Row i of rotated = original column (WIDTH-1-i) 
+            // We need to split columns 0-599 to left, 600-1199 to right
+            
+            for (int outRow = 0; outRow < WIDTH; outRow++) {
+                uint8_t* outPtrLeft = bufLeft + outRow * OUT_ROW_BYTES;
+                uint8_t* outPtrRight = bufRight + outRow * OUT_ROW_BYTES;
+                const uint32_t* rowPtr = rotatedBuf + outRow * HEIGHT;
+                
+                // Left panel: columns 0-599 of rotated image
+                for (int i = 0; i < OUT_ROW_BYTES; i++) {
+                    uint8_t c0 = argbToColor(rowPtr[i * 2]);
+                    uint8_t c1 = argbToColor(rowPtr[i * 2 + 1]);
+                    outPtrLeft[i] = (c0 << 4) | c1;
+                }
+                
+                // Right panel: columns 600-1199 of rotated image
+                const uint32_t* rowPtrRight = rowPtr + 600;
+                for (int i = 0; i < OUT_ROW_BYTES; i++) {
+                    uint8_t c0 = argbToColor(rowPtrRight[i * 2]);
+                    uint8_t c1 = argbToColor(rowPtrRight[i * 2 + 1]);
+                    outPtrRight[i] = (c0 << 4) | c1;
+                }
+            }
+            
+            hal_psram_free(rotatedBuf);
+            Serial.printf("    Pack:           %4lu ms (linear after PPA)\n", millis() - stepStart);
+        } else {
+            // Software fallback: combined rotate + pack
+            // Source: ARGB8888 at (x, y) where x=0..1599, y=0..1199
+            // After 90° CCW rotation: output row = 1599-x, output col = y
+            
+            for (int srcCol = WIDTH - 1; srcCol >= 0; srcCol--) {
+                int outRow = WIDTH - 1 - srcCol;
+                uint8_t* outPtrLeft = bufLeft + outRow * OUT_ROW_BYTES;
+                uint8_t* outPtrRight = bufRight + outRow * OUT_ROW_BYTES;
+                const uint32_t* srcPtr = _bufferARGB + srcCol;
+                
+                // Process left panel (source rows 0-599)
+                for (int i = 0; i < OUT_ROW_BYTES; i++) {
+                    uint8_t c0 = argbToColor(srcPtr[0]);
+                    uint8_t c1 = argbToColor(srcPtr[WIDTH]);
+                    outPtrLeft[i] = (c0 << 4) | c1;
+                    srcPtr += WIDTH * 2;
+                }
+                
+                // Process right panel (source rows 600-1199)
+                for (int i = 0; i < OUT_ROW_BYTES; i++) {
+                    uint8_t c0 = argbToColor(srcPtr[0]);
+                    uint8_t c1 = argbToColor(srcPtr[WIDTH]);
+                    outPtrRight[i] = (c0 << 4) | c1;
+                    srcPtr += WIDTH * 2;
+                }
+            }
+            Serial.printf("    Rotate+pack:    %4lu ms (software)\n", millis() - stepStart);
+        }
         
         // Send to display
         stepStart = millis();

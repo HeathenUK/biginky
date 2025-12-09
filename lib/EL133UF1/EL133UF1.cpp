@@ -4,8 +4,13 @@
  */
 
 #include "EL133UF1.h"
+#include "platform_hal.h"
+
+// Platform-specific DMA includes
+#ifdef PLATFORM_RP2350
 #include "hardware/dma.h"
 #include "hardware/sync.h"
+#endif
 
 // Simple 8x8 bitmap font (ASCII 32-127)
 // Each character is 8 bytes, each byte is one row (MSB = leftmost pixel)
@@ -153,7 +158,7 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     Serial.printf("  Allocating %u bytes in PSRAM...\n", EL133UF1_WIDTH * EL133UF1_HEIGHT);
     Serial.flush();
     
-    _buffer = (uint8_t*)pmalloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
+    _buffer = (uint8_t*)hal_psram_malloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
     _packedMode = false;
     _bufferRight = nullptr;
     
@@ -399,13 +404,13 @@ void EL133UF1::setPreRotatedMode(bool enable) {
     if (enable && !_packedMode) {
         // Switching to pre-rotated mode: reallocate buffers
         // Allocate new buffers first before freeing old one
-        uint8_t* newBuffer = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
-        uint8_t* newBufferRight = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
+        uint8_t* newBuffer = (uint8_t*)hal_psram_malloc(PACKED_HALF_SIZE);
+        uint8_t* newBufferRight = (uint8_t*)hal_psram_malloc(PACKED_HALF_SIZE);
         
         if (newBuffer && newBufferRight) {
             // Success - free old buffer and switch
             if (_buffer) {
-                free(_buffer);
+                hal_psram_free(_buffer);
             }
             _buffer = newBuffer;
             _bufferRight = newBufferRight;
@@ -415,19 +420,19 @@ void EL133UF1::setPreRotatedMode(bool enable) {
             memset(_bufferRight, 0x11, PACKED_HALF_SIZE);
         } else {
             // Allocation failed - clean up and keep current mode
-            if (newBuffer) free(newBuffer);
-            if (newBufferRight) free(newBufferRight);
+            if (newBuffer) hal_psram_free(newBuffer);
+            if (newBufferRight) hal_psram_free(newBufferRight);
             Serial.println("EL133UF1: Failed to allocate pre-rotated buffers");
             _preRotatedMode = !enable;  // Revert the mode flag
             return;
         }
     } else if (!enable && !_packedMode) {
         // Switching back to unpacked mode
-        if (_buffer) free(_buffer);
-        if (_bufferRight) free(_bufferRight);
+        if (_buffer) hal_psram_free(_buffer);
+        if (_bufferRight) hal_psram_free(_bufferRight);
         _bufferRight = nullptr;
         
-        _buffer = (uint8_t*)pmalloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
+        _buffer = (uint8_t*)hal_psram_malloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
         if (_buffer) {
             memset(_buffer, EL133UF1_WHITE, EL133UF1_WIDTH * EL133UF1_HEIGHT);
         }
@@ -634,53 +639,26 @@ bool EL133UF1::isBusy() {
 // Optimized buffer rotation with SIMD-style packing and DMA
 // ============================================================================
 
-// DMA channel for async memory transfers (-1 = not initialized)
-static int _dmaChannel = -1;
-
-// Initialize DMA channel for memory transfers
+// Initialize DMA for memory transfers (uses platform HAL)
 static void initDMA() {
-    if (_dmaChannel < 0) {
-        _dmaChannel = dma_claim_unused_channel(false);
-        if (_dmaChannel >= 0) {
-            Serial.printf("    DMA channel:    %d claimed\n", _dmaChannel);
-        }
+    if (hal_dma_init()) {
+        Serial.println("    DMA:            initialized");
     }
 }
 
 // Start async DMA memcpy (returns immediately)
 static void dmaMemcpyStart(void* dst, const void* src, size_t size) {
-    if (_dmaChannel < 0) {
-        // Fallback to regular memcpy
-        memcpy(dst, src, size);
-        return;
-    }
-    
-    dma_channel_config c = dma_channel_get_default_config(_dmaChannel);
-    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);  // 32-bit transfers
-    channel_config_set_read_increment(&c, true);
-    channel_config_set_write_increment(&c, true);
-    
-    dma_channel_configure(
-        _dmaChannel,
-        &c,
-        dst,           // Write address
-        src,           // Read address
-        size / 4,      // Transfer count (32-bit words)
-        true           // Start immediately
-    );
+    hal_dma_memcpy_start(dst, src, size);
 }
 
 // Wait for DMA to complete
 static void dmaMemcpyWait() {
-    if (_dmaChannel >= 0) {
-        dma_channel_wait_for_finish_blocking(_dmaChannel);
-    }
+    hal_dma_wait();
 }
 
 // Synchronous DMA memcpy
 static void dmaMemcpy(void* dst, const void* src, size_t size) {
-    dmaMemcpyStart(dst, src, size);
-    dmaMemcpyWait();
+    hal_dma_memcpy(dst, src, size);
 }
 
 // Process 8 pixels into 4 bytes using 32-bit operations
@@ -745,33 +723,33 @@ void EL133UF1::_sendBuffer() {
     const size_t SEND_HALF_SIZE = PACKED_HALF_SIZE;
     
     // Debug: show PSRAM state before allocation
-    Serial.printf("    PSRAM total:    %lu KB\n", rp2040.getPSRAMSize() / 1024);
+    Serial.printf("    PSRAM total:    %lu KB\n", (unsigned long)(hal_psram_get_size() / 1024));
     Serial.printf("    Need:           %lu KB (2x %lu)\n", 
-                  (SEND_HALF_SIZE * 2) / 1024, SEND_HALF_SIZE / 1024);
+                  (unsigned long)((SEND_HALF_SIZE * 2) / 1024), (unsigned long)(SEND_HALF_SIZE / 1024));
     
     stepStart = millis();
-    uint8_t* bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
-    uint8_t* bufB = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+    uint8_t* bufA = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
+    uint8_t* bufB = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
     
     bool singleBufferMode = false;
     
     if (bufA == nullptr || bufB == nullptr) {
         // Fallback: try single buffer mode - process one half at a time
         Serial.println("    Two-buffer alloc failed, trying single-buffer fallback...");
-        if (bufA) free(bufA);
-        if (bufB) free(bufB);
+        if (bufA) hal_psram_free(bufA);
+        if (bufB) hal_psram_free(bufB);
         bufA = nullptr;
         bufB = nullptr;
         
         // Try to allocate just one buffer
-        bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+        bufA = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
         if (bufA == nullptr) {
             Serial.printf("EL133UF1: FATAL - Cannot allocate even single send buffer (%lu KB)\n", 
-                         SEND_HALF_SIZE / 1024);
+                         (unsigned long)(SEND_HALF_SIZE / 1024));
             return;
         }
         singleBufferMode = true;
-        Serial.printf("    Single buffer:  %p (%lu KB) - slower but works\n", bufA, SEND_HALF_SIZE / 1024);
+        Serial.printf("    Single buffer:  %p (%lu KB) - slower but works\n", bufA, (unsigned long)(SEND_HALF_SIZE / 1024));
     } else {
         Serial.printf("    Dual buffers:   %p, %p\n", bufA, bufB);
     }
@@ -781,7 +759,7 @@ void EL133UF1::_sendBuffer() {
     initDMA();
     
     // Debug: show available heap
-    Serial.printf("    Free heap:      %lu KB\n", rp2040.getFreeHeap() / 1024);
+    Serial.printf("    Free heap:      %lu KB\n", (unsigned long)(hal_heap_get_free() / 1024));
     
     // SRAM-accelerated rotation with SIMD packing and DMA
     // Strategy: Double-buffered strips with DMA prefetch
@@ -979,9 +957,9 @@ void EL133UF1::_sendBuffer() {
     Serial.printf("    SPI transmit:   %4lu ms (CS0: %lu, CS1: %lu)\n", 
                   spiA + spiB, spiA, spiB);
 
-    free(bufA);
-    if (bufB) free(bufB);
-    if (sramStrip[0]) free(sramStrip[0]);
+    hal_psram_free(bufA);
+    if (bufB) hal_psram_free(bufB);
+    if (sramStrip[0]) free(sramStrip[0]);  // SRAM strips use regular malloc
     if (sramStrip[1]) free(sramStrip[1]);
 }
 

@@ -1,0 +1,13 @@
+{
+    "name": "esp32_sleep",
+    "version": "1.0.0",
+    "description": "Deep sleep functionality for ESP32 (including ESP32-P4)",
+    "keywords": "esp32, sleep, deep-sleep, rtc, power",
+    "authors": [
+        {
+            "name": "Your Name"
+        }
+    ],
+    "frameworks": ["arduino"],
+    "platforms": ["espressif32"]
+}

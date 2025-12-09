@@ -1,0 +1,13 @@
+{
+    "name": "platform_hal",
+    "version": "1.0.0",
+    "description": "Platform Hardware Abstraction Layer for RP2350 and ESP32",
+    "keywords": "hal, psram, dma, platform, abstraction",
+    "authors": [
+        {
+            "name": "Your Name"
+        }
+    ],
+    "frameworks": ["arduino"],
+    "platforms": ["raspberrypi", "espressif32"]
+}

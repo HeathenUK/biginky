@@ -6,6 +6,11 @@
 #include "EL133UF1.h"
 #include "platform_hal.h"
 
+// ESP32-specific includes
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+#include "esp_heap_caps.h"
+#endif
+
 // Image processing HAL (PPA acceleration on ESP32-P4)
 #if EL133UF1_USE_ARGB8888
 #include "image_hal.h"
@@ -172,10 +177,13 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     
 #if EL133UF1_USE_ARGB8888
     // ESP32-P4 with PPA: Use ARGB8888 buffer (7.68MB) for hardware-accelerated rotation
-    Serial.printf("  Allocating ARGB8888 buffer (%u bytes) in PSRAM...\n", EL133UF1_ARGB_BUFFER_SIZE);
+    // PPA requires cache-line aligned buffers (64 bytes on ESP32-P4)
+    size_t argbBufSize = EL133UF1_ARGB_BUFFER_SIZE;
+    argbBufSize = (argbBufSize + 63) & ~63;  // Round up to cache line
+    Serial.printf("  Allocating ARGB8888 buffer (%u bytes, 64-byte aligned) in PSRAM...\n", argbBufSize);
     Serial.flush();
     
-    _bufferARGB = (uint32_t*)hal_psram_malloc(EL133UF1_ARGB_BUFFER_SIZE);
+    _bufferARGB = (uint32_t*)heap_caps_aligned_alloc(64, argbBufSize, MALLOC_CAP_SPIRAM);
     _argbMode = (_bufferARGB != nullptr);
     
     if (_bufferARGB != nullptr) {
@@ -905,7 +913,11 @@ void EL133UF1::_sendBuffer() {
         if (ppaInitialized && hal_image_hw_accel_available()) {
             // Allocate rotated buffer (1200x1600 ARGB8888 = same size, different dimensions)
             // After 90° CCW rotation: width becomes height, height becomes width
-            rotatedBuf = (uint32_t*)hal_psram_malloc(WIDTH * HEIGHT * sizeof(uint32_t));
+            // PPA requires cache-line aligned buffers (64 bytes on ESP32-P4)
+            size_t rotatedSize = WIDTH * HEIGHT * sizeof(uint32_t);
+            // Round up to cache line size
+            rotatedSize = (rotatedSize + 63) & ~63;
+            rotatedBuf = (uint32_t*)heap_caps_aligned_alloc(64, rotatedSize, MALLOC_CAP_SPIRAM);
             
             if (rotatedBuf != nullptr) {
                 stepStart = millis();

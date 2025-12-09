@@ -9,21 +9,22 @@
  * Build with: pio run -e esp32p4_minimal
  * 
  * === PIN MAPPING FOR WAVESHARE ESP32-P4-WIFI6 ===
+ * Uses same PHYSICAL pin locations as Pico Plus 2 W (form-factor compatible)
  * Configured via build flags in platformio.ini
  * 
- * Display SPI:
- *   SCLK    ->   GPIO20
- *   MOSI    ->   GPIO21
- *   CS0     ->   GPIO22 (left half)
- *   CS1     ->   GPIO23 (right half)
- *   DC      ->   GPIO26
- *   RESET   ->   GPIO27
- *   BUSY    ->   GPIO32
+ * Display SPI (Pico GP -> ESP32-P4 GPIO):
+ *   SCLK    ->   GPIO3  (was GP10, pin 14)
+ *   MOSI    ->   GPIO2  (was GP11, pin 15)
+ *   CS0     ->   GPIO23 (was GP26, pin 31)
+ *   CS1     ->   GPIO48 (was GP16, pin 21)
+ *   DC      ->   GPIO26 (was GP22, pin 29)
+ *   RESET   ->   GPIO22 (was GP27, pin 32)
+ *   BUSY    ->   GPIO47 (was GP17, pin 22)
  *
  * DS3231 RTC (optional):
- *   SDA     ->   GPIO7  (labeled on board)
- *   SCL     ->   GPIO8  (labeled on board)
- *   INT     ->   GPIO33
+ *   SDA     ->   GPIO31 (was GP2, pin 4)
+ *   SCL     ->   GPIO30 (was GP3, pin 5)
+ *   INT     ->   GPIO46 (was GP18, pin 24)
  */
 
 // Only compile this file for ESP32 builds
@@ -42,27 +43,27 @@
 // Override these with build flags or edit for your specific board
 // ============================================================================
 
-// Defaults for Waveshare ESP32-P4-WIFI6 - override via platformio.ini build_flags
+// Defaults for Waveshare ESP32-P4-WIFI6 - matches Pico physical pin locations
 #ifndef PIN_SPI_SCK
-#define PIN_SPI_SCK   20    // SPI Clock
+#define PIN_SPI_SCK   3     // GPIO3 = Pico GP10 (pin 14)
 #endif
 #ifndef PIN_SPI_MOSI
-#define PIN_SPI_MOSI  21    // SPI MOSI
+#define PIN_SPI_MOSI  2     // GPIO2 = Pico GP11 (pin 15)
 #endif
 #ifndef PIN_CS0
-#define PIN_CS0       22    // Chip Select 0 - left half
+#define PIN_CS0       23    // GPIO23 = Pico GP26 (pin 31)
 #endif
 #ifndef PIN_CS1
-#define PIN_CS1       23    // Chip Select 1 - right half
+#define PIN_CS1       48    // GPIO48 = Pico GP16 (pin 21)
 #endif
 #ifndef PIN_DC
-#define PIN_DC        26    // Data/Command
+#define PIN_DC        26    // GPIO26 = Pico GP22 (pin 29)
 #endif
 #ifndef PIN_RESET
-#define PIN_RESET     27    // Reset
+#define PIN_RESET     22    // GPIO22 = Pico GP27 (pin 32)
 #endif
 #ifndef PIN_BUSY
-#define PIN_BUSY      32    // Busy
+#define PIN_BUSY      47    // GPIO47 = Pico GP17 (pin 22)
 #endif
 
 // ============================================================================

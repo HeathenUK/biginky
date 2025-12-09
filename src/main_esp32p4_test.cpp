@@ -226,13 +226,10 @@ void setup() {
         Serial.println("This display requires ~2MB PSRAM for the frame buffer.");
         Serial.println("Check board configuration and PSRAM settings.");
         
-        // Blink LED to indicate error
-        pinMode(LED_BUILTIN, OUTPUT);
+        // Halt with error message
         while (1) {
-            digitalWrite(LED_BUILTIN, HIGH);
-            delay(100);
-            digitalWrite(LED_BUILTIN, LOW);
-            delay(100);
+            Serial.println("PSRAM ERROR - halted");
+            delay(1000);
         }
     }
     

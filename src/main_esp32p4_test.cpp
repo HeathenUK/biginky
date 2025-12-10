@@ -56,6 +56,7 @@
 #include "driver/sdmmc_host.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "esp_ldo_regulator.h"
 #define SDMMC_ENABLED 1
 #else
 #define SDMMC_ENABLED 0
@@ -367,6 +368,36 @@ void sdDiagnostics() {
 
 // ESP-IDF based SD card handle for direct initialization
 static sdmmc_card_t* sd_card = nullptr;
+static esp_ldo_channel_handle_t ldo_vo4_handle = nullptr;
+
+// Enable LDO channel 4 (powers external pull-up resistors for SD card)
+bool enableLdoVO4() {
+    if (ldo_vo4_handle != nullptr) {
+        Serial.println("LDO_VO4 already enabled");
+        return true;
+    }
+    
+    Serial.println("Enabling LDO_VO4 (3.3V for SD pull-ups)...");
+    
+    esp_ldo_channel_config_t ldo_config = {
+        .chan_id = 4,
+        .voltage_mv = 3300,
+        .flags = {
+            .adjustable = 0,
+            .owned_by_hw = 0,
+        }
+    };
+    
+    esp_err_t ret = esp_ldo_acquire_channel(&ldo_config, &ldo_vo4_handle);
+    if (ret != ESP_OK) {
+        Serial.printf("Failed to acquire LDO_VO4: %s (0x%x)\n", esp_err_to_name(ret), ret);
+        esp_ldo_dump(stdout);
+        return false;
+    }
+    
+    Serial.println("LDO_VO4 enabled at 3.3V");
+    return true;
+}
 
 // Enable SD card power by driving GPIO45 LOW (turns on P-MOSFET Q1)
 void sdPowerOn() {
@@ -408,8 +439,13 @@ bool sdInitDirect(bool mode1bit = false) {
                   PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
     Serial.printf("Power control: GPIO%d (active LOW)\n", PIN_SD_POWER);
     
-    // CRITICAL: Enable SD card power first!
-    // GPIO45 controls P-MOSFET Q1: LOW = power ON, HIGH = power OFF
+    // Step 1: Enable LDO_VO4 for external pull-up resistors (5.1K to LDO_VO4)
+    if (!enableLdoVO4()) {
+        Serial.println("Warning: LDO_VO4 not enabled, relying on internal pull-ups only");
+    }
+    
+    // Step 2: Enable SD card power via GPIO45 -> MOSFET Q1
+    // GPIO45 LOW = MOSFET ON = SD card VDD powered from ESP_3V3
     sdPowerOn();
     
     // Configure SDMMC host
@@ -484,8 +520,13 @@ bool sdInit(bool mode1bit = false) {
                   PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
     Serial.printf("Power control: GPIO%d (active LOW)\n", PIN_SD_POWER);
     
-    // CRITICAL: Enable SD card power first!
-    // GPIO45 controls P-MOSFET Q1: LOW = power ON, HIGH = power OFF
+    // Step 1: Enable LDO_VO4 for external pull-up resistors (5.1K to LDO_VO4)
+    if (!enableLdoVO4()) {
+        Serial.println("Warning: LDO_VO4 not enabled, relying on internal pull-ups only");
+    }
+    
+    // Step 2: Enable SD card power via GPIO45 -> MOSFET Q1
+    // GPIO45 LOW = MOSFET ON = SD card VDD powered from ESP_3V3
     sdPowerOn();
     
     // Set custom pins (for GPIO matrix mode)
@@ -1135,6 +1176,11 @@ void loop() {
         }
         else if (c == 'o') {
             sdPowerOff();
+        }
+        else if (c == 'V') {
+            Serial.println("\n=== LDO Status ===");
+            esp_ldo_dump(stdout);
+            Serial.println("==================\n");
         }
 #endif
     }

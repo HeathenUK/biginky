@@ -56,7 +56,6 @@
 #include "driver/sdmmc_host.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
-#include "esp_ldo_regulator.h"
 #define SDMMC_ENABLED 1
 #else
 #define SDMMC_ENABLED 0
@@ -119,6 +118,13 @@
 #endif
 #ifndef PIN_SD_D3
 #define PIN_SD_D3     42
+#endif
+
+// SD Card power control (P-MOSFET Q1 gate)
+// GPIO45 LOW = MOSFET ON = SD card powered
+// GPIO45 HIGH = MOSFET OFF = SD card unpowered
+#ifndef PIN_SD_POWER
+#define PIN_SD_POWER  45
 #endif
 
 // ============================================================================
@@ -322,9 +328,18 @@ static bool sdCardMounted = false;
 
 void sdDiagnostics() {
     Serial.println("\n=== SD Card Pin Diagnostics ===");
-    Serial.printf("Expected IOMUX pins for Slot 0:\n");
-    Serial.printf("  CLK=43, CMD=44, D0=39, D1=40, D2=41, D3=42\n");
-    Serial.printf("Configured pins:\n");
+    
+    // Check power control pin first
+    Serial.printf("Power control: GPIO%d\n", PIN_SD_POWER);
+    pinMode(PIN_SD_POWER, INPUT);  // Temporarily set as input to read state
+    int powerState = digitalRead(PIN_SD_POWER);
+    Serial.printf("  GPIO%d state: %s -> MOSFET %s -> SD card %s\n", 
+                  PIN_SD_POWER,
+                  powerState ? "HIGH" : "LOW",
+                  powerState ? "OFF" : "ON",
+                  powerState ? "UNPOWERED" : "POWERED");
+    
+    Serial.printf("\nData pins (IOMUX Slot 0):\n");
     Serial.printf("  CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
                   PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
     
@@ -343,42 +358,42 @@ void sdDiagnostics() {
         Serial.printf("  GPIO%d (%s): %s\n", pins[i], names[i], state ? "HIGH" : "LOW");
     }
     
-    Serial.println("\nIf all pins are HIGH, card may not be inserted or wrong pins.");
-    Serial.println("If CMD/D0-D3 are LOW with card inserted, wiring is likely correct.");
+    Serial.println("\nTroubleshooting:");
+    Serial.println("  - If GPIO45 is HIGH: SD card has no power! Press 'O' to power on");
+    Serial.println("  - If all data pins HIGH: card may not be inserted");
+    Serial.println("  - If CMD/D0-D3 LOW with card inserted: wiring is likely correct");
     Serial.println("================================\n");
 }
 
 // ESP-IDF based SD card handle for direct initialization
 static sdmmc_card_t* sd_card = nullptr;
-static esp_ldo_channel_handle_t ldo_handle = nullptr;
 
-// Enable LDO channel 4 for SD card pull-ups (Waveshare ESP32-P4-WIFI6 specific)
-bool enableLdoForSdPullups() {
-    if (ldo_handle != nullptr) {
-        Serial.println("LDO channel 4 already enabled");
-        return true;
-    }
-    
-    Serial.println("Enabling LDO channel 4 for SD card pull-ups...");
-    
-    esp_ldo_channel_config_t ldo_config = {
-        .chan_id = 4,
-        .voltage_mv = 3300,  // 3.3V for pull-ups
-    };
-    ldo_config.flags.adjustable = 0;
-    ldo_config.flags.owned_by_hw = 0;
-    
-    esp_err_t ret = esp_ldo_acquire_channel(&ldo_config, &ldo_handle);
-    if (ret != ESP_OK) {
-        Serial.printf("Failed to acquire LDO channel 4: %s (0x%x)\n", esp_err_to_name(ret), ret);
-        // Try to dump LDO status for debugging
-        Serial.println("LDO channel status:");
-        esp_ldo_dump(stdout);
-        return false;
-    }
-    
-    Serial.println("LDO channel 4 enabled at 3.3V for pull-ups");
-    return true;
+// Enable SD card power by driving GPIO45 LOW (turns on P-MOSFET Q1)
+void sdPowerOn() {
+    Serial.printf("Enabling SD card power (GPIO%d LOW)...\n", PIN_SD_POWER);
+    pinMode(PIN_SD_POWER, OUTPUT);
+    digitalWrite(PIN_SD_POWER, LOW);  // LOW = MOSFET ON = SD powered
+    delay(10);  // Allow power to stabilize
+    Serial.println("SD card power enabled");
+}
+
+// Disable SD card power by driving GPIO45 HIGH (turns off P-MOSFET Q1)
+void sdPowerOff() {
+    Serial.printf("Disabling SD card power (GPIO%d HIGH)...\n", PIN_SD_POWER);
+    pinMode(PIN_SD_POWER, OUTPUT);
+    digitalWrite(PIN_SD_POWER, HIGH);  // HIGH = MOSFET OFF = SD unpowered
+    delay(10);
+    Serial.println("SD card power disabled");
+}
+
+// Power cycle the SD card (useful for resetting stuck cards)
+void sdPowerCycle() {
+    Serial.println("Power cycling SD card...");
+    sdPowerOff();
+    delay(100);  // Keep power off for 100ms
+    sdPowerOn();
+    delay(50);   // Allow card to initialize
+    Serial.println("SD card power cycled");
 }
 
 // Direct ESP-IDF SD card initialization with internal pull-ups
@@ -391,11 +406,11 @@ bool sdInitDirect(bool mode1bit = false) {
     Serial.println("\n=== Initializing SD Card (ESP-IDF Direct) ===");
     Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
                   PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+    Serial.printf("Power control: GPIO%d (active LOW)\n", PIN_SD_POWER);
     
-    // Enable LDO channel 4 to power the external pull-up resistors
-    if (!enableLdoForSdPullups()) {
-        Serial.println("Warning: Could not enable LDO for pull-ups, trying anyway...");
-    }
+    // CRITICAL: Enable SD card power first!
+    // GPIO45 controls P-MOSFET Q1: LOW = power ON, HIGH = power OFF
+    sdPowerOn();
     
     // Configure SDMMC host
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -464,25 +479,14 @@ bool sdInit(bool mode1bit = false) {
         return true;
     }
     
-    Serial.println("\n=== Initializing SD Card (SDMMC) ===");
+    Serial.println("\n=== Initializing SD Card (SDMMC - Arduino) ===");
     Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
                   PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+    Serial.printf("Power control: GPIO%d (active LOW)\n", PIN_SD_POWER);
     
-    // Enable internal pull-ups on all SD card pins
-    // The Waveshare ESP32-P4-WIFI6 requires SDMMC_SLOT_FLAG_INTERNAL_PULLUP
-    // but Arduino SD_MMC library doesn't set this, so we enable pull-ups manually
-    Serial.println("Enabling internal pull-ups...");
-    gpio_num_t sd_pins[] = {
-        (gpio_num_t)PIN_SD_CLK,
-        (gpio_num_t)PIN_SD_CMD,
-        (gpio_num_t)PIN_SD_D0,
-        (gpio_num_t)PIN_SD_D1,
-        (gpio_num_t)PIN_SD_D2,
-        (gpio_num_t)PIN_SD_D3
-    };
-    for (int i = 0; i < 6; i++) {
-        gpio_pullup_en(sd_pins[i]);
-    }
+    // CRITICAL: Enable SD card power first!
+    // GPIO45 controls P-MOSFET Q1: LOW = power ON, HIGH = power OFF
+    sdPowerOn();
     
     // Set custom pins (for GPIO matrix mode)
     // Note: ESP32-P4 Slot 0 uses IOMUX, so pins must match the IOMUX pins
@@ -491,10 +495,9 @@ bool sdInit(bool mode1bit = false) {
         return false;
     }
     
-    // Use external power (power_channel = -1) since Waveshare board has its own regulator
-    // This avoids conflicts with LDO channels used by PSRAM/Flash
+    // Use external power (power_channel = -1) since Waveshare board has its own MOSFET-switched power
     SD_MMC.setPowerChannel(-1);
-    Serial.println("Using external power for SD card");
+    Serial.println("Using GPIO45-controlled MOSFET power");
     
     Serial.printf("Trying %s mode...\n", mode1bit ? "1-bit" : "4-bit");
     if (!SD_MMC.begin("/sdcard", mode1bit, false, SDMMC_FREQ_DEFAULT)) {
@@ -914,7 +917,7 @@ void setup() {
     Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
 #endif
 #if SDMMC_ENABLED
-    Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=speed test, 'U'=unmount, 'D'=diagnostics, 'A/a'=Arduino mount");
+    Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=test, 'U'=unmount, 'D'=diag, 'P'=power cycle, 'O/o'=pwr on/off");
 #endif
     
     // Initialize WiFi (just check status, don't connect yet)
@@ -1123,6 +1126,15 @@ void loop() {
         }
         else if (c == 'D') {
             sdDiagnostics();
+        }
+        else if (c == 'P') {
+            sdPowerCycle();  // Power cycle the SD card
+        }
+        else if (c == 'O') {
+            sdPowerOn();
+        }
+        else if (c == 'o') {
+            sdPowerOff();
         }
 #endif
     }

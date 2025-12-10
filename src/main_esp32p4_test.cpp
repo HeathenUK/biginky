@@ -56,6 +56,7 @@
 #include "driver/sdmmc_host.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "esp_ldo_regulator.h"
 #define SDMMC_ENABLED 1
 #else
 #define SDMMC_ENABLED 0
@@ -349,6 +350,36 @@ void sdDiagnostics() {
 
 // ESP-IDF based SD card handle for direct initialization
 static sdmmc_card_t* sd_card = nullptr;
+static esp_ldo_channel_handle_t ldo_handle = nullptr;
+
+// Enable LDO channel 4 for SD card pull-ups (Waveshare ESP32-P4-WIFI6 specific)
+bool enableLdoForSdPullups() {
+    if (ldo_handle != nullptr) {
+        Serial.println("LDO channel 4 already enabled");
+        return true;
+    }
+    
+    Serial.println("Enabling LDO channel 4 for SD card pull-ups...");
+    
+    esp_ldo_channel_config_t ldo_config = {
+        .chan_id = 4,
+        .voltage_mv = 3300,  // 3.3V for pull-ups
+    };
+    ldo_config.flags.adjustable = 0;
+    ldo_config.flags.owned_by_hw = 0;
+    
+    esp_err_t ret = esp_ldo_acquire_channel(&ldo_config, &ldo_handle);
+    if (ret != ESP_OK) {
+        Serial.printf("Failed to acquire LDO channel 4: %s (0x%x)\n", esp_err_to_name(ret), ret);
+        // Try to dump LDO status for debugging
+        Serial.println("LDO channel status:");
+        esp_ldo_dump(stdout);
+        return false;
+    }
+    
+    Serial.println("LDO channel 4 enabled at 3.3V for pull-ups");
+    return true;
+}
 
 // Direct ESP-IDF SD card initialization with internal pull-ups
 bool sdInitDirect(bool mode1bit = false) {
@@ -360,6 +391,11 @@ bool sdInitDirect(bool mode1bit = false) {
     Serial.println("\n=== Initializing SD Card (ESP-IDF Direct) ===");
     Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
                   PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+    
+    // Enable LDO channel 4 to power the external pull-up resistors
+    if (!enableLdoForSdPullups()) {
+        Serial.println("Warning: Could not enable LDO for pull-ups, trying anyway...");
+    }
     
     // Configure SDMMC host
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();

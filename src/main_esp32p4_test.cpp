@@ -1079,7 +1079,7 @@ void loop() {
         else if (c == 'W') {
             wifiSetCredentials();
         }
-        else if (c == 'd' || c == 'D') {
+        else if (c == 'd') {
             wifiDisconnect();
         }
         else if (c == 'x' || c == 'X') {

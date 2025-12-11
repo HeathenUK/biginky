@@ -36,6 +36,7 @@
 #include "platform_hal.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
+#include "EL133UF1_BMP.h"
 #include "EL133UF1_Color.h"
 #include "fonts/opensans.h"
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
@@ -134,6 +135,9 @@ EL133UF1 display(&displaySPI);
 
 // TTF font renderer
 EL133UF1_TTF ttf;
+
+// BMP image loader
+EL133UF1_BMP bmpLoader;
 
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
@@ -769,6 +773,196 @@ void sdUnmount() {
     sdCardMounted = false;
     Serial.println("SD card unmounted");
 }
+
+// ============================================================================
+// BMP Loading from SD Card
+// ============================================================================
+
+// Count BMP files in a directory (returns count, stores paths in array if provided)
+int bmpCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0) {
+    File root = SD_MMC.open(dirname);
+    if (!root || !root.isDirectory()) {
+        return 0;
+    }
+    
+    int count = 0;
+    File file = root.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            String name = String(file.name());
+            name.toLowerCase();
+            if (name.endsWith(".bmp")) {
+                if (paths && count < maxCount) {
+                    paths[count] = String(dirname) + "/" + file.name();
+                }
+                count++;
+            }
+        }
+        file = root.openNextFile();
+    }
+    root.close();
+    return count;
+}
+
+// Load a random BMP from SD card and display it
+void bmpLoadRandom(const char* dirname = "/") {
+    Serial.println("\n=== Loading Random BMP ===");
+    uint32_t totalStart = millis();
+    
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted. Mounting...");
+        if (!sdInitDirect(false)) {
+            Serial.println("Failed to mount SD card!");
+            return;
+        }
+    }
+    
+    // First pass: count BMP files
+    int bmpCount = bmpCountFiles(dirname);
+    if (bmpCount == 0) {
+        Serial.printf("No BMP files found in %s\n", dirname);
+        Serial.println("Tip: Place some .bmp files on the SD card root");
+        return;
+    }
+    Serial.printf("Found %d BMP files\n", bmpCount);
+    
+    // Allocate array for paths (max 100)
+    int maxFiles = min(bmpCount, 100);
+    String* paths = new String[maxFiles];
+    if (!paths) {
+        Serial.println("Failed to allocate path array!");
+        return;
+    }
+    
+    // Second pass: collect paths
+    bmpCountFiles(dirname, paths, maxFiles);
+    
+    // Pick a random file
+    srand(millis());  // Seed with current time
+    int randomIndex = rand() % maxFiles;
+    String selectedPath = paths[randomIndex];
+    delete[] paths;
+    
+    Serial.printf("Selected: %s\n", selectedPath.c_str());
+    
+    // Open the file
+    File bmpFile = SD_MMC.open(selectedPath);
+    if (!bmpFile) {
+        Serial.println("Failed to open BMP file!");
+        return;
+    }
+    
+    size_t fileSize = bmpFile.size();
+    Serial.printf("File size: %zu bytes (%.2f MB)\n", fileSize, fileSize / (1024.0 * 1024.0));
+    
+    // Allocate buffer in PSRAM for the file
+    uint32_t loadStart = millis();
+    uint8_t* bmpData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!bmpData) {
+        Serial.println("Failed to allocate PSRAM buffer for BMP!");
+        bmpFile.close();
+        return;
+    }
+    
+    // Read entire file into PSRAM (fast bulk read)
+    size_t bytesRead = bmpFile.read(bmpData, fileSize);
+    bmpFile.close();
+    
+    uint32_t loadTime = millis() - loadStart;
+    Serial.printf("SD read: %lu ms (%.2f MB/s)\n", 
+                  loadTime, (fileSize / 1024.0 / 1024.0) / (loadTime / 1000.0));
+    
+    if (bytesRead != fileSize) {
+        Serial.printf("Warning: Only read %zu of %zu bytes\n", bytesRead, fileSize);
+    }
+    
+    // Get BMP info
+    int32_t bmpWidth, bmpHeight;
+    uint16_t bmpBpp;
+    BMPResult result = bmpLoader.getInfo(bmpData, fileSize, &bmpWidth, &bmpHeight, &bmpBpp);
+    if (result != BMP_OK) {
+        Serial.printf("BMP parse error: %s\n", bmpLoader.getErrorString(result));
+        hal_psram_free(bmpData);
+        return;
+    }
+    Serial.printf("BMP: %ldx%ld, %d bpp\n", bmpWidth, bmpHeight, bmpBpp);
+    
+    // Check if image needs rotation (landscape BMP on portrait display)
+    bool needsRotation = (bmpWidth > bmpHeight) && 
+                         (display.width() < display.height());
+    if (needsRotation) {
+        Serial.println("Note: Landscape image on portrait display");
+        Serial.println("      Image will be letterboxed (rotation would need PPA + extra buffer)");
+    }
+    
+    // Clear display and draw the BMP
+    uint32_t drawStart = millis();
+    display.clear(EL133UF1_WHITE);
+    
+    // Use fullscreen draw (centers the image)
+    result = bmpLoader.drawFullscreen(bmpData, fileSize);
+    uint32_t drawTime = millis() - drawStart;
+    
+    // Free the BMP data
+    hal_psram_free(bmpData);
+    
+    if (result != BMP_OK) {
+        Serial.printf("BMP draw error: %s\n", bmpLoader.getErrorString(result));
+        return;
+    }
+    
+    Serial.printf("BMP decode+draw: %lu ms\n", drawTime);
+    
+    // Update display
+    Serial.println("Updating display (20-30s for e-ink refresh)...");
+    uint32_t refreshStart = millis();
+    display.update();
+    uint32_t refreshTime = millis() - refreshStart;
+    
+    Serial.printf("Display refresh: %lu ms\n", refreshTime);
+    Serial.printf("Total time: %lu ms (%.1f s)\n", 
+                  millis() - totalStart, (millis() - totalStart) / 1000.0);
+    Serial.println("Done!");
+}
+
+// List all BMP files on SD card
+void bmpListFiles(const char* dirname = "/") {
+    Serial.println("\n=== BMP Files on SD Card ===");
+    
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted!");
+        return;
+    }
+    
+    File root = SD_MMC.open(dirname);
+    if (!root || !root.isDirectory()) {
+        Serial.printf("Failed to open %s\n", dirname);
+        return;
+    }
+    
+    int count = 0;
+    File file = root.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            String name = String(file.name());
+            String nameLower = name;
+            nameLower.toLowerCase();
+            if (nameLower.endsWith(".bmp")) {
+                Serial.printf("  [%d] %s (%zu bytes)\n", count++, file.name(), file.size());
+            }
+        }
+        file = root.openNextFile();
+    }
+    root.close();
+    
+    if (count == 0) {
+        Serial.println("  No BMP files found");
+    } else {
+        Serial.printf("Total: %d BMP files\n", count);
+    }
+    Serial.println("=============================\n");
+}
+
 #endif // SDMMC_ENABLED
 
 void wifiVersionInfo() {
@@ -886,6 +1080,9 @@ void drawTTFTest() {
     
     // Initialize TTF renderer
     ttf.begin(&display);
+    
+    // Initialize BMP loader
+    bmpLoader.begin(&display);
     
     if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
         Serial.println("ERROR: Failed to load TTF font!");
@@ -1010,6 +1207,7 @@ void setup() {
 #endif
 #if SDMMC_ENABLED
     Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=test, 'U'=unmount, 'D'=diag, 'P'=power cycle, 'O/o'=pwr on/off");
+    Serial.println("  BMP:     'B'=load random BMP, 'b'=list BMP files");
 #endif
     Serial.println("  Sleep:   'z'=status, '1'=10s, '2'=30s, '3'=60s, '5'=5min deep sleep");
     
@@ -1320,6 +1518,14 @@ void loop() {
         }
         else if (c == 'D') {
             sdDiagnostics();
+        }
+        else if (c == 'B') {
+            // Load and display a random BMP from SD card
+            bmpLoadRandom("/");
+        }
+        else if (c == 'b') {
+            // List BMP files on SD card
+            bmpListFiles("/");
         }
         else if (c == 'P') {
             sdPowerCycle();  // Power cycle the SD card

@@ -781,6 +781,7 @@ void sdUnmount() {
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include "ff.h"  // FatFs native functions
 
 // Get the SD card mount point (depends on which init method was used)
 const char* sdGetMountPoint() {
@@ -788,35 +789,47 @@ const char* sdGetMountPoint() {
     return "/sdcard";
 }
 
-// Count BMP files in a directory (returns count, stores paths in array if provided)
+// Count BMP files in a directory using FatFs (returns count, stores paths in array if provided)
 int bmpCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0) {
-    // Build full path
-    String fullPath = String(sdGetMountPoint()) + dirname;
-    if (dirname[0] == '/' && strlen(dirname) == 1) {
-        fullPath = sdGetMountPoint();  // Root directory
+    // FatFs uses drive number prefix
+    String fatfsPath = "0:";
+    if (strcmp(dirname, "/") != 0) {
+        fatfsPath += dirname;
     }
     
-    DIR* dir = opendir(fullPath.c_str());
-    if (!dir) {
-        Serial.printf("Failed to open directory: %s\n", fullPath.c_str());
-        return 0;
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res;
+    
+    res = f_opendir(&dir, fatfsPath.c_str());
+    if (res != FR_OK) {
+        // Try without drive prefix
+        res = f_opendir(&dir, dirname);
+        if (res != FR_OK) {
+            return 0;
+        }
     }
     
     int count = 0;
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        // Skip . and ..
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    
+    while (true) {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK || fno.fname[0] == 0) {
+            break;  // Error or end of directory
+        }
+        
+        // Skip directories
+        if (fno.fattrib & AM_DIR) {
             continue;
         }
         
         // Check if it's a BMP file
-        String name = String(entry->d_name);
+        String name = String(fno.fname);
         String nameLower = name;
         nameLower.toLowerCase();
         if (nameLower.endsWith(".bmp")) {
             if (paths && count < maxCount) {
-                if (dirname[0] == '/' && strlen(dirname) == 1) {
+                if (strcmp(dirname, "/") == 0) {
                     paths[count] = "/" + name;
                 } else {
                     paths[count] = String(dirname) + "/" + name;
@@ -825,7 +838,8 @@ int bmpCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0
             count++;
         }
     }
-    closedir(dir);
+    
+    f_closedir(&dir);
     return count;
 }
 
@@ -870,22 +884,24 @@ void bmpLoadRandom(const char* dirname = "/") {
     
     Serial.printf("Selected: %s\n", selectedPath.c_str());
     
-    // Build full filesystem path
-    String fullPath = String(sdGetMountPoint()) + selectedPath;
+    // Build FatFs path (with drive prefix)
+    String fatfsPath = "0:" + selectedPath;
     
-    // Get file size using stat
-    struct stat st;
-    if (stat(fullPath.c_str(), &st) != 0) {
-        Serial.printf("Failed to stat file: %s\n", fullPath.c_str());
+    // Get file info using FatFs
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("f_stat failed for %s: %d\n", fatfsPath.c_str(), res);
         return;
     }
-    size_t fileSize = st.st_size;
+    size_t fileSize = fno.fsize;
     Serial.printf("File size: %zu bytes (%.2f MB)\n", fileSize, fileSize / (1024.0 * 1024.0));
     
-    // Open the file using standard C file operations
-    FILE* bmpFile = fopen(fullPath.c_str(), "rb");
-    if (!bmpFile) {
-        Serial.printf("Failed to open BMP file: %s\n", fullPath.c_str());
+    // Open the file using FatFs
+    FIL bmpFile;
+    res = f_open(&bmpFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("f_open failed for %s: %d\n", fatfsPath.c_str(), res);
         return;
     }
     
@@ -894,13 +910,20 @@ void bmpLoadRandom(const char* dirname = "/") {
     uint8_t* bmpData = (uint8_t*)hal_psram_malloc(fileSize);
     if (!bmpData) {
         Serial.println("Failed to allocate PSRAM buffer for BMP!");
-        fclose(bmpFile);
+        f_close(&bmpFile);
         return;
     }
     
     // Read entire file into PSRAM (fast bulk read)
-    size_t bytesRead = fread(bmpData, 1, fileSize, bmpFile);
-    fclose(bmpFile);
+    UINT bytesRead;
+    res = f_read(&bmpFile, bmpData, fileSize, &bytesRead);
+    f_close(&bmpFile);
+    
+    if (res != FR_OK) {
+        Serial.printf("f_read failed: %d\n", res);
+        hal_psram_free(bmpData);
+        return;
+    }
     
     uint32_t loadTime = millis() - loadStart;
     float loadTimeSec = loadTime / 1000.0f;
@@ -964,101 +987,78 @@ void bmpLoadRandom(const char* dirname = "/") {
     Serial.println("Done!");
 }
 
-// List all BMP files on SD card
+// List all BMP files on SD card using FatFs native functions
 void bmpListFiles(const char* dirname = "/") {
-    Serial.println("\n=== BMP Files on SD Card ===");
+    Serial.println("\n=== BMP Files on SD Card (FatFs) ===");
     
     if (!sdCardMounted && sd_card == nullptr) {
         Serial.println("SD card not mounted!");
         return;
     }
     
-    // Build full path
-    String fullPath = String(sdGetMountPoint()) + dirname;
-    if (dirname[0] == '/' && strlen(dirname) == 1) {
-        fullPath = sdGetMountPoint();  // Root directory
+    // FatFs uses drive number prefix: "0:" for first drive
+    // When mounted via esp_vfs_fat_sdmmc_mount, drive 0 is used
+    String fatfsPath = "0:";
+    if (strcmp(dirname, "/") != 0) {
+        fatfsPath += dirname;
     }
     
-    Serial.printf("Scanning: %s\n", fullPath.c_str());
+    Serial.printf("Scanning: %s\n", fatfsPath.c_str());
     
-    // Test: Try to directly access a known file
-    Serial.println("\n--- Direct file access test ---");
-    const char* testFiles[] = {
-        "/sdcard/generated_1_scale_ATK_output.bmp",
-        "/sdcard/test.bmp",
-        "/sdcard/test.txt"
-    };
-    for (int i = 0; i < 3; i++) {
-        struct stat st;
-        if (stat(testFiles[i], &st) == 0) {
-            Serial.printf("  FOUND: %s (%ld bytes)\n", testFiles[i], st.st_size);
-        } else {
-            Serial.printf("  NOT FOUND: %s (errno=%d)\n", testFiles[i], errno);
-        }
-    }
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res;
     
-    // Try opening directory
-    Serial.println("\n--- Directory enumeration ---");
-    DIR* dir = opendir(fullPath.c_str());
-    if (!dir) {
-        Serial.printf("Failed to open directory: %s (errno=%d)\n", fullPath.c_str(), errno);
+    res = f_opendir(&dir, fatfsPath.c_str());
+    if (res != FR_OK) {
+        Serial.printf("f_opendir failed: %d\n", res);
         
-        // Try alternative path
-        Serial.println("Trying alternative: just /sdcard...");
-        dir = opendir("/sdcard");
-        if (!dir) {
-            Serial.printf("Also failed with /sdcard (errno=%d)\n", errno);
+        // Try without drive prefix
+        Serial.println("Trying path without drive prefix...");
+        res = f_opendir(&dir, dirname);
+        if (res != FR_OK) {
+            Serial.printf("Also failed: %d\n", res);
             return;
         }
     }
-    Serial.printf("opendir() succeeded, DIR*=%p\n", dir);
+    Serial.println("f_opendir succeeded");
     
     int count = 0;
     int totalFiles = 0;
-    struct dirent* entry;
     
-    // Debug: check errno before loop
-    errno = 0;
-    
-    while ((entry = readdir(dir)) != nullptr) {
-        // Skip . and ..
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    while (true) {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK) {
+            Serial.printf("f_readdir error: %d\n", res);
+            break;
+        }
+        if (fno.fname[0] == 0) {
+            // End of directory
+            break;
+        }
+        
+        // Skip directories
+        if (fno.fattrib & AM_DIR) {
+            Serial.printf("  [DIR] %s\n", fno.fname);
             continue;
         }
         
         totalFiles++;
-        Serial.printf("  Found: %s (type=%d)\n", entry->d_name, entry->d_type);
+        Serial.printf("  [FILE] %s (%lu bytes)\n", fno.fname, (unsigned long)fno.fsize);
         
         // Check if it's a BMP file
-        String name = String(entry->d_name);
+        String name = String(fno.fname);
         String nameLower = name;
         nameLower.toLowerCase();
         if (nameLower.endsWith(".bmp")) {
-            // Get file size
-            String filePath = fullPath + "/" + name;
-            struct stat st;
-            size_t fileSize = 0;
-            if (stat(filePath.c_str(), &st) == 0) {
-                fileSize = st.st_size;
-            }
-            Serial.printf("  -> BMP [%d] %s (%.2f MB)\n", count++, entry->d_name, fileSize / (1024.0 * 1024.0));
+            Serial.printf("    -> BMP [%d] %.2f MB\n", count++, fno.fsize / (1024.0 * 1024.0));
         }
     }
     
-    // Check if readdir failed or just reached end
-    if (errno != 0) {
-        Serial.printf("readdir() error: errno=%d\n", errno);
-    }
+    f_closedir(&dir);
     
-    closedir(dir);
-    
-    Serial.printf("\nTotal files scanned: %d\n", totalFiles);
-    if (count == 0) {
-        Serial.println("No BMP files found");
-    } else {
-        Serial.printf("BMP files found: %d\n", count);
-    }
-    Serial.println("=============================\n");
+    Serial.printf("\nTotal files: %d, BMP files: %d\n", totalFiles, count);
+    Serial.println("=====================================\n");
 }
 
 #endif // SDMMC_ENABLED

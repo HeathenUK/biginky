@@ -159,6 +159,11 @@ void sleep_clear_gpio_wake_sources(void);
  */
 int sleep_get_wake_gpio(void);
 
+/**
+ * @brief Print sleep system status information
+ */
+void sleep_print_info(void);
+
 #ifdef __cplusplus
 }
 #endif

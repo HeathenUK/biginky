@@ -39,6 +39,7 @@
 #include "EL133UF1_Color.h"
 #include "fonts/opensans.h"
 #include "DS3231.h"
+#include "esp32_sleep.h"
 
 // WiFi support for ESP32-P4 (via ESP32-C6 companion chip)
 #if !defined(DISABLE_WIFI) || defined(ENABLE_WIFI_TEST)
@@ -1006,6 +1007,7 @@ void setup() {
 #if SDMMC_ENABLED
     Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=test, 'U'=unmount, 'D'=diag, 'P'=power cycle, 'O/o'=pwr on/off");
 #endif
+    Serial.println("  Sleep:   'Z'=init, 'z'=status, '1'=10s, '2'=30s, '3'=60s, '5'=5min");
     
     // Initialize WiFi - load saved credentials and optionally auto-connect
 #if WIFI_ENABLED
@@ -1035,6 +1037,10 @@ void setup() {
         Serial.println("DS3231 RTC found!");
         rtc.printStatus();
         
+        // Initialize sleep system with RTC
+        Serial.println("\n--- Initializing Sleep System ---");
+        sleep_init_rtc(PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
+        
         // Read current time
         time_t now = rtc.getTime();
         Serial.printf("Current RTC time: %lu (Unix timestamp)\n", (unsigned long)now);
@@ -1051,6 +1057,73 @@ void setup() {
     } else {
         Serial.println("DS3231 RTC not found - check wiring");
     }
+}
+
+// ============================================================================
+// Deep Sleep Functions
+// ============================================================================
+
+void sleepInit() {
+    Serial.println("\n=== Initializing Sleep System ===");
+    
+    // Initialize sleep with RTC
+    sleep_init_rtc(PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
+    
+    // Print sleep status
+    sleep_print_info();
+}
+
+void sleepTest(uint32_t seconds) {
+    Serial.printf("\n=== Deep Sleep Test (%d seconds) ===\n", seconds);
+    
+    if (!sleep_has_rtc()) {
+        Serial.println("ERROR: RTC not detected! Cannot set wake alarm.");
+        Serial.println("Check RTC wiring and try 'r' to test RTC first.");
+        return;
+    }
+    
+    Serial.printf("Will sleep for %d seconds, then wake via RTC alarm on GPIO%d\n", 
+                  seconds, PIN_RTC_INT);
+    Serial.println("Press any key within 3 seconds to cancel...");
+    
+    // Give user a chance to cancel
+    uint32_t start = millis();
+    while (millis() - start < 3000) {
+        if (Serial.available()) {
+            Serial.read();
+            Serial.println("Cancelled!");
+            return;
+        }
+        delay(100);
+    }
+    
+    Serial.println("\nEntering deep sleep NOW...");
+    Serial.flush();
+    delay(100);
+    
+    // Go to sleep - will wake after 'seconds' via RTC alarm
+    sleep_goto_dormant_for_ms(seconds * 1000);
+    
+    // If we get here, sleep failed
+    Serial.println("ERROR: Deep sleep failed to enter!");
+}
+
+void sleepStatus() {
+    Serial.println("\n=== Sleep System Status ===");
+    sleep_print_info();
+    
+    // Check wake cause if we just woke up
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    Serial.printf("Last wake cause: ");
+    switch (cause) {
+        case ESP_SLEEP_WAKEUP_UNDEFINED: Serial.println("Power on / reset"); break;
+        case ESP_SLEEP_WAKEUP_EXT0: Serial.println("EXT0 (RTC GPIO)"); break;
+        case ESP_SLEEP_WAKEUP_EXT1: Serial.println("EXT1 (RTC GPIO mask)"); break;
+        case ESP_SLEEP_WAKEUP_TIMER: Serial.println("Timer"); break;
+        case ESP_SLEEP_WAKEUP_GPIO: Serial.println("GPIO"); break;
+        default: Serial.printf("Other (%d)\n", cause); break;
+    }
+    Serial.println("============================\n");
 }
 
 void loop() {
@@ -1238,6 +1311,25 @@ void loop() {
             Serial.println("==================\n");
         }
 #endif
+        // Sleep commands (always available)
+        else if (c == 'Z') {
+            sleepInit();
+        }
+        else if (c == 'z') {
+            sleepStatus();
+        }
+        else if (c == '1') {
+            sleepTest(10);   // Sleep for 10 seconds
+        }
+        else if (c == '2') {
+            sleepTest(30);   // Sleep for 30 seconds
+        }
+        else if (c == '3') {
+            sleepTest(60);   // Sleep for 1 minute
+        }
+        else if (c == '5') {
+            sleepTest(300);  // Sleep for 5 minutes
+        }
     }
     
     delay(100);

@@ -1176,12 +1176,6 @@ void drawTestPattern() {
 void drawTTFTest() {
     Serial.println("Drawing TTF test...");
     
-    // Initialize TTF renderer
-    ttf.begin(&display);
-    
-    // Initialize BMP loader
-    bmpLoader.begin(&display);
-    
     if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
         Serial.println("ERROR: Failed to load TTF font!");
         return;
@@ -1277,6 +1271,10 @@ void setup() {
         while (1) delay(1000);
     }
     Serial.println("Display initialized");
+    
+    // Initialize TTF renderer and BMP loader
+    ttf.begin(&display);
+    bmpLoader.begin(&display);
     
     if (!wokeFromSleep) {
         // Cold boot only: draw test pattern and update display

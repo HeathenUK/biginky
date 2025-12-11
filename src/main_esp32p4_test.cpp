@@ -778,29 +778,53 @@ void sdUnmount() {
 // BMP Loading from SD Card
 // ============================================================================
 
+#include <dirent.h>
+#include <sys/stat.h>
+
+// Get the SD card mount point (depends on which init method was used)
+const char* sdGetMountPoint() {
+    // Both methods mount at /sdcard
+    return "/sdcard";
+}
+
 // Count BMP files in a directory (returns count, stores paths in array if provided)
 int bmpCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0) {
-    File root = SD_MMC.open(dirname);
-    if (!root || !root.isDirectory()) {
+    // Build full path
+    String fullPath = String(sdGetMountPoint()) + dirname;
+    if (dirname[0] == '/' && strlen(dirname) == 1) {
+        fullPath = sdGetMountPoint();  // Root directory
+    }
+    
+    DIR* dir = opendir(fullPath.c_str());
+    if (!dir) {
+        Serial.printf("Failed to open directory: %s\n", fullPath.c_str());
         return 0;
     }
     
     int count = 0;
-    File file = root.openNextFile();
-    while (file) {
-        if (!file.isDirectory()) {
-            String name = String(file.name());
-            name.toLowerCase();
-            if (name.endsWith(".bmp")) {
-                if (paths && count < maxCount) {
-                    paths[count] = String(dirname) + "/" + file.name();
-                }
-                count++;
-            }
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        // Skip . and ..
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
         }
-        file = root.openNextFile();
+        
+        // Check if it's a BMP file
+        String name = String(entry->d_name);
+        String nameLower = name;
+        nameLower.toLowerCase();
+        if (nameLower.endsWith(".bmp")) {
+            if (paths && count < maxCount) {
+                if (dirname[0] == '/' && strlen(dirname) == 1) {
+                    paths[count] = "/" + name;
+                } else {
+                    paths[count] = String(dirname) + "/" + name;
+                }
+            }
+            count++;
+        }
     }
-    root.close();
+    closedir(dir);
     return count;
 }
 
@@ -845,32 +869,46 @@ void bmpLoadRandom(const char* dirname = "/") {
     
     Serial.printf("Selected: %s\n", selectedPath.c_str());
     
-    // Open the file
-    File bmpFile = SD_MMC.open(selectedPath);
-    if (!bmpFile) {
-        Serial.println("Failed to open BMP file!");
+    // Build full filesystem path
+    String fullPath = String(sdGetMountPoint()) + selectedPath;
+    
+    // Get file size using stat
+    struct stat st;
+    if (stat(fullPath.c_str(), &st) != 0) {
+        Serial.printf("Failed to stat file: %s\n", fullPath.c_str());
         return;
     }
-    
-    size_t fileSize = bmpFile.size();
+    size_t fileSize = st.st_size;
     Serial.printf("File size: %zu bytes (%.2f MB)\n", fileSize, fileSize / (1024.0 * 1024.0));
+    
+    // Open the file using standard C file operations
+    FILE* bmpFile = fopen(fullPath.c_str(), "rb");
+    if (!bmpFile) {
+        Serial.printf("Failed to open BMP file: %s\n", fullPath.c_str());
+        return;
+    }
     
     // Allocate buffer in PSRAM for the file
     uint32_t loadStart = millis();
     uint8_t* bmpData = (uint8_t*)hal_psram_malloc(fileSize);
     if (!bmpData) {
         Serial.println("Failed to allocate PSRAM buffer for BMP!");
-        bmpFile.close();
+        fclose(bmpFile);
         return;
     }
     
     // Read entire file into PSRAM (fast bulk read)
-    size_t bytesRead = bmpFile.read(bmpData, fileSize);
-    bmpFile.close();
+    size_t bytesRead = fread(bmpData, 1, fileSize, bmpFile);
+    fclose(bmpFile);
     
     uint32_t loadTime = millis() - loadStart;
-    Serial.printf("SD read: %lu ms (%.2f MB/s)\n", 
-                  loadTime, (fileSize / 1024.0 / 1024.0) / (loadTime / 1000.0));
+    float loadTimeSec = loadTime / 1000.0f;
+    if (loadTimeSec > 0) {
+        Serial.printf("SD read: %lu ms (%.2f MB/s)\n", 
+                      loadTime, (fileSize / 1024.0 / 1024.0) / loadTimeSec);
+    } else {
+        Serial.printf("SD read: %lu ms\n", loadTime);
+    }
     
     if (bytesRead != fileSize) {
         Serial.printf("Warning: Only read %zu of %zu bytes\n", bytesRead, fileSize);
@@ -934,26 +972,42 @@ void bmpListFiles(const char* dirname = "/") {
         return;
     }
     
-    File root = SD_MMC.open(dirname);
-    if (!root || !root.isDirectory()) {
-        Serial.printf("Failed to open %s\n", dirname);
+    // Build full path
+    String fullPath = String(sdGetMountPoint()) + dirname;
+    if (dirname[0] == '/' && strlen(dirname) == 1) {
+        fullPath = sdGetMountPoint();  // Root directory
+    }
+    
+    DIR* dir = opendir(fullPath.c_str());
+    if (!dir) {
+        Serial.printf("Failed to open %s\n", fullPath.c_str());
         return;
     }
     
     int count = 0;
-    File file = root.openNextFile();
-    while (file) {
-        if (!file.isDirectory()) {
-            String name = String(file.name());
-            String nameLower = name;
-            nameLower.toLowerCase();
-            if (nameLower.endsWith(".bmp")) {
-                Serial.printf("  [%d] %s (%zu bytes)\n", count++, file.name(), file.size());
-            }
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        // Skip . and ..
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
         }
-        file = root.openNextFile();
+        
+        // Check if it's a BMP file
+        String name = String(entry->d_name);
+        String nameLower = name;
+        nameLower.toLowerCase();
+        if (nameLower.endsWith(".bmp")) {
+            // Get file size
+            String filePath = fullPath + "/" + name;
+            struct stat st;
+            size_t fileSize = 0;
+            if (stat(filePath.c_str(), &st) == 0) {
+                fileSize = st.st_size;
+            }
+            Serial.printf("  [%d] %s (%.2f MB)\n", count++, entry->d_name, fileSize / (1024.0 * 1024.0));
+        }
     }
-    root.close();
+    closedir(dir);
     
     if (count == 0) {
         Serial.println("  No BMP files found");

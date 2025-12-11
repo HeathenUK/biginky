@@ -1000,43 +1000,96 @@ void setup() {
 #endif
     Serial.println("  Sleep:   'z'=status, '1'=10s, '2'=30s, '3'=60s, '5'=5min deep sleep");
     
-    // Initialize WiFi - load saved credentials and optionally auto-connect
-#if WIFI_ENABLED
-    Serial.println("\n--- WiFi Status ---");
-    Serial.printf("WiFi library available: YES\n");
-    Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
-    
-    // Load saved credentials from NVS
-    wifiLoadCredentials();
-    
-    if (strlen(wifiSSID) > 0) {
-        Serial.printf("Saved network: %s\n", wifiSSID);
-        Serial.println("Use 'w' to connect, 'W' to change credentials");
-    } else {
-        Serial.println("No saved credentials. Use 'W' to set credentials.");
-    }
-#else
-    Serial.println("\n--- WiFi Status ---");
-    Serial.println("WiFi: DISABLED (DISABLE_WIFI defined)");
-#endif
-
-    // Check internal RTC time
-    Serial.println("\n--- Internal RTC Status ---");
+    // Check internal RTC time and auto-sync if needed
+    Serial.println("\n--- Time Check ---");
     time_t now = time(nullptr);
-    struct tm* timeinfo = gmtime(&now);
+    bool timeValid = (now > 1577836800);  // After Jan 1, 2020
     
-    // Check if time is valid (after year 2020)
-    if (now > 1577836800) {  // Jan 1, 2020
+    if (timeValid) {
+        struct tm* timeinfo = gmtime(&now);
         Serial.printf("Current time: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
                       timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
                       timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-        Serial.printf("Unix timestamp: %lu\n", (unsigned long)now);
+        Serial.printf("Deep sleep boot count: %u\n", sleepBootCount);
     } else {
-        Serial.println("Time not set (use NTP sync with 'n' after WiFi connect)");
+        Serial.println("Time not set - need NTP sync");
     }
+
+#if WIFI_ENABLED
+    // Load saved credentials from NVS
+    wifiLoadCredentials();
     
-    // Show deep sleep boot count
-    Serial.printf("Deep sleep boot count: %u\n", sleepBootCount);
+    // If time not valid, try to auto-connect and sync
+    if (!timeValid) {
+        if (strlen(wifiSSID) > 0) {
+            Serial.printf("\nAuto-connecting to: %s\n", wifiSSID);
+            
+            WiFi.mode(WIFI_STA);
+            WiFi.begin(wifiSSID, wifiPSK);
+            
+            Serial.print("Connecting");
+            int attempts = 0;
+            while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+                delay(500);
+                Serial.print(".");
+                attempts++;
+            }
+            
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.println(" OK!");
+                Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+                
+                // Auto NTP sync
+                Serial.println("Syncing time with NTP...");
+                configTime(0, 0, "pool.ntp.org", "time.google.com");
+                
+                // Wait for time sync
+                Serial.print("Waiting for NTP");
+                now = time(nullptr);
+                uint32_t start = millis();
+                while (now < 1577836800 && (millis() - start < 15000)) {
+                    delay(500);
+                    Serial.print(".");
+                    now = time(nullptr);
+                }
+                
+                if (now > 1577836800) {
+                    Serial.println(" OK!");
+                    struct tm* timeinfo = gmtime(&now);
+                    Serial.printf("Time set: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                                  timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
+                                  timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+                    timeValid = true;
+                } else {
+                    Serial.println(" FAILED!");
+                }
+            } else {
+                Serial.println(" FAILED!");
+                Serial.println("Could not connect to WiFi");
+            }
+        } else {
+            Serial.println("\nNo WiFi credentials saved.");
+            Serial.println(">>> Use 'W' to set WiFi credentials, then 'n' to sync time <<<");
+        }
+    } else {
+        // Time is valid, just show WiFi status
+        Serial.println("\n--- WiFi Status ---");
+        Serial.printf("MAC: %s\n", WiFi.macAddress().c_str());
+        if (strlen(wifiSSID) > 0) {
+            Serial.printf("Saved network: %s (use 'w' to connect)\n", wifiSSID);
+        } else {
+            Serial.println("No saved credentials (use 'W' to set)");
+        }
+    }
+#else
+    if (!timeValid) {
+        Serial.println("\nWiFi disabled - use 's' to set time manually");
+    }
+#endif
+
+    Serial.println("\n========================================");
+    Serial.println("Ready! Enter command...");
+    Serial.println("========================================\n");
 }
 
 // ============================================================================

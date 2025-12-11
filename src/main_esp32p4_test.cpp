@@ -978,19 +978,25 @@ void bmpListFiles(const char* dirname = "/") {
         fullPath = sdGetMountPoint();  // Root directory
     }
     
+    Serial.printf("Scanning: %s\n", fullPath.c_str());
+    
     DIR* dir = opendir(fullPath.c_str());
     if (!dir) {
-        Serial.printf("Failed to open %s\n", fullPath.c_str());
+        Serial.printf("Failed to open directory: %s (errno=%d)\n", fullPath.c_str(), errno);
         return;
     }
     
     int count = 0;
+    int totalFiles = 0;
     struct dirent* entry;
     while ((entry = readdir(dir)) != nullptr) {
         // Skip . and ..
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
+        
+        totalFiles++;
+        Serial.printf("  Found: %s (type=%d)\n", entry->d_name, entry->d_type);
         
         // Check if it's a BMP file
         String name = String(entry->d_name);
@@ -1004,15 +1010,16 @@ void bmpListFiles(const char* dirname = "/") {
             if (stat(filePath.c_str(), &st) == 0) {
                 fileSize = st.st_size;
             }
-            Serial.printf("  [%d] %s (%.2f MB)\n", count++, entry->d_name, fileSize / (1024.0 * 1024.0));
+            Serial.printf("  -> BMP [%d] %s (%.2f MB)\n", count++, entry->d_name, fileSize / (1024.0 * 1024.0));
         }
     }
     closedir(dir);
     
+    Serial.printf("\nTotal files scanned: %d\n", totalFiles);
     if (count == 0) {
-        Serial.println("  No BMP files found");
+        Serial.println("No BMP files found");
     } else {
-        Serial.printf("Total: %d BMP files\n", count);
+        Serial.printf("BMP files found: %d\n", count);
     }
     Serial.println("=============================\n");
 }

@@ -493,7 +493,7 @@ bool sdInitDirect(bool mode1bit = false) {
     // Configure SDMMC host
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
-    host.max_freq_khz = SDMMC_FREQ_DEFAULT;  // 20 MHz
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;  // 40 MHz for faster transfers
     if (mode1bit) {
         host.flags = SDMMC_HOST_FLAG_1BIT;
     }
@@ -949,13 +949,13 @@ void bmpLoadRandom(const char* dirname = "/") {
     }
     Serial.printf("BMP: %ldx%ld, %d bpp\n", bmpWidth, bmpHeight, bmpBpp);
     
-    // Check if image needs rotation (landscape BMP on portrait display)
-    bool needsRotation = (bmpWidth > bmpHeight) && 
-                         (display.width() < display.height());
-    if (needsRotation) {
-        Serial.println("Note: Landscape image on portrait display");
-        Serial.println("      Image will be letterboxed (rotation would need PPA + extra buffer)");
+    // Check if image dimensions match display
+    bool isLandscape = (bmpWidth > bmpHeight);
+    bool displayIsPortrait = (display.width() < display.height());
+    if (isLandscape && displayIsPortrait) {
+        Serial.println("Note: Landscape image on portrait display - will be centered/letterboxed");
     }
+    Serial.println("Acceleration: LUT color mapping, PPA rotation (in display.update())");
     
     // Clear display and draw the BMP
     uint32_t drawStart = millis();

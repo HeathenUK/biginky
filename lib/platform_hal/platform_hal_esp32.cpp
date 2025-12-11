@@ -73,10 +73,11 @@ size_t hal_heap_get_free(void) {
 static bool _dma_initialized = false;
 
 bool hal_dma_init(void) {
-    // ESP32 doesn't have general-purpose memory DMA like RP2350
-    // Return true as "initialized" but operations will use memcpy
-    _dma_initialized = true;
-    return true;
+    // ESP32/ESP32-P4 doesn't have general-purpose memory-to-memory DMA like RP2350
+    // PSRAM access uses DMA internally via the SPI controller
+    // For explicit mem-to-mem, we use optimized memcpy
+    _dma_initialized = false;  // No explicit DMA available
+    return false;  // Signal that explicit DMA is not available
 }
 
 void hal_dma_memcpy(void* dst, const void* src, size_t size) {

@@ -796,7 +796,10 @@ bool EL133UF1::isBusy() {
 // Initialize DMA for memory transfers (uses platform HAL)
 static void initDMA() {
     if (hal_dma_init()) {
-        Serial.println("    DMA:            initialized");
+        Serial.println("    DMA:            hardware DMA enabled");
+    } else {
+        // ESP32-P4 uses optimized memcpy (PSRAM has internal DMA)
+        Serial.println("    DMA:            using optimized memcpy");
     }
 }
 

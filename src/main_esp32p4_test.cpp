@@ -1060,42 +1060,37 @@ void setup() {
 }
 
 // ============================================================================
-// Deep Sleep Functions
+// Deep Sleep Functions (using ESP32 internal timer)
 // ============================================================================
-// Uses esp32_sleep library which wraps official ESP-IDF APIs:
-// - esp_sleep_enable_ext1_wakeup() for GPIO wake on ESP32-P4
+// Uses official ESP-IDF APIs:
 // - esp_sleep_enable_timer_wakeup() for timer-based wake
 // - esp_deep_sleep_start() to enter deep sleep
-//
-// ESP32-P4 notes:
-// - Only GPIO 0-15 (LP GPIOs) can wake from deep sleep
-// - ext0 wake is NOT supported, must use ext1
+
+#include "esp_sleep.h"
+
+// Boot count persisted in RTC memory across deep sleep
+RTC_DATA_ATTR static uint32_t sleepBootCount = 0;
 
 void sleepStatus() {
     Serial.println("\n=== Deep Sleep Status ===");
-    sleep_print_info();
+    Serial.printf("Boot count (RTC memory): %u\n", sleepBootCount);
+    
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    Serial.print("Last wake cause: ");
+    switch (cause) {
+        case ESP_SLEEP_WAKEUP_UNDEFINED: Serial.println("Power on / reset"); break;
+        case ESP_SLEEP_WAKEUP_TIMER:     Serial.println("Timer"); break;
+        case ESP_SLEEP_WAKEUP_EXT0:      Serial.println("EXT0 GPIO"); break;
+        case ESP_SLEEP_WAKEUP_EXT1:      Serial.println("EXT1 GPIO"); break;
+        case ESP_SLEEP_WAKEUP_GPIO:      Serial.println("GPIO"); break;
+        default: Serial.printf("Other (%d)\n", cause); break;
+    }
     Serial.println("==========================\n");
 }
 
 void sleepTest(uint32_t seconds) {
     Serial.printf("\n=== Deep Sleep Test (%d seconds) ===\n", seconds);
-    
-    // Validate wake pin is in LP GPIO range (0-15 for ESP32-P4)
-    if (PIN_RTC_INT < 0 || PIN_RTC_INT > 15) {
-        Serial.printf("ERROR: GPIO%d is not an LP GPIO (0-15)!\n", PIN_RTC_INT);
-        Serial.println("ESP32-P4 can only wake from GPIO 0-15 in deep sleep.");
-        return;
-    }
-    
-    // Check if RTC is available
-    if (!sleep_has_rtc()) {
-        Serial.println("ERROR: DS3231 RTC not detected!");
-        Serial.println("Check RTC wiring and try 'r' to test RTC first.");
-        return;
-    }
-    
-    Serial.printf("Will sleep for %d seconds\n", seconds);
-    Serial.printf("Wake source: DS3231 alarm on GPIO%d (active LOW)\n", PIN_RTC_INT);
+    Serial.println("Using ESP32 internal timer for wake");
     Serial.println("\nPress any key within 3 seconds to cancel...");
     
     // Give user a chance to cancel
@@ -1109,15 +1104,23 @@ void sleepTest(uint32_t seconds) {
         delay(100);
     }
     
-    Serial.println("\nEntering deep sleep...");
+    // Configure timer wake (microseconds)
+    uint64_t sleep_us = (uint64_t)seconds * 1000000ULL;
+    esp_err_t err = esp_sleep_enable_timer_wakeup(sleep_us);
+    if (err != ESP_OK) {
+        Serial.printf("ERROR: Failed to configure timer: %s\n", esp_err_to_name(err));
+        return;
+    }
+    
+    sleepBootCount++;
+    Serial.printf("Boot count will be: %u\n", sleepBootCount);
+    Serial.println("\nEntering deep sleep NOW...");
     Serial.flush();
     delay(100);
     
-    // This sets DS3231 alarm and configures ext1 GPIO wake
-    sleep_goto_dormant_for_ms(seconds * 1000);
+    esp_deep_sleep_start();
     
-    // Should never reach here
-    Serial.println("ERROR: Deep sleep failed!");
+    // Never reached
 }
 
 void loop() {

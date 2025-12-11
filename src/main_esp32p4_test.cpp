@@ -780,6 +780,7 @@ void sdUnmount() {
 
 #include <dirent.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 // Get the SD card mount point (depends on which init method was used)
 const char* sdGetMountPoint() {
@@ -980,15 +981,45 @@ void bmpListFiles(const char* dirname = "/") {
     
     Serial.printf("Scanning: %s\n", fullPath.c_str());
     
+    // Test: Try to directly access a known file
+    Serial.println("\n--- Direct file access test ---");
+    const char* testFiles[] = {
+        "/sdcard/generated_1_scale_ATK_output.bmp",
+        "/sdcard/test.bmp",
+        "/sdcard/test.txt"
+    };
+    for (int i = 0; i < 3; i++) {
+        struct stat st;
+        if (stat(testFiles[i], &st) == 0) {
+            Serial.printf("  FOUND: %s (%ld bytes)\n", testFiles[i], st.st_size);
+        } else {
+            Serial.printf("  NOT FOUND: %s (errno=%d)\n", testFiles[i], errno);
+        }
+    }
+    
+    // Try opening directory
+    Serial.println("\n--- Directory enumeration ---");
     DIR* dir = opendir(fullPath.c_str());
     if (!dir) {
         Serial.printf("Failed to open directory: %s (errno=%d)\n", fullPath.c_str(), errno);
-        return;
+        
+        // Try alternative path
+        Serial.println("Trying alternative: just /sdcard...");
+        dir = opendir("/sdcard");
+        if (!dir) {
+            Serial.printf("Also failed with /sdcard (errno=%d)\n", errno);
+            return;
+        }
     }
+    Serial.printf("opendir() succeeded, DIR*=%p\n", dir);
     
     int count = 0;
     int totalFiles = 0;
     struct dirent* entry;
+    
+    // Debug: check errno before loop
+    errno = 0;
+    
     while ((entry = readdir(dir)) != nullptr) {
         // Skip . and ..
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
@@ -1013,6 +1044,12 @@ void bmpListFiles(const char* dirname = "/") {
             Serial.printf("  -> BMP [%d] %s (%.2f MB)\n", count++, entry->d_name, fileSize / (1024.0 * 1024.0));
         }
     }
+    
+    // Check if readdir failed or just reached end
+    if (errno != 0) {
+        Serial.printf("readdir() error: errno=%d\n", errno);
+    }
+    
     closedir(dir);
     
     Serial.printf("\nTotal files scanned: %d\n", totalFiles);

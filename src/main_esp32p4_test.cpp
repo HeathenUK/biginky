@@ -972,32 +972,35 @@ void setup() {
     
     Serial.printf("PSRAM OK: %lu KB available\n", (unsigned long)(hal_psram_get_size() / 1024));
     
-    // Initialize SPI with custom pins
-    Serial.println("\nInitializing SPI...");
-    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);  // SCK, MISO (unused), MOSI, SS (unused)
+    // Initialize SPI (always needed - ESP32 peripherals reset after deep sleep)
+    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
     
-    // Initialize display
+    // Initialize display (required - PSRAM doesn't persist through deep sleep)
     Serial.println("Initializing display...");
     if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
         Serial.println("ERROR: Display initialization failed!");
         while (1) delay(1000);
     }
+    Serial.println("Display initialized");
     
-    Serial.println("Display initialized successfully!\n");
-    Serial.printf("Display buffer at: %p\n", display.getBuffer());
-    
-    // Draw test pattern
-    Serial.println("\n--- Drawing Test Pattern ---");
-    drawTestPattern();
-    
-    // Update display
-    Serial.println("\n--- Updating Display ---");
-    Serial.println("This will take 20-30 seconds...\n");
-    display.update();
-    
-    Serial.println("\n========================================");
-    Serial.println("Test complete!");
-    Serial.println("========================================");
+    if (!wokeFromSleep) {
+        // Cold boot only: draw test pattern and update display
+        Serial.printf("Display buffer at: %p\n", display.getBuffer());
+        
+        Serial.println("\n--- Drawing Test Pattern ---");
+        drawTestPattern();
+        
+        Serial.println("\n--- Updating Display ---");
+        Serial.println("This will take 20-30 seconds...\n");
+        display.update();
+        
+        Serial.println("\n========================================");
+        Serial.println("Test complete!");
+        Serial.println("========================================");
+    } else {
+        // After sleep: skip test pattern - display retains last image
+        Serial.println("Skipping display update (e-ink retains image)");
+    }
     Serial.println("\nCommands:");
     Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
     Serial.println("  Time:    'r'=show time, 's'=set time, 'n'=NTP sync (after WiFi)");

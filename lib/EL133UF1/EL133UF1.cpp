@@ -1318,14 +1318,14 @@ void EL133UF1::update(bool skipInit) {
     uint32_t totalStart = millis();
     uint32_t stepStart;
     
-    // Run init sequence (can skip on subsequent updates)
-    if (!skipInit || !_initDone) {
+    // Run init sequence only if not already done this boot session
+    if (!_initDone) {
         stepStart = millis();
         _initSequence();
         _initDone = true;
         Serial.printf("  Init sequence:    %4lu ms\n", millis() - stepStart);
     } else {
-        Serial.println("  Init sequence:    skipped");
+        Serial.println("  Init sequence:    skipped (already done)");
     }
     
     // Send buffer data
@@ -1369,8 +1369,8 @@ void EL133UF1::update(bool skipInit) {
 void EL133UF1::updateAsync(bool skipInit) {
     if (!_initialized || _asyncInProgress) return;
 
-    // Run init sequence if needed
-    if (!skipInit || !_initDone) {
+    // Run init sequence only if not already done this boot session
+    if (!_initDone) {
         _initSequence();
         _initDone = true;
     }

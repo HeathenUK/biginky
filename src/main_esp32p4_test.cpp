@@ -38,8 +38,9 @@
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_Color.h"
 #include "fonts/opensans.h"
-#include "DS3231.h"
-#include "esp32_sleep.h"  // Wrapper using official ESP-IDF deep sleep APIs
+// DS3231 external RTC removed - using ESP32 internal RTC + NTP
+#include <time.h>
+#include <sys/time.h>
 
 // WiFi support for ESP32-P4 (via ESP32-C6 companion chip)
 #if !defined(DISABLE_WIFI) || defined(ENABLE_WIFI_TEST)
@@ -93,15 +94,7 @@
 #endif
 
 // RTC I2C pins
-#ifndef PIN_RTC_SDA
-#define PIN_RTC_SDA   31    // GPIO31 = Pico GP2 (pin 4)
-#endif
-#ifndef PIN_RTC_SCL
-#define PIN_RTC_SCL   30    // GPIO30 = Pico GP3 (pin 5)
-#endif
-#ifndef PIN_RTC_INT
-#define PIN_RTC_INT   46    // GPIO46 = Pico GP18 (pin 24)
-#endif
+// DS3231 pins removed - using internal RTC only
 
 // SDMMC SD Card pins (ESP32-P4 Slot 0 IOMUX pins)
 #ifndef PIN_SD_CLK
@@ -141,6 +134,9 @@ EL133UF1 display(&displaySPI);
 
 // TTF font renderer
 EL133UF1_TTF ttf;
+
+// Deep sleep boot counter (persists in RTC memory across deep sleep)
+RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 
 // ============================================================================
 // WiFi Functions
@@ -355,12 +351,7 @@ void wifiNtpSync() {
                      timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
                      timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
         Serial.printf("Unix timestamp: %lu\n", (unsigned long)now);
-        
-        // If we have RTC, sync it
-        if (rtc.isPresent()) {
-            rtc.setTime(now);
-            Serial.println("RTC synchronized!");
-        }
+        Serial.println("Internal RTC synchronized!");
     } else {
         Serial.println(" FAILED!");
     }
@@ -999,7 +990,7 @@ void setup() {
     Serial.println("========================================");
     Serial.println("\nCommands:");
     Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
-    Serial.println("  RTC:     'r'=RTC test, 's'=set RTC time");
+    Serial.println("  Time:    'r'=show time, 's'=set time, 'n'=NTP sync (after WiFi)");
     Serial.println("  System:  'i'=info");
 #if WIFI_ENABLED
     Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
@@ -1029,34 +1020,23 @@ void setup() {
     Serial.println("WiFi: DISABLED (DISABLE_WIFI defined)");
 #endif
 
-    // Initialize RTC
-    Serial.println("\n--- Initializing RTC ---");
-    Serial.printf("RTC pins: SDA=%d, SCL=%d, INT=%d\n", PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
+    // Check internal RTC time
+    Serial.println("\n--- Internal RTC Status ---");
+    time_t now = time(nullptr);
+    struct tm* timeinfo = gmtime(&now);
     
-    if (rtc.begin(&Wire, PIN_RTC_SDA, PIN_RTC_SCL)) {
-        Serial.println("DS3231 RTC found!");
-        rtc.printStatus();
-        
-        // Initialize sleep system with RTC
-        Serial.println("\n--- Initializing Sleep System ---");
-        sleep_init_rtc(PIN_RTC_SDA, PIN_RTC_SCL, PIN_RTC_INT);
-        
-        // Read current time
-        time_t now = rtc.getTime();
-        Serial.printf("Current RTC time: %lu (Unix timestamp)\n", (unsigned long)now);
-        
-        // Convert to human readable
-        struct tm* timeinfo = gmtime(&now);
-        Serial.printf("  UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
+    // Check if time is valid (after year 2020)
+    if (now > 1577836800) {  // Jan 1, 2020
+        Serial.printf("Current time: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
                       timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
                       timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-        
-        // Read temperature
-        float temp = rtc.getTemperature();
-        Serial.printf("RTC temperature: %.2f °C\n", temp);
+        Serial.printf("Unix timestamp: %lu\n", (unsigned long)now);
     } else {
-        Serial.println("DS3231 RTC not found - check wiring");
+        Serial.println("Time not set (use NTP sync with 'n' after WiFi connect)");
     }
+    
+    // Show deep sleep boot count
+    Serial.printf("Deep sleep boot count: %u\n", sleepBootCount);
 }
 
 // ============================================================================
@@ -1068,8 +1048,7 @@ void setup() {
 
 #include "esp_sleep.h"
 
-// Boot count persisted in RTC memory across deep sleep
-RTC_DATA_ATTR static uint32_t sleepBootCount = 0;
+// sleepBootCount is declared globally above
 
 void sleepStatus() {
     Serial.println("\n=== Deep Sleep Status ===");
@@ -1154,60 +1133,28 @@ void loop() {
             hal_print_info();
         }
         else if (c == 'r' || c == 'R') {
-            Serial.println("\n--- RTC Test ---");
+            Serial.println("\n--- Internal RTC Status ---");
             
-            if (!rtc.isPresent()) {
-                Serial.println("RTC not initialized, trying again...");
-                if (!rtc.begin(&Wire, PIN_RTC_SDA, PIN_RTC_SCL)) {
-                    Serial.println("DS3231 RTC not found!");
-                    return;
-                }
-            }
+            time_t now = time(nullptr);
+            Serial.printf("Unix timestamp: %lu\n", (unsigned long)now);
             
-            // Print full status
-            rtc.printStatus();
-            
-            // Read current time
-            time_t now = rtc.getTime();
-            Serial.printf("\nCurrent RTC time: %lu\n", (unsigned long)now);
             struct tm* timeinfo = gmtime(&now);
-            Serial.printf("  UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
+            Serial.printf("UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
                           timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
                           timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
             
-            // Temperature
-            Serial.printf("Temperature: %.2f °C\n", rtc.getTemperature());
-            
-            // Test alarm (set 5 second alarm)
-            Serial.println("\nSetting 5-second alarm test...");
-            rtc.clearAlarm1();
-            rtc.setAlarm1(5000);  // 5 seconds
-            rtc.enableAlarm1Interrupt(true);
-            Serial.println("Alarm set! INT pin should go LOW in 5 seconds.");
-            Serial.printf("INT pin (GPIO%d) current state: %s\n", 
-                          PIN_RTC_INT, digitalRead(PIN_RTC_INT) ? "HIGH" : "LOW");
-            
-            // Wait for alarm
-            Serial.println("Waiting for alarm...");
-            unsigned long start = millis();
-            pinMode(PIN_RTC_INT, INPUT_PULLUP);
-            while (millis() - start < 7000) {
-                if (digitalRead(PIN_RTC_INT) == LOW) {
-                    Serial.printf("Alarm triggered after %lu ms!\n", millis() - start);
-                    rtc.clearAlarm1();
-                    Serial.println("Alarm cleared.");
-                    break;
-                }
-                delay(100);
+            // Check if time is valid
+            if (now > 1577836800) {  // After Jan 1, 2020
+                Serial.println("Time appears valid");
+            } else {
+                Serial.println("Time not set - use 'n' to sync with NTP after WiFi connect");
             }
-            if (millis() - start >= 7000) {
-                Serial.println("Alarm did not trigger within timeout");
-                Serial.printf("Alarm1 flag: %d\n", rtc.alarm1Triggered());
-            }
+            
+            Serial.printf("Deep sleep boot count: %u\n", sleepBootCount);
         }
         else if (c == 's' || c == 'S') {
-            // Set RTC time from serial input
-            Serial.println("\n--- Set RTC Time ---");
+            // Set internal RTC time from serial input
+            Serial.println("\n--- Set Internal RTC Time ---");
             Serial.println("Enter Unix timestamp (seconds since 1970):");
             Serial.println("Example: 1733673600 = 2024-12-08 12:00:00 UTC");
             
@@ -1220,12 +1167,15 @@ void loop() {
             unsigned long timestamp = input.toInt();
             
             if (timestamp > 0) {
-                Serial.printf("Setting RTC to: %lu\n", timestamp);
-                rtc.setTime((time_t)timestamp);
+                Serial.printf("Setting time to: %lu\n", timestamp);
+                
+                // Set internal RTC using settimeofday
+                struct timeval tv = { .tv_sec = (time_t)timestamp, .tv_usec = 0 };
+                settimeofday(&tv, nullptr);
                 delay(100);
                 
                 // Verify
-                time_t now = rtc.getTime();
+                time_t now = time(nullptr);
                 Serial.printf("RTC now reads: %lu\n", (unsigned long)now);
                 struct tm* timeinfo = gmtime(&now);
                 Serial.printf("  UTC: %04d-%02d-%02d %02d:%02d:%02d\n",

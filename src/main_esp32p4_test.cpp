@@ -923,15 +923,25 @@ void drawTTFTest() {
 void setup() {
     Serial.begin(115200);
     
-    // Wait for serial (with timeout)
-    uint32_t start = millis();
-    while (!Serial && (millis() - start < 5000)) {
-        delay(100);
-    }
+    // Check if we woke from deep sleep FIRST (before any delays)
+    esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+    bool wokeFromSleep = (wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED);
     
-    Serial.println("\n\n========================================");
-    Serial.println("EL133UF1 ESP32-P4 Port Test");
-    Serial.println("========================================\n");
+    if (wokeFromSleep) {
+        // Quick boot after deep sleep - skip serial wait
+        delay(100);  // Brief delay for serial to init
+        Serial.println("\n=== Woke from deep sleep ===");
+        Serial.printf("Boot count: %u, Wake cause: %d\n", sleepBootCount, wakeCause);
+    } else {
+        // Cold boot - wait for serial
+        uint32_t start = millis();
+        while (!Serial && (millis() - start < 3000)) {
+            delay(100);
+        }
+        Serial.println("\n\n========================================");
+        Serial.println("EL133UF1 ESP32-P4 Port Test");
+        Serial.println("========================================\n");
+    }
     
     // Print platform info
     hal_print_info();
@@ -1000,17 +1010,30 @@ void setup() {
 #endif
     Serial.println("  Sleep:   'z'=status, '1'=10s, '2'=30s, '3'=60s, '5'=5min deep sleep");
     
-    // Check internal RTC time and auto-sync if needed
-    Serial.println("\n--- Time Check ---");
+    // Check internal RTC time
     time_t now = time(nullptr);
     bool timeValid = (now > 1577836800);  // After Jan 1, 2020
     
+    if (wokeFromSleep && timeValid) {
+        // Fast path after deep sleep - time already valid, skip WiFi/NTP
+        struct tm* timeinfo = gmtime(&now);
+        Serial.printf("Time: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                      timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
+                      timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+#if WIFI_ENABLED
+        wifiLoadCredentials();  // Still load credentials for later use
+#endif
+        Serial.println("Ready! Enter command...\n");
+        return;  // Skip WiFi auto-connect and NTP sync
+    }
+    
+    // Cold boot path - full initialization
+    Serial.println("\n--- Time Check ---");
     if (timeValid) {
         struct tm* timeinfo = gmtime(&now);
         Serial.printf("Current time: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
                       timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
                       timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-        Serial.printf("Deep sleep boot count: %u\n", sleepBootCount);
     } else {
         Serial.println("Time not set - need NTP sync");
     }
@@ -1059,7 +1082,6 @@ void setup() {
                     Serial.printf("Time set: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
                                   timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
                                   timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-                    timeValid = true;
                 } else {
                     Serial.println(" FAILED!");
                 }

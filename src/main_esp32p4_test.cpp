@@ -43,6 +43,7 @@
 // WiFi support for ESP32-P4 (via ESP32-C6 companion chip)
 #if !defined(DISABLE_WIFI) || defined(ENABLE_WIFI_TEST)
 #include <WiFi.h>
+#include <Preferences.h>
 #define WIFI_ENABLED 1
 #else
 #define WIFI_ENABLED 0
@@ -145,9 +146,45 @@ EL133UF1_TTF ttf;
 // ============================================================================
 
 #if WIFI_ENABLED
-// WiFi credentials - set via serial or compile-time
+// WiFi credentials - stored in NVS (persistent)
 static char wifiSSID[33] = "";
 static char wifiPSK[65] = "";
+static Preferences wifiPrefs;
+
+// Load WiFi credentials from NVS
+void wifiLoadCredentials() {
+    wifiPrefs.begin("wifi", true);  // Read-only
+    String ssid = wifiPrefs.getString("ssid", "");
+    String psk = wifiPrefs.getString("psk", "");
+    wifiPrefs.end();
+    
+    if (ssid.length() > 0) {
+        strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+        Serial.printf("Loaded WiFi credentials for: %s\n", wifiSSID);
+    } else {
+        Serial.println("No saved WiFi credentials");
+    }
+}
+
+// Save WiFi credentials to NVS
+void wifiSaveCredentials() {
+    wifiPrefs.begin("wifi", false);  // Read-write
+    wifiPrefs.putString("ssid", wifiSSID);
+    wifiPrefs.putString("psk", wifiPSK);
+    wifiPrefs.end();
+    Serial.println("WiFi credentials saved to NVS");
+}
+
+// Clear WiFi credentials from NVS
+void wifiClearCredentials() {
+    wifiPrefs.begin("wifi", false);
+    wifiPrefs.clear();
+    wifiPrefs.end();
+    wifiSSID[0] = '\0';
+    wifiPSK[0] = '\0';
+    Serial.println("WiFi credentials cleared from NVS");
+}
 
 void wifiScan() {
     Serial.println("\n=== WiFi Scan ===");
@@ -251,7 +288,7 @@ void wifiStatus() {
 
 void wifiSetCredentials() {
     Serial.println("\n=== Set WiFi Credentials ===");
-    Serial.println("Enter SSID:");
+    Serial.println("Enter SSID (or 'clear' to delete saved credentials):");
     
     // Wait for input
     while (!Serial.available()) delay(10);
@@ -262,6 +299,11 @@ void wifiSetCredentials() {
     
     if (ssid.length() == 0) {
         Serial.println("Cancelled.");
+        return;
+    }
+    
+    if (ssid == "clear") {
+        wifiClearCredentials();
         return;
     }
     
@@ -277,6 +319,10 @@ void wifiSetCredentials() {
     
     strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
     Serial.println("Password set.");
+    
+    // Save to NVS for persistence across reboots
+    wifiSaveCredentials();
+    
     Serial.println("============================\n");
     Serial.println("Use 'w' to connect with these credentials.");
 }
@@ -961,12 +1007,21 @@ void setup() {
     Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=test, 'U'=unmount, 'D'=diag, 'P'=power cycle, 'O/o'=pwr on/off");
 #endif
     
-    // Initialize WiFi (just check status, don't connect yet)
+    // Initialize WiFi - load saved credentials and optionally auto-connect
 #if WIFI_ENABLED
     Serial.println("\n--- WiFi Status ---");
     Serial.printf("WiFi library available: YES\n");
     Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
-    Serial.println("WiFi not connected (use 'W' to set credentials, 'w' to connect)");
+    
+    // Load saved credentials from NVS
+    wifiLoadCredentials();
+    
+    if (strlen(wifiSSID) > 0) {
+        Serial.printf("Saved network: %s\n", wifiSSID);
+        Serial.println("Use 'w' to connect, 'W' to change credentials");
+    } else {
+        Serial.println("No saved credentials. Use 'W' to set credentials.");
+    }
 #else
     Serial.println("\n--- WiFi Status ---");
     Serial.println("WiFi: DISABLED (DISABLE_WIFI defined)");

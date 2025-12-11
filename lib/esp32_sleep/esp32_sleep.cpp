@@ -252,8 +252,42 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
     if (_rtc_present && _rtc_int_pin >= 0 && is_valid_wake_gpio(_rtc_int_pin)) {
         Serial.printf("[ESP32_SLEEP] Using DS3231 alarm + GPIO%d for wake\n", _rtc_int_pin);
         
-        // Clear any existing alarm and set new one
+        // Configure INT pin as input with pull-up
+        pinMode(_rtc_int_pin, INPUT_PULLUP);
+        
+        // Clear any existing alarm flags (this releases the INT pin)
         rtc.clearAlarm1();
+        delay(10);  // Give time for INT pin to go HIGH
+        
+        // Verify INT pin is HIGH before proceeding
+        int pin_state = digitalRead(_rtc_int_pin);
+        Serial.printf("[ESP32_SLEEP] GPIO%d state after clearing alarms: %s\n", 
+                      _rtc_int_pin, pin_state ? "HIGH" : "LOW");
+        
+        if (pin_state == LOW) {
+            Serial.println("[ESP32_SLEEP] WARNING: INT pin still LOW! Trying to release...");
+            // Try disabling interrupt and clearing alarm again
+            rtc.enableAlarm1Interrupt(false);  // Disable interrupt
+            rtc.clearAlarm1();                  // Clear alarm flag
+            delay(50);
+            pin_state = digitalRead(_rtc_int_pin);
+            Serial.printf("[ESP32_SLEEP] GPIO%d state after reset: %s\n", 
+                          _rtc_int_pin, pin_state ? "HIGH" : "LOW");
+            
+            if (pin_state == LOW) {
+                Serial.println("[ESP32_SLEEP] ERROR: Cannot release INT pin, using timer fallback");
+                esp_sleep_enable_timer_wakeup((uint64_t)delay_ms * 1000ULL);
+                timer_enabled = true;
+                // Skip GPIO wake setup - go directly to sleep
+                Serial.printf("[ESP32_SLEEP] Boot count: %lu, total uptime: %lu s\n", 
+                              rtc_data.boot_count, rtc_data.uptime_seconds);
+                Serial.flush();
+                delay(10);
+                esp_deep_sleep_start();
+            }
+        }
+        
+        // Set new alarm
         rtc.setAlarm1(delay_ms);
         rtc.enableAlarm1Interrupt(true);
         

@@ -4,7 +4,6 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include "driver/i2c.h"
 
 // Minimal ES8311 bring-up helper (based on Espressif esp-adf register sequences).
 // Notes:
@@ -29,14 +28,6 @@ public:
   };
 
   bool begin(TwoWire& wire, uint8_t i2c_addr_7bit, const Pins& pins, const Clocking& clk);
-  // ESP-IDF style I2C init + register IO (matches known-good esp-idf example style)
-  bool beginIdfI2C(i2c_port_t port,
-                   int sda_gpio,
-                   int scl_gpio,
-                   uint32_t clk_hz,
-                   uint8_t i2c_addr_7bit,
-                   const Pins& pins,
-                   const Clocking& clk);
 
   bool probe(uint8_t* id1, uint8_t* id2, uint8_t* ver);
 
@@ -50,8 +41,6 @@ public:
 
 private:
   TwoWire* wire_ = nullptr;
-  bool using_idf_i2c_ = false;
-  i2c_port_t i2c_port_ = I2C_NUM_0;
   uint8_t addr7_ = 0x18;
   Pins pins_{};
   Clocking clk_{};

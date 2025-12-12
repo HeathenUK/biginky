@@ -489,10 +489,65 @@ static void sleepNowSeconds(uint32_t seconds) {
     esp_deep_sleep_start();
 }
 
+#if WIFI_ENABLED
+static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
+    time_t now = time(nullptr);
+    if (now > 1577836800) {  // 2020-01-01
+        return true;
+    }
+
+    // Load creds (if any) and try NTP
+    wifiLoadCredentials();
+    if (strlen(wifiSSID) == 0) {
+        Serial.println("Time invalid and no WiFi credentials saved; cannot NTP sync.");
+        return false;
+    }
+
+    Serial.printf("Time invalid; syncing NTP via WiFi SSID '%s'...\n", wifiSSID);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(wifiSSID, wifiPSK);
+
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
+        delay(250);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi connect failed; cannot NTP sync.");
+        return false;
+    }
+
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+
+    start = millis();
+    while ((millis() - start) < timeout_ms) {
+        now = time(nullptr);
+        if (now > 1577836800) {
+            struct tm tm_utc;
+            gmtime_r(&now, &tm_utc);
+            char buf[32];
+            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+            Serial.printf("NTP sync OK: %s\n", buf);
+            return true;
+        }
+        delay(250);
+    }
+
+    Serial.println("NTP sync timed out; continuing with invalid time.");
+    return false;
+}
+#else
+static bool ensureTimeValid(uint32_t timeout_ms = 0) {
+    (void)timeout_ms;
+    return (time(nullptr) > 1577836800);
+}
+#endif
+
 static void auto_cycle_task(void* arg) {
     (void)arg;
     g_cycle_count++;
     Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
+
+    (void)ensureTimeValid();
 
     uint32_t sd_ms = 0, dec_ms = 0;
 #if SDMMC_ENABLED

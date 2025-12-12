@@ -1913,13 +1913,19 @@ void setup() {
     if (kAutoCycleEnabled) {
         bool shouldRun = true;
         if (!wokeFromSleep) {
-            Serial.printf("\nAuto-cycle starts in %lu ms (press any key to cancel)...\n", (unsigned long)kCycleSerialEscapeMs);
+            // Drain any buffered bytes (some terminals send a newline on connect)
+            while (Serial.available()) {
+                (void)Serial.read();
+            }
+            Serial.printf("\nAuto-cycle starts in %lu ms (press '!' to cancel)...\n", (unsigned long)kCycleSerialEscapeMs);
             uint32_t startWait = millis();
             while (millis() - startWait < kCycleSerialEscapeMs) {
                 if (Serial.available()) {
-                    (void)Serial.read();
-                    shouldRun = false;
-                    break;
+                    char ch = (char)Serial.read();
+                    if (ch == '!') {
+                        shouldRun = false;
+                        break;
+                    }
                 }
                 delay(20);
             }
@@ -1971,10 +1977,13 @@ void setup() {
             Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
 
             sleepNowSeconds(kCycleSleepSeconds);
+        } else {
+            Serial.println("Auto-cycle cancelled -> staying in interactive mode.");
         }
     }
 
-    if (!wokeFromSleep) {
+    // Keep legacy test-pattern behavior only when auto-cycle is disabled.
+    if (!wokeFromSleep && !kAutoCycleEnabled) {
         // Cold boot only: draw test pattern and update display
         Serial.printf("Display buffer at: %p\n", display.getBuffer());
         

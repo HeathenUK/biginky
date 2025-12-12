@@ -191,6 +191,29 @@ static i2s_chan_handle_t g_i2s_tx = nullptr;
 static TaskHandle_t g_audio_task = nullptr;
 static volatile bool g_audio_running = false;
 static int g_audio_volume_pct = 40;
+static bool g_codec_ready = false;
+
+static TwoWire g_codec_wire0(0);
+static TwoWire g_codec_wire1(1);
+static TwoWire* g_codec_wire = nullptr;
+
+static bool i2c_ping(TwoWire& w, uint8_t addr7) {
+    w.beginTransmission(addr7);
+    return (w.endTransmission() == 0);
+}
+
+static void i2c_scan(TwoWire& w) {
+    int found = 0;
+    for (uint8_t a = 0x03; a < 0x78; a++) {
+        if (i2c_ping(w, a)) {
+            Serial.printf("  - found device at 0x%02X\n", a);
+            found++;
+        }
+    }
+    if (found == 0) {
+        Serial.println("  (no devices found)");
+    }
+}
 
 static bool audio_i2s_init(uint32_t sample_rate_hz) {
     if (g_i2s_tx != nullptr) {
@@ -279,8 +302,37 @@ static bool audio_start() {
     const uint32_t sample_rate = 44100;
     const int bits = 16;
 
+    if (g_audio_running) {
+        Serial.println("Audio: already running");
+        return true;
+    }
+
     // I2C setup for codec control
-    Wire.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000);
+    // Use dedicated TwoWire instances and try both I2C controllers.
+    g_codec_ready = false;
+    g_codec_wire = nullptr;
+
+    g_codec_wire0.end();
+    delay(5);
+    bool ok0 = g_codec_wire0.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000);
+    Serial.printf("I2C0 begin(SDA=%d SCL=%d): %s\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, ok0 ? "OK" : "FAIL");
+
+    g_codec_wire1.end();
+    delay(5);
+    bool ok1 = g_codec_wire1.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000);
+    Serial.printf("I2C1 begin(SDA=%d SCL=%d): %s\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, ok1 ? "OK" : "FAIL");
+
+    if (ok0 && i2c_ping(g_codec_wire0, PIN_CODEC_I2C_ADDR)) {
+        g_codec_wire = &g_codec_wire0;
+        Serial.printf("I2C: codec ACK on I2C0 at 0x%02X\n", PIN_CODEC_I2C_ADDR);
+    } else if (ok1 && i2c_ping(g_codec_wire1, PIN_CODEC_I2C_ADDR)) {
+        g_codec_wire = &g_codec_wire1;
+        Serial.printf("I2C: codec ACK on I2C1 at 0x%02X\n", PIN_CODEC_I2C_ADDR);
+    } else {
+        Serial.printf("I2C: no ACK at 0x%02X on either controller.\n", PIN_CODEC_I2C_ADDR);
+        Serial.println("Tip: run 'K' to scan the bus for devices and confirm SDA/SCL.");
+        return false;
+    }
 
     ES8311Simple::Pins pins;
     pins.pa_enable_gpio = PIN_CODEC_PA_EN;
@@ -295,10 +347,11 @@ static bool audio_start() {
     clk.no_dac_ref = false;
     clk.mclk_div = 256;
 
-    if (!g_codec.begin(Wire, PIN_CODEC_I2C_ADDR, pins, clk)) {
+    if (!g_codec.begin(*g_codec_wire, PIN_CODEC_I2C_ADDR, pins, clk)) {
         Serial.println("ES8311: begin/init failed (check I2C pins/address).");
         return false;
     }
+    g_codec_ready = true;
 
     uint8_t id1 = 0, id2 = 0, ver = 0;
     if (g_codec.probe(&id1, &id2, &ver)) {
@@ -324,10 +377,8 @@ static bool audio_start() {
         return false;
     }
 
-    if (!g_audio_running) {
-        g_audio_running = true;
-        xTaskCreatePinnedToCore(audio_task, "audio_tone", 4096, nullptr, 5, &g_audio_task, 0);
-    }
+    g_audio_running = true;
+    xTaskCreatePinnedToCore(audio_task, "audio_tone", 4096, nullptr, 5, &g_audio_task, 0);
 
     Serial.println("Audio: started 440Hz sine tone");
     return true;
@@ -341,7 +392,10 @@ static void audio_stop() {
         (void)i2s_del_channel(g_i2s_tx);
         g_i2s_tx = nullptr;
     }
-    g_codec.stopAll();
+    if (g_codec_ready) {
+        (void)g_codec.stopAll();
+        g_codec_ready = false;
+    }
     Serial.println("Audio: stopped");
 }
 
@@ -1611,7 +1665,7 @@ void setup() {
 
     Serial.println("\nCommands:");
     Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
-    Serial.println("  Audio:   'A'=start 440Hz tone, 'a'=stop, '+'/'-'=volume");
+    Serial.println("  Audio:   'A'=start 440Hz tone, 'a'=stop, '+'/'-'=volume, 'K'=I2C scan");
     Serial.println("  Time:    'r'=show time, 's'=set time, 'n'=NTP sync (after WiFi)");
     Serial.println("  System:  'i'=info");
 #if WIFI_ENABLED
@@ -1726,6 +1780,25 @@ void loop() {
             Serial.printf("I2S pins: MCLK=%d BCLK=%d LRCK=%d DOUT=%d DIN=%d PA_EN=%d\n",
                           PIN_CODEC_MCLK, PIN_CODEC_BCLK, PIN_CODEC_LRCK, PIN_CODEC_DOUT, PIN_CODEC_DIN, PIN_CODEC_PA_EN);
             audio_start();
+        }
+        else if (c == 'K') {
+            Serial.println("\n--- I2C Scan (codec pins) ---");
+            Serial.printf("Using SDA=%d SCL=%d, scanning I2C0...\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL);
+            g_codec_wire0.end();
+            delay(5);
+            if (g_codec_wire0.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000)) {
+                i2c_scan(g_codec_wire0);
+            } else {
+                Serial.println("I2C0 begin failed");
+            }
+            Serial.println("Scanning I2C1...");
+            g_codec_wire1.end();
+            delay(5);
+            if (g_codec_wire1.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000)) {
+                i2c_scan(g_codec_wire1);
+            } else {
+                Serial.println("I2C1 begin failed");
+            }
         }
         else if (c == 'a') {
             Serial.println("\n--- Audio Tone Stop ---");

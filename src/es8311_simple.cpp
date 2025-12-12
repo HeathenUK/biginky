@@ -200,22 +200,51 @@ bool ES8311Simple::setDacVolumePercent(int percent_0_100) {
   return setDacVolumeReg(reg);
 }
 
+bool ES8311Simple::dumpRegisters(uint8_t start_reg, uint8_t end_reg) {
+  if (start_reg > end_reg) return false;
+  for (uint16_t r = start_reg; r <= end_reg; r++) {
+    uint8_t v = 0;
+    if (!readReg((uint8_t)r, v)) {
+      Serial.printf("ES8311: dump failed at reg 0x%02X\n", (unsigned)r);
+      return false;
+    }
+    Serial.printf("ES8311 reg[0x%02X] = 0x%02X\n", (unsigned)r, (unsigned)v);
+  }
+  return true;
+}
+
 bool ES8311Simple::writeReg(uint8_t reg, uint8_t val) {
   if (!wire_) return false;
+  if (trace_) {
+    Serial.printf("ES8311 W reg[0x%02X] <= 0x%02X\n", (unsigned)reg, (unsigned)val);
+  }
   wire_->beginTransmission(addr7_);
   wire_->write(reg);
   wire_->write(val);
-  return wire_->endTransmission() == 0;
+  int err = wire_->endTransmission();
+  if (trace_ && err != 0) {
+    Serial.printf("ES8311 W reg[0x%02X] error=%d\n", (unsigned)reg, err);
+  }
+  return err == 0;
 }
 
 bool ES8311Simple::readReg(uint8_t reg, uint8_t& val) {
   if (!wire_) return false;
   wire_->beginTransmission(addr7_);
   wire_->write(reg);
-  if (wire_->endTransmission(false) != 0) return false;
+  int err = wire_->endTransmission(false);
+  if (err != 0) {
+    if (trace_) {
+      Serial.printf("ES8311 R reg[0x%02X] addr phase error=%d\n", (unsigned)reg, err);
+    }
+    return false;
+  }
   int n = wire_->requestFrom((int)addr7_, 1);
   if (n != 1) return false;
   val = (uint8_t)wire_->read();
+  if (trace_) {
+    Serial.printf("ES8311 R reg[0x%02X] => 0x%02X\n", (unsigned)reg, (unsigned)val);
+  }
   return true;
 }
 

@@ -39,11 +39,16 @@ public:
   bool setDacVolumeReg(uint8_t reg);           // 0x00..0xFF
   bool setDacVolumePercent(int percent_0_100); // convenience mapping
 
+  // Debug helpers to compare against known-good bring-up sequences
+  void setTrace(bool enable) { trace_ = enable; }
+  bool dumpRegisters(uint8_t start_reg = 0x00, uint8_t end_reg = 0x45);
+
 private:
   TwoWire* wire_ = nullptr;
   uint8_t addr7_ = 0x18;
   Pins pins_{};
   Clocking clk_{};
+  bool trace_ = false;
 
   bool writeReg(uint8_t reg, uint8_t val);
   bool readReg(uint8_t reg, uint8_t& val);

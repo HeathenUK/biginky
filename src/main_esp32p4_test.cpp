@@ -355,6 +355,7 @@ static bool audio_start() {
         return false;
     }
     g_codec_ready = true;
+    g_codec.setTrace(true);
 
     uint8_t id1 = 0, id2 = 0, ver = 0;
     if (g_codec.probe(&id1, &id2, &ver)) {
@@ -379,6 +380,9 @@ static bool audio_start() {
         Serial.println("ES8311: start DAC failed");
         return false;
     }
+
+    Serial.println("ES8311: register dump 0x00..0x45 (post-init)");
+    (void)g_codec.dumpRegisters(0x00, 0x45);
 
     g_audio_running = true;
     xTaskCreatePinnedToCore(audio_task, "audio_tone", 4096, nullptr, 5, &g_audio_task, 0);
@@ -1672,7 +1676,7 @@ void setup() {
 
     Serial.println("\nCommands:");
     Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
-    Serial.println("  Audio:   'A'=start 440Hz tone, 'a'=stop, '+'/'-'=volume, 'K'=I2C scan");
+    Serial.println("  Audio:   'A'=start 440Hz tone (logs codec regs), 'a'=stop, '+'/'-'=volume, 'K'=I2C scan");
     Serial.println("  Time:    'r'=show time, 's'=set time, 'n'=NTP sync (after WiFi)");
     Serial.println("  System:  'i'=info");
 #if WIFI_ENABLED

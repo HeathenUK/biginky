@@ -37,6 +37,7 @@
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_BMP.h"
+#include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
 #include "fonts/opensans.h"
 #include "es8311_simple.h"
@@ -173,6 +174,7 @@ EL133UF1_TTF ttf;
 
 // BMP image loader
 EL133UF1_BMP bmpLoader;
+EL133UF1_PNG pngLoader;
 
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
@@ -1336,6 +1338,203 @@ void bmpListFiles(const char* dirname = "/") {
     Serial.println("=====================================\n");
 }
 
+// Count PNG files in a directory using FatFs (returns count, stores paths in array if provided)
+int pngCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0) {
+    String fatfsPath = "0:";
+    if (strcmp(dirname, "/") != 0) {
+        fatfsPath += dirname;
+    }
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, fatfsPath.c_str());
+    if (res != FR_OK) {
+        res = f_opendir(&dir, dirname);
+        if (res != FR_OK) {
+            return 0;
+        }
+    }
+
+    int count = 0;
+    while (true) {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK || fno.fname[0] == 0) break;
+        if (fno.fattrib & AM_DIR) continue;
+
+        String name = String(fno.fname);
+        String lower = name;
+        lower.toLowerCase();
+        if (lower.endsWith(".png")) {
+            if (paths && count < maxCount) {
+                if (strcmp(dirname, "/") == 0) paths[count] = "/" + name;
+                else paths[count] = String(dirname) + "/" + name;
+            }
+            count++;
+        }
+    }
+    f_closedir(&dir);
+    return count;
+}
+
+// Load a random PNG from SD card and display it (timed)
+void pngLoadRandom(const char* dirname = "/") {
+    Serial.println("\n=== Loading Random PNG ===");
+    uint32_t totalStart = millis();
+
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted. Mounting...");
+        if (!sdInitDirect(false)) {
+            Serial.println("Failed to mount SD card!");
+            return;
+        }
+    }
+
+    int pngCount = pngCountFiles(dirname);
+    if (pngCount == 0) {
+        Serial.printf("No PNG files found in %s\n", dirname);
+        Serial.println("Tip: Place some .png files on the SD card root");
+        return;
+    }
+    Serial.printf("Found %d PNG files\n", pngCount);
+
+    int maxFiles = min(pngCount, 100);
+    String* paths = new String[maxFiles];
+    if (!paths) {
+        Serial.println("Failed to allocate path array!");
+        return;
+    }
+    pngCountFiles(dirname, paths, maxFiles);
+
+    srand(millis());
+    int randomIndex = rand() % maxFiles;
+    String selectedPath = paths[randomIndex];
+    delete[] paths;
+
+    Serial.printf("Selected: %s\n", selectedPath.c_str());
+    String fatfsPath = "0:" + selectedPath;
+
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("f_stat failed for %s: %d\n", fatfsPath.c_str(), res);
+        return;
+    }
+    size_t fileSize = fno.fsize;
+    Serial.printf("File size: %zu bytes (%.2f MB)\n", fileSize, fileSize / (1024.0 * 1024.0));
+
+    FIL pngFile;
+    res = f_open(&pngFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("f_open failed for %s: %d\n", fatfsPath.c_str(), res);
+        return;
+    }
+
+    uint32_t loadStart = millis();
+    uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!pngData) {
+        Serial.println("Failed to allocate PSRAM buffer for PNG!");
+        f_close(&pngFile);
+        return;
+    }
+
+    UINT bytesRead = 0;
+    res = f_read(&pngFile, pngData, fileSize, &bytesRead);
+    f_close(&pngFile);
+    if (res != FR_OK) {
+        Serial.printf("f_read failed: %d\n", res);
+        hal_psram_free(pngData);
+        return;
+    }
+
+    uint32_t loadTime = millis() - loadStart;
+    float loadTimeSec = loadTime / 1000.0f;
+    Serial.printf("SD read: %lu ms (%.2f MB/s)\n",
+                  loadTime,
+                  loadTimeSec > 0 ? (fileSize / 1024.0 / 1024.0) / loadTimeSec : 0.0f);
+    if (bytesRead != fileSize) {
+        Serial.printf("Warning: Only read %u of %u bytes\n", (unsigned)bytesRead, (unsigned)fileSize);
+    }
+
+    Serial.printf("PNG dithering: %s\n", pngLoader.getDithering() ? "ON" : "off");
+    Serial.println("Acceleration: row-wise mapping, PPA rotation (in display.update())");
+
+    uint32_t drawStart = millis();
+    display.clear(EL133UF1_WHITE);
+    PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
+    uint32_t drawTime = millis() - drawStart;
+
+    hal_psram_free(pngData);
+
+    if (pres != PNG_OK) {
+        Serial.printf("PNG draw error: %s\n", pngLoader.getErrorString(pres));
+        return;
+    }
+    Serial.printf("PNG decode+draw: %lu ms\n", drawTime);
+
+    Serial.println("Updating display (20-30s for e-ink refresh)...");
+    uint32_t refreshStart = millis();
+    display.update();
+    uint32_t refreshTime = millis() - refreshStart;
+    Serial.printf("Display refresh: %lu ms\n", refreshTime);
+
+    Serial.printf("Total time: %lu ms (%.1f s)\n",
+                  millis() - totalStart, (millis() - totalStart) / 1000.0);
+    Serial.println("Done!");
+}
+
+// List all PNG files on SD card using FatFs native functions
+void pngListFiles(const char* dirname = "/") {
+    Serial.println("\n=== PNG Files on SD Card (FatFs) ===");
+
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted!");
+        return;
+    }
+
+    String fatfsPath = "0:";
+    if (strcmp(dirname, "/") != 0) {
+        fatfsPath += dirname;
+    }
+
+    Serial.printf("Scanning: %s\n", fatfsPath.c_str());
+
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, fatfsPath.c_str());
+    if (res != FR_OK) {
+        Serial.printf("f_opendir failed: %d\n", res);
+        Serial.println("Trying path without drive prefix...");
+        res = f_opendir(&dir, dirname);
+        if (res != FR_OK) {
+            Serial.printf("Also failed: %d\n", res);
+            return;
+        }
+    }
+
+    int count = 0;
+    int totalFiles = 0;
+    while (true) {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK) {
+            Serial.printf("f_readdir error: %d\n", res);
+            break;
+        }
+        if (fno.fname[0] == 0) break;
+        if (fno.fattrib & AM_DIR) continue;
+
+        totalFiles++;
+        String name = String(fno.fname);
+        String lower = name;
+        lower.toLowerCase();
+        if (lower.endsWith(".png")) {
+            Serial.printf("  [PNG] %s (%.2f MB)\n", fno.fname, fno.fsize / (1024.0 * 1024.0));
+            count++;
+        }
+    }
+    f_closedir(&dir);
+    Serial.printf("\nTotal files: %d, PNG files: %d\n", totalFiles, count);
+    Serial.println("=====================================\n");
+}
+
 #endif // SDMMC_ENABLED
 
 void wifiVersionInfo() {
@@ -1554,6 +1753,8 @@ void setup() {
     // Initialize TTF renderer and BMP loader
     ttf.begin(&display);
     bmpLoader.begin(&display);
+    pngLoader.begin(&display);
+    pngLoader.setDithering(false);  // keep off for speed comparison baseline
     
     if (!wokeFromSleep) {
         // Cold boot only: draw test pattern and update display
@@ -1694,7 +1895,7 @@ void setup() {
     Serial.println("  WiFi:    'w'=connect, 'W'=set creds, 'q'=scan, 'd'=disconnect, 'x'=status");
 #endif
 #if SDMMC_ENABLED
-    Serial.println("  SD:      'M'/'m'=mount 4/1-bit, 'L'=list, 'I'=info, 'B'=rand BMP");
+    Serial.println("  SD:      'M'/'m'=mount 4/1-bit, 'L'=list, 'I'=info, 'B'=rand BMP, 'G'=rand PNG");
 #endif
     Serial.println();
 
@@ -1956,6 +2157,14 @@ void loop() {
         else if (c == 'b') {
             // List BMP files on SD card
             bmpListFiles("/");
+        }
+        else if (c == 'G') {
+            // Load and display a random PNG from SD card
+            pngLoadRandom("/");
+        }
+        else if (c == 'g') {
+            // List PNG files on SD card
+            pngListFiles("/");
         }
         else if (c == 'P') {
             sdPowerCycle();  // Power cycle the SD card

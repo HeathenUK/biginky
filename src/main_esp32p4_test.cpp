@@ -39,6 +39,7 @@
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_Color.h"
 #include "fonts/opensans.h"
+#include "es8311_simple.h"
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
 #include <time.h>
 #include <sys/time.h>
@@ -125,6 +126,40 @@
 #endif
 
 // ============================================================================
+// Audio codec (ES8311) pin definitions (Waveshare ESP32-P4-WIFI6)
+// ============================================================================
+// Override with build flags if your wiring differs.
+// ES8311 address is commonly 0x18 (7-bit). (0x30 is the 8-bit write address.)
+#ifndef PIN_CODEC_I2C_SDA
+#define PIN_CODEC_I2C_SDA  8
+#endif
+#ifndef PIN_CODEC_I2C_SCL
+#define PIN_CODEC_I2C_SCL  7
+#endif
+#ifndef PIN_CODEC_I2C_ADDR
+#define PIN_CODEC_I2C_ADDR 0x18
+#endif
+
+#ifndef PIN_CODEC_MCLK
+#define PIN_CODEC_MCLK  13
+#endif
+#ifndef PIN_CODEC_BCLK
+#define PIN_CODEC_BCLK  12   // SCLK (bit clock)
+#endif
+#ifndef PIN_CODEC_LRCK
+#define PIN_CODEC_LRCK  10   // LRCK / WS
+#endif
+#ifndef PIN_CODEC_DOUT
+#define PIN_CODEC_DOUT  9    // ESP32 -> codec SDIN (DSDIN)
+#endif
+#ifndef PIN_CODEC_DIN
+#define PIN_CODEC_DIN   11   // codec DOUT (ASDOUT) -> ESP32 (optional)
+#endif
+#ifndef PIN_CODEC_PA_EN
+#define PIN_CODEC_PA_EN 53   // PA_Ctrl (active high)
+#endif
+
+// ============================================================================
 // Global objects
 // ============================================================================
 
@@ -141,6 +176,174 @@ EL133UF1_BMP bmpLoader;
 
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
+
+// ============================================================================
+// Audio: ES8311 + I2S test tone
+// ============================================================================
+#include "driver/i2s_common.h"
+#include "driver/i2s_std.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <math.h>
+
+static ES8311Simple g_codec;
+static i2s_chan_handle_t g_i2s_tx = nullptr;
+static TaskHandle_t g_audio_task = nullptr;
+static volatile bool g_audio_running = false;
+static int g_audio_volume_pct = 40;
+
+static bool audio_i2s_init(uint32_t sample_rate_hz) {
+    if (g_i2s_tx != nullptr) {
+        return true;
+    }
+
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
+
+    i2s_chan_handle_t tx_handle = nullptr;
+    esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle, nullptr /* rx */);
+    if (err != ESP_OK) {
+        Serial.printf("I2S: i2s_new_channel failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate_hz),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = (gpio_num_t)PIN_CODEC_MCLK,
+            .bclk = (gpio_num_t)PIN_CODEC_BCLK,
+            .ws   = (gpio_num_t)PIN_CODEC_LRCK,
+            .dout = (gpio_num_t)PIN_CODEC_DOUT,
+            .din  = (gpio_num_t)PIN_CODEC_DIN,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv   = false,
+            },
+        },
+    };
+    // Ensure MCLK is generated at 256 * Fs (matches ES8311 mclk_div=256)
+    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+
+    err = i2s_channel_init_std_mode(tx_handle, &std_cfg);
+    if (err != ESP_OK) {
+        Serial.printf("I2S: init std mode failed: %s\n", esp_err_to_name(err));
+        i2s_del_channel(tx_handle);
+        return false;
+    }
+
+    err = i2s_channel_enable(tx_handle);
+    if (err != ESP_OK) {
+        Serial.printf("I2S: enable failed: %s\n", esp_err_to_name(err));
+        i2s_del_channel(tx_handle);
+        return false;
+    }
+
+    g_i2s_tx = tx_handle;
+    return true;
+}
+
+static void audio_task(void* arg) {
+    (void)arg;
+    const uint32_t sample_rate = 44100;
+    const float freq = 440.0f;
+    const int16_t amp = 12000;
+    const size_t frames = 256; // stereo frames
+    int16_t buf[frames * 2];
+
+    float phase = 0.0f;
+    const float two_pi = 2.0f * 3.14159265358979323846f;
+    const float phase_inc = two_pi * freq / (float)sample_rate;
+
+    while (g_audio_running) {
+        for (size_t i = 0; i < frames; i++) {
+            float s = sinf(phase);
+            phase += phase_inc;
+            if (phase >= two_pi) phase -= two_pi;
+            int16_t v = (int16_t)(s * amp);
+            buf[i * 2 + 0] = v; // L
+            buf[i * 2 + 1] = v; // R
+        }
+        size_t bytes_written = 0;
+        esp_err_t err = i2s_channel_write(g_i2s_tx, buf, sizeof(buf), &bytes_written, portMAX_DELAY);
+        if (err != ESP_OK) {
+            Serial.printf("I2S: write failed: %s\n", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    vTaskDelete(nullptr);
+}
+
+static bool audio_start() {
+    const uint32_t sample_rate = 44100;
+    const int bits = 16;
+
+    // I2C setup for codec control
+    Wire.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000);
+
+    ES8311Simple::Pins pins;
+    pins.pa_enable_gpio = PIN_CODEC_PA_EN;
+    pins.pa_active_high = true;
+
+    ES8311Simple::Clocking clk;
+    clk.master_mode = false; // ESP32 provides clocks
+    clk.use_mclk = true;
+    clk.invert_mclk = false;
+    clk.invert_sclk = false;
+    clk.digital_mic = false;
+    clk.no_dac_ref = false;
+    clk.mclk_div = 256;
+
+    if (!g_codec.begin(Wire, PIN_CODEC_I2C_ADDR, pins, clk)) {
+        Serial.println("ES8311: begin/init failed (check I2C pins/address).");
+        return false;
+    }
+
+    uint8_t id1 = 0, id2 = 0, ver = 0;
+    if (g_codec.probe(&id1, &id2, &ver)) {
+        Serial.printf("ES8311: CHIP_ID=0x%02X 0x%02X  VER=0x%02X\n", id1, id2, ver);
+    } else {
+        Serial.println("ES8311: probe failed");
+    }
+
+    if (!audio_i2s_init(sample_rate)) {
+        Serial.println("Audio: I2S init failed");
+        return false;
+    }
+
+    if (!g_codec.configureI2S(sample_rate, bits)) {
+        Serial.println("ES8311: configure I2S failed (clocking mismatch?)");
+        return false;
+    }
+
+    (void)g_codec.setDacVolumePercent(g_audio_volume_pct);
+
+    if (!g_codec.startDac()) {
+        Serial.println("ES8311: start DAC failed");
+        return false;
+    }
+
+    if (!g_audio_running) {
+        g_audio_running = true;
+        xTaskCreatePinnedToCore(audio_task, "audio_tone", 4096, nullptr, 5, &g_audio_task, 0);
+    }
+
+    Serial.println("Audio: started 440Hz sine tone");
+    return true;
+}
+
+static void audio_stop() {
+    g_audio_running = false;
+    // task self-deletes
+    if (g_i2s_tx) {
+        (void)i2s_channel_disable(g_i2s_tx);
+        (void)i2s_del_channel(g_i2s_tx);
+        g_i2s_tx = nullptr;
+    }
+    g_codec.stopAll();
+    Serial.println("Audio: stopped");
+}
 
 // ============================================================================
 // WiFi Functions
@@ -1406,6 +1609,19 @@ void setup() {
     }
 #endif
 
+    Serial.println("\nCommands:");
+    Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
+    Serial.println("  Audio:   'A'=start 440Hz tone, 'a'=stop, '+'/'-'=volume");
+    Serial.println("  Time:    'r'=show time, 's'=set time, 'n'=NTP sync (after WiFi)");
+    Serial.println("  System:  'i'=info");
+#if WIFI_ENABLED
+    Serial.println("  WiFi:    'w'=connect, 'W'=set creds, 'q'=scan, 'd'=disconnect, 'x'=status");
+#endif
+#if SDMMC_ENABLED
+    Serial.println("  SD:      'M'/'m'=mount 4/1-bit, 'L'=list, 'I'=info, 'B'=rand BMP");
+#endif
+    Serial.println();
+
     Serial.println("\n========================================");
     Serial.println("Ready! Enter command...");
     Serial.println("========================================\n");
@@ -1503,6 +1719,29 @@ void loop() {
         else if (c == 'i' || c == 'I') {
             Serial.println("\n--- Platform Info ---");
             hal_print_info();
+        }
+        else if (c == 'A') {
+            Serial.println("\n--- Audio Tone Start ---");
+            Serial.printf("Codec I2C: SDA=%d SCL=%d addr=0x%02X\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, PIN_CODEC_I2C_ADDR);
+            Serial.printf("I2S pins: MCLK=%d BCLK=%d LRCK=%d DOUT=%d DIN=%d PA_EN=%d\n",
+                          PIN_CODEC_MCLK, PIN_CODEC_BCLK, PIN_CODEC_LRCK, PIN_CODEC_DOUT, PIN_CODEC_DIN, PIN_CODEC_PA_EN);
+            audio_start();
+        }
+        else if (c == 'a') {
+            Serial.println("\n--- Audio Tone Stop ---");
+            audio_stop();
+        }
+        else if (c == '+' || c == '=') {
+            g_audio_volume_pct += 5;
+            if (g_audio_volume_pct > 100) g_audio_volume_pct = 100;
+            Serial.printf("Audio volume: %d%%\n", g_audio_volume_pct);
+            (void)g_codec.setDacVolumePercent(g_audio_volume_pct);
+        }
+        else if (c == '-') {
+            g_audio_volume_pct -= 5;
+            if (g_audio_volume_pct < 0) g_audio_volume_pct = 0;
+            Serial.printf("Audio volume: %d%%\n", g_audio_volume_pct);
+            (void)g_codec.setDacVolumePercent(g_audio_volume_pct);
         }
         else if (c == 'r' || c == 'R') {
             Serial.println("\n--- Internal RTC Status ---");

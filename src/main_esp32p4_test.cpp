@@ -1447,6 +1447,10 @@ void drawTTFTest() {
 
 void setup() {
     Serial.begin(115200);
+
+    // Bring up PA enable early (matches known-good ESP-IDF example behavior)
+    pinMode(PIN_CODEC_PA_EN, OUTPUT);
+    digitalWrite(PIN_CODEC_PA_EN, HIGH);
     
     // Check if we woke from deep sleep FIRST (before any delays)
     esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();

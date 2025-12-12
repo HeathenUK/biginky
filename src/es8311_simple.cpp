@@ -438,7 +438,9 @@ bool ES8311Simple::configSampleRate(int sample_rate_hz) {
 void ES8311Simple::paSetup() {
   if (pins_.pa_enable_gpio < 0) return;
   pinMode(pins_.pa_enable_gpio, OUTPUT);
-  paSet(false);
+  // Match typical board bring-up: enable PA as early as possible.
+  // (Codec outputs are muted/quiet until configured anyway.)
+  paSet(true);
 }
 
 void ES8311Simple::paSet(bool enable) {

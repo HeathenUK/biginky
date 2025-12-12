@@ -4,6 +4,7 @@
  */
 
 #include "ModelsLabAI.h"
+#include "platform_hal.h"
 #include <WiFi.h>
 
 // ModelsLab API endpoint

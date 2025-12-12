@@ -16,17 +16,55 @@
 #include <Arduino.h>
 #include <SPI.h>
 
+// Check for PPA support (ESP32-P4)
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+#include "soc/soc_caps.h"
+#endif
+
 // Display resolution
 #define EL133UF1_WIDTH  1600
 #define EL133UF1_HEIGHT 1200
 
-// Color definitions (3-bit values)
+// Color definitions (3-bit values for e-ink)
 #define EL133UF1_BLACK   0
 #define EL133UF1_WHITE   1
 #define EL133UF1_YELLOW  2
 #define EL133UF1_RED     3
 #define EL133UF1_BLUE    5
 #define EL133UF1_GREEN   6
+
+// ============================================================================
+// Buffer format configuration
+// ============================================================================
+// On ESP32-P4 with PPA, use ARGB8888 for hardware-accelerated rotation
+// On other platforms, use L8 (1 byte per pixel) for memory efficiency
+
+#if defined(SOC_PPA_SUPPORTED) && SOC_PPA_SUPPORTED
+    #ifndef EL133UF1_USE_ARGB8888
+    #define EL133UF1_USE_ARGB8888 1
+    #endif
+#else
+    #ifndef EL133UF1_USE_ARGB8888
+    #define EL133UF1_USE_ARGB8888 0
+    #endif
+#endif
+
+// ARGB8888 color values (for PPA-accelerated mode)
+// Format: 0xAARRGGBB - Alpha channel ignored, RGB mapped to 3-bit e-ink color
+#if EL133UF1_USE_ARGB8888
+#define EL133UF1_ARGB_BLACK   0xFF000000
+#define EL133UF1_ARGB_WHITE   0xFFFFFFFF
+#define EL133UF1_ARGB_YELLOW  0xFFFFFF00
+#define EL133UF1_ARGB_RED     0xFFFF0000
+#define EL133UF1_ARGB_BLUE    0xFF0000FF
+#define EL133UF1_ARGB_GREEN   0xFF00FF00
+#endif
+
+// Buffer sizes
+// L8 mode: 1 byte per pixel = 1.92 MB
+// ARGB8888 mode: 4 bytes per pixel = 7.68 MB
+#define EL133UF1_L8_BUFFER_SIZE     (EL133UF1_WIDTH * EL133UF1_HEIGHT)
+#define EL133UF1_ARGB_BUFFER_SIZE   (EL133UF1_WIDTH * EL133UF1_HEIGHT * 4)
 
 // Chip select bit masks
 #define CS0_SEL      0x01
@@ -295,10 +333,48 @@ public:
      * 
      * If using unpacked mode: 1600x1200 pixels, 1 byte per pixel
      * If using packed mode: Two half buffers, packed nibbles
+     * If using ARGB8888 mode: 1600x1200 pixels, 4 bytes per pixel
      * 
      * @return uint8_t* Pointer to frame buffer (or left half if packed)
      */
     uint8_t* getBuffer() { return _buffer; }
+    
+#if EL133UF1_USE_ARGB8888
+    /**
+     * @brief Get pointer to ARGB8888 frame buffer
+     * @return uint32_t* Pointer to ARGB8888 buffer, or nullptr if not in ARGB mode
+     */
+    uint32_t* getBufferARGB() { return _bufferARGB; }
+    
+    /**
+     * @brief Check if using ARGB8888 buffer mode
+     * @return true if using ARGB8888 buffer (ESP32-P4 with PPA)
+     */
+    bool isARGBMode() const { return _argbMode; }
+    
+    /**
+     * @brief Set a pixel using ARGB8888 color value
+     * 
+     * @param x X coordinate
+     * @param y Y coordinate
+     * @param argb ARGB8888 color value (0xAARRGGBB)
+     */
+    void setPixelARGB(int16_t x, int16_t y, uint32_t argb);
+    
+    /**
+     * @brief Convert 3-bit e-ink color to ARGB8888
+     * @param color 3-bit color value (0-6)
+     * @return uint32_t ARGB8888 equivalent
+     */
+    static uint32_t colorToARGB(uint8_t color);
+    
+    /**
+     * @brief Convert ARGB8888 to 3-bit e-ink color
+     * @param argb ARGB8888 color value
+     * @return uint8_t 3-bit color value (0-6)
+     */
+    static uint8_t argbToColor(uint32_t argb);
+#endif
     
     /**
      * @brief Check if using packed buffer mode
@@ -316,7 +392,10 @@ public:
      * @return uint8_t* Pointer to row, or nullptr if invalid/packed mode
      */
     inline uint8_t* getRowPtr(int16_t y) {
-        // Disable direct row access when flipped (would need pixel reversal)
+        // Disable direct row access when flipped or in ARGB mode (different buffer layout)
+#if EL133UF1_USE_ARGB8888
+        if (_argbMode) return nullptr;  // Use getRowPtrARGB instead
+#endif
         if (_packedMode || _preRotatedMode || _hFlip || _buffer == nullptr) return nullptr;
         if (y < 0 || y >= EL133UF1_HEIGHT) return nullptr;
         int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
@@ -338,11 +417,31 @@ public:
      * @param count Number of pixels to write
      */
     inline void writeRowFast(int16_t x, int16_t y, const uint8_t* colors, int16_t count) {
-        if (_packedMode || _preRotatedMode || _buffer == nullptr) return;
+        if (_packedMode || _preRotatedMode) return;
         if (y < 0 || y >= EL133UF1_HEIGHT) return;
         if (x < 0) { colors -= x; count += x; x = 0; }
         if (x + count > EL133UF1_WIDTH) count = EL133UF1_WIDTH - x;
         if (count <= 0) return;
+        
+#if EL133UF1_USE_ARGB8888
+        if (_argbMode && _bufferARGB != nullptr) {
+            // ARGB mode: convert each color to ARGB32
+            int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
+            if (!_hFlip) {
+                uint32_t* dst = _bufferARGB + dstY * EL133UF1_WIDTH + x;
+                for (int16_t i = 0; i < count; i++) {
+                    dst[i] = colorToARGB(colors[i]);
+                }
+            } else {
+                uint32_t* dst = _bufferARGB + dstY * EL133UF1_WIDTH + (EL133UF1_WIDTH - 1 - x);
+                for (int16_t i = 0; i < count; i++) {
+                    *dst-- = colorToARGB(colors[i]);
+                }
+            }
+            return;
+        }
+#endif
+        if (_buffer == nullptr) return;
         
         if (!_hFlip && !_vFlip) {
             // Fast path: direct memcpy
@@ -372,7 +471,7 @@ public:
      * @param color Color value
      */
     inline void fillRowFast(int16_t x, int16_t y, int16_t count, uint8_t color) {
-        if (_packedMode || _preRotatedMode || _buffer == nullptr) return;
+        if (_packedMode || _preRotatedMode) return;
         if (y < 0 || y >= EL133UF1_HEIGHT) return;
         if (x < 0) { count += x; x = 0; }
         if (x + count > EL133UF1_WIDTH) count = EL133UF1_WIDTH - x;
@@ -382,6 +481,18 @@ public:
         int16_t dstY = _vFlip ? (EL133UF1_HEIGHT - 1 - y) : y;
         int16_t dstX = _hFlip ? (EL133UF1_WIDTH - x - count) : x;
         
+#if EL133UF1_USE_ARGB8888
+        if (_argbMode && _bufferARGB != nullptr) {
+            // ARGB mode: write 32-bit values
+            uint32_t argbColor = colorToARGB(color);
+            uint32_t* dst = _bufferARGB + dstY * EL133UF1_WIDTH + dstX;
+            for (int16_t i = 0; i < count; i++) {
+                dst[i] = argbColor;
+            }
+            return;
+        }
+#endif
+        if (_buffer == nullptr) return;
         memset(_buffer + dstY * EL133UF1_WIDTH + dstX, color & 0x07, count);
     }
     
@@ -444,10 +555,16 @@ private:
     bool _asyncInProgress;  // True if async update is running
     
     // Frame buffer(s)
-    // Unpacked mode: single 1.92MB buffer (requires PSRAM)
+    // Unpacked L8 mode: single 1.92MB buffer (requires PSRAM)
     // Packed mode: two 480KB buffers (works without PSRAM)
+    // ARGB8888 mode: single 7.68MB buffer (ESP32-P4 with PPA)
     uint8_t* _buffer;       // Main buffer (or left half in packed mode)
     uint8_t* _bufferRight;  // Right half (only used in packed mode)
+    
+#if EL133UF1_USE_ARGB8888
+    uint32_t* _bufferARGB;  // ARGB8888 buffer for PPA acceleration
+    bool _argbMode;         // True if using ARGB8888 buffer
+#endif
     
     /**
      * @brief Perform hardware reset

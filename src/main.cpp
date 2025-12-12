@@ -39,7 +39,13 @@
  * WiFi Configuration:
  *   On first boot (or press 'c' within 3 seconds), enter config mode
  *   to set WiFi credentials via serial. Credentials are stored in EEPROM.
+ * 
+ * NOTE: This file is for RP2350 (Pico) only. 
+ *       For ESP32-P4, see main_esp32p4_test.cpp
  */
+
+// Only compile this file for RP2350 builds
+#if defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350) || defined(TARGET_RP2350)
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -2373,3 +2379,5 @@ void drawDemoPattern() {
     
     Serial.println("Orientation test pattern drawn to buffer");
 }
+
+#endif // ARDUINO_ARCH_RP2040 || PICO_RP2350 || TARGET_RP2350

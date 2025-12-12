@@ -4,6 +4,7 @@
  */
 
 #include "OpenAIImage.h"
+#include "platform_hal.h"
 #include <WiFi.h>
 
 // OpenAI API endpoint

@@ -4,8 +4,23 @@
  */
 
 #include "EL133UF1.h"
+#include "platform_hal.h"
+
+// ESP32-specific includes
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+#include "esp_heap_caps.h"
+#endif
+
+// Image processing HAL (PPA acceleration on ESP32-P4)
+#if EL133UF1_USE_ARGB8888
+#include "image_hal.h"
+#endif
+
+// Platform-specific DMA includes
+#ifdef PLATFORM_RP2350
 #include "hardware/dma.h"
 #include "hardware/sync.h"
+#endif
 
 // Simple 8x8 bitmap font (ASCII 32-127)
 // Each character is 8 bytes, each byte is one row (MSB = leftmost pixel)
@@ -124,6 +139,10 @@ EL133UF1::EL133UF1(SPIClass* spi) :
     _asyncInProgress(false),
     _buffer(nullptr),
     _bufferRight(nullptr)
+#if EL133UF1_USE_ARGB8888
+    , _bufferARGB(nullptr)
+    , _argbMode(false)
+#endif
 {
 }
 
@@ -138,7 +157,7 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     _resetPin = resetPin;
     _busyPin = busyPin;
 
-    // Allocate frame buffer in PSRAM (1.92MB)
+    // Allocate frame buffer in PSRAM
     // Free old buffer if exists (prevents leak on repeated begin() calls)
     if (_buffer != nullptr) {
         Serial.printf("  Freeing old buffer at %p\n", _buffer);
@@ -149,31 +168,73 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
         free(_bufferRight);
         _bufferRight = nullptr;
     }
+#if EL133UF1_USE_ARGB8888
+    if (_bufferARGB != nullptr) {
+        hal_psram_free(_bufferARGB);
+        _bufferARGB = nullptr;
+    }
+#endif
     
-    Serial.printf("  Allocating %u bytes in PSRAM...\n", EL133UF1_WIDTH * EL133UF1_HEIGHT);
+#if EL133UF1_USE_ARGB8888
+    // ESP32-P4 with PPA: Use ARGB8888 buffer (7.68MB) for hardware-accelerated rotation
+    // PPA requires cache-line aligned buffers (64 bytes on ESP32-P4)
+    size_t argbBufSize = EL133UF1_ARGB_BUFFER_SIZE;
+    argbBufSize = (argbBufSize + 63) & ~63;  // Round up to cache line
+    Serial.printf("  Allocating ARGB8888 buffer (%u bytes, 64-byte aligned) in PSRAM...\n", argbBufSize);
     Serial.flush();
     
-    _buffer = (uint8_t*)pmalloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
-    _packedMode = false;
-    _bufferRight = nullptr;
+    _bufferARGB = (uint32_t*)heap_caps_aligned_alloc(64, argbBufSize, MALLOC_CAP_SPIRAM);
+    _argbMode = (_bufferARGB != nullptr);
     
-    if (_buffer == nullptr) {
-        Serial.println("  ERROR: PSRAM allocation failed!");
-        return false;
+    if (_bufferARGB != nullptr) {
+        Serial.printf("  ARGB8888 buffer allocated at %p (PPA acceleration enabled)\n", _bufferARGB);
+        // Also allocate L8 buffer for compatibility/fallback
+        _buffer = (uint8_t*)_bufferARGB;  // Point to same memory for getBuffer()
+        _packedMode = false;
+        _bufferRight = nullptr;
+        
+        // Clear to white
+        Serial.println("  Clearing ARGB buffer...");
+        uint32_t whiteARGB = EL133UF1_ARGB_WHITE;
+        for (size_t i = 0; i < EL133UF1_WIDTH * EL133UF1_HEIGHT; i++) {
+            _bufferARGB[i] = whiteARGB;
+        }
+        Serial.println("  ARGB buffer verified OK");
+    } else {
+        Serial.println("  ARGB8888 allocation failed, falling back to L8...");
+        _argbMode = false;
+        // Fall through to L8 allocation
     }
-    Serial.printf("  Buffer allocated at %p\n", _buffer);
-    Serial.flush();
     
-    // Clear to white and verify write
-    Serial.println("  Clearing buffer...");
-    memset(_buffer, EL133UF1_WHITE, EL133UF1_WIDTH * EL133UF1_HEIGHT);
-    
-    // Verify buffer is accessible
-    if (_buffer[0] != EL133UF1_WHITE || _buffer[1000000] != EL133UF1_WHITE) {
-        Serial.println("  ERROR: Buffer verification failed!");
-        return false;
+    if (!_argbMode)
+#endif
+    {
+        // Standard L8 buffer (1.92MB)
+        Serial.printf("  Allocating L8 buffer (%u bytes) in PSRAM...\n", EL133UF1_L8_BUFFER_SIZE);
+        Serial.flush();
+        
+        _buffer = (uint8_t*)hal_psram_malloc(EL133UF1_L8_BUFFER_SIZE);
+        _packedMode = false;
+        _bufferRight = nullptr;
+        
+        if (_buffer == nullptr) {
+            Serial.println("  ERROR: PSRAM allocation failed!");
+            return false;
+        }
+        Serial.printf("  L8 buffer allocated at %p\n", _buffer);
+        Serial.flush();
+        
+        // Clear to white and verify write
+        Serial.println("  Clearing buffer...");
+        memset(_buffer, EL133UF1_WHITE, EL133UF1_L8_BUFFER_SIZE);
+        
+        // Verify buffer is accessible
+        if (_buffer[0] != EL133UF1_WHITE || _buffer[1000000] != EL133UF1_WHITE) {
+            Serial.println("  ERROR: Buffer verification failed!");
+            return false;
+        }
+        Serial.println("  Buffer verified OK");
     }
-    Serial.println("  Buffer verified OK");
 
     // Configure GPIO pins
     Serial.println("  Configuring GPIO...");
@@ -303,8 +364,19 @@ void EL133UF1::_sendCommand(uint8_t cmd, uint8_t csSel, const uint8_t* data, siz
         for (size_t offset = 0; offset < len; offset += chunkSize) {
             size_t remaining = len - offset;
             size_t toSend = (remaining < chunkSize) ? remaining : chunkSize;
-            // Use transfer with nullptr for write-only
+            // Platform-specific SPI transfer (write-only)
+#if defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350)
+            // RP2040/RP2350: Use transfer with nullptr for write-only
             _spi->transfer(data + offset, nullptr, toSend);
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+            // ESP32: Use writeBytes for write-only bulk transfer
+            _spi->writeBytes(data + offset, toSend);
+#else
+            // Generic fallback: byte-by-byte transfer
+            for (size_t i = 0; i < toSend; i++) {
+                _spi->transfer(data[offset + i]);
+            }
+#endif
         }
         _spi->endTransaction();
     }
@@ -375,6 +447,29 @@ void EL133UF1::_initSequence() {
 }
 
 void EL133UF1::clear(uint8_t color) {
+#if EL133UF1_USE_ARGB8888
+    if (_argbMode && _bufferARGB != nullptr) {
+        // ARGB8888 mode: fill with ARGB color
+        uint32_t argbColor = colorToARGB(color);
+        uint32_t* ptr = _bufferARGB;
+        size_t count = EL133UF1_WIDTH * EL133UF1_HEIGHT;
+        
+        // Use 32-bit writes for efficiency
+        while (count >= 8) {
+            ptr[0] = argbColor; ptr[1] = argbColor;
+            ptr[2] = argbColor; ptr[3] = argbColor;
+            ptr[4] = argbColor; ptr[5] = argbColor;
+            ptr[6] = argbColor; ptr[7] = argbColor;
+            ptr += 8;
+            count -= 8;
+        }
+        while (count--) {
+            *ptr++ = argbColor;
+        }
+        return;
+    }
+#endif
+    
     if (_buffer == nullptr) return;
     
     uint8_t packedColor = ((color & 0x07) << 4) | (color & 0x07);
@@ -387,7 +482,7 @@ void EL133UF1::clear(uint8_t color) {
         }
     } else {
         // Unpacked mode: 1 byte per pixel
-        memset(_buffer, color & 0x07, EL133UF1_WIDTH * EL133UF1_HEIGHT);
+        memset(_buffer, color & 0x07, EL133UF1_L8_BUFFER_SIZE);
     }
 }
 
@@ -399,13 +494,13 @@ void EL133UF1::setPreRotatedMode(bool enable) {
     if (enable && !_packedMode) {
         // Switching to pre-rotated mode: reallocate buffers
         // Allocate new buffers first before freeing old one
-        uint8_t* newBuffer = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
-        uint8_t* newBufferRight = (uint8_t*)pmalloc(PACKED_HALF_SIZE);
+        uint8_t* newBuffer = (uint8_t*)hal_psram_malloc(PACKED_HALF_SIZE);
+        uint8_t* newBufferRight = (uint8_t*)hal_psram_malloc(PACKED_HALF_SIZE);
         
         if (newBuffer && newBufferRight) {
             // Success - free old buffer and switch
             if (_buffer) {
-                free(_buffer);
+                hal_psram_free(_buffer);
             }
             _buffer = newBuffer;
             _bufferRight = newBufferRight;
@@ -415,19 +510,19 @@ void EL133UF1::setPreRotatedMode(bool enable) {
             memset(_bufferRight, 0x11, PACKED_HALF_SIZE);
         } else {
             // Allocation failed - clean up and keep current mode
-            if (newBuffer) free(newBuffer);
-            if (newBufferRight) free(newBufferRight);
+            if (newBuffer) hal_psram_free(newBuffer);
+            if (newBufferRight) hal_psram_free(newBufferRight);
             Serial.println("EL133UF1: Failed to allocate pre-rotated buffers");
             _preRotatedMode = !enable;  // Revert the mode flag
             return;
         }
     } else if (!enable && !_packedMode) {
         // Switching back to unpacked mode
-        if (_buffer) free(_buffer);
-        if (_bufferRight) free(_bufferRight);
+        if (_buffer) hal_psram_free(_buffer);
+        if (_bufferRight) hal_psram_free(_bufferRight);
         _bufferRight = nullptr;
         
-        _buffer = (uint8_t*)pmalloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
+        _buffer = (uint8_t*)hal_psram_malloc(EL133UF1_WIDTH * EL133UF1_HEIGHT);
         if (_buffer) {
             memset(_buffer, EL133UF1_WHITE, EL133UF1_WIDTH * EL133UF1_HEIGHT);
         }
@@ -435,12 +530,21 @@ void EL133UF1::setPreRotatedMode(bool enable) {
 }
 
 void EL133UF1::setPixel(int16_t x, int16_t y, uint8_t color) {
-    if (_buffer == nullptr) return;
     if (x < 0 || x >= EL133UF1_WIDTH || y < 0 || y >= EL133UF1_HEIGHT) return;
     
     // Apply 180° rotation if both flips enabled
     if (_hFlip) x = EL133UF1_WIDTH - 1 - x;
     if (_vFlip) y = EL133UF1_HEIGHT - 1 - y;
+    
+#if EL133UF1_USE_ARGB8888
+    if (_argbMode && _bufferARGB != nullptr) {
+        // ARGB8888 mode: write 32-bit color
+        _bufferARGB[y * EL133UF1_WIDTH + x] = colorToARGB(color);
+        return;
+    }
+#endif
+    
+    if (_buffer == nullptr) return;
     
     if (_packedMode || _preRotatedMode) {
         // Pre-rotated/packed mode: write directly to panel format
@@ -474,6 +578,61 @@ void EL133UF1::setPixel(int16_t x, int16_t y, uint8_t color) {
         _buffer[y * EL133UF1_WIDTH + x] = color & 0x07;
     }
 }
+
+#if EL133UF1_USE_ARGB8888
+void EL133UF1::setPixelARGB(int16_t x, int16_t y, uint32_t argb) {
+    if (x < 0 || x >= EL133UF1_WIDTH || y < 0 || y >= EL133UF1_HEIGHT) return;
+    if (!_argbMode || _bufferARGB == nullptr) return;
+    
+    // Apply 180° rotation if both flips enabled
+    if (_hFlip) x = EL133UF1_WIDTH - 1 - x;
+    if (_vFlip) y = EL133UF1_HEIGHT - 1 - y;
+    
+    _bufferARGB[y * EL133UF1_WIDTH + x] = argb;
+}
+
+uint32_t EL133UF1::colorToARGB(uint8_t color) {
+    // Map 3-bit e-ink color to ARGB8888
+    switch (color & 0x07) {
+        case EL133UF1_BLACK:  return EL133UF1_ARGB_BLACK;
+        case EL133UF1_WHITE:  return EL133UF1_ARGB_WHITE;
+        case EL133UF1_YELLOW: return EL133UF1_ARGB_YELLOW;
+        case EL133UF1_RED:    return EL133UF1_ARGB_RED;
+        case EL133UF1_BLUE:   return EL133UF1_ARGB_BLUE;
+        case EL133UF1_GREEN:  return EL133UF1_ARGB_GREEN;
+        default:              return EL133UF1_ARGB_WHITE;
+    }
+}
+
+uint8_t EL133UF1::argbToColor(uint32_t argb) {
+    // Extract RGB components
+    uint8_t r = (argb >> 16) & 0xFF;
+    uint8_t g = (argb >> 8) & 0xFF;
+    uint8_t b = argb & 0xFF;
+    
+    // Simple nearest-color matching for e-ink palette
+    // Black: (0, 0, 0)
+    if (r < 64 && g < 64 && b < 64) return EL133UF1_BLACK;
+    
+    // White: (255, 255, 255)
+    if (r > 192 && g > 192 && b > 192) return EL133UF1_WHITE;
+    
+    // Yellow: (255, 255, 0)
+    if (r > 192 && g > 192 && b < 64) return EL133UF1_YELLOW;
+    
+    // Red: (255, 0, 0)
+    if (r > 192 && g < 64 && b < 64) return EL133UF1_RED;
+    
+    // Blue: (0, 0, 255)
+    if (r < 64 && g < 64 && b > 192) return EL133UF1_BLUE;
+    
+    // Green: (0, 255, 0)
+    if (r < 64 && g > 192 && b < 64) return EL133UF1_GREEN;
+    
+    // Default to white for other colors
+    return EL133UF1_WHITE;
+}
+#endif
 
 uint8_t EL133UF1::getPixel(int16_t x, int16_t y) {
     if (_buffer == nullptr) return 0;
@@ -634,53 +793,29 @@ bool EL133UF1::isBusy() {
 // Optimized buffer rotation with SIMD-style packing and DMA
 // ============================================================================
 
-// DMA channel for async memory transfers (-1 = not initialized)
-static int _dmaChannel = -1;
-
-// Initialize DMA channel for memory transfers
+// Initialize DMA for memory transfers (uses platform HAL)
 static void initDMA() {
-    if (_dmaChannel < 0) {
-        _dmaChannel = dma_claim_unused_channel(false);
-        if (_dmaChannel >= 0) {
-            Serial.printf("    DMA channel:    %d claimed\n", _dmaChannel);
-        }
+    if (hal_dma_init()) {
+        Serial.println("    DMA:            hardware DMA enabled");
+    } else {
+        // ESP32-P4 uses optimized memcpy (PSRAM has internal DMA)
+        Serial.println("    DMA:            using optimized memcpy");
     }
 }
 
 // Start async DMA memcpy (returns immediately)
 static void dmaMemcpyStart(void* dst, const void* src, size_t size) {
-    if (_dmaChannel < 0) {
-        // Fallback to regular memcpy
-        memcpy(dst, src, size);
-        return;
-    }
-    
-    dma_channel_config c = dma_channel_get_default_config(_dmaChannel);
-    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);  // 32-bit transfers
-    channel_config_set_read_increment(&c, true);
-    channel_config_set_write_increment(&c, true);
-    
-    dma_channel_configure(
-        _dmaChannel,
-        &c,
-        dst,           // Write address
-        src,           // Read address
-        size / 4,      // Transfer count (32-bit words)
-        true           // Start immediately
-    );
+    hal_dma_memcpy_start(dst, src, size);
 }
 
 // Wait for DMA to complete
 static void dmaMemcpyWait() {
-    if (_dmaChannel >= 0) {
-        dma_channel_wait_for_finish_blocking(_dmaChannel);
-    }
+    hal_dma_wait();
 }
 
 // Synchronous DMA memcpy
 static void dmaMemcpy(void* dst, const void* src, size_t size) {
-    dmaMemcpyStart(dst, src, size);
-    dmaMemcpyWait();
+    hal_dma_memcpy(dst, src, size);
 }
 
 // Process 8 pixels into 4 bytes using 32-bit operations
@@ -742,36 +877,218 @@ void EL133UF1::_sendBuffer() {
         return;
     }
 
+#if EL133UF1_USE_ARGB8888
+    // =========================================================================
+    // ARGB8888 mode with PPA acceleration (ESP32-P4)
+    // =========================================================================
+    if (_argbMode && _bufferARGB != nullptr) {
+        Serial.println("    Using ARGB8888 + PPA acceleration");
+        
+        const size_t SEND_HALF_SIZE = PACKED_HALF_SIZE;
+        const int WIDTH = EL133UF1_WIDTH;   // 1600
+        const int HEIGHT = EL133UF1_HEIGHT; // 1200
+        const int OUT_ROW_BYTES = 300;      // 600 pixels / 2 per byte
+        
+        // Allocate output buffers for packed panel data
+        stepStart = millis();
+        uint8_t* bufLeft = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
+        uint8_t* bufRight = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
+        
+        if (bufLeft == nullptr || bufRight == nullptr) {
+            Serial.println("    ERROR: Failed to allocate send buffers");
+            if (bufLeft) hal_psram_free(bufLeft);
+            if (bufRight) hal_psram_free(bufRight);
+            return;
+        }
+        Serial.printf("    Buffer alloc:   %4lu ms\n", millis() - stepStart);
+        
+        // Initialize PPA if not already done
+        static bool ppaInitialized = false;
+        if (!ppaInitialized) {
+            ppaInitialized = hal_image_init();
+            Serial.printf("    PPA init:       %s\n", ppaInitialized ? "OK" : "FAILED");
+        }
+        
+        // Try PPA hardware rotation
+        bool usedPPA = false;
+        uint32_t* rotatedBuf = nullptr;
+        
+        if (ppaInitialized && hal_image_hw_accel_available()) {
+            // Allocate rotated buffer (1200x1600 ARGB8888 = same size, different dimensions)
+            // After 90° CCW rotation: width becomes height, height becomes width
+            // PPA requires cache-line aligned buffers (64 bytes on ESP32-P4)
+            size_t rotatedSize = WIDTH * HEIGHT * sizeof(uint32_t);
+            // Round up to cache line size
+            rotatedSize = (rotatedSize + 63) & ~63;
+            rotatedBuf = (uint32_t*)heap_caps_aligned_alloc(64, rotatedSize, MALLOC_CAP_SPIRAM);
+            
+            if (rotatedBuf != nullptr) {
+                stepStart = millis();
+                
+                // Setup PPA rotation: 90° CCW = 270° CW
+                image_desc_t src = {
+                    .buffer = _bufferARGB,
+                    .width = (uint32_t)WIDTH,
+                    .height = (uint32_t)HEIGHT,
+                    .stride = (uint32_t)(WIDTH * sizeof(uint32_t)),
+                    .format = IMAGE_FORMAT_ARGB8888
+                };
+                image_desc_t dst = {
+                    .buffer = rotatedBuf,
+                    .width = (uint32_t)HEIGHT,  // After 90° rotation: 1200
+                    .height = (uint32_t)WIDTH,  // After 90° rotation: 1600
+                    .stride = (uint32_t)(HEIGHT * sizeof(uint32_t)),
+                    .format = IMAGE_FORMAT_ARGB8888
+                };
+                
+                usedPPA = hal_image_rotate(&src, &dst, IMAGE_ROTATE_270, true);
+                
+                if (usedPPA) {
+                    Serial.printf("    PPA rotate:     %4lu ms (hardware)\n", millis() - stepStart);
+                } else {
+                    Serial.println("    PPA rotate:     FAILED, using software");
+                    hal_psram_free(rotatedBuf);
+                    rotatedBuf = nullptr;
+                }
+            }
+        }
+        
+        stepStart = millis();
+        
+        if (usedPPA && rotatedBuf != nullptr) {
+            // PPA rotated the buffer - now just pack linearly
+            // Rotated buffer is 1200 wide x 1600 tall (HEIGHT x WIDTH)
+            // Row i of rotated = original column (WIDTH-1-i) 
+            // We need to split columns 0-599 to left, 600-1199 to right
+            
+            // Fast inline ARGB to 3-bit color conversion
+            // Uses bit manipulation instead of if-else chains
+            #define FAST_ARGB_TO_COLOR(argb) ({ \
+                uint32_t _a = (argb); \
+                uint8_t _r = (_a >> 16) & 0xFF; \
+                uint8_t _g = (_a >> 8) & 0xFF; \
+                uint8_t _b = _a & 0xFF; \
+                uint8_t _result; \
+                if ((_r | _g | _b) < 64) _result = 0; /* BLACK */ \
+                else if ((_r & _g & _b) > 192) _result = 1; /* WHITE */ \
+                else if (_r > 192 && _g > 192) _result = 2; /* YELLOW */ \
+                else if (_r > 192) _result = 3; /* RED */ \
+                else if (_b > 192) _result = 5; /* BLUE */ \
+                else _result = 6; /* GREEN */ \
+                _result; \
+            })
+            
+            for (int outRow = 0; outRow < WIDTH; outRow++) {
+                uint8_t* __restrict__ outPtrLeft = bufLeft + outRow * OUT_ROW_BYTES;
+                uint8_t* __restrict__ outPtrRight = bufRight + outRow * OUT_ROW_BYTES;
+                const uint32_t* __restrict__ rowPtr = rotatedBuf + outRow * HEIGHT;
+                
+                // Left panel: columns 0-599 of rotated image (unrolled 4x)
+                int i = 0;
+                for (; i < OUT_ROW_BYTES - 3; i += 4) {
+                    const uint32_t* p = rowPtr + i * 2;
+                    outPtrLeft[i]   = (FAST_ARGB_TO_COLOR(p[0]) << 4) | FAST_ARGB_TO_COLOR(p[1]);
+                    outPtrLeft[i+1] = (FAST_ARGB_TO_COLOR(p[2]) << 4) | FAST_ARGB_TO_COLOR(p[3]);
+                    outPtrLeft[i+2] = (FAST_ARGB_TO_COLOR(p[4]) << 4) | FAST_ARGB_TO_COLOR(p[5]);
+                    outPtrLeft[i+3] = (FAST_ARGB_TO_COLOR(p[6]) << 4) | FAST_ARGB_TO_COLOR(p[7]);
+                }
+                for (; i < OUT_ROW_BYTES; i++) {
+                    outPtrLeft[i] = (FAST_ARGB_TO_COLOR(rowPtr[i*2]) << 4) | FAST_ARGB_TO_COLOR(rowPtr[i*2+1]);
+                }
+                
+                // Right panel: columns 600-1199 of rotated image (unrolled 4x)
+                const uint32_t* __restrict__ rowPtrRight = rowPtr + 600;
+                i = 0;
+                for (; i < OUT_ROW_BYTES - 3; i += 4) {
+                    const uint32_t* p = rowPtrRight + i * 2;
+                    outPtrRight[i]   = (FAST_ARGB_TO_COLOR(p[0]) << 4) | FAST_ARGB_TO_COLOR(p[1]);
+                    outPtrRight[i+1] = (FAST_ARGB_TO_COLOR(p[2]) << 4) | FAST_ARGB_TO_COLOR(p[3]);
+                    outPtrRight[i+2] = (FAST_ARGB_TO_COLOR(p[4]) << 4) | FAST_ARGB_TO_COLOR(p[5]);
+                    outPtrRight[i+3] = (FAST_ARGB_TO_COLOR(p[6]) << 4) | FAST_ARGB_TO_COLOR(p[7]);
+                }
+                for (; i < OUT_ROW_BYTES; i++) {
+                    outPtrRight[i] = (FAST_ARGB_TO_COLOR(rowPtrRight[i*2]) << 4) | FAST_ARGB_TO_COLOR(rowPtrRight[i*2+1]);
+                }
+            }
+            
+            #undef FAST_ARGB_TO_COLOR
+            
+            hal_psram_free(rotatedBuf);
+            Serial.printf("    Pack:           %4lu ms (optimized linear)\n", millis() - stepStart);
+        } else {
+            // Software fallback: combined rotate + pack
+            // Source: ARGB8888 at (x, y) where x=0..1599, y=0..1199
+            // After 90° CCW rotation: output row = 1599-x, output col = y
+            
+            for (int srcCol = WIDTH - 1; srcCol >= 0; srcCol--) {
+                int outRow = WIDTH - 1 - srcCol;
+                uint8_t* outPtrLeft = bufLeft + outRow * OUT_ROW_BYTES;
+                uint8_t* outPtrRight = bufRight + outRow * OUT_ROW_BYTES;
+                const uint32_t* srcPtr = _bufferARGB + srcCol;
+                
+                // Process left panel (source rows 0-599)
+                for (int i = 0; i < OUT_ROW_BYTES; i++) {
+                    uint8_t c0 = argbToColor(srcPtr[0]);
+                    uint8_t c1 = argbToColor(srcPtr[WIDTH]);
+                    outPtrLeft[i] = (c0 << 4) | c1;
+                    srcPtr += WIDTH * 2;
+                }
+                
+                // Process right panel (source rows 600-1199)
+                for (int i = 0; i < OUT_ROW_BYTES; i++) {
+                    uint8_t c0 = argbToColor(srcPtr[0]);
+                    uint8_t c1 = argbToColor(srcPtr[WIDTH]);
+                    outPtrRight[i] = (c0 << 4) | c1;
+                    srcPtr += WIDTH * 2;
+                }
+            }
+            Serial.printf("    Rotate+pack:    %4lu ms (software)\n", millis() - stepStart);
+        }
+        
+        // Send to display
+        stepStart = millis();
+        _sendCommand(CMD_DTM, CS0_SEL, bufLeft, SEND_HALF_SIZE);
+        _sendCommand(CMD_DTM, CS1_SEL, bufRight, SEND_HALF_SIZE);
+        Serial.printf("    SPI transmit:   %4lu ms\n", millis() - stepStart);
+        
+        // Free buffers
+        hal_psram_free(bufLeft);
+        hal_psram_free(bufRight);
+        
+        return;
+    }
+#endif
+
     const size_t SEND_HALF_SIZE = PACKED_HALF_SIZE;
     
     // Debug: show PSRAM state before allocation
-    Serial.printf("    PSRAM total:    %lu KB\n", rp2040.getPSRAMSize() / 1024);
+    Serial.printf("    PSRAM total:    %lu KB\n", (unsigned long)(hal_psram_get_size() / 1024));
     Serial.printf("    Need:           %lu KB (2x %lu)\n", 
-                  (SEND_HALF_SIZE * 2) / 1024, SEND_HALF_SIZE / 1024);
+                  (unsigned long)((SEND_HALF_SIZE * 2) / 1024), (unsigned long)(SEND_HALF_SIZE / 1024));
     
     stepStart = millis();
-    uint8_t* bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
-    uint8_t* bufB = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+    uint8_t* bufA = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
+    uint8_t* bufB = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
     
     bool singleBufferMode = false;
     
     if (bufA == nullptr || bufB == nullptr) {
         // Fallback: try single buffer mode - process one half at a time
         Serial.println("    Two-buffer alloc failed, trying single-buffer fallback...");
-        if (bufA) free(bufA);
-        if (bufB) free(bufB);
+        if (bufA) hal_psram_free(bufA);
+        if (bufB) hal_psram_free(bufB);
         bufA = nullptr;
         bufB = nullptr;
         
         // Try to allocate just one buffer
-        bufA = (uint8_t*)pmalloc(SEND_HALF_SIZE);
+        bufA = (uint8_t*)hal_psram_malloc(SEND_HALF_SIZE);
         if (bufA == nullptr) {
             Serial.printf("EL133UF1: FATAL - Cannot allocate even single send buffer (%lu KB)\n", 
-                         SEND_HALF_SIZE / 1024);
+                         (unsigned long)(SEND_HALF_SIZE / 1024));
             return;
         }
         singleBufferMode = true;
-        Serial.printf("    Single buffer:  %p (%lu KB) - slower but works\n", bufA, SEND_HALF_SIZE / 1024);
+        Serial.printf("    Single buffer:  %p (%lu KB) - slower but works\n", bufA, (unsigned long)(SEND_HALF_SIZE / 1024));
     } else {
         Serial.printf("    Dual buffers:   %p, %p\n", bufA, bufB);
     }
@@ -781,7 +1098,7 @@ void EL133UF1::_sendBuffer() {
     initDMA();
     
     // Debug: show available heap
-    Serial.printf("    Free heap:      %lu KB\n", rp2040.getFreeHeap() / 1024);
+    Serial.printf("    Free heap:      %lu KB\n", (unsigned long)(hal_heap_get_free() / 1024));
     
     // SRAM-accelerated rotation with SIMD packing and DMA
     // Strategy: Double-buffered strips with DMA prefetch
@@ -979,9 +1296,9 @@ void EL133UF1::_sendBuffer() {
     Serial.printf("    SPI transmit:   %4lu ms (CS0: %lu, CS1: %lu)\n", 
                   spiA + spiB, spiA, spiB);
 
-    free(bufA);
-    if (bufB) free(bufB);
-    if (sramStrip[0]) free(sramStrip[0]);
+    hal_psram_free(bufA);
+    if (bufB) hal_psram_free(bufB);
+    if (sramStrip[0]) free(sramStrip[0]);  // SRAM strips use regular malloc
     if (sramStrip[1]) free(sramStrip[1]);
 }
 
@@ -1004,14 +1321,14 @@ void EL133UF1::update(bool skipInit) {
     uint32_t totalStart = millis();
     uint32_t stepStart;
     
-    // Run init sequence (can skip on subsequent updates)
-    if (!skipInit || !_initDone) {
+    // Run init sequence only if not already done this boot session
+    if (!_initDone) {
         stepStart = millis();
         _initSequence();
         _initDone = true;
         Serial.printf("  Init sequence:    %4lu ms\n", millis() - stepStart);
     } else {
-        Serial.println("  Init sequence:    skipped");
+        Serial.println("  Init sequence:    skipped (already done)");
     }
     
     // Send buffer data
@@ -1055,8 +1372,8 @@ void EL133UF1::update(bool skipInit) {
 void EL133UF1::updateAsync(bool skipInit) {
     if (!_initialized || _asyncInProgress) return;
 
-    // Run init sequence if needed
-    if (!skipInit || !_initDone) {
+    // Run init sequence only if not already done this boot session
+    if (!_initDone) {
         _initSequence();
         _initDone = true;
     }

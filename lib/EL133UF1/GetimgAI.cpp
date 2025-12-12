@@ -4,6 +4,7 @@
  */
 
 #include "GetimgAI.h"
+#include "platform_hal.h"
 #include <WiFi.h>
 
 // getimg.ai API endpoint

@@ -182,6 +182,7 @@ RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 // ============================================================================
 #include "driver/i2s_common.h"
 #include "driver/i2s_std.h"
+#include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <math.h>
@@ -307,32 +308,10 @@ static bool audio_start() {
         return true;
     }
 
-    // I2C setup for codec control
-    // Use dedicated TwoWire instances and try both I2C controllers.
+    // I2C setup for codec control (ESP-IDF driver style; matches your known-good example)
     g_codec_ready = false;
-    g_codec_wire = nullptr;
-
-    g_codec_wire0.end();
-    delay(5);
-    bool ok0 = g_codec_wire0.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000);
-    Serial.printf("I2C0 begin(SDA=%d SCL=%d): %s\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, ok0 ? "OK" : "FAIL");
-
-    g_codec_wire1.end();
-    delay(5);
-    bool ok1 = g_codec_wire1.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000);
-    Serial.printf("I2C1 begin(SDA=%d SCL=%d): %s\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, ok1 ? "OK" : "FAIL");
-
-    if (ok0 && i2c_ping(g_codec_wire0, PIN_CODEC_I2C_ADDR)) {
-        g_codec_wire = &g_codec_wire0;
-        Serial.printf("I2C: codec ACK on I2C0 at 0x%02X\n", PIN_CODEC_I2C_ADDR);
-    } else if (ok1 && i2c_ping(g_codec_wire1, PIN_CODEC_I2C_ADDR)) {
-        g_codec_wire = &g_codec_wire1;
-        Serial.printf("I2C: codec ACK on I2C1 at 0x%02X\n", PIN_CODEC_I2C_ADDR);
-    } else {
-        Serial.printf("I2C: no ACK at 0x%02X on either controller.\n", PIN_CODEC_I2C_ADDR);
-        Serial.println("Tip: run 'K' to scan the bus for devices and confirm SDA/SCL.");
-        return false;
-    }
+    const i2c_port_t port = I2C_NUM_0;
+    const uint32_t i2c_hz = 100000;
 
     ES8311Simple::Pins pins;
     pins.pa_enable_gpio = PIN_CODEC_PA_EN;
@@ -347,8 +326,8 @@ static bool audio_start() {
     clk.no_dac_ref = false;
     clk.mclk_div = 256;
 
-    if (!g_codec.begin(*g_codec_wire, PIN_CODEC_I2C_ADDR, pins, clk)) {
-        Serial.println("ES8311: begin/init failed (check I2C pins/address).");
+    if (!g_codec.beginIdfI2C(port, PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, i2c_hz, PIN_CODEC_I2C_ADDR, pins, clk)) {
+        Serial.println("ES8311: begin/init failed (IDF I2C) - check SDA/SCL/address/power.");
         return false;
     }
     g_codec_ready = true;

@@ -1,6 +1,8 @@
 #if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 
 #include "es8311_simple.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 // Register map (subset) from Espressif esp-adf / audio_hal ES8311 driver
 static constexpr uint8_t ES8311_RESET_REG00 = 0x00;
@@ -82,12 +84,62 @@ static int find_coeff(uint32_t mclk, uint32_t rate) {
 
 bool ES8311Simple::begin(TwoWire& wire, uint8_t i2c_addr_7bit, const Pins& pins, const Clocking& clk) {
   wire_ = &wire;
+  using_idf_i2c_ = false;
   addr7_ = i2c_addr_7bit;
   pins_ = pins;
   clk_ = clk;
 
   if (clk_.mclk_div == 0) clk_.mclk_div = 256;
   paSetup();
+  return openInit();
+}
+
+bool ES8311Simple::beginIdfI2C(i2c_port_t port,
+                              int sda_gpio,
+                              int scl_gpio,
+                              uint32_t clk_hz,
+                              uint8_t i2c_addr_7bit,
+                              const Pins& pins,
+                              const Clocking& clk) {
+  wire_ = nullptr;
+  using_idf_i2c_ = true;
+  i2c_port_ = port;
+  addr7_ = i2c_addr_7bit;
+  pins_ = pins;
+  clk_ = clk;
+
+  if (clk_.mclk_div == 0) clk_.mclk_div = 256;
+  paSetup();
+
+  const i2c_config_t cfg = {
+      .mode = I2C_MODE_MASTER,
+      .sda_io_num = (gpio_num_t)sda_gpio,
+      .scl_io_num = (gpio_num_t)scl_gpio,
+      .sda_pullup_en = GPIO_PULLUP_ENABLE,
+      .scl_pullup_en = GPIO_PULLUP_ENABLE,
+      .master = {
+          .clk_speed = clk_hz,
+      },
+      .clk_flags = 0,
+  };
+
+  esp_err_t err = i2c_param_config(i2c_port_, &cfg);
+  if (err != ESP_OK) {
+    return false;
+  }
+  err = i2c_driver_install(i2c_port_, I2C_MODE_MASTER, 0, 0, 0);
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    return false;
+  }
+
+  // Quick ping (read a byte) to ensure the device ACKs
+  uint8_t reg = ES8311_GPIO_REG44;
+  uint8_t out = 0;
+  err = i2c_master_write_read_device(i2c_port_, addr7_, &reg, 1, &out, 1, pdMS_TO_TICKS(100));
+  if (err != ESP_OK) {
+    return false;
+  }
+
   return openInit();
 }
 
@@ -201,6 +253,11 @@ bool ES8311Simple::setDacVolumePercent(int percent_0_100) {
 }
 
 bool ES8311Simple::writeReg(uint8_t reg, uint8_t val) {
+  if (using_idf_i2c_) {
+    uint8_t buf[2] = {reg, val};
+    esp_err_t err = i2c_master_write_to_device(i2c_port_, addr7_, buf, sizeof(buf), pdMS_TO_TICKS(100));
+    return err == ESP_OK;
+  }
   if (!wire_) return false;
   wire_->beginTransmission(addr7_);
   wire_->write(reg);
@@ -209,6 +266,13 @@ bool ES8311Simple::writeReg(uint8_t reg, uint8_t val) {
 }
 
 bool ES8311Simple::readReg(uint8_t reg, uint8_t& val) {
+  if (using_idf_i2c_) {
+    uint8_t out = 0;
+    esp_err_t err = i2c_master_write_read_device(i2c_port_, addr7_, &reg, 1, &out, 1, pdMS_TO_TICKS(100));
+    if (err != ESP_OK) return false;
+    val = out;
+    return true;
+  }
   if (!wire_) return false;
   wire_->beginTransmission(addr7_);
   wire_->write(reg);

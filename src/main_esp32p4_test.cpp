@@ -496,16 +496,22 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
         return true;
     }
 
-    // Load creds (if any) and try NTP
-    wifiLoadCredentials();
-    if (strlen(wifiSSID) == 0) {
+    // Load creds (if any) directly from NVS and try NTP.
+    // (Don't call wifiLoadCredentials() here since it's defined later in this file.)
+    Preferences p;
+    p.begin("wifi", true);
+    String ssid = p.getString("ssid", "");
+    String psk = p.getString("psk", "");
+    p.end();
+
+    if (ssid.length() == 0) {
         Serial.println("Time invalid and no WiFi credentials saved; cannot NTP sync.");
         return false;
     }
 
-    Serial.printf("Time invalid; syncing NTP via WiFi SSID '%s'...\n", wifiSSID);
+    Serial.printf("Time invalid; syncing NTP via WiFi SSID '%s'...\n", ssid.c_str());
     WiFi.mode(WIFI_STA);
-    WiFi.begin(wifiSSID, wifiPSK);
+    WiFi.begin(ssid.c_str(), psk.c_str());
 
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
@@ -527,12 +533,16 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
             char buf[32];
             strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
             Serial.printf("NTP sync OK: %s\n", buf);
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
             return true;
         }
         delay(250);
     }
 
     Serial.println("NTP sync timed out; continuing with invalid time.");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
     return false;
 }
 #else

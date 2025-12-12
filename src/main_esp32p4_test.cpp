@@ -489,6 +489,25 @@ static void sleepNowSeconds(uint32_t seconds) {
     esp_deep_sleep_start();
 }
 
+static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSleepSeconds) {
+    time_t now = time(nullptr);
+    if (now <= 1577836800) {  // time invalid
+        sleepNowSeconds(fallback_seconds);
+    }
+
+    uint32_t sec = (uint32_t)(now % 60);
+    uint32_t sleep_s = 60 - sec;
+    if (sleep_s == 0) sleep_s = 60;
+    // Avoid very short sleeps (USB/serial jitter); skip to next minute
+    if (sleep_s < 5) sleep_s += 60;
+    // Sanity clamp
+    if (sleep_s > 120) sleep_s = fallback_seconds;
+
+    Serial.printf("Sleeping until next minute: %lu seconds (sec=%lu)\n",
+                  (unsigned long)sleep_s, (unsigned long)sec);
+    sleepNowSeconds(sleep_s);
+}
+
 #if WIFI_ENABLED
 static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
     time_t now = time(nullptr);
@@ -557,7 +576,7 @@ static void auto_cycle_task(void* arg) {
     g_cycle_count++;
     Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
 
-    (void)ensureTimeValid();
+    const bool time_ok = ensureTimeValid();
 
     uint32_t sd_ms = 0, dec_ms = 0;
 #if SDMMC_ENABLED
@@ -569,6 +588,7 @@ static void auto_cycle_task(void* arg) {
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     if (!ok) {
         Serial.println("PNG draw failed; sleeping anyway");
+        if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
         sleepNowSeconds(kCycleSleepSeconds);
     }
 
@@ -609,6 +629,9 @@ static void auto_cycle_task(void* arg) {
     uint32_t refreshMs = millis() - refreshStart;
     Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
 
+    if (time_ok) {
+        sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+    }
     sleepNowSeconds(kCycleSleepSeconds);
 }
 

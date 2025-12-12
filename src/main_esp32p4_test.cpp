@@ -209,6 +209,11 @@ static constexpr uint32_t kCycleSerialEscapeMs = 2000; // cold boot escape to in
 RTC_DATA_ATTR uint32_t g_cycle_count = 0;
 static TaskHandle_t g_auto_cycle_task = nullptr;
 
+// Forward declarations (defined later in file under SDMMC_ENABLED)
+#if SDMMC_ENABLED
+bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
+#endif
+
 static bool i2c_ping(TwoWire& w, uint8_t addr7) {
     w.beginTransmission(addr7);
     return (w.endTransmission() == 0);
@@ -490,7 +495,12 @@ static void auto_cycle_task(void* arg) {
     Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
 
     uint32_t sd_ms = 0, dec_ms = 0;
+#if SDMMC_ENABLED
     bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+#else
+    bool ok = false;
+    Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");
+#endif
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     if (!ok) {
         Serial.println("PNG draw failed; sleeping anyway");

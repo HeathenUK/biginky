@@ -190,7 +190,7 @@ static ES8311Simple g_codec;
 static i2s_chan_handle_t g_i2s_tx = nullptr;
 static TaskHandle_t g_audio_task = nullptr;
 static volatile bool g_audio_running = false;
-static int g_audio_volume_pct = 40;
+static int g_audio_volume_pct = 90;
 static bool g_codec_ready = false;
 
 static TwoWire g_codec_wire0(0);
@@ -220,7 +220,8 @@ static bool audio_i2s_init(uint32_t sample_rate_hz) {
         return true;
     }
 
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+    // Use a fixed I2S peripheral for repeatability during bring-up.
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
 
     i2s_chan_handle_t tx_handle = nullptr;
@@ -293,6 +294,11 @@ static void audio_task(void* arg) {
         if (err != ESP_OK) {
             Serial.printf("I2S: write failed: %s\n", esp_err_to_name(err));
             vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        static uint32_t loops = 0;
+        loops++;
+        if ((loops % 400) == 0) {
+            Serial.printf("I2S: streaming... last write %u bytes\n", (unsigned)bytes_written);
         }
     }
     vTaskDelete(nullptr);
@@ -374,7 +380,10 @@ static bool audio_start() {
         return false;
     }
 
-    (void)g_codec.setDacVolumePercent(g_audio_volume_pct);
+    // Bring-up: force loud output first, then you can trim with +/-.
+    (void)g_codec.setDacVolumeReg(0xFF);
+    g_audio_volume_pct = 100;
+    Serial.println("ES8311: DAC volume forced to MAX (0xFF) for bring-up");
 
     if (!g_codec.startDac()) {
         Serial.println("ES8311: start DAC failed");

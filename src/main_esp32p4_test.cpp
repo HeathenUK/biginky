@@ -37,8 +37,10 @@
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_BMP.h"
+#include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
 #include "fonts/opensans.h"
+#include "es8311_simple.h"
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
 #include <time.h>
 #include <sys/time.h>
@@ -125,6 +127,40 @@
 #endif
 
 // ============================================================================
+// Audio codec (ES8311) pin definitions (Waveshare ESP32-P4-WIFI6)
+// ============================================================================
+// Override with build flags if your wiring differs.
+// ES8311 address is commonly 0x18 (7-bit). (0x30 is the 8-bit write address.)
+#ifndef PIN_CODEC_I2C_SDA
+#define PIN_CODEC_I2C_SDA  7
+#endif
+#ifndef PIN_CODEC_I2C_SCL
+#define PIN_CODEC_I2C_SCL  8
+#endif
+#ifndef PIN_CODEC_I2C_ADDR
+#define PIN_CODEC_I2C_ADDR 0x18
+#endif
+
+#ifndef PIN_CODEC_MCLK
+#define PIN_CODEC_MCLK  13
+#endif
+#ifndef PIN_CODEC_BCLK
+#define PIN_CODEC_BCLK  12   // SCLK (bit clock)
+#endif
+#ifndef PIN_CODEC_LRCK
+#define PIN_CODEC_LRCK  10   // LRCK / WS
+#endif
+#ifndef PIN_CODEC_DOUT
+#define PIN_CODEC_DOUT  9    // ESP32 -> codec SDIN (DSDIN)
+#endif
+#ifndef PIN_CODEC_DIN
+#define PIN_CODEC_DIN   11   // codec DOUT (ASDOUT) -> ESP32 (optional)
+#endif
+#ifndef PIN_CODEC_PA_EN
+#define PIN_CODEC_PA_EN 53   // PA_Ctrl (active high)
+#endif
+
+// ============================================================================
 // Global objects
 // ============================================================================
 
@@ -138,9 +174,466 @@ EL133UF1_TTF ttf;
 
 // BMP image loader
 EL133UF1_BMP bmpLoader;
+EL133UF1_PNG pngLoader;
 
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
+
+// ============================================================================
+// Audio: ES8311 + I2S test tone
+// ============================================================================
+#include "driver/i2s_common.h"
+#include "driver/i2s_std.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <math.h>
+
+static ES8311Simple g_codec;
+static i2s_chan_handle_t g_i2s_tx = nullptr;
+static TaskHandle_t g_audio_task = nullptr;
+static volatile bool g_audio_running = false;
+static int g_audio_volume_pct = 50;  // UI percent (0..100), mapped into codec range below
+static bool g_codec_ready = false;
+
+static TwoWire g_codec_wire0(0);
+static TwoWire g_codec_wire1(1);
+static TwoWire* g_codec_wire = nullptr;
+
+static constexpr int kCodecVolumeMinPct = 50; // inaudible below this (empirical)
+static constexpr int kCodecVolumeMaxPct = 80; // too loud above this (empirical)
+
+// Auto demo cycle settings: random PNG + clock overlay + short beep + deep sleep
+static constexpr bool kAutoCycleEnabled = true;
+static constexpr uint32_t kCycleSleepSeconds = 60;
+static constexpr uint32_t kCycleSerialEscapeMs = 2000; // cold boot escape to interactive
+RTC_DATA_ATTR uint32_t g_cycle_count = 0;
+static TaskHandle_t g_auto_cycle_task = nullptr;
+
+// Forward declarations (defined later in file under SDMMC_ENABLED)
+#if SDMMC_ENABLED
+bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
+#endif
+
+static bool i2c_ping(TwoWire& w, uint8_t addr7) {
+    w.beginTransmission(addr7);
+    return (w.endTransmission() == 0);
+}
+
+static void i2c_scan(TwoWire& w) {
+    int found = 0;
+    for (uint8_t a = 0x03; a < 0x78; a++) {
+        if (i2c_ping(w, a)) {
+            Serial.printf("  - found device at 0x%02X\n", a);
+            found++;
+        }
+    }
+    if (found == 0) {
+        Serial.println("  (no devices found)");
+    }
+}
+
+static bool audio_i2s_init(uint32_t sample_rate_hz) {
+    if (g_i2s_tx != nullptr) {
+        return true;
+    }
+
+    // Use a fixed I2S peripheral for repeatability during bring-up.
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
+
+    i2s_chan_handle_t tx_handle = nullptr;
+    esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle, nullptr /* rx */);
+    if (err != ESP_OK) {
+        Serial.printf("I2S: i2s_new_channel failed: %s\n", esp_err_to_name(err));
+        return false;
+    }
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate_hz),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = (gpio_num_t)PIN_CODEC_MCLK,
+            .bclk = (gpio_num_t)PIN_CODEC_BCLK,
+            .ws   = (gpio_num_t)PIN_CODEC_LRCK,
+            .dout = (gpio_num_t)PIN_CODEC_DOUT,
+            .din  = (gpio_num_t)PIN_CODEC_DIN,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv   = false,
+            },
+        },
+    };
+    // Ensure MCLK is generated at 256 * Fs (matches ES8311 mclk_div=256)
+    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+
+    err = i2s_channel_init_std_mode(tx_handle, &std_cfg);
+    if (err != ESP_OK) {
+        Serial.printf("I2S: init std mode failed: %s\n", esp_err_to_name(err));
+        i2s_del_channel(tx_handle);
+        return false;
+    }
+
+    err = i2s_channel_enable(tx_handle);
+    if (err != ESP_OK) {
+        Serial.printf("I2S: enable failed: %s\n", esp_err_to_name(err));
+        i2s_del_channel(tx_handle);
+        return false;
+    }
+
+    g_i2s_tx = tx_handle;
+    return true;
+}
+
+static void audio_task(void* arg) {
+    (void)arg;
+    const uint32_t sample_rate = 44100;
+    const float freq = 440.0f;
+    const int16_t amp = 12000;
+    const size_t frames = 256; // stereo frames
+    int16_t buf[frames * 2];
+
+    float phase = 0.0f;
+    const float two_pi = 2.0f * 3.14159265358979323846f;
+    const float phase_inc = two_pi * freq / (float)sample_rate;
+
+    while (g_audio_running) {
+        for (size_t i = 0; i < frames; i++) {
+            float s = sinf(phase);
+            phase += phase_inc;
+            if (phase >= two_pi) phase -= two_pi;
+            int16_t v = (int16_t)(s * amp);
+            buf[i * 2 + 0] = v; // L
+            buf[i * 2 + 1] = v; // R
+        }
+        size_t bytes_written = 0;
+        esp_err_t err = i2s_channel_write(g_i2s_tx, buf, sizeof(buf), &bytes_written, portMAX_DELAY);
+        if (err != ESP_OK) {
+            Serial.printf("I2S: write failed: %s\n", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        static uint32_t loops = 0;
+        loops++;
+        if ((loops % 400) == 0) {
+            Serial.printf("I2S: streaming... last write %u bytes\n", (unsigned)bytes_written);
+        }
+    }
+    vTaskDelete(nullptr);
+}
+
+static bool audio_start(bool verbose) {
+    const uint32_t sample_rate = 44100;
+    const int bits = 16;
+
+    if (g_audio_running) {
+        Serial.println("Audio: already running");
+        return true;
+    }
+
+    // I2C setup for codec control (Arduino Wire only; avoid legacy esp-idf i2c driver conflicts)
+    g_codec_ready = false;
+    g_codec_wire = nullptr;
+
+    // Prefer I2C0 on the specified pins
+    g_codec_wire0.end();
+    delay(5);
+    bool ok0 = g_codec_wire0.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 100000);
+    Serial.printf("I2C0 begin(SDA=%d SCL=%d): %s\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, ok0 ? "OK" : "FAIL");
+    if (ok0 && i2c_ping(g_codec_wire0, PIN_CODEC_I2C_ADDR)) {
+        g_codec_wire = &g_codec_wire0;
+        Serial.printf("I2C: codec ACK on I2C0 at 0x%02X\n", PIN_CODEC_I2C_ADDR);
+    } else {
+        // Also try I2C1 with same pins (some cores map better on certain targets)
+        g_codec_wire1.end();
+        delay(5);
+        bool ok1 = g_codec_wire1.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 100000);
+        Serial.printf("I2C1 begin(SDA=%d SCL=%d): %s\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, ok1 ? "OK" : "FAIL");
+        if (ok1 && i2c_ping(g_codec_wire1, PIN_CODEC_I2C_ADDR)) {
+            g_codec_wire = &g_codec_wire1;
+            Serial.printf("I2C: codec ACK on I2C1 at 0x%02X\n", PIN_CODEC_I2C_ADDR);
+        }
+    }
+
+    if (!g_codec_wire) {
+        Serial.printf("I2C: no ACK at 0x%02X on SDA=%d SCL=%d.\n", PIN_CODEC_I2C_ADDR, PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL);
+        Serial.println("Tip: press 'K' to scan for devices.");
+        return false;
+    }
+
+    ES8311Simple::Pins pins;
+    pins.pa_enable_gpio = PIN_CODEC_PA_EN;
+    pins.pa_active_high = true;
+
+    ES8311Simple::Clocking clk;
+    clk.master_mode = false; // ESP32 provides clocks
+    clk.use_mclk = true;
+    clk.invert_mclk = false;
+    clk.invert_sclk = false;
+    clk.digital_mic = false;
+    clk.no_dac_ref = false;
+    clk.mclk_div = 256;
+
+    if (!g_codec.begin(*g_codec_wire, PIN_CODEC_I2C_ADDR, pins, clk)) {
+        Serial.println("ES8311: begin/init failed - check SDA/SCL/address/power.");
+        return false;
+    }
+    g_codec_ready = true;
+    g_codec.setTrace(verbose);
+
+    uint8_t id1 = 0, id2 = 0, ver = 0;
+    if (g_codec.probe(&id1, &id2, &ver)) {
+        Serial.printf("ES8311: CHIP_ID=0x%02X 0x%02X  VER=0x%02X\n", id1, id2, ver);
+    } else {
+        Serial.println("ES8311: probe failed");
+    }
+
+    if (!audio_i2s_init(sample_rate)) {
+        Serial.println("Audio: I2S init failed");
+        return false;
+    }
+
+    if (!g_codec.configureI2S(sample_rate, bits)) {
+        Serial.println("ES8311: configure I2S failed (clocking mismatch?)");
+        return false;
+    }
+
+    // Use mapped range to match your speaker/amp usable window.
+    (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+    Serial.printf("ES8311: volume UI=%d%% mapped to %d..%d%%\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+
+    if (!g_codec.startDac()) {
+        Serial.println("ES8311: start DAC failed");
+        return false;
+    }
+
+    if (verbose) {
+        Serial.println("ES8311: register dump 0x00..0x45 (post-init)");
+        (void)g_codec.dumpRegisters(0x00, 0x45);
+    }
+
+    g_audio_running = true;
+    xTaskCreatePinnedToCore(audio_task, "audio_tone", 4096, nullptr, 5, &g_audio_task, 0);
+
+    Serial.println("Audio: started 440Hz sine tone");
+    return true;
+}
+
+static bool audio_beep(uint32_t freq_hz, uint32_t duration_ms) {
+    const uint32_t sample_rate = 44100;
+    const int bits = 16;
+    if (!g_codec_ready || g_i2s_tx == nullptr) {
+        // Initialize codec + I2S quietly
+        if (!audio_start(false)) {
+            return false;
+        }
+        // Stop the continuous tone task immediately; we'll do a one-shot write below.
+        g_audio_running = false;
+        delay(10);
+    }
+
+    // Ensure audible volume window
+    (void)g_codec.setDacVolumePercentMapped(60, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+    (void)g_codec.setMute(false);
+
+    const float two_pi = 2.0f * 3.14159265358979323846f;
+    float phase = 0.0f;
+    const float phase_inc = two_pi * (float)freq_hz / (float)sample_rate;
+    const int16_t amp = 12000;
+
+    const uint32_t total_frames = (sample_rate * duration_ms) / 1000;
+    const size_t frames_per_chunk = 256;
+    int16_t buf[frames_per_chunk * 2];
+
+    uint32_t frames_done = 0;
+    while (frames_done < total_frames) {
+        size_t frames = min((uint32_t)frames_per_chunk, total_frames - frames_done);
+        for (size_t i = 0; i < frames; i++) {
+            float s = sinf(phase);
+            phase += phase_inc;
+            if (phase >= two_pi) phase -= two_pi;
+            int16_t v = (int16_t)(s * amp);
+            buf[i * 2 + 0] = v;
+            buf[i * 2 + 1] = v;
+        }
+        size_t bytes_written = 0;
+        esp_err_t err = i2s_channel_write(g_i2s_tx, buf, frames * 2 * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+        if (err != ESP_OK) {
+            Serial.printf("I2S: beep write failed: %s\n", esp_err_to_name(err));
+            break;
+        }
+        frames_done += (uint32_t)frames;
+    }
+    return true;
+}
+
+static void audio_stop() {
+    g_audio_running = false;
+    // task self-deletes
+    if (g_i2s_tx) {
+        (void)i2s_channel_disable(g_i2s_tx);
+        (void)i2s_del_channel(g_i2s_tx);
+        g_i2s_tx = nullptr;
+    }
+    if (g_codec_ready) {
+        (void)g_codec.stopAll();
+        g_codec_ready = false;
+    }
+    Serial.println("Audio: stopped");
+}
+
+static void sleepNowSeconds(uint32_t seconds) {
+    Serial.printf("Sleeping for %lu seconds...\n", (unsigned long)seconds);
+    Serial.flush();
+    esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
+    delay(50);
+    esp_deep_sleep_start();
+}
+
+static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSleepSeconds) {
+    time_t now = time(nullptr);
+    if (now <= 1577836800) {  // time invalid
+        sleepNowSeconds(fallback_seconds);
+    }
+
+    uint32_t sec = (uint32_t)(now % 60);
+    uint32_t sleep_s = 60 - sec;
+    if (sleep_s == 0) sleep_s = 60;
+    // Avoid very short sleeps (USB/serial jitter); skip to next minute
+    if (sleep_s < 5) sleep_s += 60;
+    // Sanity clamp
+    if (sleep_s > 120) sleep_s = fallback_seconds;
+
+    Serial.printf("Sleeping until next minute: %lu seconds (sec=%lu)\n",
+                  (unsigned long)sleep_s, (unsigned long)sec);
+    sleepNowSeconds(sleep_s);
+}
+
+#if WIFI_ENABLED
+static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
+    time_t now = time(nullptr);
+    if (now > 1577836800) {  // 2020-01-01
+        return true;
+    }
+
+    // Load creds (if any) directly from NVS and try NTP.
+    // (Don't call wifiLoadCredentials() here since it's defined later in this file.)
+    Preferences p;
+    p.begin("wifi", true);
+    String ssid = p.getString("ssid", "");
+    String psk = p.getString("psk", "");
+    p.end();
+
+    if (ssid.length() == 0) {
+        Serial.println("Time invalid and no WiFi credentials saved; cannot NTP sync.");
+        return false;
+    }
+
+    Serial.printf("Time invalid; syncing NTP via WiFi SSID '%s'...\n", ssid.c_str());
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), psk.c_str());
+
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
+        delay(250);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi connect failed; cannot NTP sync.");
+        return false;
+    }
+
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+
+    start = millis();
+    while ((millis() - start) < timeout_ms) {
+        now = time(nullptr);
+        if (now > 1577836800) {
+            struct tm tm_utc;
+            gmtime_r(&now, &tm_utc);
+            char buf[32];
+            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+            Serial.printf("NTP sync OK: %s\n", buf);
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+            return true;
+        }
+        delay(250);
+    }
+
+    Serial.println("NTP sync timed out; continuing with invalid time.");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return false;
+}
+#else
+static bool ensureTimeValid(uint32_t timeout_ms = 0) {
+    (void)timeout_ms;
+    return (time(nullptr) > 1577836800);
+}
+#endif
+
+static void auto_cycle_task(void* arg) {
+    (void)arg;
+    g_cycle_count++;
+    Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
+
+    const bool time_ok = ensureTimeValid();
+
+    uint32_t sd_ms = 0, dec_ms = 0;
+#if SDMMC_ENABLED
+    bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+#else
+    bool ok = false;
+    Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");
+#endif
+    Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
+    if (!ok) {
+        Serial.println("PNG draw failed; sleeping anyway");
+        if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        sleepNowSeconds(kCycleSleepSeconds);
+    }
+
+    // Overlay time/date
+    time_t now = time(nullptr);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+
+    char timeBuf[16];
+    char dateBuf[32];
+    bool timeValid = (now > 1577836800); // after 2020-01-01
+    if (timeValid) {
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
+        strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tm_utc);
+    } else {
+        snprintf(timeBuf, sizeof(timeBuf), "--:--");
+        snprintf(dateBuf, sizeof(dateBuf), "time not set");
+    }
+
+    // Draw outlined text like the demo
+    const int16_t cx = display.width() / 2;
+    const int16_t cy = display.height() / 2;
+    ttf.drawTextAlignedOutlined(cx, cy - 80, timeBuf, 160.0f,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 3);
+    ttf.drawTextAlignedOutlined(cx, cy + 60, dateBuf, 48.0f,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+
+    // Brief beep
+    (void)audio_beep(880, 120);
+    audio_stop();
+
+    // Refresh display
+    Serial.println("Updating display (e-ink refresh)...");
+    uint32_t refreshStart = millis();
+    display.update();
+    uint32_t refreshMs = millis() - refreshStart;
+    Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
+
+    if (time_ok) {
+        sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+    }
+    sleepNowSeconds(kCycleSleepSeconds);
+}
 
 // ============================================================================
 // WiFi Functions
@@ -1061,6 +1554,285 @@ void bmpListFiles(const char* dirname = "/") {
     Serial.println("=====================================\n");
 }
 
+// Count PNG files in a directory using FatFs (returns count, stores paths in array if provided)
+int pngCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0) {
+    String fatfsPath = "0:";
+    if (strcmp(dirname, "/") != 0) {
+        fatfsPath += dirname;
+    }
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, fatfsPath.c_str());
+    if (res != FR_OK) {
+        res = f_opendir(&dir, dirname);
+        if (res != FR_OK) {
+            return 0;
+        }
+    }
+
+    int count = 0;
+    while (true) {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK || fno.fname[0] == 0) break;
+        if (fno.fattrib & AM_DIR) continue;
+
+        String name = String(fno.fname);
+        String lower = name;
+        lower.toLowerCase();
+        if (lower.endsWith(".png")) {
+            if (paths && count < maxCount) {
+                if (strcmp(dirname, "/") == 0) paths[count] = "/" + name;
+                else paths[count] = String(dirname) + "/" + name;
+            }
+            count++;
+        }
+    }
+    f_closedir(&dir);
+    return count;
+}
+
+// Load a random PNG from SD card and display it (timed)
+void pngLoadRandom(const char* dirname = "/") {
+    Serial.println("\n=== Loading Random PNG ===");
+    uint32_t totalStart = millis();
+
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted. Mounting...");
+        if (!sdInitDirect(false)) {
+            Serial.println("Failed to mount SD card!");
+            return;
+        }
+    }
+
+    int pngCount = pngCountFiles(dirname);
+    if (pngCount == 0) {
+        Serial.printf("No PNG files found in %s\n", dirname);
+        Serial.println("Tip: Place some .png files on the SD card root");
+        return;
+    }
+    Serial.printf("Found %d PNG files\n", pngCount);
+
+    int maxFiles = min(pngCount, 100);
+    String* paths = new String[maxFiles];
+    if (!paths) {
+        Serial.println("Failed to allocate path array!");
+        return;
+    }
+    pngCountFiles(dirname, paths, maxFiles);
+
+    srand(millis());
+    int randomIndex = rand() % maxFiles;
+    String selectedPath = paths[randomIndex];
+    delete[] paths;
+
+    Serial.printf("Selected: %s\n", selectedPath.c_str());
+    String fatfsPath = "0:" + selectedPath;
+
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("f_stat failed for %s: %d\n", fatfsPath.c_str(), res);
+        return;
+    }
+    size_t fileSize = fno.fsize;
+    Serial.printf("File size: %zu bytes (%.2f MB)\n", fileSize, fileSize / (1024.0 * 1024.0));
+
+    FIL pngFile;
+    res = f_open(&pngFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("f_open failed for %s: %d\n", fatfsPath.c_str(), res);
+        return;
+    }
+
+    uint32_t loadStart = millis();
+    uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!pngData) {
+        Serial.println("Failed to allocate PSRAM buffer for PNG!");
+        f_close(&pngFile);
+        return;
+    }
+
+    UINT bytesRead = 0;
+    res = f_read(&pngFile, pngData, fileSize, &bytesRead);
+    f_close(&pngFile);
+    if (res != FR_OK) {
+        Serial.printf("f_read failed: %d\n", res);
+        hal_psram_free(pngData);
+        return;
+    }
+
+    uint32_t loadTime = millis() - loadStart;
+    float loadTimeSec = loadTime / 1000.0f;
+    Serial.printf("SD read: %lu ms (%.2f MB/s)\n",
+                  loadTime,
+                  loadTimeSec > 0 ? (fileSize / 1024.0 / 1024.0) / loadTimeSec : 0.0f);
+    if (bytesRead != fileSize) {
+        Serial.printf("Warning: Only read %u of %u bytes\n", (unsigned)bytesRead, (unsigned)fileSize);
+    }
+
+    Serial.printf("PNG dithering: %s\n", pngLoader.getDithering() ? "ON" : "off");
+    Serial.println("Acceleration: row-wise mapping, PPA rotation (in display.update())");
+
+    uint32_t drawStart = millis();
+    display.clear(EL133UF1_WHITE);
+    PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
+    uint32_t drawTime = millis() - drawStart;
+
+    hal_psram_free(pngData);
+
+    if (pres != PNG_OK) {
+        Serial.printf("PNG draw error: %s\n", pngLoader.getErrorString(pres));
+        return;
+    }
+    Serial.printf("PNG decode+draw: %lu ms\n", drawTime);
+
+    Serial.println("Updating display (20-30s for e-ink refresh)...");
+    uint32_t refreshStart = millis();
+    display.update();
+    uint32_t refreshTime = millis() - refreshStart;
+    Serial.printf("Display refresh: %lu ms\n", refreshTime);
+
+    Serial.printf("Total time: %lu ms (%.1f s)\n",
+                  millis() - totalStart, (millis() - totalStart) / 1000.0);
+    Serial.println("Done!");
+}
+
+// List all PNG files on SD card using FatFs native functions
+void pngListFiles(const char* dirname = "/") {
+    Serial.println("\n=== PNG Files on SD Card (FatFs) ===");
+
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted!");
+        return;
+    }
+
+    String fatfsPath = "0:";
+    if (strcmp(dirname, "/") != 0) {
+        fatfsPath += dirname;
+    }
+
+    Serial.printf("Scanning: %s\n", fatfsPath.c_str());
+
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, fatfsPath.c_str());
+    if (res != FR_OK) {
+        Serial.printf("f_opendir failed: %d\n", res);
+        Serial.println("Trying path without drive prefix...");
+        res = f_opendir(&dir, dirname);
+        if (res != FR_OK) {
+            Serial.printf("Also failed: %d\n", res);
+            return;
+        }
+    }
+
+    int count = 0;
+    int totalFiles = 0;
+    while (true) {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK) {
+            Serial.printf("f_readdir error: %d\n", res);
+            break;
+        }
+        if (fno.fname[0] == 0) break;
+        if (fno.fattrib & AM_DIR) continue;
+
+        totalFiles++;
+        String name = String(fno.fname);
+        String lower = name;
+        lower.toLowerCase();
+        if (lower.endsWith(".png")) {
+            Serial.printf("  [PNG] %s (%.2f MB)\n", fno.fname, fno.fsize / (1024.0 * 1024.0));
+            count++;
+        }
+    }
+    f_closedir(&dir);
+    Serial.printf("\nTotal files: %d, PNG files: %d\n", totalFiles, count);
+    Serial.println("=====================================\n");
+}
+
+// Draw a random PNG into the display buffer (no display.update), return timing info.
+bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms) {
+    if (out_sd_read_ms) *out_sd_read_ms = 0;
+    if (out_decode_ms) *out_decode_ms = 0;
+
+    if (!sdCardMounted && sd_card == nullptr) {
+        if (!sdInitDirect(false)) {
+            Serial.println("Failed to mount SD card!");
+            return false;
+        }
+    }
+
+    int pngCount = pngCountFiles(dirname);
+    if (pngCount == 0) {
+        Serial.printf("No PNG files found in %s\n", dirname);
+        return false;
+    }
+
+    int maxFiles = min(pngCount, 100);
+    String* paths = new String[maxFiles];
+    if (!paths) return false;
+    pngCountFiles(dirname, paths, maxFiles);
+
+    srand(millis());
+    int randomIndex = rand() % maxFiles;
+    String selectedPath = paths[randomIndex];
+    delete[] paths;
+
+    Serial.printf("Selected PNG: %s\n", selectedPath.c_str());
+    String fatfsPath = "0:" + selectedPath;
+
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("f_stat failed: %d\n", res);
+        return false;
+    }
+    size_t fileSize = fno.fsize;
+
+    FIL pngFile;
+    res = f_open(&pngFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("f_open failed: %d\n", res);
+        return false;
+    }
+
+    uint32_t loadStart = millis();
+    uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!pngData) {
+        Serial.println("Failed to allocate PSRAM buffer for PNG!");
+        f_close(&pngFile);
+        return false;
+    }
+
+    UINT bytesRead = 0;
+    res = f_read(&pngFile, pngData, fileSize, &bytesRead);
+    f_close(&pngFile);
+    uint32_t loadTime = millis() - loadStart;
+    if (out_sd_read_ms) *out_sd_read_ms = loadTime;
+    if (res != FR_OK) {
+        Serial.printf("f_read failed: %d\n", res);
+        hal_psram_free(pngData);
+        return false;
+    }
+    if (bytesRead != fileSize) {
+        Serial.printf("Warning: only read %u/%u bytes\n", (unsigned)bytesRead, (unsigned)fileSize);
+    }
+
+    uint32_t decodeStart = millis();
+    display.clear(EL133UF1_WHITE);
+    PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
+    uint32_t decodeTime = millis() - decodeStart;
+    if (out_decode_ms) *out_decode_ms = decodeTime;
+    hal_psram_free(pngData);
+
+    if (pres != PNG_OK) {
+        Serial.printf("PNG draw error: %s\n", pngLoader.getErrorString(pres));
+        return false;
+    }
+    return true;
+}
+
 #endif // SDMMC_ENABLED
 
 void wifiVersionInfo() {
@@ -1211,6 +1983,10 @@ void drawTTFTest() {
 
 void setup() {
     Serial.begin(115200);
+
+    // Bring up PA enable early (matches known-good ESP-IDF example behavior)
+    pinMode(PIN_CODEC_PA_EN, OUTPUT);
+    digitalWrite(PIN_CODEC_PA_EN, HIGH);
     
     // Check if we woke from deep sleep FIRST (before any delays)
     esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
@@ -1275,8 +2051,50 @@ void setup() {
     // Initialize TTF renderer and BMP loader
     ttf.begin(&display);
     bmpLoader.begin(&display);
+    pngLoader.begin(&display);
+    pngLoader.setDithering(false);  // keep off for speed comparison baseline
     
-    if (!wokeFromSleep) {
+    // Load font once (clock overlay uses it)
+    if (!ttf.fontLoaded()) {
+        if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+            Serial.println("WARNING: Failed to load TTF font");
+        }
+    }
+
+    // Auto cycle: random PNG + time/date overlay + beep + deep sleep
+    if (kAutoCycleEnabled) {
+        bool shouldRun = true;
+        if (!wokeFromSleep) {
+            // Drain any buffered bytes (some terminals send a newline on connect)
+            while (Serial.available()) {
+                (void)Serial.read();
+            }
+            Serial.printf("\nAuto-cycle starts in %lu ms (press '!' to cancel)...\n", (unsigned long)kCycleSerialEscapeMs);
+            uint32_t startWait = millis();
+            while (millis() - startWait < kCycleSerialEscapeMs) {
+                if (Serial.available()) {
+                    char ch = (char)Serial.read();
+                    if (ch == '!') {
+                        shouldRun = false;
+                        break;
+                    }
+                }
+                delay(20);
+            }
+        }
+
+        if (shouldRun) {
+            // Run auto-cycle in a dedicated task with a larger stack than Arduino loopTask,
+            // since SD init and PNG decoding are stack-heavy.
+            xTaskCreatePinnedToCore(auto_cycle_task, "auto_cycle", 16384, nullptr, 5, &g_auto_cycle_task, 0);
+            return; // yield loopTask; auto_cycle_task will deep-sleep the device
+        } else {
+            Serial.println("Auto-cycle cancelled -> staying in interactive mode.");
+        }
+    }
+
+    // Keep legacy test-pattern behavior only when auto-cycle is disabled.
+    if (!wokeFromSleep && !kAutoCycleEnabled) {
         // Cold boot only: draw test pattern and update display
         Serial.printf("Display buffer at: %p\n", display.getBuffer());
         
@@ -1406,6 +2224,19 @@ void setup() {
     }
 #endif
 
+    Serial.println("\nCommands:");
+    Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
+    Serial.println("  Audio:   'A'=start 440Hz tone (logs codec regs), 'a'=stop, '+'/'-'=volume, 'K'=I2C scan");
+    Serial.println("  Time:    'r'=show time, 's'=set time, 'n'=NTP sync (after WiFi)");
+    Serial.println("  System:  'i'=info");
+#if WIFI_ENABLED
+    Serial.println("  WiFi:    'w'=connect, 'W'=set creds, 'q'=scan, 'd'=disconnect, 'x'=status");
+#endif
+#if SDMMC_ENABLED
+    Serial.println("  SD:      'M'/'m'=mount 4/1-bit, 'L'=list, 'I'=info, 'B'=rand BMP, 'G'=rand PNG");
+#endif
+    Serial.println();
+
     Serial.println("\n========================================");
     Serial.println("Ready! Enter command...");
     Serial.println("========================================\n");
@@ -1503,6 +2334,48 @@ void loop() {
         else if (c == 'i' || c == 'I') {
             Serial.println("\n--- Platform Info ---");
             hal_print_info();
+        }
+        else if (c == 'A') {
+            Serial.println("\n--- Audio Tone Start ---");
+            Serial.printf("Codec I2C: SDA=%d SCL=%d addr=0x%02X\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, PIN_CODEC_I2C_ADDR);
+            Serial.printf("I2S pins: MCLK=%d BCLK=%d LRCK=%d DOUT=%d DIN=%d PA_EN=%d\n",
+                          PIN_CODEC_MCLK, PIN_CODEC_BCLK, PIN_CODEC_LRCK, PIN_CODEC_DOUT, PIN_CODEC_DIN, PIN_CODEC_PA_EN);
+            audio_start(true);
+        }
+        else if (c == 'K') {
+            Serial.println("\n--- I2C Scan (codec pins) ---");
+            Serial.printf("Using SDA=%d SCL=%d, scanning I2C0...\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL);
+            g_codec_wire0.end();
+            delay(5);
+            if (g_codec_wire0.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000)) {
+                i2c_scan(g_codec_wire0);
+            } else {
+                Serial.println("I2C0 begin failed");
+            }
+            Serial.println("Scanning I2C1...");
+            g_codec_wire1.end();
+            delay(5);
+            if (g_codec_wire1.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000)) {
+                i2c_scan(g_codec_wire1);
+            } else {
+                Serial.println("I2C1 begin failed");
+            }
+        }
+        else if (c == 'a') {
+            Serial.println("\n--- Audio Tone Stop ---");
+            audio_stop();
+        }
+        else if (c == '+' || c == '=') {
+            g_audio_volume_pct += 5;
+            if (g_audio_volume_pct > 100) g_audio_volume_pct = 100;
+            Serial.printf("Audio volume (UI): %d%% (mapped %d..%d)\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+            (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+        }
+        else if (c == '-') {
+            g_audio_volume_pct -= 5;
+            if (g_audio_volume_pct < 0) g_audio_volume_pct = 0;
+            Serial.printf("Audio volume (UI): %d%% (mapped %d..%d)\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+            (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
         }
         else if (c == 'r' || c == 'R') {
             Serial.println("\n--- Internal RTC Status ---");
@@ -1622,6 +2495,14 @@ void loop() {
         else if (c == 'b') {
             // List BMP files on SD card
             bmpListFiles("/");
+        }
+        else if (c == 'G') {
+            // Load and display a random PNG from SD card
+            pngLoadRandom("/");
+        }
+        else if (c == 'g') {
+            // List PNG files on SD card
+            pngListFiles("/");
         }
         else if (c == 'P') {
             sdPowerCycle();  // Power cycle the SD card

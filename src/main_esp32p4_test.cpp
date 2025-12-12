@@ -207,6 +207,7 @@ static constexpr bool kAutoCycleEnabled = true;
 static constexpr uint32_t kCycleSleepSeconds = 60;
 static constexpr uint32_t kCycleSerialEscapeMs = 2000; // cold boot escape to interactive
 RTC_DATA_ATTR uint32_t g_cycle_count = 0;
+static TaskHandle_t g_auto_cycle_task = nullptr;
 
 static bool i2c_ping(TwoWire& w, uint8_t addr7) {
     w.beginTransmission(addr7);
@@ -481,6 +482,59 @@ static void sleepNowSeconds(uint32_t seconds) {
     esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
     delay(50);
     esp_deep_sleep_start();
+}
+
+static void auto_cycle_task(void* arg) {
+    (void)arg;
+    g_cycle_count++;
+    Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
+
+    uint32_t sd_ms = 0, dec_ms = 0;
+    bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+    Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
+    if (!ok) {
+        Serial.println("PNG draw failed; sleeping anyway");
+        sleepNowSeconds(kCycleSleepSeconds);
+    }
+
+    // Overlay time/date
+    time_t now = time(nullptr);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+
+    char timeBuf[16];
+    char dateBuf[32];
+    bool timeValid = (now > 1577836800); // after 2020-01-01
+    if (timeValid) {
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
+        strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tm_utc);
+    } else {
+        snprintf(timeBuf, sizeof(timeBuf), "--:--");
+        snprintf(dateBuf, sizeof(dateBuf), "time not set");
+    }
+
+    // Draw outlined text like the demo
+    const int16_t cx = display.width() / 2;
+    const int16_t cy = display.height() / 2;
+    ttf.drawTextAlignedOutlined(cx, cy - 80, timeBuf, 160.0f,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 3);
+    ttf.drawTextAlignedOutlined(cx, cy + 60, dateBuf, 48.0f,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+
+    // Brief beep
+    (void)audio_beep(880, 120);
+    audio_stop();
+
+    // Refresh display
+    Serial.println("Updating display (e-ink refresh)...");
+    uint32_t refreshStart = millis();
+    display.update();
+    uint32_t refreshMs = millis() - refreshStart;
+    Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
+
+    sleepNowSeconds(kCycleSleepSeconds);
 }
 
 // ============================================================================
@@ -1932,51 +1986,10 @@ void setup() {
         }
 
         if (shouldRun) {
-            g_cycle_count++;
-            Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
-
-            uint32_t sd_ms = 0, dec_ms = 0;
-            bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
-            Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
-
-            // Overlay time/date
-            time_t now = time(nullptr);
-            struct tm tm_utc;
-            gmtime_r(&now, &tm_utc);
-
-            char timeBuf[16];
-            char dateBuf[32];
-            bool timeValid = (now > 1577836800); // after 2020-01-01
-            if (timeValid) {
-                strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
-                strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tm_utc);
-            } else {
-                snprintf(timeBuf, sizeof(timeBuf), "--:--");
-                snprintf(dateBuf, sizeof(dateBuf), "time not set");
-            }
-
-            // Draw outlined text like the demo
-            const int16_t cx = display.width() / 2;
-            const int16_t cy = display.height() / 2;
-            ttf.drawTextAlignedOutlined(cx, cy - 80, timeBuf, 160.0f,
-                                        EL133UF1_WHITE, EL133UF1_BLACK,
-                                        ALIGN_CENTER, ALIGN_MIDDLE, 3);
-            ttf.drawTextAlignedOutlined(cx, cy + 60, dateBuf, 48.0f,
-                                        EL133UF1_WHITE, EL133UF1_BLACK,
-                                        ALIGN_CENTER, ALIGN_MIDDLE, 2);
-
-            // Brief beep
-            (void)audio_beep(880, 120);
-            audio_stop();
-
-            // Refresh display
-            Serial.println("Updating display (e-ink refresh)...");
-            uint32_t refreshStart = millis();
-            display.update();
-            uint32_t refreshMs = millis() - refreshStart;
-            Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
-
-            sleepNowSeconds(kCycleSleepSeconds);
+            // Run auto-cycle in a dedicated task with a larger stack than Arduino loopTask,
+            // since SD init and PNG decoding are stack-heavy.
+            xTaskCreatePinnedToCore(auto_cycle_task, "auto_cycle", 16384, nullptr, 5, &g_auto_cycle_task, 0);
+            return; // yield loopTask; auto_cycle_task will deep-sleep the device
         } else {
             Serial.println("Auto-cycle cancelled -> staying in interactive mode.");
         }

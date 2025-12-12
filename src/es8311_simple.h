@@ -38,6 +38,9 @@ public:
   bool setMute(bool mute);
   bool setDacVolumeReg(uint8_t reg);           // 0x00..0xFF
   bool setDacVolumePercent(int percent_0_100); // convenience mapping
+  // Map a user-facing 0..100% into a restricted codec percentage range.
+  // Example: map 0..100 -> 50..80 to avoid inaudible/too-loud extremes.
+  bool setDacVolumePercentMapped(int ui_percent_0_100, int min_percent, int max_percent);
 
   // Debug helpers to compare against known-good bring-up sequences
   void setTrace(bool enable) { trace_ = enable; }

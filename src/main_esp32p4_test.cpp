@@ -190,12 +190,15 @@ static ES8311Simple g_codec;
 static i2s_chan_handle_t g_i2s_tx = nullptr;
 static TaskHandle_t g_audio_task = nullptr;
 static volatile bool g_audio_running = false;
-static int g_audio_volume_pct = 90;
+static int g_audio_volume_pct = 50;  // UI percent (0..100), mapped into codec range below
 static bool g_codec_ready = false;
 
 static TwoWire g_codec_wire0(0);
 static TwoWire g_codec_wire1(1);
 static TwoWire* g_codec_wire = nullptr;
+
+static constexpr int kCodecVolumeMinPct = 50; // inaudible below this (empirical)
+static constexpr int kCodecVolumeMaxPct = 80; // too loud above this (empirical)
 
 static bool i2c_ping(TwoWire& w, uint8_t addr7) {
     w.beginTransmission(addr7);
@@ -380,10 +383,9 @@ static bool audio_start() {
         return false;
     }
 
-    // Bring-up: force loud output first, then you can trim with +/-.
-    (void)g_codec.setDacVolumeReg(0xFF);
-    g_audio_volume_pct = 100;
-    Serial.println("ES8311: DAC volume forced to MAX (0xFF) for bring-up");
+    // Use mapped range to match your speaker/amp usable window.
+    (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+    Serial.printf("ES8311: volume UI=%d%% mapped to %d..%d%%\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
 
     if (!g_codec.startDac()) {
         Serial.println("ES8311: start DAC failed");
@@ -1827,14 +1829,14 @@ void loop() {
         else if (c == '+' || c == '=') {
             g_audio_volume_pct += 5;
             if (g_audio_volume_pct > 100) g_audio_volume_pct = 100;
-            Serial.printf("Audio volume: %d%%\n", g_audio_volume_pct);
-            (void)g_codec.setDacVolumePercent(g_audio_volume_pct);
+            Serial.printf("Audio volume (UI): %d%% (mapped %d..%d)\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+            (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
         }
         else if (c == '-') {
             g_audio_volume_pct -= 5;
             if (g_audio_volume_pct < 0) g_audio_volume_pct = 0;
-            Serial.printf("Audio volume: %d%%\n", g_audio_volume_pct);
-            (void)g_codec.setDacVolumePercent(g_audio_volume_pct);
+            Serial.printf("Audio volume (UI): %d%% (mapped %d..%d)\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+            (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
         }
         else if (c == 'r' || c == 'R') {
             Serial.println("\n--- Internal RTC Status ---");

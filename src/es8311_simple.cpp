@@ -200,6 +200,20 @@ bool ES8311Simple::setDacVolumePercent(int percent_0_100) {
   return setDacVolumeReg(reg);
 }
 
+bool ES8311Simple::setDacVolumePercentMapped(int ui_percent_0_100, int min_percent, int max_percent) {
+  if (min_percent < 0) min_percent = 0;
+  if (max_percent > 100) max_percent = 100;
+  if (max_percent < min_percent) {
+    int tmp = min_percent;
+    min_percent = max_percent;
+    max_percent = tmp;
+  }
+  if (ui_percent_0_100 < 0) ui_percent_0_100 = 0;
+  if (ui_percent_0_100 > 100) ui_percent_0_100 = 100;
+  const int mapped = min_percent + (ui_percent_0_100 * (max_percent - min_percent)) / 100;
+  return setDacVolumePercent(mapped);
+}
+
 bool ES8311Simple::dumpRegisters(uint8_t start_reg, uint8_t end_reg) {
   if (start_reg > end_reg) return false;
   for (uint16_t r = start_reg; r <= end_reg; r++) {

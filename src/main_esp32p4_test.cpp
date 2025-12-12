@@ -131,10 +131,10 @@
 // Override with build flags if your wiring differs.
 // ES8311 address is commonly 0x18 (7-bit). (0x30 is the 8-bit write address.)
 #ifndef PIN_CODEC_I2C_SDA
-#define PIN_CODEC_I2C_SDA  8
+#define PIN_CODEC_I2C_SDA  31
 #endif
 #ifndef PIN_CODEC_I2C_SCL
-#define PIN_CODEC_I2C_SCL  7
+#define PIN_CODEC_I2C_SCL  30
 #endif
 #ifndef PIN_CODEC_I2C_ADDR
 #define PIN_CODEC_I2C_ADDR 0x18

@@ -657,23 +657,25 @@ static void auto_cycle_task(void* arg) {
     
     TextPlacementRegion bestPos;
     int16_t blockW, blockH;
+    int16_t timeW, timeH, dateW, dateH;  // Declare outside loop
     int attempts = 0;
     const int maxAttempts = 5;  // Try up to 5 different sizes
+    uint32_t analysisStart;  // Declare for reuse
     
     do {
         attempts++;
         
-        int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
-        int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
-        int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
-        int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
+        timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+        timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+        dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+        dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
 
         // Combined block dimensions (time + gap + date)
         blockW = max(timeW, dateW);
         blockH = timeH + gapBetween + dateH;
 
         // Scan the entire display to find the best position for time/date block
-        uint32_t analysisStart = millis();
+        analysisStart = millis();
         bestPos = textPlacement.scanForBestPosition(
             &display, blockW, blockH,
             EL133UF1_WHITE, EL133UF1_BLACK);

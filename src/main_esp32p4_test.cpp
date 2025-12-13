@@ -226,6 +226,11 @@ static TaskHandle_t g_auto_cycle_task = nullptr;
 // Forward declarations (defined later in file under SDMMC_ENABLED)
 #if SDMMC_ENABLED
 bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
+
+// SD card state variables (declared here for use by SD config functions)
+static bool sdCardMounted = false;
+static sdmmc_card_t* sd_card = nullptr;
+static esp_ldo_channel_handle_t ldo_vo4_handle = nullptr;
 #endif
 
 static bool i2c_ping(TwoWire& w, uint8_t addr7) {
@@ -1556,7 +1561,7 @@ void wifiNtpSync() {
 // ============================================================================
 
 #if SDMMC_ENABLED
-static bool sdCardMounted = false;
+// Note: sdCardMounted, sd_card, and ldo_vo4_handle are declared earlier in the file
 
 void sdDiagnostics() {
     Serial.println("\n=== SD Card Pin Diagnostics ===");
@@ -1597,11 +1602,8 @@ void sdDiagnostics() {
     Serial.println("================================\n");
 }
 
-// ESP-IDF based SD card handle for direct initialization
-static sdmmc_card_t* sd_card = nullptr;
-static esp_ldo_channel_handle_t ldo_vo4_handle = nullptr;
-
 // Enable LDO channel 4 (powers external pull-up resistors for SD card)
+// Note: ldo_vo4_handle is declared earlier in the file
 bool enableLdoVO4() {
     if (ldo_vo4_handle != nullptr) {
         Serial.println("LDO_VO4 already enabled");

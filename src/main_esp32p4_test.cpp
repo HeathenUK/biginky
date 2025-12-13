@@ -227,6 +227,7 @@ static TaskHandle_t g_auto_cycle_task = nullptr;
 // Forward declarations (defined later in file under SDMMC_ENABLED)
 #if SDMMC_ENABLED
 bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
+bool sdInitDirect(bool mode1bit = false);
 
 // SD card state variables (declared here for use by SD config functions)
 static bool sdCardMounted = false;

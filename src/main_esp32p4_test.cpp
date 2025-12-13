@@ -180,6 +180,9 @@ TextPlacementAnalyzer textPlacement;
 EL133UF1_BMP bmpLoader;
 EL133UF1_PNG pngLoader;
 
+// Last loaded image filename (for keep-out map lookup)
+static String g_lastImagePath = "";
+
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 
@@ -1702,6 +1705,126 @@ int pngCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0
     return count;
 }
 
+// Load keep-out map for the currently displayed image
+bool loadKeepOutMapForImage() {
+    if (g_lastImagePath.isEmpty()) {
+        Serial.println("[KeepOut] No image path recorded");
+        return false;
+    }
+    
+    // Generate map filename (replace .png with .map)
+    String mapPath = g_lastImagePath;
+    int extPos = mapPath.lastIndexOf('.');
+    if (extPos > 0) {
+        mapPath = mapPath.substring(0, extPos) + ".map";
+    } else {
+        mapPath += ".map";
+    }
+    
+    Serial.println("\n=== Checking for keep-out map ===");
+    Serial.printf("  Image: %s\n", g_lastImagePath.c_str());
+    Serial.printf("  Map:   %s\n", mapPath.c_str());
+    
+    // Check if map file exists
+    String fatfsPath = "0:" + mapPath;
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.println("  Map file not found (using fallback salience detection)");
+        Serial.println("=====================================\n");
+        return false;
+    }
+    
+    Serial.printf("  Map file found: %lu bytes\n", (unsigned long)fno.fsize);
+    
+    // Open map file
+    FIL mapFile;
+    res = f_open(&mapFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("  Failed to open map file: %d\n", res);
+        return false;
+    }
+    
+    // Read header (16 bytes)
+    struct __attribute__((packed)) MapHeader {
+        char magic[5];
+        uint8_t version;
+        uint16_t width;
+        uint16_t height;
+        uint8_t reserved[6];
+    } header;
+    
+    UINT bytesRead = 0;
+    res = f_read(&mapFile, &header, sizeof(header), &bytesRead);
+    if (res != FR_OK || bytesRead != sizeof(header)) {
+        Serial.println("  Failed to read map header");
+        f_close(&mapFile);
+        return false;
+    }
+    
+    // Verify magic
+    if (memcmp(header.magic, "KOMAP", 5) != 0) {
+        Serial.println("  Invalid map file (bad magic)");
+        f_close(&mapFile);
+        return false;
+    }
+    
+    // Check version
+    if (header.version != 1) {
+        Serial.printf("  Unsupported map version: %d\n", header.version);
+        f_close(&mapFile);
+        return false;
+    }
+    
+    Serial.printf("  Map dimensions: %dx%d\n", header.width, header.height);
+    
+    // Calculate bitmap size
+    uint32_t bitmapSize = ((uint32_t)header.width * header.height + 7) / 8;
+    
+    // Allocate bitmap in PSRAM
+    uint8_t* bitmap = (uint8_t*)hal_psram_malloc(bitmapSize);
+    if (!bitmap) {
+        Serial.println("  Failed to allocate PSRAM for map bitmap");
+        f_close(&mapFile);
+        return false;
+    }
+    
+    // Read bitmap data
+    res = f_read(&mapFile, bitmap, bitmapSize, &bytesRead);
+    f_close(&mapFile);
+    
+    if (res != FR_OK || bytesRead != bitmapSize) {
+        Serial.printf("  Failed to read bitmap (got %u of %lu bytes)\n",
+                      (unsigned)bytesRead, (unsigned long)bitmapSize);
+        hal_psram_free(bitmap);
+        return false;
+    }
+    
+    // Reconstruct the full file in memory for the buffer loader
+    size_t fullSize = sizeof(header) + bitmapSize;
+    uint8_t* fullFile = (uint8_t*)malloc(fullSize);
+    if (!fullFile) {
+        Serial.println("  Failed to allocate temp buffer");
+        hal_psram_free(bitmap);
+        return false;
+    }
+    
+    memcpy(fullFile, &header, sizeof(header));
+    memcpy(fullFile + sizeof(header), bitmap, bitmapSize);
+    hal_psram_free(bitmap);
+    
+    // Load map using buffer method
+    bool success = textPlacement.loadKeepOutMapFromBuffer(fullFile, fullSize);
+    free(fullFile);
+    
+    if (success) {
+        Serial.println("  Text placement will avoid ML-detected objects");
+    }
+    Serial.println("=====================================\n");
+    
+    return success;
+}
+
 // Load a random PNG from SD card and display it (timed)
 void pngLoadRandom(const char* dirname = "/") {
     Serial.println("\n=== Loading Random PNG ===");
@@ -1735,6 +1858,9 @@ void pngLoadRandom(const char* dirname = "/") {
     int randomIndex = rand() % maxFiles;
     String selectedPath = paths[randomIndex];
     delete[] paths;
+    
+    // Store path for map lookup
+    g_lastImagePath = selectedPath;
 
     Serial.printf("Selected: %s\n", selectedPath.c_str());
     String fatfsPath = "0:" + selectedPath;
@@ -1796,6 +1922,9 @@ void pngLoadRandom(const char* dirname = "/") {
         return;
     }
     Serial.printf("PNG decode+draw: %lu ms\n", drawTime);
+    
+    // Try to load keep-out map for this image (if available)
+    loadKeepOutMapForImage();
 
     Serial.println("Updating display (20-30s for e-ink refresh)...");
     uint32_t refreshStart = millis();

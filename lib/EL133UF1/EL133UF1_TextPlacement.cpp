@@ -222,6 +222,89 @@ void TextPlacementAnalyzer::clearKeepOutMap() {
     _keepOutMap.height = 0;
 }
 
+bool TextPlacementAnalyzer::loadKeepOutMapFromBuffer(const uint8_t* data, size_t dataSize) {
+    Serial.println("[TextPlacement] Loading keep-out map from buffer...");
+    
+    // Clear any existing map
+    clearKeepOutMap();
+    
+    // Check minimum size (header = 16 bytes)
+    if (dataSize < 16) {
+        Serial.println("[TextPlacement] ERROR: Buffer too small for header");
+        return false;
+    }
+    
+    // Read header
+    struct __attribute__((packed)) MapHeader {
+        char magic[5];
+        uint8_t version;
+        uint16_t width;
+        uint16_t height;
+        uint8_t reserved[6];
+    };
+    
+    const MapHeader* header = (const MapHeader*)data;
+    
+    // Verify magic
+    if (memcmp(header->magic, "KOMAP", 5) != 0) {
+        Serial.println("[TextPlacement] ERROR: Invalid map file (bad magic)");
+        return false;
+    }
+    
+    // Check version
+    if (header->version != 1) {
+        Serial.printf("[TextPlacement] ERROR: Unsupported map version: %d\n", header->version);
+        return false;
+    }
+    
+    Serial.printf("[TextPlacement] Map dimensions: %dx%d\n", header->width, header->height);
+    
+    // Calculate bitmap size
+    uint32_t bitmapSize = ((uint32_t)header->width * header->height + 7) / 8;
+    Serial.printf("[TextPlacement] Bitmap size: %lu bytes (%.1f KB)\n", 
+                  bitmapSize, bitmapSize / 1024.0f);
+    
+    // Check buffer has enough data
+    if (dataSize < 16 + bitmapSize) {
+        Serial.printf("[TextPlacement] ERROR: Buffer too small (need %lu, have %zu)\n",
+                      16 + bitmapSize, dataSize);
+        return false;
+    }
+    
+    // Allocate bitmap
+    uint8_t* bitmap = (uint8_t*)malloc(bitmapSize);
+    if (!bitmap) {
+        Serial.println("[TextPlacement] ERROR: Failed to allocate bitmap memory");
+        return false;
+    }
+    
+    // Copy bitmap data
+    memcpy(bitmap, data + 16, bitmapSize);
+    
+    // Store in keep-out map structure
+    _keepOutMap.width = header->width;
+    _keepOutMap.height = header->height;
+    _keepOutMap.bitmap = bitmap;
+    
+    // Calculate coverage statistics
+    uint32_t keepOutPixels = 0;
+    for (uint32_t i = 0; i < bitmapSize; i++) {
+        // Count set bits in each byte
+        uint8_t byte = bitmap[i];
+        while (byte) {
+            keepOutPixels += (byte & 1);
+            byte >>= 1;
+        }
+    }
+    
+    float coverage = (float)keepOutPixels / (header->width * header->height) * 100.0f;
+    Serial.printf("[TextPlacement] Keep-out coverage: %.1f%% (%lu pixels)\n", 
+                  coverage, keepOutPixels);
+    
+    Serial.println("[TextPlacement] Keep-out map loaded successfully!");
+    return true;
+}
+
 TextPlacementAnalyzer::~TextPlacementAnalyzer() {
 }
 

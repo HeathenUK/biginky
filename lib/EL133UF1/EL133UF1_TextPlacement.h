@@ -374,6 +374,18 @@ public:
     #endif
     
     /**
+     * @brief Load keep-out map from a memory buffer (for ESP32-P4 FatFs)
+     * 
+     * Same format as file-based version, but reads from memory buffer.
+     * Useful when using FatFs or when map is already loaded into memory.
+     * 
+     * @param data Pointer to map file data (header + bitmap)
+     * @param dataSize Total size of data buffer
+     * @return true if map loaded successfully
+     */
+    bool loadKeepOutMapFromBuffer(const uint8_t* data, size_t dataSize);
+    
+    /**
      * @brief Clear the loaded keep-out map (frees memory)
      */
     void clearKeepOutMap();

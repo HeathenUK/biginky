@@ -67,9 +67,43 @@ float Spectra6Histogram::percentage(uint8_t spectraCode) const {
 
 TextPlacementAnalyzer::TextPlacementAnalyzer() 
     : _useParallel(true),  // Enable by default on ESP32-P4
-      _keepout()           // No keepout by default
+      _keepout(),          // No keepout by default
+      _numExclusionZones(0)
 {
     initLUT();
+}
+
+// ============================================================================
+// Exclusion Zone Management
+// ============================================================================
+
+bool TextPlacementAnalyzer::addExclusionZone(const ExclusionZone& zone) {
+    if (_numExclusionZones >= MAX_EXCLUSION_ZONES) {
+        Serial.println("[TextPlacement] Warning: Max exclusion zones reached!");
+        return false;
+    }
+    _exclusionZones[_numExclusionZones++] = zone;
+    Serial.printf("[TextPlacement] Added exclusion zone %d: center=(%d,%d) size=%dx%d pad=%d\n",
+                  _numExclusionZones, zone.x, zone.y, zone.width, zone.height, zone.padding);
+    return true;
+}
+
+bool TextPlacementAnalyzer::addExclusionZone(const TextPlacementRegion& region, int16_t padding) {
+    return addExclusionZone(ExclusionZone(region, padding));
+}
+
+void TextPlacementAnalyzer::clearExclusionZones() {
+    _numExclusionZones = 0;
+    Serial.println("[TextPlacement] Cleared all exclusion zones");
+}
+
+bool TextPlacementAnalyzer::overlapsExclusionZone(int16_t x, int16_t y, int16_t w, int16_t h) const {
+    for (int i = 0; i < _numExclusionZones; i++) {
+        if (_exclusionZones[i].overlaps(x, y, w, h)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool TextPlacementAnalyzer::isWithinSafeArea(int16_t displayWidth, int16_t displayHeight,
@@ -86,6 +120,9 @@ bool TextPlacementAnalyzer::isWithinSafeArea(int16_t displayWidth, int16_t displ
     if (right > displayWidth - _keepout.right) return false;
     if (top < _keepout.top) return false;
     if (bottom > displayHeight - _keepout.bottom) return false;
+    
+    // Check against exclusion zones
+    if (overlapsExclusionZone(x, y, w, h)) return false;
     
     return true;
 }
@@ -262,14 +299,31 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
     Serial.printf("[TextPlacement] Scanning grid: %dx%d (%d positions), step=%dx%d\n",
                   numX, numY, maxCandidates, gridStepX, gridStepY);
     
-    // Generate grid candidates
+    // Generate grid candidates, skipping those that overlap exclusion zones
     TextPlacementRegion* candidates = new TextPlacementRegion[maxCandidates];
     int numCandidates = 0;
+    int skippedByExclusion = 0;
     
     for (int16_t cy = safeTop; cy <= safeBottom && numCandidates < maxCandidates; cy += gridStepY) {
         for (int16_t cx = safeLeft; cx <= safeRight && numCandidates < maxCandidates; cx += gridStepX) {
+            // Check if this position overlaps any exclusion zone
+            if (overlapsExclusionZone(cx, cy, blockWidth, blockHeight)) {
+                skippedByExclusion++;
+                continue;  // Skip this position entirely
+            }
             candidates[numCandidates++] = {cx, cy, blockWidth, blockHeight, 0.0f};
         }
+    }
+    
+    if (skippedByExclusion > 0) {
+        Serial.printf("[TextPlacement] Skipped %d positions due to exclusion zones\n", skippedByExclusion);
+    }
+    
+    if (numCandidates == 0) {
+        Serial.println("[TextPlacement] Warning: All positions excluded! Using center.");
+        delete[] candidates;
+        return TextPlacementRegion{(int16_t)(dispW/2), (int16_t)(dispH/2), 
+                                   blockWidth, blockHeight, 0.0f};
     }
     
     // Score all candidates (uses parallel scoring on ESP32-P4 if enabled)

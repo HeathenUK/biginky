@@ -126,6 +126,48 @@ struct KeepoutMargins {
 };
 
 /**
+ * @brief Exclusion zone - a rectangular area to avoid when placing text
+ * 
+ * Used to prevent text elements from overlapping each other.
+ * Coordinates are center-based with width/height, matching TextPlacementRegion.
+ */
+struct ExclusionZone {
+    int16_t x;           ///< Center X
+    int16_t y;           ///< Center Y
+    int16_t width;       ///< Width of zone
+    int16_t height;      ///< Height of zone
+    int16_t padding;     ///< Extra padding around the zone
+    
+    ExclusionZone() : x(0), y(0), width(0), height(0), padding(0) {}
+    ExclusionZone(int16_t cx, int16_t cy, int16_t w, int16_t h, int16_t pad = 50)
+        : x(cx), y(cy), width(w), height(h), padding(pad) {}
+    
+    // Create from a TextPlacementRegion
+    ExclusionZone(const TextPlacementRegion& region, int16_t pad = 50)
+        : x(region.x), y(region.y), width(region.width), height(region.height), padding(pad) {}
+    
+    // Get bounds including padding
+    int16_t left() const { return x - width/2 - padding; }
+    int16_t right() const { return x + width/2 + padding; }
+    int16_t top() const { return y - height/2 - padding; }
+    int16_t bottom() const { return y + height/2 + padding; }
+    
+    // Check if a rectangle overlaps this zone
+    bool overlaps(int16_t cx, int16_t cy, int16_t w, int16_t h) const {
+        int16_t otherLeft = cx - w/2;
+        int16_t otherRight = cx + w/2;
+        int16_t otherTop = cy - h/2;
+        int16_t otherBottom = cy + h/2;
+        
+        return !(otherRight < left() || otherLeft > right() ||
+                 otherBottom < top() || otherTop > bottom());
+    }
+};
+
+/// Maximum number of exclusion zones
+static const int MAX_EXCLUSION_ZONES = 8;
+
+/**
  * @brief Intelligent text placement analyzer
  * 
  * Analyzes framebuffer regions to find optimal text placement positions.
@@ -173,6 +215,51 @@ public:
      * @param enable True to use both cores for analysis
      */
     void setParallelMode(bool enable) { _useParallel = enable; }
+    
+    // ========================================================================
+    // Exclusion Zones - prevent text overlap
+    // ========================================================================
+    
+    /**
+     * @brief Add an exclusion zone where text should not be placed
+     * 
+     * Use this after placing text to prevent subsequent text from overlapping.
+     * The zone includes padding around the actual text bounds.
+     * 
+     * @param zone Exclusion zone to add
+     * @return true if added, false if max zones reached
+     */
+    bool addExclusionZone(const ExclusionZone& zone);
+    
+    /**
+     * @brief Add exclusion zone from a placed text region
+     * @param region The region where text was placed
+     * @param padding Extra padding around the region (default 50px)
+     * @return true if added, false if max zones reached
+     */
+    bool addExclusionZone(const TextPlacementRegion& region, int16_t padding = 50);
+    
+    /**
+     * @brief Clear all exclusion zones
+     * 
+     * Call this at the start of a new frame/layout session.
+     */
+    void clearExclusionZones();
+    
+    /**
+     * @brief Get number of active exclusion zones
+     */
+    int getExclusionZoneCount() const { return _numExclusionZones; }
+    
+    /**
+     * @brief Check if a region overlaps any exclusion zone
+     * @param x Center X
+     * @param y Center Y
+     * @param w Width
+     * @param h Height
+     * @return true if overlaps any exclusion zone
+     */
+    bool overlapsExclusionZone(int16_t x, int16_t y, int16_t w, int16_t h) const;
     
     /**
      * @brief Check if a region fits within the safe area (outside keepout)
@@ -505,6 +592,10 @@ private:
     ScoringWeights _weights;
     KeepoutMargins _keepout;
     bool _useParallel;
+    
+    // Exclusion zones - areas where previous text has been placed
+    ExclusionZone _exclusionZones[MAX_EXCLUSION_ZONES];
+    int _numExclusionZones;
     
     // Luminance lookup table for fast ARGB analysis
     static uint8_t _argbToLuminance[256];  // Green channel to luminance

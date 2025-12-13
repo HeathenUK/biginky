@@ -615,6 +615,9 @@ static void auto_cycle_task(void* arg) {
     // Set keepout margins (areas not visible to user due to bezel/frame)
     textPlacement.setKeepout(100);  // 100px margin on all sides
     
+    // Clear any previous exclusion zones (fresh start for this frame)
+    textPlacement.clearExclusionZones();
+    
     // Get text dimensions for both time and date
     const float timeFontSize = 160.0f;
     const float dateFontSize = 48.0f;
@@ -637,11 +640,6 @@ static void auto_cycle_task(void* arg) {
         EL133UF1_WHITE, EL133UF1_BLACK);
     Serial.printf("Time/date placement scan: %lu ms (score=%.2f, pos=%d,%d)\n",
                   millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
-    
-    // For reference in quote placement
-    const int16_t cx = display.width() / 2;
-    const int16_t cy = display.height() / 2;
-    (void)cx; (void)cy;
 
     // Calculate individual positions relative to the chosen block center
     int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
@@ -654,6 +652,10 @@ static void auto_cycle_task(void* arg) {
     ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    
+    // Add the time/date block as an exclusion zone so quote won't overlap
+    // Padding of 50px ensures some breathing room between elements
+    textPlacement.addExclusionZone(bestPos, 50);
 
     // ================================================================
     // QUOTE - Intelligently positioned with automatic line wrapping
@@ -700,6 +702,9 @@ static void auto_cycle_task(void* arg) {
     textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
                             quoteFontSize, authorFontSize,
                             EL133UF1_WHITE, EL133UF1_BLACK, 2);
+    
+    // Add quote as exclusion zone for any future text elements (e.g., battery %)
+    textPlacement.addExclusionZone(quoteLayout.position, 50);
 
     // Brief beep
     (void)audio_beep(880, 120);

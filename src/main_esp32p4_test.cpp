@@ -40,7 +40,10 @@
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
 #include "EL133UF1_TextPlacement.h"
+
+#include "fonts/dancing.h"
 #include "fonts/opensans.h"
+
 #include "es8311_simple.h"
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
 #include <time.h>
@@ -160,6 +163,8 @@
 #ifndef PIN_CODEC_PA_EN
 #define PIN_CODEC_PA_EN 53   // PA_Ctrl (active high)
 #endif
+
+#define PIN_USER_LED 7
 
 // ============================================================================
 // Global objects
@@ -2328,6 +2333,9 @@ void setup() {
     // Bring up PA enable early (matches known-good ESP-IDF example behavior)
     pinMode(PIN_CODEC_PA_EN, OUTPUT);
     digitalWrite(PIN_CODEC_PA_EN, HIGH);
+
+    pinMode(PIN_USER_LED, OUTPUT);
+    digitalWrite(PIN_USER_LED, LOW);    
     
     // Check if we woke from deep sleep FIRST (before any delays)
     esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
@@ -2397,7 +2405,7 @@ void setup() {
     
     // Load font once (clock overlay uses it)
     if (!ttf.fontLoaded()) {
-        if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+        if (!ttf.loadFont(dancing_otf, dancing_otf_len)) {
             Serial.println("WARNING: Failed to load TTF font");
         }
     }

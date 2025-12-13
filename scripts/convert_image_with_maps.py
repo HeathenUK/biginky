@@ -310,17 +310,17 @@ def process_image(image_file):
         base = os.path.splitext(image_file)[0] + '_' + display_mode + ('_' + dither_label if dither_label else '') + '_output'
 
         # Save converted image
-        quantized_rgb.save(base + '.bmp')
+        # quantized_rgb.save(base + '.bmp')  # Disabled - BMP no longer needed
         quantized_p.save(base + '.png', optimize=True)
 
         # Save keep-out map if generated
         if keep_out_mask is not None:
             save_keepout_map(keep_out_mask, base + '.map', verbose=args.verbose)
             if args.verbose:
-                print(f'  Saved: {base}.bmp, {base}.png, {base}.map')
+                print(f'  Saved: {base}.png, {base}.map')
         else:
             if args.verbose:
-                print(f'  Saved: {base}.bmp, {base}.png')
+                print(f'  Saved: {base}.png')
 
         print(f'Successfully converted {image_file}')
 

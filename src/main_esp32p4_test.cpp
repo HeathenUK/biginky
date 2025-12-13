@@ -668,12 +668,23 @@ static void auto_cycle_task(void* arg) {
         EL133UF1_WHITE, EL133UF1_BLACK);
     Serial.printf("Time/date placement scan: %lu ms (score=%.2f, pos=%d,%d)\n",
                   millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
+    
+    // Debug: show what area was checked for keep-out
+    int16_t checkX = bestPos.x - blockW/2;
+    int16_t checkY = bestPos.y - blockH/2;
+    Serial.printf("[DEBUG] Time/Date block checked: x=%d, y=%d, w=%d, h=%d (center=%d,%d)\n",
+                  checkX, checkY, blockW, blockH, bestPos.x, bestPos.y);
 
     // Calculate individual positions relative to the chosen block center
     int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
     int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
 
     // Draw time and date at best position
+    Serial.printf("[DEBUG] Drawing time at (%d,%d) with size %.0f, outline %d\n", 
+                  bestPos.x, timeY, timeFontSize, timeOutline);
+    Serial.printf("[DEBUG] Drawing date at (%d,%d) with size %.0f, outline %d\n", 
+                  bestPos.x, dateY, dateFontSize, dateOutline);
+    
     ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
@@ -2081,6 +2092,7 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     
     // Debug: visualize keep-out areas
     if (mapLoaded) {
+        Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
         textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
     }
     

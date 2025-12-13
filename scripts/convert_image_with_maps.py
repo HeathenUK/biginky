@@ -109,12 +109,22 @@ def detect_objects_yolo(img, confidence=0.3, expand_margin=50, use_segmentation=
     # Convert PIL to numpy
     img_np = np.array(img)
     
+    # Get model name from environment or use default
+    # Models: n=nano (fastest), s=small, m=medium, l=large, x=xlarge (most accurate)
+    model_size = os.environ.get('YOLO_MODEL_SIZE', 'n')
+    
     # Run YOLO detection (try segmentation model if requested)
     try:
         if use_segmentation:
-            model = YOLO('yolov8n-seg.pt')  # Segmentation model
+            model_name = f'yolov8{model_size}-seg.pt'
+            model = YOLO(model_name)  # Segmentation model
+            if verbose:
+                print(f"    Using model: {model_name}")
         else:
-            model = YOLO('yolov8n.pt')  # Detection model
+            model_name = f'yolov8{model_size}.pt'
+            model = YOLO(model_name)  # Detection model
+            if verbose:
+                print(f"    Using model: {model_name}")
     except Exception as e:
         if verbose:
             print(f"  ERROR: Failed to load YOLO model: {e}")
@@ -275,6 +285,8 @@ parser.add_argument('--map-expand', type=int, default=50,
                     help='Pixels to expand around detected objects (default: 50)')
 parser.add_argument('--map-method', choices=['segmentation', 'boxes'], default='segmentation',
                     help='Detection method: segmentation (precise, follows outline) or boxes (faster, rectangular)')
+parser.add_argument('--map-model', choices=['n', 's', 'm', 'l', 'x'], default='n',
+                    help='YOLO model size: n=nano (fast), s=small, m=medium, l=large, x=xlarge (accurate, default: n)')
 parser.add_argument('--verbose', action='store_true',
                     help='Print detailed processing information')
 
@@ -322,6 +334,8 @@ def process_image(image_file):
         # ML object detection (before color processing for better detection)
         keep_out_mask = None
         if args.generate_maps:
+            # Set model size via environment variable (detect_objects_yolo reads it)
+            os.environ['YOLO_MODEL_SIZE'] = args.map_model
             keep_out_mask = detect_objects_yolo(
                 resized_image,
                 confidence=args.map_confidence,

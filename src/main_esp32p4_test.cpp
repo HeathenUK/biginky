@@ -676,8 +676,8 @@ static void auto_cycle_task(void* arg) {
     // Select a random quote
     const Quote& selectedQuote = quotes[random(numQuotes)];
     
-    const float quoteFontSize = 32.0f;
-    const float authorFontSize = 24.0f;
+    const float quoteFontSize = 48.0f;
+    const float authorFontSize = 32.0f;
     
     // Scan the entire display to find the best quote position
     // This uses a grid-based search that evaluates many more positions than

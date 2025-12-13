@@ -1759,7 +1759,7 @@ void sdPowerCycle() {
 }
 
 // Direct ESP-IDF SD card initialization with internal pull-ups
-bool sdInitDirect(bool mode1bit = false) {
+bool sdInitDirect(bool mode1bit) {
     if (sd_card != nullptr) {
         Serial.println("SD card already mounted (direct)");
         return true;
@@ -1840,7 +1840,7 @@ void sdUnmountDirect() {
     Serial.println("SD card unmounted");
 }
 
-bool sdInit(bool mode1bit = false) {
+bool sdInit(bool mode1bit) {
     if (sdCardMounted) {
         Serial.println("SD card already mounted");
         return true;

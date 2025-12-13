@@ -39,6 +39,7 @@
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
+#include "EL133UF1_TextPlacement.h"
 #include "fonts/opensans.h"
 #include "es8311_simple.h"
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
@@ -171,6 +172,9 @@ EL133UF1 display(&displaySPI);
 
 // TTF font renderer
 EL133UF1_TTF ttf;
+
+// Intelligent text placement analyzer
+TextPlacementAnalyzer textPlacement;
 
 // BMP image loader
 EL133UF1_BMP bmpLoader;
@@ -592,31 +596,138 @@ static void auto_cycle_task(void* arg) {
         sleepNowSeconds(kCycleSleepSeconds);
     }
 
-    // Overlay time/date
+    // Overlay time/date with intelligent positioning
     time_t now = time(nullptr);
     struct tm tm_utc;
     gmtime_r(&now, &tm_utc);
 
     char timeBuf[16];
-    char dateBuf[32];
+    char dateBuf[48];  // "Saturday 13th of December 2025" needs ~35 chars
     bool timeValid = (now > 1577836800); // after 2020-01-01
     if (timeValid) {
         strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
-        strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tm_utc);
+        
+        // Format date as "Saturday 13th of December 2025"
+        char dayName[12], monthName[12];
+        strftime(dayName, sizeof(dayName), "%A", &tm_utc);      // Full day name
+        strftime(monthName, sizeof(monthName), "%B", &tm_utc);  // Full month name
+        
+        int day = tm_utc.tm_mday;
+        int year = tm_utc.tm_year + 1900;
+        
+        // Determine ordinal suffix (1st, 2nd, 3rd, 4th, etc.)
+        const char* suffix;
+        if (day >= 11 && day <= 13) {
+            suffix = "th";  // 11th, 12th, 13th are special cases
+        } else {
+            switch (day % 10) {
+                case 1: suffix = "st"; break;
+                case 2: suffix = "nd"; break;
+                case 3: suffix = "rd"; break;
+                default: suffix = "th"; break;
+            }
+        }
+        
+        snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
+                 dayName, day, suffix, monthName, year);
     } else {
         snprintf(timeBuf, sizeof(timeBuf), "--:--");
         snprintf(dateBuf, sizeof(dateBuf), "time not set");
     }
 
-    // Draw outlined text like the demo
-    const int16_t cx = display.width() / 2;
-    const int16_t cy = display.height() / 2;
-    ttf.drawTextAlignedOutlined(cx, cy - 80, timeBuf, 160.0f,
+    // Set keepout margins (areas not visible to user due to bezel/frame)
+    textPlacement.setKeepout(100);  // 100px margin on all sides
+    
+    // Clear any previous exclusion zones (fresh start for this frame)
+    textPlacement.clearExclusionZones();
+    
+    // Get text dimensions for both time and date
+    const float timeFontSize = 160.0f;
+    const float dateFontSize = 48.0f;
+    const int16_t gapBetween = 20;  // Gap between time and date
+
+    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize);
+    int16_t timeH = ttf.getTextHeight(timeFontSize);
+    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize);
+    int16_t dateH = ttf.getTextHeight(dateFontSize);
+
+    // Combined block dimensions (time + gap + date)
+    int16_t blockW = max(timeW, dateW);
+    int16_t blockH = timeH + gapBetween + dateH;
+
+    // Scan the entire display to find the best position for time/date block
+    // Grid scanning evaluates many positions across the safe area
+    uint32_t analysisStart = millis();
+    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
+        &display, blockW, blockH,
+        EL133UF1_WHITE, EL133UF1_BLACK);
+    Serial.printf("Time/date placement scan: %lu ms (score=%.2f, pos=%d,%d)\n",
+                  millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
+
+    // Calculate individual positions relative to the chosen block center
+    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
+    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
+
+    // Draw time and date at best position
+    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
-    ttf.drawTextAlignedOutlined(cx, cy + 60, dateBuf, 48.0f,
+    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    
+    // Add the time/date block as an exclusion zone so quote won't overlap
+    // Padding of 50px ensures some breathing room between elements
+    textPlacement.addExclusionZone(bestPos, 50);
+
+    // ================================================================
+    // QUOTE - Intelligently positioned with automatic line wrapping
+    // ================================================================
+    
+    // Collection of quotes with their authors
+    using Quote = TextPlacementAnalyzer::Quote;
+    static const Quote quotes[] = {
+        {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
+        {"The only way to do great work is to love what you do", "Steve Jobs"},
+        {"In the middle of difficulty lies opportunity", "Albert Einstein"},
+        {"Be yourself; everyone else is already taken", "Oscar Wilde"},
+        {"The future belongs to those who believe in the beauty of their dreams", "Eleanor Roosevelt"},
+        {"It is during our darkest moments that we must focus to see the light", "Aristotle"},
+        {"The best time to plant a tree was 20 years ago. The second best time is now", "Chinese Proverb"},
+        {"Life is what happens when you're busy making other plans", "John Lennon"},
+    };
+    static const int numQuotes = sizeof(quotes) / sizeof(quotes[0]);
+    
+    // Select a random quote
+    const Quote& selectedQuote = quotes[random(numQuotes)];
+    
+    const float quoteFontSize = 48.0f;
+    const float authorFontSize = 32.0f;
+    
+    // Scan the entire display to find the best quote position
+    // This uses a grid-based search that evaluates many more positions than
+    // the old fixed-candidate approach, finding empty areas like the left
+    // quarter of the frame that might otherwise be missed.
+    analysisStart = millis();
+    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
+        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
+        EL133UF1_WHITE, EL133UF1_BLACK,
+        3,   // maxLines: try up to 3 lines
+        3);  // minWordsPerLine: at least 3 words per line
+    
+    Serial.printf("Quote placement: %lu ms (score=%.2f, pos=%d,%d, %d lines)\n",
+                  millis() - analysisStart, quoteLayout.position.score, 
+                  quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
+    Serial.printf("  Quote: \"%s\"\n", quoteLayout.wrappedQuote);
+    Serial.printf("  Author: %s\n", selectedQuote.author);
+    
+    // Draw the quote with author using the helper function
+    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
+                            quoteFontSize, authorFontSize,
+                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
+    
+    // Add quote as exclusion zone for any future text elements (e.g., battery %)
+    textPlacement.addExclusionZone(quoteLayout.position, 50);
 
     // Brief beep
     (void)audio_beep(880, 120);

@@ -602,11 +602,34 @@ static void auto_cycle_task(void* arg) {
     gmtime_r(&now, &tm_utc);
 
     char timeBuf[16];
-    char dateBuf[32];
+    char dateBuf[48];  // "Saturday 13th of December 2025" needs ~35 chars
     bool timeValid = (now > 1577836800); // after 2020-01-01
     if (timeValid) {
         strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
-        strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &tm_utc);
+        
+        // Format date as "Saturday 13th of December 2025"
+        char dayName[12], monthName[12];
+        strftime(dayName, sizeof(dayName), "%A", &tm_utc);      // Full day name
+        strftime(monthName, sizeof(monthName), "%B", &tm_utc);  // Full month name
+        
+        int day = tm_utc.tm_mday;
+        int year = tm_utc.tm_year + 1900;
+        
+        // Determine ordinal suffix (1st, 2nd, 3rd, 4th, etc.)
+        const char* suffix;
+        if (day >= 11 && day <= 13) {
+            suffix = "th";  // 11th, 12th, 13th are special cases
+        } else {
+            switch (day % 10) {
+                case 1: suffix = "st"; break;
+                case 2: suffix = "nd"; break;
+                case 3: suffix = "rd"; break;
+                default: suffix = "th"; break;
+            }
+        }
+        
+        snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
+                 dayName, day, suffix, monthName, year);
     } else {
         snprintf(timeBuf, sizeof(timeBuf), "--:--");
         snprintf(dateBuf, sizeof(dateBuf), "time not set");

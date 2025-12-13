@@ -188,6 +188,7 @@ static String g_lastImagePath = "";
 
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
+RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
 
 // ============================================================================
 // Audio: ES8311 + I2S test tone
@@ -2105,9 +2106,14 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     if (!paths) return false;
     pngCountFiles(dirname, paths, maxFiles);
 
-    srand(millis());
-    int randomIndex = rand() % maxFiles;
-    String selectedPath = paths[randomIndex];
+    // Cycle through images sequentially (stored in RTC memory)
+    // This ensures we see all images before repeating, in alphabetical order
+    lastImageIndex = (lastImageIndex + 1) % maxFiles;
+    String selectedPath = paths[lastImageIndex];
+    
+    Serial.printf("Image %lu of %d (cycling alphabetically)\n", 
+                  (unsigned long)(lastImageIndex + 1), maxFiles);
+    
     delete[] paths;
     
     // Store path for keep-out map lookup

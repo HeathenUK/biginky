@@ -786,3 +786,204 @@ void TextPlacementAnalyzer::scoreRegionsParallel(
 }
 
 #endif // SOC_PPA_SUPPORTED
+
+// ============================================================================
+// Text Wrapping and Multi-line Layout
+// ============================================================================
+
+int16_t TextPlacementAnalyzer::wrapText(EL133UF1_TTF* ttf, const char* text, 
+                                         float fontSize, int16_t targetWidth,
+                                         char* output, size_t outputSize,
+                                         int* numLines)
+{
+    if (!ttf || !text || !output || outputSize < 2) {
+        if (numLines) *numLines = 0;
+        return 0;
+    }
+    
+    // If no target width, just copy text as-is
+    if (targetWidth <= 0) {
+        strncpy(output, text, outputSize - 1);
+        output[outputSize - 1] = '\0';
+        if (numLines) *numLines = 1;
+        return ttf->getTextWidth(text, fontSize);
+    }
+    
+    // Split into words
+    const int MAX_WORDS = 64;
+    const char* words[MAX_WORDS];
+    int wordLengths[MAX_WORDS];
+    int wordCount = 0;
+    
+    const char* p = text;
+    while (*p && wordCount < MAX_WORDS) {
+        // Skip leading spaces
+        while (*p == ' ') p++;
+        if (!*p) break;
+        
+        // Find word end
+        words[wordCount] = p;
+        while (*p && *p != ' ') p++;
+        wordLengths[wordCount] = p - words[wordCount];
+        wordCount++;
+    }
+    
+    if (wordCount == 0) {
+        output[0] = '\0';
+        if (numLines) *numLines = 0;
+        return 0;
+    }
+    
+    // Build wrapped text
+    char* out = output;
+    char* outEnd = output + outputSize - 1;
+    int lines = 1;
+    int16_t maxLineWidth = 0;
+    int16_t currentLineWidth = 0;
+    char lineBuffer[256] = {0};
+    int lineBufferLen = 0;
+    
+    for (int i = 0; i < wordCount; i++) {
+        // Build potential line with this word
+        char testLine[256];
+        if (lineBufferLen > 0) {
+            snprintf(testLine, sizeof(testLine), "%s %.*s", lineBuffer, wordLengths[i], words[i]);
+        } else {
+            snprintf(testLine, sizeof(testLine), "%.*s", wordLengths[i], words[i]);
+        }
+        
+        int16_t testWidth = ttf->getTextWidth(testLine, fontSize);
+        
+        if (testWidth <= targetWidth || lineBufferLen == 0) {
+            // Word fits, add to current line
+            strcpy(lineBuffer, testLine);
+            lineBufferLen = strlen(lineBuffer);
+            currentLineWidth = testWidth;
+        } else {
+            // Word doesn't fit, start new line
+            // First, output current line
+            int len = strlen(lineBuffer);
+            if (out + len < outEnd) {
+                memcpy(out, lineBuffer, len);
+                out += len;
+            }
+            if (currentLineWidth > maxLineWidth) maxLineWidth = currentLineWidth;
+            
+            // Add newline
+            if (out < outEnd) *out++ = '\n';
+            lines++;
+            
+            // Start new line with this word
+            snprintf(lineBuffer, sizeof(lineBuffer), "%.*s", wordLengths[i], words[i]);
+            lineBufferLen = strlen(lineBuffer);
+            currentLineWidth = ttf->getTextWidth(lineBuffer, fontSize);
+        }
+    }
+    
+    // Output final line
+    if (lineBufferLen > 0 && out < outEnd) {
+        int len = strlen(lineBuffer);
+        if (out + len < outEnd) {
+            memcpy(out, lineBuffer, len);
+            out += len;
+        }
+        if (currentLineWidth > maxLineWidth) maxLineWidth = currentLineWidth;
+    }
+    
+    *out = '\0';
+    
+    if (numLines) *numLines = lines;
+    return maxLineWidth;
+}
+
+TextPlacementAnalyzer::WrappedTextResult TextPlacementAnalyzer::findBestWrappedPosition(
+    EL133UF1* display, EL133UF1_TTF* ttf,
+    const char* text, float fontSize,
+    const TextPlacementRegion* candidates, int numCandidates,
+    uint8_t textColor, uint8_t outlineColor,
+    int maxLines, int minWordsPerLine)
+{
+    WrappedTextResult bestResult;
+    memset(&bestResult, 0, sizeof(bestResult));
+    bestResult.position.score = -1.0f;
+    
+    if (!display || !ttf || !text || !candidates || numCandidates <= 0) {
+        return bestResult;
+    }
+    
+    // Count words in text
+    int wordCount = 0;
+    const char* p = text;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        wordCount++;
+        while (*p && *p != ' ') p++;
+    }
+    
+    // Get line height for multi-line calculations
+    int16_t lineHeight = ttf->getTextHeight(fontSize);
+    int16_t lineGap = lineHeight / 4;  // 25% of line height as gap
+    
+    // Get full text width for calculating target widths
+    int16_t fullWidth = ttf->getTextWidth(text, fontSize);
+    
+    // Try different numbers of lines
+    int maxPossibleLines = wordCount / minWordsPerLine;
+    if (maxPossibleLines < 1) maxPossibleLines = 1;
+    if (maxPossibleLines > maxLines) maxPossibleLines = maxLines;
+    
+    for (int targetLines = 1; targetLines <= maxPossibleLines; targetLines++) {
+        char wrappedText[512];
+        int actualLines = 0;
+        
+        // Calculate target width for this number of lines
+        // Aim for roughly equal line lengths
+        int16_t targetWidth = (targetLines == 1) ? 0 : (fullWidth / targetLines) + 50;
+        
+        int16_t wrappedWidth = wrapText(ttf, text, fontSize, targetWidth, 
+                                        wrappedText, sizeof(wrappedText), &actualLines);
+        
+        // Calculate block dimensions
+        int16_t blockWidth = wrappedWidth;
+        int16_t blockHeight = actualLines * lineHeight + (actualLines - 1) * lineGap;
+        
+        // Create modified candidates with this block size
+        TextPlacementRegion* modifiedCandidates = new TextPlacementRegion[numCandidates];
+        for (int i = 0; i < numCandidates; i++) {
+            modifiedCandidates[i] = candidates[i];
+            modifiedCandidates[i].width = blockWidth;
+            modifiedCandidates[i].height = blockHeight;
+        }
+        
+        // Find best position for this wrapping
+        TextPlacementRegion bestPos = findBestPosition(
+            display, ttf, wrappedText, fontSize,
+            modifiedCandidates, numCandidates,
+            textColor, outlineColor);
+        
+        delete[] modifiedCandidates;
+        
+        // Check if this is better than our current best
+        if (bestPos.score > bestResult.position.score) {
+            strncpy(bestResult.wrappedText, wrappedText, sizeof(bestResult.wrappedText) - 1);
+            bestResult.wrappedText[sizeof(bestResult.wrappedText) - 1] = '\0';
+            bestResult.width = blockWidth;
+            bestResult.height = blockHeight;
+            bestResult.numLines = actualLines;
+            bestResult.position = bestPos;
+        }
+    }
+    
+    // If no valid position found, return single-line version at first candidate
+    if (bestResult.position.score < 0) {
+        strncpy(bestResult.wrappedText, text, sizeof(bestResult.wrappedText) - 1);
+        bestResult.width = fullWidth;
+        bestResult.height = lineHeight;
+        bestResult.numLines = 1;
+        bestResult.position = candidates[0];
+        bestResult.position.score = 0.0f;
+    }
+    
+    return bestResult;
+}

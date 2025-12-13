@@ -663,60 +663,99 @@ static void auto_cycle_task(void* arg) {
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
 
     // ================================================================
-    // QUOTE - Intelligently positioned, avoiding time/date area
+    // QUOTE - Intelligently positioned with automatic line wrapping
     // ================================================================
     const char* quoteText = "Vulnerability is not weakness; it's our greatest measure of courage  --Brene Brown";
     const float quoteFontSize = 32.0f;
     
-    int16_t quoteW = ttf.getTextWidth(quoteText, quoteFontSize);
-    int16_t quoteH = ttf.getTextHeight(quoteFontSize);
-    
-    // Generate candidate positions for the quote
-    // Avoid the area where time/date was placed
+    // Generate candidate positions for the quote (dimensions will be set by wrapper)
     // Safe area after keepout (100px margins): x=[100, 1500], y=[100, 1100]
-    const int16_t keepout = 100;
-    const int16_t safeLeft = keepout + quoteW/2 + 20;
-    const int16_t safeRight = display.width() - keepout - quoteW/2 - 20;
-    const int16_t safeTop = keepout + quoteH/2 + 20;
-    const int16_t safeBottom = display.height() - keepout - quoteH/2 - 20;
+    const int16_t keepoutMargin = 100;
+    const int16_t padding = 50;
     
-    // Calculate time/date block bounds to avoid
-    int16_t timeDateTop = timeY - timeH/2 - 20;
-    int16_t timeDateBottom = dateY + dateH/2 + 20;
+    // Calculate time/date block bounds to avoid overlapping
+    int16_t timeDateTop = timeY - timeH/2 - 30;
+    int16_t timeDateBottom = dateY + dateH/2 + 30;
+    int16_t timeDateLeft = bestPos.x - blockW/2 - 30;
+    int16_t timeDateRight = bestPos.x + blockW/2 + 30;
     
-    TextPlacementRegion quoteCandidates[6];
+    // Generate diverse candidate positions for the quote
+    // The wrapper will try different line configurations at each position
+    TextPlacementRegion quoteCandidates[8];
     int numQuoteCandidates = 0;
     
-    // Bottom center (if time/date isn't there)
-    if (timeDateBottom < safeBottom - quoteH) {
-        quoteCandidates[numQuoteCandidates++] = {cx, safeBottom, quoteW, quoteH, 0};
-    }
-    // Top center (if time/date isn't there)
-    if (timeDateTop > safeTop + quoteH) {
-        quoteCandidates[numQuoteCandidates++] = {cx, safeTop, quoteW, quoteH, 0};
-    }
+    // Positions are specified as centers; dimensions will be filled by findBestWrappedPosition
+    // Bottom center
+    quoteCandidates[numQuoteCandidates++] = {cx, (int16_t)(display.height() - keepoutMargin - padding), 0, 0, 0};
+    // Top center
+    quoteCandidates[numQuoteCandidates++] = {cx, (int16_t)(keepoutMargin + padding), 0, 0, 0};
+    // Left center (avoid time/date if it's in center)
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(keepoutMargin + 200), cy, 0, 0, 0};
+    // Right center
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(display.width() - keepoutMargin - 200), cy, 0, 0, 0};
     // Bottom left
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeLeft + 50), safeBottom, quoteW, quoteH, 0};
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(keepoutMargin + 200), (int16_t)(display.height() - keepoutMargin - padding), 0, 0, 0};
     // Bottom right
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeRight - 50), safeBottom, quoteW, quoteH, 0};
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(display.width() - keepoutMargin - 200), (int16_t)(display.height() - keepoutMargin - padding), 0, 0, 0};
     // Top left
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeLeft + 50), safeTop, quoteW, quoteH, 0};
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(keepoutMargin + 200), (int16_t)(keepoutMargin + padding), 0, 0, 0};
     // Top right
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeRight - 50), safeTop, quoteW, quoteH, 0};
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(display.width() - keepoutMargin - 200), (int16_t)(keepoutMargin + padding), 0, 0, 0};
     
-    // Find best position for quote
+    // Find best wrapping + position combination
+    // This tries 1, 2, and 3 line layouts at each candidate position
     analysisStart = millis();
-    TextPlacementRegion bestQuotePos = textPlacement.findBestPosition(
+    TextPlacementAnalyzer::WrappedTextResult quoteResult = textPlacement.findBestWrappedPosition(
         &display, &ttf, quoteText, quoteFontSize,
         quoteCandidates, numQuoteCandidates,
-        EL133UF1_WHITE, EL133UF1_BLACK);
-    Serial.printf("Quote placement analysis: %lu ms (score=%.2f, pos=%d,%d)\n",
-                  millis() - analysisStart, bestQuotePos.score, bestQuotePos.x, bestQuotePos.y);
+        EL133UF1_WHITE, EL133UF1_BLACK,
+        3,   // maxLines: try up to 3 lines
+        3);  // minWordsPerLine: at least 3 words per line
     
-    // Draw quote
-    ttf.drawTextAlignedOutlined(bestQuotePos.x, bestQuotePos.y, quoteText, quoteFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    Serial.printf("Quote placement: %lu ms (score=%.2f, pos=%d,%d, %d lines)\n",
+                  millis() - analysisStart, quoteResult.position.score, 
+                  quoteResult.position.x, quoteResult.position.y, quoteResult.numLines);
+    Serial.printf("  Wrapped text: \"%s\"\n", quoteResult.wrappedText);
+    
+    // Draw the wrapped quote
+    // For multi-line text, we need to draw each line separately
+    if (quoteResult.numLines == 1) {
+        ttf.drawTextAlignedOutlined(quoteResult.position.x, quoteResult.position.y, 
+                                    quoteResult.wrappedText, quoteFontSize,
+                                    EL133UF1_WHITE, EL133UF1_BLACK,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    } else {
+        // Multi-line: draw each line
+        int16_t lineHeight = ttf.getTextHeight(quoteFontSize);
+        int16_t lineGap = lineHeight / 4;
+        int16_t totalHeight = quoteResult.numLines * lineHeight + (quoteResult.numLines - 1) * lineGap;
+        int16_t startY = quoteResult.position.y - totalHeight / 2 + lineHeight / 2;
+        
+        char* line = quoteResult.wrappedText;
+        for (int i = 0; i < quoteResult.numLines && line && *line; i++) {
+            // Find end of this line
+            char* nextLine = strchr(line, '\n');
+            char savedChar = 0;
+            if (nextLine) {
+                savedChar = *nextLine;
+                *nextLine = '\0';
+            }
+            
+            // Draw this line
+            ttf.drawTextAlignedOutlined(quoteResult.position.x, startY + i * (lineHeight + lineGap),
+                                        line, quoteFontSize,
+                                        EL133UF1_WHITE, EL133UF1_BLACK,
+                                        ALIGN_CENTER, ALIGN_MIDDLE, 2);
+            
+            // Restore and move to next line
+            if (nextLine) {
+                *nextLine = savedChar;
+                line = nextLine + 1;
+            } else {
+                break;
+            }
+        }
+    }
 
     // Brief beep
     (void)audio_beep(880, 120);

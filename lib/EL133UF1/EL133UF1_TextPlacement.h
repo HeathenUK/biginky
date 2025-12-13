@@ -310,6 +310,62 @@ public:
         int16_t margin, TextPlacementRegion* candidates,
         bool includeCorners = false);
 
+    // ========================================================================
+    // Multi-line text wrapping and optimal layout
+    // ========================================================================
+    
+    /**
+     * @brief Result of multi-line text layout optimization
+     */
+    struct WrappedTextResult {
+        char wrappedText[512];     ///< Text with newlines inserted
+        int16_t width;             ///< Width of wrapped text block
+        int16_t height;            ///< Height of wrapped text block
+        int numLines;              ///< Number of lines
+        TextPlacementRegion position;  ///< Best position for this layout
+    };
+    
+    /**
+     * @brief Find optimal line-wrapping and position for text
+     * 
+     * Tries different line-break configurations (1, 2, 3 lines) and finds
+     * the combination of wrapping + position that scores best.
+     * 
+     * @param display Pointer to display instance
+     * @param ttf Pointer to TTF renderer
+     * @param text Original text (will try different wrappings)
+     * @param fontSize Font size in pixels
+     * @param candidates Array of candidate positions
+     * @param numCandidates Number of candidates
+     * @param textColor Primary text color
+     * @param outlineColor Outline color
+     * @param maxLines Maximum number of lines to try (1-4, default 3)
+     * @param minWordsPerLine Minimum words per line (default 3)
+     * @return Best wrapped text result with position
+     */
+    WrappedTextResult findBestWrappedPosition(
+        EL133UF1* display, EL133UF1_TTF* ttf,
+        const char* text, float fontSize,
+        const TextPlacementRegion* candidates, int numCandidates,
+        uint8_t textColor, uint8_t outlineColor,
+        int maxLines = 3, int minWordsPerLine = 3);
+    
+    /**
+     * @brief Wrap text to fit within a target width
+     * 
+     * @param ttf TTF renderer for measuring
+     * @param text Input text
+     * @param fontSize Font size
+     * @param targetWidth Target width in pixels (0 = no limit)
+     * @param output Output buffer for wrapped text
+     * @param outputSize Size of output buffer
+     * @param numLines Output: number of lines created
+     * @return Width of the resulting wrapped text block
+     */
+    static int16_t wrapText(EL133UF1_TTF* ttf, const char* text, float fontSize,
+                            int16_t targetWidth, char* output, size_t outputSize,
+                            int* numLines);
+
 private:
     ScoringWeights _weights;
     KeepoutMargins _keepout;

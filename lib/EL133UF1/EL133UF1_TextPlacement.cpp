@@ -132,7 +132,8 @@ bool TextPlacementAnalyzer::isWithinSafeArea(int16_t displayWidth, int16_t displ
 // Keep-Out Map Management
 // ============================================================================
 
-#ifndef DISABLE_SDIO_TEST
+// RP2350/SdFat version
+#if !defined(DISABLE_SDIO_TEST) && (defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350) || defined(TARGET_RP2350))
 bool TextPlacementAnalyzer::loadKeepOutMap(FsFile& file) {
     Serial.println("[TextPlacement] Loading keep-out map from SD card...");
     

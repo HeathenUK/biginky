@@ -653,7 +653,7 @@ static void auto_cycle_task(void* arg) {
     const int16_t gapBetween = 20;
     const int16_t timeOutline = 3;
     const int16_t dateOutline = 2;
-    const float minAcceptableScore = 0.3f;  // Threshold for "good enough" placement
+    const float minAcceptableScore = 0.25f;  // Threshold for "good enough" placement
     
     TextPlacementRegion bestPos;
     int16_t blockW, blockH;

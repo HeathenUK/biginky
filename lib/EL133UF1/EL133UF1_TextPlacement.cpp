@@ -527,15 +527,15 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
                 continue;  // Skip this position entirely
             }
             
-            // Check if this position heavily overlaps keep-out areas (> 50%)
+            // Check if this position overlaps keep-out areas (> 10%)
             // This is an optimization to avoid scoring obviously bad positions
             if (_keepOutMap.bitmap) {
                 int16_t rx = cx - blockWidth / 2;
                 int16_t ry = cy - blockHeight / 2;
                 float coverage = _keepOutMap.getKeepOutCoverage(rx, ry, blockWidth, blockHeight);
-                if (coverage > 0.5f) {
+                if (coverage > 0.10f) {  // Reject >10% overlap
                     skippedByKeepOut++;
-                    continue;  // Skip heavily overlapped positions
+                    continue;  // Skip overlapped positions
                 }
             }
             
@@ -620,22 +620,24 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     if (w <= 0 || h <= 0) return metrics;
     
     // Check keep-out map FIRST (if available)
-    // If region heavily overlaps keep-out areas, return very low score immediately
+    // If region overlaps keep-out areas AT ALL, apply severe penalty or reject
+    float keepOutCoverage = 0.0f;
     if (_keepOutMap.bitmap) {
-        float keepOutCoverage = _keepOutMap.getKeepOutCoverage(x, y, w, h);
+        keepOutCoverage = _keepOutMap.getKeepOutCoverage(x, y, w, h);
         
-        // Heavy penalty for keep-out overlap
-        // > 50% overlap: score = 0 (reject completely)
-        // 20-50% overlap: significant penalty
-        // < 20% overlap: minor penalty
-        if (keepOutCoverage > 0.5f) {
-            // Complete rejection - text would cover detected objects
+        // STRICT POLICY: ANY overlap with keep-out areas is very bad
+        // We want text to NEVER overlap detected objects
+        // > 10% overlap: complete rejection
+        // 5-10% overlap: severe penalty (score * 0.1)
+        // 1-5% overlap: heavy penalty (score * 0.3)
+        // < 1% overlap: moderate penalty (score * 0.7)
+        if (keepOutCoverage > 0.10f) {
+            // Complete rejection - unacceptable overlap with objects
             metrics.overallScore = 0.0f;
             return metrics;
         } else if (keepOutCoverage > 0.0f) {
-            // Partial overlap - will apply penalty later
-            // Store in variance field (unused otherwise for this purpose)
-            metrics.variance = keepOutCoverage;  // Will use this later
+            // Store coverage for later penalty application
+            metrics.variance = keepOutCoverage;
         }
     }
     
@@ -667,11 +669,15 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     
     // Apply keep-out penalty if there was partial overlap
     if (_keepOutMap.bitmap && keepOutCoverage > 0.0f) {
-        // Reduce score based on keep-out coverage
-        // 20% coverage -> multiply by 0.5 (50% penalty)
-        // 50% coverage -> multiply by 0.0 (complete rejection)
-        float penalty = 1.0f - (keepOutCoverage / 0.5f);
-        if (penalty < 0.0f) penalty = 0.0f;
+        // VERY aggressive penalty for any keep-out overlap
+        float penalty;
+        if (keepOutCoverage > 0.05f) {
+            penalty = 0.1f;  // 5-10% overlap: keep only 10% of score
+        } else if (keepOutCoverage > 0.01f) {
+            penalty = 0.3f;  // 1-5% overlap: keep only 30% of score
+        } else {
+            penalty = 0.7f;  // <1% overlap: keep 70% of score
+        }
         metrics.overallScore *= penalty;
     }
     

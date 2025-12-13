@@ -2018,6 +2018,9 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     int randomIndex = rand() % maxFiles;
     String selectedPath = paths[randomIndex];
     delete[] paths;
+    
+    // Store path for keep-out map lookup
+    g_lastImagePath = selectedPath;
 
     Serial.printf("Selected PNG: %s\n", selectedPath.c_str());
     String fatfsPath = "0:" + selectedPath;
@@ -2070,6 +2073,10 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
         Serial.printf("PNG draw error: %s\n", pngLoader.getErrorString(pres));
         return false;
     }
+    
+    // Try to load keep-out map for this image (if available)
+    loadKeepOutMapForImage();
+    
     return true;
 }
 

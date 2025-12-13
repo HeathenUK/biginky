@@ -311,8 +311,19 @@ public:
         bool includeCorners = false);
 
     // ========================================================================
-    // Multi-line text wrapping and optimal layout
+    // Quote structure and multi-line text wrapping
     // ========================================================================
+    
+    /**
+     * @brief A quote with its author
+     */
+    struct Quote {
+        const char* text;          ///< The quote text (without author)
+        const char* author;        ///< Author name (e.g., "Brene Brown")
+        
+        Quote() : text(nullptr), author(nullptr) {}
+        Quote(const char* t, const char* a) : text(t), author(a) {}
+    };
     
     /**
      * @brief Result of multi-line text layout optimization
@@ -320,9 +331,24 @@ public:
     struct WrappedTextResult {
         char wrappedText[512];     ///< Text with newlines inserted
         int16_t width;             ///< Width of wrapped text block
-        int16_t height;            ///< Height of wrapped text block
-        int numLines;              ///< Number of lines
+        int16_t height;            ///< Height of wrapped text block (quote only)
+        int numLines;              ///< Number of lines in quote
         TextPlacementRegion position;  ///< Best position for this layout
+    };
+    
+    /**
+     * @brief Result of quote layout with author
+     */
+    struct QuoteLayoutResult {
+        char wrappedQuote[512];    ///< Quote text with newlines inserted
+        int16_t quoteWidth;        ///< Width of quote text block
+        int16_t quoteHeight;       ///< Height of quote text block
+        int quoteLines;            ///< Number of lines in quote
+        int16_t authorWidth;       ///< Width of author text
+        int16_t authorHeight;      ///< Height of author text
+        int16_t totalWidth;        ///< Total width of quote+author block
+        int16_t totalHeight;       ///< Total height including author
+        TextPlacementRegion position;  ///< Best position for the block center
     };
     
     /**
@@ -365,6 +391,48 @@ public:
     static int16_t wrapText(EL133UF1_TTF* ttf, const char* text, float fontSize,
                             int16_t targetWidth, char* output, size_t outputSize,
                             int* numLines);
+    
+    /**
+     * @brief Find optimal layout and position for a quote with author
+     * 
+     * The author is displayed in a smaller font, right-aligned below the quote.
+     * Tries different line-break configurations for the quote text.
+     * 
+     * @param display Pointer to display instance
+     * @param ttf Pointer to TTF renderer
+     * @param quote Quote with text and author
+     * @param quoteFontSize Font size for quote text
+     * @param authorFontSize Font size for author (typically smaller)
+     * @param candidates Array of candidate positions
+     * @param numCandidates Number of candidates
+     * @param textColor Primary text color
+     * @param outlineColor Outline color
+     * @param maxLines Maximum lines for quote text (default 3)
+     * @param minWordsPerLine Minimum words per line (default 3)
+     * @return Layout result with wrapped text and optimal position
+     */
+    QuoteLayoutResult findBestQuotePosition(
+        EL133UF1* display, EL133UF1_TTF* ttf,
+        const Quote& quote, float quoteFontSize, float authorFontSize,
+        const TextPlacementRegion* candidates, int numCandidates,
+        uint8_t textColor, uint8_t outlineColor,
+        int maxLines = 3, int minWordsPerLine = 3);
+    
+    /**
+     * @brief Draw a quote with author using the layout result
+     * 
+     * @param ttf TTF renderer
+     * @param layout Layout result from findBestQuotePosition
+     * @param author Author string
+     * @param quoteFontSize Quote font size
+     * @param authorFontSize Author font size
+     * @param textColor Text color
+     * @param outlineColor Outline color
+     * @param outlineWidth Outline width
+     */
+    void drawQuote(EL133UF1_TTF* ttf, const QuoteLayoutResult& layout,
+                   const char* author, float quoteFontSize, float authorFontSize,
+                   uint8_t textColor, uint8_t outlineColor, int outlineWidth = 2);
 
 private:
     ScoringWeights _weights;

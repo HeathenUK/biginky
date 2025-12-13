@@ -665,8 +665,26 @@ static void auto_cycle_task(void* arg) {
     // ================================================================
     // QUOTE - Intelligently positioned with automatic line wrapping
     // ================================================================
-    const char* quoteText = "Vulnerability is not weakness; it's our greatest measure of courage  --Brene Brown";
+    
+    // Collection of quotes with their authors
+    using Quote = TextPlacementAnalyzer::Quote;
+    static const Quote quotes[] = {
+        {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
+        {"The only way to do great work is to love what you do", "Steve Jobs"},
+        {"In the middle of difficulty lies opportunity", "Albert Einstein"},
+        {"Be yourself; everyone else is already taken", "Oscar Wilde"},
+        {"The future belongs to those who believe in the beauty of their dreams", "Eleanor Roosevelt"},
+        {"It is during our darkest moments that we must focus to see the light", "Aristotle"},
+        {"The best time to plant a tree was 20 years ago. The second best time is now", "Chinese Proverb"},
+        {"Life is what happens when you're busy making other plans", "John Lennon"},
+    };
+    static const int numQuotes = sizeof(quotes) / sizeof(quotes[0]);
+    
+    // Select a random quote
+    const Quote& selectedQuote = quotes[random(numQuotes)];
+    
     const float quoteFontSize = 32.0f;
+    const float authorFontSize = 24.0f;
     
     // Generate candidate positions for the quote (dimensions will be set by wrapper)
     // Safe area after keepout (100px margins): x=[100, 1500], y=[100, 1100]
@@ -678,13 +696,14 @@ static void auto_cycle_task(void* arg) {
     int16_t timeDateBottom = dateY + dateH/2 + 30;
     int16_t timeDateLeft = bestPos.x - blockW/2 - 30;
     int16_t timeDateRight = bestPos.x + blockW/2 + 30;
+    (void)timeDateTop; (void)timeDateBottom; (void)timeDateLeft; (void)timeDateRight;
     
     // Generate diverse candidate positions for the quote
     // The wrapper will try different line configurations at each position
     TextPlacementRegion quoteCandidates[8];
     int numQuoteCandidates = 0;
     
-    // Positions are specified as centers; dimensions will be filled by findBestWrappedPosition
+    // Positions are specified as centers; dimensions will be filled by findBestQuotePosition
     // Bottom center
     quoteCandidates[numQuoteCandidates++] = {cx, (int16_t)(display.height() - keepoutMargin - padding), 0, 0, 0};
     // Top center
@@ -702,60 +721,26 @@ static void auto_cycle_task(void* arg) {
     // Top right
     quoteCandidates[numQuoteCandidates++] = {(int16_t)(display.width() - keepoutMargin - 200), (int16_t)(keepoutMargin + padding), 0, 0, 0};
     
-    // Find best wrapping + position combination
+    // Find best quote layout (quote + author as a block)
     // This tries 1, 2, and 3 line layouts at each candidate position
     analysisStart = millis();
-    TextPlacementAnalyzer::WrappedTextResult quoteResult = textPlacement.findBestWrappedPosition(
-        &display, &ttf, quoteText, quoteFontSize,
+    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.findBestQuotePosition(
+        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
         quoteCandidates, numQuoteCandidates,
         EL133UF1_WHITE, EL133UF1_BLACK,
         3,   // maxLines: try up to 3 lines
         3);  // minWordsPerLine: at least 3 words per line
     
     Serial.printf("Quote placement: %lu ms (score=%.2f, pos=%d,%d, %d lines)\n",
-                  millis() - analysisStart, quoteResult.position.score, 
-                  quoteResult.position.x, quoteResult.position.y, quoteResult.numLines);
-    Serial.printf("  Wrapped text: \"%s\"\n", quoteResult.wrappedText);
+                  millis() - analysisStart, quoteLayout.position.score, 
+                  quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
+    Serial.printf("  Quote: \"%s\"\n", quoteLayout.wrappedQuote);
+    Serial.printf("  Author: %s\n", selectedQuote.author);
     
-    // Draw the wrapped quote
-    // For multi-line text, we need to draw each line separately
-    if (quoteResult.numLines == 1) {
-        ttf.drawTextAlignedOutlined(quoteResult.position.x, quoteResult.position.y, 
-                                    quoteResult.wrappedText, quoteFontSize,
-                                    EL133UF1_WHITE, EL133UF1_BLACK,
-                                    ALIGN_CENTER, ALIGN_MIDDLE, 2);
-    } else {
-        // Multi-line: draw each line
-        int16_t lineHeight = ttf.getTextHeight(quoteFontSize);
-        int16_t lineGap = lineHeight / 4;
-        int16_t totalHeight = quoteResult.numLines * lineHeight + (quoteResult.numLines - 1) * lineGap;
-        int16_t startY = quoteResult.position.y - totalHeight / 2 + lineHeight / 2;
-        
-        char* line = quoteResult.wrappedText;
-        for (int i = 0; i < quoteResult.numLines && line && *line; i++) {
-            // Find end of this line
-            char* nextLine = strchr(line, '\n');
-            char savedChar = 0;
-            if (nextLine) {
-                savedChar = *nextLine;
-                *nextLine = '\0';
-            }
-            
-            // Draw this line
-            ttf.drawTextAlignedOutlined(quoteResult.position.x, startY + i * (lineHeight + lineGap),
-                                        line, quoteFontSize,
-                                        EL133UF1_WHITE, EL133UF1_BLACK,
-                                        ALIGN_CENTER, ALIGN_MIDDLE, 2);
-            
-            // Restore and move to next line
-            if (nextLine) {
-                *nextLine = savedChar;
-                line = nextLine + 1;
-            } else {
-                break;
-            }
-        }
-    }
+    // Draw the quote with author using the helper function
+    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
+                            quoteFontSize, authorFontSize,
+                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
 
     // Brief beep
     (void)audio_beep(880, 120);

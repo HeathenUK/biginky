@@ -987,3 +987,180 @@ TextPlacementAnalyzer::WrappedTextResult TextPlacementAnalyzer::findBestWrappedP
     
     return bestResult;
 }
+
+// ============================================================================
+// Quote Layout with Author
+// ============================================================================
+
+TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::findBestQuotePosition(
+    EL133UF1* display, EL133UF1_TTF* ttf,
+    const Quote& quote, float quoteFontSize, float authorFontSize,
+    const TextPlacementRegion* candidates, int numCandidates,
+    uint8_t textColor, uint8_t outlineColor,
+    int maxLines, int minWordsPerLine)
+{
+    QuoteLayoutResult bestResult;
+    memset(&bestResult, 0, sizeof(bestResult));
+    bestResult.position.score = -1.0f;
+    
+    if (!display || !ttf || !quote.text || !candidates || numCandidates <= 0) {
+        return bestResult;
+    }
+    
+    // Measure author text
+    char authorText[128];
+    snprintf(authorText, sizeof(authorText), "— %s", quote.author ? quote.author : "Unknown");
+    int16_t authorWidth = ttf->getTextWidth(authorText, authorFontSize);
+    int16_t authorHeight = ttf->getTextHeight(authorFontSize);
+    int16_t gapBeforeAuthor = authorHeight / 2;  // Gap between quote and author
+    
+    // Count words in quote
+    int wordCount = 0;
+    const char* p = quote.text;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        wordCount++;
+        while (*p && *p != ' ') p++;
+    }
+    
+    // Get line metrics for quote
+    int16_t quoteLineHeight = ttf->getTextHeight(quoteFontSize);
+    int16_t quoteLineGap = quoteLineHeight / 4;
+    
+    // Get full quote width for target calculations
+    int16_t fullQuoteWidth = ttf->getTextWidth(quote.text, quoteFontSize);
+    
+    // Try different numbers of lines
+    int maxPossibleLines = wordCount / minWordsPerLine;
+    if (maxPossibleLines < 1) maxPossibleLines = 1;
+    if (maxPossibleLines > maxLines) maxPossibleLines = maxLines;
+    
+    for (int targetLines = 1; targetLines <= maxPossibleLines; targetLines++) {
+        char wrappedQuote[512];
+        int actualLines = 0;
+        
+        // Calculate target width for this number of lines
+        int16_t targetWidth = (targetLines == 1) ? 0 : (fullQuoteWidth / targetLines) + 50;
+        
+        int16_t quoteWidth = wrapText(ttf, quote.text, quoteFontSize, targetWidth,
+                                       wrappedQuote, sizeof(wrappedQuote), &actualLines);
+        
+        // Calculate quote block dimensions
+        int16_t quoteHeight = actualLines * quoteLineHeight + (actualLines - 1) * quoteLineGap;
+        
+        // Total block dimensions (quote + gap + author)
+        int16_t totalWidth = max(quoteWidth, authorWidth);
+        int16_t totalHeight = quoteHeight + gapBeforeAuthor + authorHeight;
+        
+        // Create modified candidates with this block size
+        TextPlacementRegion* modifiedCandidates = new TextPlacementRegion[numCandidates];
+        for (int i = 0; i < numCandidates; i++) {
+            modifiedCandidates[i] = candidates[i];
+            modifiedCandidates[i].width = totalWidth;
+            modifiedCandidates[i].height = totalHeight;
+        }
+        
+        // Find best position for this wrapping
+        TextPlacementRegion bestPos = findBestPosition(
+            display, ttf, wrappedQuote, quoteFontSize,
+            modifiedCandidates, numCandidates,
+            textColor, outlineColor);
+        
+        delete[] modifiedCandidates;
+        
+        // Check if this is better than our current best
+        if (bestPos.score > bestResult.position.score) {
+            strncpy(bestResult.wrappedQuote, wrappedQuote, sizeof(bestResult.wrappedQuote) - 1);
+            bestResult.wrappedQuote[sizeof(bestResult.wrappedQuote) - 1] = '\0';
+            bestResult.quoteWidth = quoteWidth;
+            bestResult.quoteHeight = quoteHeight;
+            bestResult.quoteLines = actualLines;
+            bestResult.authorWidth = authorWidth;
+            bestResult.authorHeight = authorHeight;
+            bestResult.totalWidth = totalWidth;
+            bestResult.totalHeight = totalHeight;
+            bestResult.position = bestPos;
+        }
+    }
+    
+    // If no valid position found, use single-line at first candidate
+    if (bestResult.position.score < 0) {
+        strncpy(bestResult.wrappedQuote, quote.text, sizeof(bestResult.wrappedQuote) - 1);
+        bestResult.quoteWidth = fullQuoteWidth;
+        bestResult.quoteHeight = quoteLineHeight;
+        bestResult.quoteLines = 1;
+        bestResult.authorWidth = authorWidth;
+        bestResult.authorHeight = authorHeight;
+        bestResult.totalWidth = max(fullQuoteWidth, authorWidth);
+        bestResult.totalHeight = quoteLineHeight + gapBeforeAuthor + authorHeight;
+        bestResult.position = candidates[0];
+        bestResult.position.score = 0.0f;
+    }
+    
+    return bestResult;
+}
+
+void TextPlacementAnalyzer::drawQuote(EL133UF1_TTF* ttf, const QuoteLayoutResult& layout,
+                                       const char* author, float quoteFontSize, float authorFontSize,
+                                       uint8_t textColor, uint8_t outlineColor, int outlineWidth)
+{
+    if (!ttf) return;
+    
+    int16_t quoteLineHeight = ttf->getTextHeight(quoteFontSize);
+    int16_t quoteLineGap = quoteLineHeight / 4;
+    int16_t gapBeforeAuthor = ttf->getTextHeight(authorFontSize) / 2;
+    
+    // Calculate positions
+    // Block is centered at position.x, position.y
+    // Quote is at the top of the block, author at the bottom
+    int16_t blockTop = layout.position.y - layout.totalHeight / 2;
+    int16_t blockRight = layout.position.x + layout.totalWidth / 2;
+    
+    // Draw quote lines (centered horizontally)
+    if (layout.quoteLines == 1) {
+        // Single line - center it
+        int16_t quoteY = blockTop + quoteLineHeight / 2;
+        ttf->drawTextAlignedOutlined(layout.position.x, quoteY, layout.wrappedQuote, quoteFontSize,
+                                     textColor, outlineColor, ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+    } else {
+        // Multi-line - draw each line centered
+        int16_t startY = blockTop + quoteLineHeight / 2;
+        
+        // Need to make a mutable copy for strtok-style parsing
+        char quoteCopy[512];
+        strncpy(quoteCopy, layout.wrappedQuote, sizeof(quoteCopy) - 1);
+        quoteCopy[sizeof(quoteCopy) - 1] = '\0';
+        
+        char* line = quoteCopy;
+        for (int i = 0; i < layout.quoteLines && line && *line; i++) {
+            // Find end of this line
+            char* nextLine = strchr(line, '\n');
+            if (nextLine) {
+                *nextLine = '\0';
+            }
+            
+            // Draw this line centered
+            int16_t lineY = startY + i * (quoteLineHeight + quoteLineGap);
+            ttf->drawTextAlignedOutlined(layout.position.x, lineY, line, quoteFontSize,
+                                         textColor, outlineColor, ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+            
+            // Move to next line
+            if (nextLine) {
+                line = nextLine + 1;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    // Draw author - right-aligned to the quote block's right edge
+    // Position: below the quote, right-aligned
+    int16_t authorY = blockTop + layout.quoteHeight + gapBeforeAuthor + layout.authorHeight / 2;
+    
+    char authorText[128];
+    snprintf(authorText, sizeof(authorText), "— %s", author ? author : "Unknown");
+    
+    ttf->drawTextAlignedOutlined(blockRight, authorY, authorText, authorFontSize,
+                                 textColor, outlineColor, ALIGN_RIGHT, ALIGN_MIDDLE, outlineWidth);
+}

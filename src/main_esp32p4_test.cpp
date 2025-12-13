@@ -1129,15 +1129,16 @@ static void auto_cycle_task(void* arg) {
 
     uint32_t sd_ms = 0, dec_ms = 0;
 #if SDMMC_ENABLED
-    // Load configuration files from SD card (only once)
-    if (!g_quotes_loaded) {
+    // First, load the PNG (this will mount SD card if needed)
+    bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+    
+    // After SD card is mounted, load configuration files (only once)
+    if (ok && !g_quotes_loaded) {
         loadQuotesFromSD();
     }
-    if (!g_media_mappings_loaded) {
+    if (ok && !g_media_mappings_loaded) {
         loadMediaMappingsFromSD();
     }
-    
-    bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
 #else
     bool ok = false;
     Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");

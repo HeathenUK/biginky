@@ -192,6 +192,7 @@ static String g_lastImagePath = "";
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
+RTC_DATA_ATTR uint32_t ntpSyncCounter = 0;  // Counter for periodic NTP resync
 
 // ============================================================================
 // Audio: ES8311 + I2S test tone
@@ -1052,7 +1053,77 @@ static void auto_cycle_task(void* arg) {
     g_cycle_count++;
     Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
 
-    const bool time_ok = ensureTimeValid();
+    // Increment NTP sync counter
+    ntpSyncCounter++;
+    
+    // Check if time is valid
+    bool time_ok = ensureTimeValid();
+    
+#if WIFI_ENABLED
+    // Resync NTP every 5 wake cycles to keep time accurate
+    if (ntpSyncCounter >= 5) {
+        Serial.println("\n=== Periodic NTP Resync (every 5 cycles) ===");
+        ntpSyncCounter = 0;  // Reset counter
+        
+        // Load WiFi credentials
+        Preferences p;
+        p.begin("wifi", true);
+        String ssid = p.getString("ssid", "");
+        String psk = p.getString("psk", "");
+        p.end();
+        
+        if (ssid.length() > 0) {
+            Serial.printf("Connecting to WiFi: %s\n", ssid.c_str());
+            WiFi.mode(WIFI_STA);
+            WiFi.begin(ssid.c_str(), psk.c_str());
+            
+            // Wait up to 10 seconds for connection
+            uint32_t start = millis();
+            while (WiFi.status() != WL_CONNECTED && (millis() - start < 10000)) {
+                delay(250);
+            }
+            
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.println("WiFi connected");
+                
+                // Sync time via NTP
+                configTime(0, 0, "pool.ntp.org", "time.google.com");
+                
+                Serial.print("Syncing NTP");
+                start = millis();
+                time_t now = time(nullptr);
+                while (now < 1577836800 && (millis() - start < 10000)) {
+                    delay(250);
+                    Serial.print(".");
+                    now = time(nullptr);
+                }
+                
+                if (now > 1577836800) {
+                    Serial.println(" OK!");
+                    struct tm tm_utc;
+                    gmtime_r(&now, &tm_utc);
+                    char buf[32];
+                    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+                    Serial.printf("Time synced: %s\n", buf);
+                    time_ok = true;
+                } else {
+                    Serial.println(" FAILED (timeout)");
+                }
+                
+                // Disconnect WiFi to save power
+                WiFi.disconnect(true);
+                WiFi.mode(WIFI_OFF);
+            } else {
+                Serial.println("WiFi connection failed");
+            }
+        } else {
+            Serial.println("No WiFi credentials saved, skipping NTP resync");
+        }
+        Serial.println("==========================================\n");
+    } else {
+        Serial.printf("NTP resync in %lu more cycles\n", (unsigned long)(5 - ntpSyncCounter));
+    }
+#endif
 
     uint32_t sd_ms = 0, dec_ms = 0;
 #if SDMMC_ENABLED

@@ -41,8 +41,8 @@
 #include "EL133UF1_Color.h"
 #include "EL133UF1_TextPlacement.h"
 
-#include "fonts/dancing.h"
 #include "fonts/opensans.h"
+#include "fonts/dancing.h"
 
 #include "es8311_simple.h"
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
@@ -190,6 +190,7 @@ static String g_lastImagePath = "";
 
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
+RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
 
 // ============================================================================
 // Audio: ES8311 + I2S test tone
@@ -2107,9 +2108,14 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     if (!paths) return false;
     pngCountFiles(dirname, paths, maxFiles);
 
-    srand(millis());
-    int randomIndex = rand() % maxFiles;
-    String selectedPath = paths[randomIndex];
+    // Cycle through images sequentially (stored in RTC memory)
+    // This ensures we see all images before repeating, in alphabetical order
+    lastImageIndex = (lastImageIndex + 1) % maxFiles;
+    String selectedPath = paths[lastImageIndex];
+    
+    Serial.printf("Image %lu of %d (cycling alphabetically)\n", 
+                  (unsigned long)(lastImageIndex + 1), maxFiles);
+    
     delete[] paths;
     
     // Store path for keep-out map lookup
@@ -2294,7 +2300,7 @@ void drawTestPattern() {
 void drawTTFTest() {
     Serial.println("Drawing TTF test...");
     
-    if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+    if (!ttf.loadFont(dancing_otf, dancing_otf_len)) {
         Serial.println("ERROR: Failed to load TTF font!");
         return;
     }

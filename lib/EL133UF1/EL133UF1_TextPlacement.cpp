@@ -589,11 +589,32 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
         }
     }
     
-    TextPlacementRegion result = candidates[bestIdx];
+    // Collect all "good enough" candidates (within 65% of best score)
+    // Lower threshold (65%) to ensure more variety in selection
+    // Even with strong distance bonus, we want multiple viable options
+    const float acceptableThreshold = bestScore * 0.65f;
+    int goodCandidates[64];  // Max positions to consider for variety
+    int numGood = 0;
+    
+    for (int i = 0; i < numCandidates && numGood < 64; i++) {
+        if (candidates[i].score >= acceptableThreshold) {
+            goodCandidates[numGood++] = i;
+        }
+    }
+    
+    // Randomly pick from good candidates (adds visual variety across refreshes)
+    int selectedIdx = (numGood > 0) ? goodCandidates[random(numGood)] : bestIdx;
+    
+    TextPlacementRegion result = candidates[selectedIdx];
     delete[] candidates;
     
-    Serial.printf("[TextPlacement] Best position: (%d,%d) score=%.3f\n",
-                  result.x, result.y, result.score);
+    if (numGood > 1) {
+        Serial.printf("[TextPlacement] Randomly selected 1 of %d good positions (score=%.3f, best=%.3f)\n",
+                      numGood, result.score, bestScore);
+    } else {
+        Serial.printf("[TextPlacement] Best position: (%d,%d) score=%.3f\n",
+                      result.x, result.y, result.score);
+    }
     
     return result;
 }
@@ -695,8 +716,17 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
     if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
     
-    // Bonus for positions that balance existing text elements
-    // If there's an exclusion zone (previous text), prefer positions far from it
+    // Add small random noise to introduce variety (±5% random variation)
+    // This prevents the same position from always winning
+    float noise = ((float)random(100) / 1000.0f) - 0.05f;  // Range: -0.05 to +0.05
+    metrics.overallScore += noise;
+    
+    // Clamp again after noise
+    if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
+    if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
+    
+    // STRONG bonus for positions that balance existing text elements
+    // If there's an exclusion zone (previous text), heavily prefer positions far from it
     if (_numExclusionZones > 0) {
         int16_t ex_cx = _exclusionZones[0].x;
         int16_t ex_cy = _exclusionZones[0].y;
@@ -713,8 +743,28 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
         float normalizedDistance = distance / 2000.0f;
         if (normalizedDistance > 1.0f) normalizedDistance = 1.0f;
         
-        // Apply distance bonus (up to 20% score increase for well-separated elements)
-        float distanceBonus = normalizedDistance * 0.2f;
+        // VERY strong distance bonus (up to 50% score increase!)
+        // This heavily rewards spread-out compositions
+        float distanceBonus = normalizedDistance * 0.5f;
+        
+        // Extra bonus for opposite quadrants (diagonal placement)
+        // Check if this position is in a different quadrant than existing text
+        int16_t dispW = display->width();
+        int16_t dispH = display->height();
+        bool thisLeft = (cx < dispW/2);
+        bool thisTop = (cy < dispH/2);
+        bool exLeft = (ex_cx < dispW/2);
+        bool exTop = (ex_cy < dispH/2);
+        
+        // Diagonal bonus: if in opposite corners, add extra 15%
+        if ((thisLeft != exLeft) && (thisTop != exTop)) {
+            distanceBonus += 0.15f;
+        }
+        // Adjacent quadrant bonus: if in different quadrant (but not diagonal), add 5%
+        else if ((thisLeft != exLeft) || (thisTop != exTop)) {
+            distanceBonus += 0.05f;
+        }
+        
         metrics.overallScore += distanceBonus;
         
         // Clamp again after bonus
@@ -1624,6 +1674,10 @@ TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::scanForBestQuote
     
     Serial.printf("[TextPlacement] Scanning for quote, trying %d line layouts\n", maxPossibleLines);
     
+    // Store all layouts to allow randomization among good ones
+    QuoteLayoutResult layouts[3];  // Max 3 line layouts
+    int numLayouts = 0;
+    
     for (int targetLines = 1; targetLines <= maxPossibleLines; targetLines++) {
         char wrappedQuote[512];
         int actualLines = 0;
@@ -1645,18 +1699,45 @@ TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::scanForBestQuote
         TextPlacementRegion bestPos = scanForBestPosition(display, totalWidth, totalHeight,
                                                           textColor, outlineColor);
         
-        // Check if this is better than our current best
+        // Store this layout
+        if (numLayouts < 3) {
+            strncpy(layouts[numLayouts].wrappedQuote, wrappedQuote, sizeof(layouts[numLayouts].wrappedQuote) - 1);
+            layouts[numLayouts].wrappedQuote[sizeof(layouts[numLayouts].wrappedQuote) - 1] = '\0';
+            layouts[numLayouts].quoteWidth = quoteWidth;
+            layouts[numLayouts].quoteHeight = quoteHeight;
+            layouts[numLayouts].quoteLines = actualLines;
+            layouts[numLayouts].authorWidth = authorWidth;
+            layouts[numLayouts].authorHeight = authorHeight;
+            layouts[numLayouts].totalWidth = totalWidth;
+            layouts[numLayouts].totalHeight = totalHeight;
+            layouts[numLayouts].position = bestPos;
+            numLayouts++;
+        }
+        
+        // Track simple best for reference
         if (bestPos.score > bestResult.position.score) {
-            strncpy(bestResult.wrappedQuote, wrappedQuote, sizeof(bestResult.wrappedQuote) - 1);
-            bestResult.wrappedQuote[sizeof(bestResult.wrappedQuote) - 1] = '\0';
-            bestResult.quoteWidth = quoteWidth;
-            bestResult.quoteHeight = quoteHeight;
-            bestResult.quoteLines = actualLines;
-            bestResult.authorWidth = authorWidth;
-            bestResult.authorHeight = authorHeight;
-            bestResult.totalWidth = totalWidth;
-            bestResult.totalHeight = totalHeight;
-            bestResult.position = bestPos;
+            bestResult = layouts[numLayouts - 1];
+        }
+    }
+    
+    // Randomly pick among good layouts (within 80% of best score)
+    if (numLayouts > 1) {
+        float bestScore = bestResult.position.score;
+        float threshold = bestScore * 0.8f;
+        int goodLayouts[3];
+        int numGood = 0;
+        
+        for (int i = 0; i < numLayouts; i++) {
+            if (layouts[i].position.score >= threshold) {
+                goodLayouts[numGood++] = i;
+            }
+        }
+        
+        if (numGood > 1) {
+            int selected = goodLayouts[random(numGood)];
+            bestResult = layouts[selected];
+            Serial.printf("[TextPlacement] Randomly selected %d-line layout (1 of %d good options)\n",
+                         bestResult.quoteLines, numGood);
         }
     }
     

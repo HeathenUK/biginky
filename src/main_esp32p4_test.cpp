@@ -173,6 +173,9 @@ EL133UF1 display(&displaySPI);
 // TTF font renderer
 EL133UF1_TTF ttf;
 
+// Intelligent text placement analyzer
+TextPlacementAnalyzer textPlacement;
+
 // BMP image loader
 EL133UF1_BMP bmpLoader;
 EL133UF1_PNG pngLoader;
@@ -593,7 +596,7 @@ static void auto_cycle_task(void* arg) {
         sleepNowSeconds(kCycleSleepSeconds);
     }
 
-    // Overlay time/date
+    // Overlay time/date with intelligent positioning
     time_t now = time(nullptr);
     struct tm tm_utc;
     gmtime_r(&now, &tm_utc);
@@ -609,13 +612,50 @@ static void auto_cycle_task(void* arg) {
         snprintf(dateBuf, sizeof(dateBuf), "time not set");
     }
 
-    // Draw outlined text like the demo
+    // Get text dimensions for both time and date
+    const float timeFontSize = 160.0f;
+    const float dateFontSize = 48.0f;
+    const int16_t gapBetween = 20;  // Gap between time and date
+
+    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize);
+    int16_t timeH = ttf.getTextHeight(timeFontSize);
+    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize);
+    int16_t dateH = ttf.getTextHeight(dateFontSize);
+
+    // Combined block dimensions (time + gap + date)
+    int16_t blockW = max(timeW, dateW);
+    int16_t blockH = timeH + gapBetween + dateH;
+
+    // Generate candidate positions for the combined time+date block
     const int16_t cx = display.width() / 2;
     const int16_t cy = display.height() / 2;
-    ttf.drawTextAlignedOutlined(cx, cy - 80, timeBuf, 160.0f,
+    const int16_t margin = 100;
+
+    TextPlacementRegion candidates[5];
+    candidates[0] = {cx, cy, blockW, blockH, 0};                                    // Screen center
+    candidates[1] = {cx, (int16_t)(margin + blockH/2), blockW, blockH, 0};          // Top
+    candidates[2] = {cx, (int16_t)(cy - 100), blockW, blockH, 0};                   // Upper-center
+    candidates[3] = {cx, (int16_t)(cy + 100), blockW, blockH, 0};                   // Lower-center
+    candidates[4] = {cx, (int16_t)(display.height() - margin - blockH/2), blockW, blockH, 0}; // Bottom
+
+    // Find best position for the combined block
+    uint32_t analysisStart = millis();
+    TextPlacementRegion bestPos = textPlacement.findBestPosition(
+        &display, &ttf, timeBuf, timeFontSize,
+        candidates, 5,
+        EL133UF1_WHITE, EL133UF1_BLACK);
+    Serial.printf("Text placement analysis: %lu ms (score=%.2f, pos=%d,%d)\n",
+                  millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
+
+    // Calculate individual positions relative to the chosen block center
+    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
+    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
+
+    // Draw time and date at best position
+    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
-    ttf.drawTextAlignedOutlined(cx, cy + 60, dateBuf, 48.0f,
+    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
 

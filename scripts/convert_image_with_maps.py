@@ -82,41 +82,54 @@ def quantize_atkinson(image):
     return Image.fromarray(quantized_array)
 
 
-def detect_objects_yolo(img, confidence=0.3, expand_margin=50, verbose=False):
+def detect_objects_yolo(img, confidence=0.3, expand_margin=50, use_segmentation=True, verbose=False):
     """
     Detect objects using YOLOv8 and generate keep-out masks.
     
     Args:
-        img: PIL Image (RGB)
+        img: PIL Image
         confidence: Detection confidence threshold (0.0-1.0)
         expand_margin: Pixels to expand around detected objects
+        use_segmentation: If True, use pixel-level segmentation (precise).
+                         If False, use bounding boxes (faster).
         verbose: Print detection details
-        
+    
     Returns:
-        keep_out_mask: Binary mask (0=safe, 255=keep out), or None if ML not available
+        numpy array: Keep-out mask (255 = keep out, 0 = safe)
     """
     if not HAS_ML:
         if verbose:
             print("  ML libraries not available, skipping object detection")
         return None
     
+    method = "segmentation" if use_segmentation else "bounding boxes"
     if verbose:
-        print(f"  Running YOLO object detection (confidence={confidence})...")
+        print(f"  Running YOLO object detection ({method}, confidence={confidence})...")
     
-    # Convert PIL to numpy/cv2 format
+    # Convert PIL to numpy
     img_np = np.array(img)
-    img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
     
-    # Load YOLOv8 model (downloads automatically on first run)
+    # Run YOLO detection (try segmentation model if requested)
     try:
-        model = YOLO('yolov8n.pt')  # nano model (fastest)
+        if use_segmentation:
+            model = YOLO('yolov8n-seg.pt')  # Segmentation model
+        else:
+            model = YOLO('yolov8n.pt')  # Detection model
     except Exception as e:
         if verbose:
             print(f"  ERROR: Failed to load YOLO model: {e}")
-        return None
+        if use_segmentation:
+            if verbose:
+                print(f"  Falling back to bounding boxes...")
+            use_segmentation = False
+            try:
+                model = YOLO('yolov8n.pt')
+            except:
+                return None
+        else:
+            return None
     
-    # Run detection
-    results = model(img_cv, conf=confidence, verbose=False)
+    results = model(img_np, conf=confidence, verbose=False)
     
     # Create keep-out mask
     h, w = img_np.shape[:2]
@@ -124,27 +137,59 @@ def detect_objects_yolo(img, confidence=0.3, expand_margin=50, verbose=False):
     
     detections = 0
     for result in results:
-        boxes = result.boxes
-        if boxes is not None and len(boxes) > 0:
-            for box in boxes:
-                # Get bounding box coordinates
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                conf = box.conf[0].cpu().numpy()
-                cls = int(box.cls[0].cpu().numpy())
-                class_name = model.names[cls]
+        # Try segmentation masks first (more accurate)
+        if use_segmentation and hasattr(result, 'masks') and result.masks is not None:
+            masks = result.masks
+            boxes = result.boxes
+            for i, mask in enumerate(masks):
+                # Get segmentation mask as numpy array
+                mask_np = mask.data[0].cpu().numpy()
                 
-                # Expand box by margin
-                x1 = max(0, int(x1) - expand_margin)
-                y1 = max(0, int(y1) - expand_margin)
-                x2 = min(w, int(x2) + expand_margin)
-                y2 = min(h, int(y2) + expand_margin)
+                # Resize mask to image size if needed
+                if mask_np.shape != (h, w):
+                    mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
                 
-                # Mark as keep-out area
-                keep_out_mask[y1:y2, x1:x2] = 255
+                # Convert to binary mask
+                binary_mask = (mask_np > 0.5).astype(np.uint8) * 255
+                
+                # Expand mask by dilation
+                if expand_margin > 0:
+                    kernel = np.ones((expand_margin*2, expand_margin*2), np.uint8)
+                    binary_mask = cv2.dilate(binary_mask, kernel, iterations=1)
+                
+                # Add to keep-out mask
+                keep_out_mask = np.maximum(keep_out_mask, binary_mask)
                 
                 detections += 1
-                if verbose:
-                    print(f"    Detected: {class_name} (conf={conf:.2f}) at [{x1},{y1},{x2},{y2}]")
+                if verbose and boxes is not None:
+                    conf = boxes[i].conf[0].cpu().numpy()
+                    cls = int(boxes[i].cls[0].cpu().numpy())
+                    class_name = model.names[cls]
+                    pixels = (binary_mask > 0).sum()
+                    print(f"    Detected: {class_name} (conf={conf:.2f}) - {pixels} pixels")
+        
+        # Fallback to bounding boxes
+        else:
+            boxes = result.boxes
+            if boxes is not None and len(boxes) > 0:
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = box.conf[0].cpu().numpy()
+                    cls = int(box.cls[0].cpu().numpy())
+                    class_name = model.names[cls]
+                    
+                    # Expand box by margin
+                    x1 = max(0, int(x1) - expand_margin)
+                    y1 = max(0, int(y1) - expand_margin)
+                    x2 = min(w, int(x2) + expand_margin)
+                    y2 = min(h, int(y2) + expand_margin)
+                    
+                    # Mark as keep-out area
+                    keep_out_mask[y1:y2, x1:x2] = 255
+                    
+                    detections += 1
+                    if verbose:
+                        print(f"    Detected: {class_name} (conf={conf:.2f}) at [{x1},{y1},{x2},{y2}]")
     
     if detections == 0:
         if verbose:

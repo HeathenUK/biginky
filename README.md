@@ -10,7 +10,9 @@ A PlatformIO/Arduino-Pico driver for the EL133UF1 13.3" Spectra 6 e-ink panel, d
 - **Simple API**: Clear, setPixel, fillRect, drawRect, and more
 - **Optimized for RP2350**: Takes advantage of the Pico Plus 2 W's 8MB PSRAM
 - **🆕 ML-Based Text Placement**: Automatically avoid placing text over detected objects
-- **SD Card Support**: Display BMPs from SD card with intelligent text overlay
+- **SD Card Support**: Display BMPs and PNGs from SD card with intelligent text overlay
+- **🆕 SD Card Configuration**: Load custom quotes and image-to-audio mappings from SD card
+- **🆕 WAV Audio Playback**: Play audio files when images are displayed (ESP32-P4)
 - **TTF Font Rendering**: High-quality text rendering with outline support
 - **Intelligent Layout**: Automatic text positioning based on image content
 
@@ -287,6 +289,72 @@ Data is sent to each controller separately, with pixels packed as nibbles (4 bit
 4. Power on
 5. Display refresh
 6. Power off
+
+## SD Card Configuration (ESP32-P4)
+
+The ESP32-P4 version supports loading quotes and audio files from the SD card, allowing you to customize the display without recompiling the firmware.
+
+### Features
+
+1. **Custom Quotes** (`/quotes.txt`): Load your own collection of inspirational quotes
+2. **Image-to-Audio Mappings** (`/media.txt`): Associate images with WAV audio files
+3. **Automatic Fallback**: Uses hard-coded defaults if configuration files are missing
+
+### Quick Start
+
+1. **Create `/quotes.txt` on your SD card:**
+   ```
+   The only impossible journey is the one you never begin.
+   ~Tony Robbins
+
+   Success is not final, failure is not fatal.
+   ~Winston Churchill
+   ```
+
+2. **Create `/media.txt` on your SD card:**
+   ```
+   sunset.png,ocean_waves.wav
+   forest.png,bird_song.wav
+   city.png,traffic.wav
+   ```
+
+3. **Add your WAV audio files** (16-bit PCM, 44.1kHz)
+
+4. **Insert SD card and reboot**
+
+### Converting Audio Files
+
+Use the provided helper scripts to convert audio files:
+
+```bash
+# Linux/macOS
+./scripts/prepare_audio.sh music/*.mp3
+
+# Windows
+scripts\prepare_audio.bat music\*.mp3
+```
+
+Or manually with ffmpeg:
+```bash
+ffmpeg -i input.mp3 -acodec pcm_s16le -ar 44100 -ac 1 output.wav
+```
+
+### File Format Details
+
+See [SD_CARD_CONFIG.md](SD_CARD_CONFIG.md) for complete documentation including:
+- Quote file format specification
+- Media mapping format
+- WAV file requirements
+- Troubleshooting tips
+- Example files
+
+### Example Files
+
+The repository includes:
+- `example_quotes.txt` - 20 inspirational quotes
+- `example_media.txt` - Sample image-to-audio mappings
+- `scripts/prepare_audio.sh` - Linux/macOS audio converter
+- `scripts/prepare_audio.bat` - Windows audio converter
 
 ## Troubleshooting
 

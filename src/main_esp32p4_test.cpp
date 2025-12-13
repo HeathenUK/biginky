@@ -33,6 +33,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <vector>
 #include "platform_hal.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
@@ -584,6 +585,450 @@ static bool ensureTimeValid(uint32_t timeout_ms = 0) {
 }
 #endif
 
+// ============================================================================
+// SD Card-Based Configuration for Quotes and Audio
+// ============================================================================
+
+#if SDMMC_ENABLED
+
+// Structure to hold loaded quotes from SD card
+struct LoadedQuote {
+    String text;
+    String author;
+};
+
+static std::vector<LoadedQuote> g_loaded_quotes;
+static bool g_quotes_loaded = false;
+
+// Structure to hold image-to-audio mappings
+struct MediaMapping {
+    String imageName;  // e.g., "sunset.png"
+    String audioFile;  // e.g., "ocean.wav"
+};
+
+static std::vector<MediaMapping> g_media_mappings;
+static bool g_media_mappings_loaded = false;
+
+/**
+ * Load quotes from /quotes.txt on SD card
+ * Format (one quote per pair of lines):
+ *   quote text
+ *   ~Author Name
+ *   (blank line separator)
+ * 
+ * Returns: number of quotes loaded
+ */
+int loadQuotesFromSD() {
+    g_loaded_quotes.clear();
+    g_quotes_loaded = false;
+    
+    Serial.println("\n=== Loading quotes from SD card ===");
+    
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("  SD card not mounted");
+        return 0;
+    }
+    
+    String quotesPath = "0:/quotes.txt";
+    
+    // Check if file exists
+    FILINFO fno;
+    FRESULT res = f_stat(quotesPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.println("  /quotes.txt not found (using fallback hard-coded quotes)");
+        return 0;
+    }
+    
+    Serial.printf("  Found quotes.txt (%lu bytes)\n", (unsigned long)fno.fsize);
+    
+    // Open file
+    FIL quotesFile;
+    res = f_open(&quotesFile, quotesPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("  Failed to open quotes.txt: %d\n", res);
+        return 0;
+    }
+    
+    // Read file line by line
+    char line[512];
+    String currentQuote = "";
+    String currentAuthor = "";
+    bool readingQuote = true;
+    int lineNum = 0;
+    
+    while (f_gets(line, sizeof(line), &quotesFile)) {
+        lineNum++;
+        
+        // Remove trailing newline/CR
+        int len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
+            line[len-1] = '\0';
+            len--;
+        }
+        
+        String trimmed = String(line);
+        trimmed.trim();
+        
+        // Skip empty lines between quotes
+        if (trimmed.length() == 0) {
+            // If we have a complete quote, save it
+            if (currentQuote.length() > 0 && currentAuthor.length() > 0) {
+                LoadedQuote lq;
+                lq.text = currentQuote;
+                lq.author = currentAuthor;
+                g_loaded_quotes.push_back(lq);
+                Serial.printf("  [%d] \"%s\" - %s\n", g_loaded_quotes.size(),
+                             currentQuote.c_str(), currentAuthor.c_str());
+                currentQuote = "";
+                currentAuthor = "";
+                readingQuote = true;
+            }
+            continue;
+        }
+        
+        // Lines starting with ~ are authors
+        if (trimmed.startsWith("~")) {
+            currentAuthor = trimmed.substring(1);
+            currentAuthor.trim();
+            readingQuote = false;
+        } else {
+            // It's a quote line
+            if (currentQuote.length() > 0) {
+                currentQuote += " ";  // Join multi-line quotes
+            }
+            currentQuote += trimmed;
+        }
+    }
+    
+    // Save the last quote if there is one
+    if (currentQuote.length() > 0 && currentAuthor.length() > 0) {
+        LoadedQuote lq;
+        lq.text = currentQuote;
+        lq.author = currentAuthor;
+        g_loaded_quotes.push_back(lq);
+        Serial.printf("  [%d] \"%s\" - %s\n", g_loaded_quotes.size(),
+                     currentQuote.c_str(), currentAuthor.c_str());
+    }
+    
+    f_close(&quotesFile);
+    
+    if (g_loaded_quotes.size() > 0) {
+        g_quotes_loaded = true;
+        Serial.printf("  Loaded %d quotes from SD card\n", g_loaded_quotes.size());
+    } else {
+        Serial.println("  No quotes found in file");
+    }
+    Serial.println("=====================================\n");
+    
+    return g_loaded_quotes.size();
+}
+
+/**
+ * Load image-to-audio mappings from /media.txt on SD card
+ * Format (one mapping per line):
+ *   image.png,audio.wav
+ * 
+ * Returns: number of mappings loaded
+ */
+int loadMediaMappingsFromSD() {
+    g_media_mappings.clear();
+    g_media_mappings_loaded = false;
+    
+    Serial.println("\n=== Loading media mappings from SD card ===");
+    
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("  SD card not mounted");
+        return 0;
+    }
+    
+    String mediaPath = "0:/media.txt";
+    
+    // Check if file exists
+    FILINFO fno;
+    FRESULT res = f_stat(mediaPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.println("  /media.txt not found (using fallback beep)");
+        return 0;
+    }
+    
+    Serial.printf("  Found media.txt (%lu bytes)\n", (unsigned long)fno.fsize);
+    
+    // Open file
+    FIL mediaFile;
+    res = f_open(&mediaFile, mediaPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("  Failed to open media.txt: %d\n", res);
+        return 0;
+    }
+    
+    // Read file line by line
+    char line[256];
+    int lineNum = 0;
+    
+    while (f_gets(line, sizeof(line), &mediaFile)) {
+        lineNum++;
+        
+        // Remove trailing newline/CR
+        int len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
+            line[len-1] = '\0';
+            len--;
+        }
+        
+        String trimmed = String(line);
+        trimmed.trim();
+        
+        // Skip empty lines and comments
+        if (trimmed.length() == 0 || trimmed.startsWith("#")) {
+            continue;
+        }
+        
+        // Parse format: image.png,audio.wav
+        int commaPos = trimmed.indexOf(',');
+        if (commaPos > 0 && commaPos < (int)trimmed.length() - 1) {
+            String imageName = trimmed.substring(0, commaPos);
+            String audioFile = trimmed.substring(commaPos + 1);
+            imageName.trim();
+            audioFile.trim();
+            
+            // Extract just the filename (remove path if present)
+            int slashPos = imageName.lastIndexOf('/');
+            if (slashPos >= 0) {
+                imageName = imageName.substring(slashPos + 1);
+            }
+            
+            MediaMapping mm;
+            mm.imageName = imageName;
+            mm.audioFile = audioFile;
+            g_media_mappings.push_back(mm);
+            
+            Serial.printf("  [%d] %s -> %s\n", g_media_mappings.size(),
+                         imageName.c_str(), audioFile.c_str());
+        } else {
+            Serial.printf("  Warning: Invalid format on line %d: %s\n", lineNum, line);
+        }
+    }
+    
+    f_close(&mediaFile);
+    
+    if (g_media_mappings.size() > 0) {
+        g_media_mappings_loaded = true;
+        Serial.printf("  Loaded %d media mappings from SD card\n", g_media_mappings.size());
+    } else {
+        Serial.println("  No mappings found in file");
+    }
+    Serial.println("============================================\n");
+    
+    return g_media_mappings.size();
+}
+
+/**
+ * Find audio file for a given image filename
+ * Returns empty string if no mapping found
+ */
+String getAudioForImage(const String& imagePath) {
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        return "";
+    }
+    
+    // Extract just the filename from the path
+    String fileName = imagePath;
+    int slashPos = fileName.lastIndexOf('/');
+    if (slashPos >= 0) {
+        fileName = fileName.substring(slashPos + 1);
+    }
+    
+    // Search for matching mapping
+    for (size_t i = 0; i < g_media_mappings.size(); i++) {
+        if (g_media_mappings[i].imageName.equalsIgnoreCase(fileName)) {
+            return g_media_mappings[i].audioFile;
+        }
+    }
+    
+    return "";
+}
+
+/**
+ * Play a WAV file from SD card
+ * Simple 16-bit mono/stereo WAV player
+ * Returns: true if playback successful
+ */
+bool playWavFile(const String& wavPath) {
+    Serial.printf("\n=== Playing WAV: %s ===\n", wavPath.c_str());
+    
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("  SD card not mounted");
+        return false;
+    }
+    
+    // Initialize audio if needed
+    if (!g_codec_ready || g_i2s_tx == nullptr) {
+        if (!audio_start(false)) {
+            Serial.println("  Failed to initialize audio");
+            return false;
+        }
+        g_audio_running = false;  // Stop any continuous tone
+        delay(10);
+    }
+    
+    // Set volume to reasonable level
+    (void)g_codec.setDacVolumePercentMapped(60, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+    (void)g_codec.setMute(false);
+    
+    // Build FatFs path
+    String fatfsPath = "0:";
+    if (!wavPath.startsWith("/")) {
+        fatfsPath += "/";
+    }
+    fatfsPath += wavPath;
+    
+    // Check if file exists
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("  WAV file not found: %s\n", wavPath.c_str());
+        return false;
+    }
+    
+    // Open file
+    FIL wavFile;
+    res = f_open(&wavFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("  Failed to open WAV file: %d\n", res);
+        return false;
+    }
+    
+    // Read WAV header (44 bytes minimum)
+    uint8_t header[44];
+    UINT bytesRead = 0;
+    res = f_read(&wavFile, header, 44, &bytesRead);
+    if (res != FR_OK || bytesRead != 44) {
+        Serial.println("  Failed to read WAV header");
+        f_close(&wavFile);
+        return false;
+    }
+    
+    // Verify RIFF header
+    if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
+        Serial.println("  Not a valid WAV file");
+        f_close(&wavFile);
+        return false;
+    }
+    
+    // Parse basic WAV header
+    uint16_t audioFormat = header[20] | (header[21] << 8);
+    uint16_t numChannels = header[22] | (header[23] << 8);
+    uint32_t sampleRate = header[24] | (header[25] << 8) | (header[26] << 16) | (header[27] << 24);
+    uint16_t bitsPerSample = header[34] | (header[35] << 8);
+    
+    Serial.printf("  Format: %d, Channels: %d, Rate: %lu Hz, Bits: %d\n",
+                  audioFormat, numChannels, (unsigned long)sampleRate, bitsPerSample);
+    
+    // Only support PCM format
+    if (audioFormat != 1) {
+        Serial.println("  Only PCM WAV files supported");
+        f_close(&wavFile);
+        return false;
+    }
+    
+    // Find data chunk
+    uint32_t dataSize = 0;
+    bool foundData = false;
+    
+    // Skip to data chunk (after fmt chunk)
+    f_lseek(&wavFile, 36);
+    
+    while (!foundData) {
+        uint8_t chunkHeader[8];
+        res = f_read(&wavFile, chunkHeader, 8, &bytesRead);
+        if (res != FR_OK || bytesRead != 8) break;
+        
+        if (memcmp(chunkHeader, "data", 4) == 0) {
+            dataSize = chunkHeader[4] | (chunkHeader[5] << 8) | (chunkHeader[6] << 16) | (chunkHeader[7] << 24);
+            foundData = true;
+        } else {
+            // Skip this chunk
+            uint32_t chunkSize = chunkHeader[4] | (chunkHeader[5] << 8) | (chunkHeader[6] << 16) | (chunkHeader[7] << 24);
+            f_lseek(&wavFile, f_tell(&wavFile) + chunkSize);
+        }
+    }
+    
+    if (!foundData || dataSize == 0) {
+        Serial.println("  No data chunk found in WAV file");
+        f_close(&wavFile);
+        return false;
+    }
+    
+    Serial.printf("  Data size: %lu bytes (%.2f seconds)\n",
+                  (unsigned long)dataSize,
+                  (float)dataSize / (sampleRate * numChannels * (bitsPerSample / 8)));
+    
+    // Allocate playback buffer
+    const size_t bufferSize = 4096;
+    uint8_t* buffer = (uint8_t*)malloc(bufferSize);
+    if (!buffer) {
+        Serial.println("  Failed to allocate playback buffer");
+        f_close(&wavFile);
+        return false;
+    }
+    
+    // Play audio data
+    uint32_t bytesPlayed = 0;
+    while (bytesPlayed < dataSize) {
+        size_t toRead = min((size_t)(dataSize - bytesPlayed), bufferSize);
+        
+        res = f_read(&wavFile, buffer, toRead, &bytesRead);
+        if (res != FR_OK || bytesRead == 0) {
+            break;
+        }
+        
+        // Convert mono to stereo if needed
+        if (numChannels == 1 && bitsPerSample == 16) {
+            // Allocate stereo buffer
+            uint8_t* stereoBuffer = (uint8_t*)malloc(bytesRead * 2);
+            if (stereoBuffer) {
+                int16_t* monoSamples = (int16_t*)buffer;
+                int16_t* stereoSamples = (int16_t*)stereoBuffer;
+                size_t numSamples = bytesRead / 2;
+                
+                for (size_t i = 0; i < numSamples; i++) {
+                    stereoSamples[i * 2] = monoSamples[i];
+                    stereoSamples[i * 2 + 1] = monoSamples[i];
+                }
+                
+                size_t written = 0;
+                esp_err_t err = i2s_channel_write(g_i2s_tx, stereoBuffer, bytesRead * 2, &written, portMAX_DELAY);
+                free(stereoBuffer);
+                
+                if (err != ESP_OK) {
+                    Serial.printf("  I2S write error: %s\n", esp_err_to_name(err));
+                    break;
+                }
+            }
+        } else {
+            // Stereo or unsupported format - write directly
+            size_t written = 0;
+            esp_err_t err = i2s_channel_write(g_i2s_tx, buffer, bytesRead, &written, portMAX_DELAY);
+            if (err != ESP_OK) {
+                Serial.printf("  I2S write error: %s\n", esp_err_to_name(err));
+                break;
+            }
+        }
+        
+        bytesPlayed += bytesRead;
+    }
+    
+    free(buffer);
+    f_close(&wavFile);
+    
+    Serial.printf("  Playback complete (%lu bytes played)\n", (unsigned long)bytesPlayed);
+    Serial.println("========================================\n");
+    
+    return true;
+}
+
+#endif // SDMMC_ENABLED
+
 static void auto_cycle_task(void* arg) {
     (void)arg;
     g_cycle_count++;
@@ -593,6 +1038,14 @@ static void auto_cycle_task(void* arg) {
 
     uint32_t sd_ms = 0, dec_ms = 0;
 #if SDMMC_ENABLED
+    // Load configuration files from SD card (only once)
+    if (!g_quotes_loaded) {
+        loadQuotesFromSD();
+    }
+    if (!g_media_mappings_loaded) {
+        loadMediaMappingsFromSD();
+    }
+    
     bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
 #else
     bool ok = false;
@@ -747,22 +1200,36 @@ static void auto_cycle_task(void* arg) {
     // QUOTE - Intelligently positioned with automatic line wrapping
     // ================================================================
     
-    // Collection of quotes with their authors
     using Quote = TextPlacementAnalyzer::Quote;
-    static const Quote quotes[] = {
-        {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
-        {"The only way to do great work is to love what you do", "Steve Jobs"},
-        {"In the middle of difficulty lies opportunity", "Albert Einstein"},
-        {"Be yourself; everyone else is already taken", "Oscar Wilde"},
-        {"The future belongs to those who believe in the beauty of their dreams", "Eleanor Roosevelt"},
-        {"It is during our darkest moments that we must focus to see the light", "Aristotle"},
-        {"The best time to plant a tree was 20 years ago. The second best time is now", "Chinese Proverb"},
-        {"Life is what happens when you're busy making other plans", "John Lennon"},
-    };
-    static const int numQuotes = sizeof(quotes) / sizeof(quotes[0]);
+    Quote selectedQuote;
     
-    // Select a random quote
-    const Quote& selectedQuote = quotes[random(numQuotes)];
+#if SDMMC_ENABLED
+    // Try to use quotes from SD card first
+    if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
+        // Select a random quote from SD card
+        int randomIndex = random(g_loaded_quotes.size());
+        selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
+        selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
+        Serial.printf("Using SD card quote: \"%s\" - %s\n", selectedQuote.text, selectedQuote.author);
+    } else {
+#endif
+        // Fallback: use hard-coded quotes
+        static const Quote fallbackQuotes[] = {
+            {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
+            {"The only way to do great work is to love what you do", "Steve Jobs"},
+            {"In the middle of difficulty lies opportunity", "Albert Einstein"},
+            {"Be yourself; everyone else is already taken", "Oscar Wilde"},
+            {"The future belongs to those who believe in the beauty of their dreams", "Eleanor Roosevelt"},
+            {"It is during our darkest moments that we must focus to see the light", "Aristotle"},
+            {"The best time to plant a tree was 20 years ago. The second best time is now", "Chinese Proverb"},
+            {"Life is what happens when you're busy making other plans", "John Lennon"},
+        };
+        static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
+        selectedQuote = fallbackQuotes[random(numQuotes)];
+        Serial.printf("Using fallback quote: \"%s\" - %s\n", selectedQuote.text, selectedQuote.author);
+#if SDMMC_ENABLED
+    }
+#endif
     
     // Adaptive sizing for quote as well
     float quoteFontSize = 48.0f;
@@ -826,9 +1293,30 @@ static void auto_cycle_task(void* arg) {
     // Add quote as exclusion zone for any future text elements (e.g., battery %)
     textPlacement.addExclusionZone(quoteLayout.position, 50);
 
-    // Brief beep
+    // ================================================================
+    // AUDIO - Play WAV file for this image (or fallback to beep)
+    // ================================================================
+    
+#if SDMMC_ENABLED
+    String audioFile = getAudioForImage(g_lastImagePath);
+    if (audioFile.length() > 0) {
+        Serial.printf("Image %s has audio mapping: %s\n", g_lastImagePath.c_str(), audioFile.c_str());
+        if (playWavFile(audioFile)) {
+            Serial.println("Audio playback complete");
+        } else {
+            Serial.println("Audio playback failed, playing fallback beep");
+            (void)audio_beep(880, 120);
+        }
+    } else {
+        Serial.println("No audio mapping for this image, playing fallback beep");
+        (void)audio_beep(880, 120);
+    }
+    audio_stop();
+#else
+    // No SD card - just play beep
     (void)audio_beep(880, 120);
     audio_stop();
+#endif
 
     // Refresh display
     Serial.println("Updating display (e-ink refresh)...");

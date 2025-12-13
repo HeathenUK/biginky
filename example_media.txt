@@ -1,0 +1,48 @@
+# Image-to-Audio Mapping Configuration
+# Format: imagename.png,audiofile.wav
+# Lines starting with # are comments
+# Image names are case-insensitive
+
+# Nature scenes
+sunset.png,ocean_waves.wav
+sunrise.png,morning_birds.wav
+forest.png,forest_ambience.wav
+mountain.png,mountain_wind.wav
+beach.png,beach_waves.wav
+ocean.png,seagulls.wav
+lake.png,gentle_water.wav
+waterfall.png,waterfall.wav
+rain.png,rain_sound.wav
+storm.png,thunder.wav
+
+# Urban scenes
+city.png,city_traffic.wav
+street.png,street_sounds.wav
+cafe.png,cafe_ambience.wav
+market.png,market_chatter.wav
+subway.png,train.wav
+
+# Musical instruments
+guitar.png,guitar_strum.wav
+piano.png,piano_melody.wav
+violin.png,violin_note.wav
+drums.png,drum_beat.wav
+
+# Animals
+cat.png,cat_meow.wav
+dog.png,dog_bark.wav
+bird.png,bird_chirp.wav
+horse.png,horse_neigh.wav
+cow.png,cow_moo.wav
+
+# Seasonal
+winter.png,wind_howl.wav
+spring.png,spring_birds.wav
+summer.png,crickets.wav
+autumn.png,leaves_rustling.wav
+
+# Abstract/Moods
+calm.png,meditation.wav
+energetic.png,upbeat.wav
+peaceful.png,zen_bells.wav
+joyful.png,happy_tune.wav

@@ -612,6 +612,9 @@ static void auto_cycle_task(void* arg) {
         snprintf(dateBuf, sizeof(dateBuf), "time not set");
     }
 
+    // Set keepout margins (areas not visible to user due to bezel/frame)
+    textPlacement.setKeepout(100);  // 100px margin on all sides
+    
     // Get text dimensions for both time and date
     const float timeFontSize = 160.0f;
     const float dateFontSize = 48.0f;

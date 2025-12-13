@@ -107,6 +107,25 @@ struct ScoringWeights {
 };
 
 /**
+ * @brief Keepout margins - areas where text should not be placed
+ * 
+ * Defines a rectangular "safe area" inset from the display edges.
+ * Any candidate position that would place text outside this area
+ * will be rejected (score = 0).
+ */
+struct KeepoutMargins {
+    int16_t top;         ///< Pixels from top edge
+    int16_t bottom;      ///< Pixels from bottom edge
+    int16_t left;        ///< Pixels from left edge
+    int16_t right;       ///< Pixels from right edge
+    
+    KeepoutMargins() : top(0), bottom(0), left(0), right(0) {}
+    KeepoutMargins(int16_t all) : top(all), bottom(all), left(all), right(all) {}
+    KeepoutMargins(int16_t tb, int16_t lr) : top(tb), bottom(tb), left(lr), right(lr) {}
+    KeepoutMargins(int16_t t, int16_t b, int16_t l, int16_t r) : top(t), bottom(b), left(l), right(r) {}
+};
+
+/**
  * @brief Intelligent text placement analyzer
  * 
  * Analyzes framebuffer regions to find optimal text placement positions.
@@ -129,10 +148,45 @@ public:
     const ScoringWeights& getWeights() const { return _weights; }
     
     /**
+     * @brief Set keepout margins (areas where text cannot be placed)
+     * 
+     * Text will not be placed such that any part of it falls within
+     * the keepout margins from the display edges.
+     * 
+     * @param margins Keepout margins in pixels
+     */
+    void setKeepout(const KeepoutMargins& margins) { _keepout = margins; }
+    
+    /**
+     * @brief Set uniform keepout margin on all sides
+     * @param margin Pixels from each edge
+     */
+    void setKeepout(int16_t margin) { _keepout = KeepoutMargins(margin); }
+    
+    /**
+     * @brief Get current keepout margins
+     */
+    const KeepoutMargins& getKeepout() const { return _keepout; }
+    
+    /**
      * @brief Enable/disable parallel analysis on ESP32-P4
      * @param enable True to use both cores for analysis
      */
     void setParallelMode(bool enable) { _useParallel = enable; }
+    
+    /**
+     * @brief Check if a region fits within the safe area (outside keepout)
+     * 
+     * @param displayWidth Display width in pixels
+     * @param displayHeight Display height in pixels
+     * @param x Region center X
+     * @param y Region center Y
+     * @param w Region width
+     * @param h Region height
+     * @return true if region is fully within safe area
+     */
+    bool isWithinSafeArea(int16_t displayWidth, int16_t displayHeight,
+                          int16_t x, int16_t y, int16_t w, int16_t h) const;
     
     // ========================================================================
     // Main API
@@ -258,6 +312,7 @@ public:
 
 private:
     ScoringWeights _weights;
+    KeepoutMargins _keepout;
     bool _useParallel;
     
     // Luminance lookup table for fast ARGB analysis

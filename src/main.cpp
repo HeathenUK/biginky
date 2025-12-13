@@ -2203,6 +2203,9 @@ void doDisplayUpdate(int updateNumber) {
     strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", tm);
     strftime(dateBuf, sizeof(dateBuf), "%A, %d %B %Y", tm);
     
+    // Set keepout margins (areas not visible to user due to bezel/frame)
+    textPlacement.setKeepout(100);  // 100px margin on all sides
+    
     // Get text dimensions for both time and date
     const float timeFontSize = 160.0f;
     const float dateFontSize = 48.0f;

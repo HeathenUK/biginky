@@ -66,9 +66,28 @@ float Spectra6Histogram::percentage(uint8_t spectraCode) const {
 // ============================================================================
 
 TextPlacementAnalyzer::TextPlacementAnalyzer() 
-    : _useParallel(true)  // Enable by default on ESP32-P4
+    : _useParallel(true),  // Enable by default on ESP32-P4
+      _keepout()           // No keepout by default
 {
     initLUT();
+}
+
+bool TextPlacementAnalyzer::isWithinSafeArea(int16_t displayWidth, int16_t displayHeight,
+                                              int16_t x, int16_t y, int16_t w, int16_t h) const
+{
+    // Calculate the region bounds (x,y is center)
+    int16_t left = x - w / 2;
+    int16_t right = x + w / 2;
+    int16_t top = y - h / 2;
+    int16_t bottom = y + h / 2;
+    
+    // Check against keepout margins
+    if (left < _keepout.left) return false;
+    if (right > displayWidth - _keepout.right) return false;
+    if (top < _keepout.top) return false;
+    if (bottom > displayHeight - _keepout.bottom) return false;
+    
+    return true;
 }
 
 TextPlacementAnalyzer::~TextPlacementAnalyzer() {
@@ -104,27 +123,52 @@ TextPlacementRegion TextPlacementAnalyzer::findBestPosition(
     // Get text dimensions (used as fallback if candidate dimensions are 0)
     int16_t defaultWidth = ttf->getTextWidth(text, fontSize);
     int16_t defaultHeight = ttf->getTextHeight(fontSize);
+    int16_t dispW = display->width();
+    int16_t dispH = display->height();
     
     // Copy candidates and fill in dimensions if not already set
     // This allows callers to specify custom dimensions (e.g., for combined text blocks)
     TextPlacementRegion* scored = new TextPlacementRegion[numCandidates];
+    int validCount = 0;
+    
     for (int i = 0; i < numCandidates; i++) {
         scored[i] = candidates[i];
         // Only use default dimensions if candidate has zero dimensions
         if (scored[i].width <= 0) scored[i].width = defaultWidth;
         if (scored[i].height <= 0) scored[i].height = defaultHeight;
-        scored[i].score = 0.0f;
+        
+        // Check if this candidate is within the safe area (outside keepout margins)
+        if (isWithinSafeArea(dispW, dispH, scored[i].x, scored[i].y, 
+                             scored[i].width, scored[i].height)) {
+            scored[i].score = 0.0f;  // Will be scored
+            validCount++;
+        } else {
+            scored[i].score = -1.0f;  // Mark as invalid (in keepout zone)
+        }
+    }
+    
+    // If no valid candidates, return first candidate with score 0
+    if (validCount == 0) {
+        Serial.println("[TextPlacement] Warning: All candidates in keepout zone!");
+        TextPlacementRegion result = scored[0];
+        result.score = 0.0f;
+        delete[] scored;
+        return result;
     }
     
 #if defined(SOC_PPA_SUPPORTED) && SOC_PPA_SUPPORTED
-    if (_useParallel && numCandidates > 2) {
+    if (_useParallel && validCount > 2) {
         // Use dual-core parallel scoring on ESP32-P4
+        // Note: parallel scorer will skip candidates with score < 0
         scoreRegionsParallel(display, scored, numCandidates, textColor, outlineColor);
     } else
 #endif
     {
         // Sequential scoring - use each candidate's own dimensions
         for (int i = 0; i < numCandidates; i++) {
+            // Skip candidates marked as invalid (in keepout zone)
+            if (scored[i].score < 0.0f) continue;
+            
             int16_t rx = scored[i].drawX();
             int16_t ry = scored[i].drawY();
             scored[i].score = scoreRegion(display, rx, ry, 
@@ -133,15 +177,18 @@ TextPlacementRegion TextPlacementAnalyzer::findBestPosition(
         }
     }
     
-    // Find best scoring region
-    int bestIdx = 0;
-    float bestScore = scored[0].score;
-    for (int i = 1; i < numCandidates; i++) {
+    // Find best scoring region (skip invalid candidates with score < 0)
+    int bestIdx = -1;
+    float bestScore = -1.0f;
+    for (int i = 0; i < numCandidates; i++) {
         if (scored[i].score > bestScore) {
             bestScore = scored[i].score;
             bestIdx = i;
         }
     }
+    
+    // Fallback to first candidate if somehow no valid one found
+    if (bestIdx < 0) bestIdx = 0;
     
     TextPlacementRegion result = scored[bestIdx];
     delete[] scored;
@@ -639,6 +686,9 @@ static void parallelScoreTask(void* param) {
     ParallelScoreParams* p = (ParallelScoreParams*)param;
     
     for (int i = p->startIdx; i < p->endIdx; i++) {
+        // Skip candidates marked as invalid (in keepout zone)
+        if (p->regions[i].score < 0.0f) continue;
+        
         int16_t rx = p->regions[i].drawX();
         int16_t ry = p->regions[i].drawY();
         p->regions[i].score = p->analyzer->scoreRegion(

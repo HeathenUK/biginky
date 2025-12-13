@@ -331,7 +331,7 @@ void TextPlacementAnalyzer::debugDrawKeepOutAreas(EL133UF1* display, uint8_t col
                 if (y < _keepOutMap.height-1 && !_keepOutMap.isKeepOut(x, y+1)) isEdge = true;
                 
                 if (isEdge) {
-                    display->drawPixel(x, y, color);
+                    display->setPixel(x, y, color);
                     pixelsDrawn++;
                 }
             }

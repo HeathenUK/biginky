@@ -55,6 +55,7 @@
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
+#include "EL133UF1_TextPlacement.h"
 #include "OpenAIImage.h"
 #include "GetimgAI.h"
 #include "ModelsLabAI.h"
@@ -142,6 +143,9 @@ EL133UF1_PNG png;
 OpenAIImage openai;
 GetimgAI getimgai;
 ModelsLabAI modelslab;
+
+// Intelligent text placement analyzer
+TextPlacementAnalyzer textPlacement;
 
 // AI-generated image stored in PSRAM (persists between updates)
 static uint8_t* aiImageData = nullptr;
@@ -2188,7 +2192,7 @@ void doDisplayUpdate(int updateNumber) {
 #endif  // AI image generation disabled
     
     // ================================================================
-    // TIME - Large outlined text, centered
+    // TIME - Large outlined text, intelligently positioned
     // ================================================================
     
     // Display the PREDICTED time (what it will be when refresh completes)
@@ -2197,22 +2201,56 @@ void doDisplayUpdate(int updateNumber) {
     char timeBuf[16];
     strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", tm);
     
-    // Time - large outlined text for readability on any background
+    // Get text dimensions for time
+    const float timeFontSize = 160.0f;
+    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize);
+    int16_t timeH = ttf.getTextHeight(timeFontSize);
+    
+    // Generate candidate positions for time display
+    // We try: center, upper-center, lower-center, and avoid corners (battery/next info there)
+    TextPlacementRegion timeCandidates[5];
+    int16_t cx = display.width() / 2;
+    int16_t cy = display.height() / 2;
+    timeCandidates[0] = {cx, cy - 50, timeW, timeH, 0};           // Center (offset up for date)
+    timeCandidates[1] = {cx, (int16_t)(timeH/2 + 80), timeW, timeH, 0};  // Top area
+    timeCandidates[2] = {cx, (int16_t)(cy - 150), timeW, timeH, 0};      // Upper-center
+    timeCandidates[3] = {cx, (int16_t)(cy + 100), timeW, timeH, 0};      // Lower-center
+    timeCandidates[4] = {cx, (int16_t)(display.height() - timeH/2 - 150), timeW, timeH, 0}; // Bottom area
+    
+    // Find best position based on background analysis
     t0 = millis();
-    ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2 - 50, timeBuf, 160.0,
+    TextPlacementRegion bestTimePos = textPlacement.findBestPosition(
+        &display, &ttf, timeBuf, timeFontSize,
+        timeCandidates, 5,
+        EL133UF1_WHITE, EL133UF1_BLACK);
+    uint32_t analysisTime = millis() - t0;
+    Serial.printf("  Text placement analysis: %lu ms (score=%.2f)\n", analysisTime, bestTimePos.score);
+    
+    // Draw time at best position
+    t0 = millis();
+    ttf.drawTextAlignedOutlined(bestTimePos.x, bestTimePos.y, timeBuf, timeFontSize,
                                  EL133UF1_WHITE, EL133UF1_BLACK,
                                  ALIGN_CENTER, ALIGN_MIDDLE, 3);
     t1 = millis() - t0;
     ttfTotal += t1;
-    Serial.printf("  TTF time 160px: %lu ms\n", t1);
+    Serial.printf("  TTF time 160px: %lu ms (at %d,%d)\n", t1, bestTimePos.x, bestTimePos.y);
     
     // ================================================================
-    // DATE - Below time, also outlined for readability
+    // DATE - Below time, positioned relative to time location
     // ================================================================
     char dateBuf[32];
     strftime(dateBuf, sizeof(dateBuf), "%A, %d %B %Y", tm);
+    
+    // Position date below the time (relative to where time was placed)
+    int16_t dateY = bestTimePos.y + timeH/2 + 50;  // 50px gap below time
+    
+    // Make sure date doesn't go off screen or overlap with bottom info
+    if (dateY > display.height() - 100) {
+        dateY = display.height() - 100;
+    }
+    
     t0 = millis();
-    ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2 + 100, dateBuf, 48.0,
+    ttf.drawTextAlignedOutlined(bestTimePos.x, dateY, dateBuf, 48.0,
                                  EL133UF1_WHITE, EL133UF1_BLACK,
                                  ALIGN_CENTER, ALIGN_TOP, 2);
     t1 = millis() - t0;

@@ -403,6 +403,15 @@ public:
     void debugDrawKeepOutAreas(EL133UF1* display, uint8_t color = EL133UF1_RED);
     
     /**
+     * @brief Get the center position of the first exclusion zone (for layout balancing)
+     * 
+     * @param outX Output: X coordinate of exclusion zone center
+     * @param outY Output: Y coordinate of exclusion zone center
+     * @return true if an exclusion zone exists
+     */
+    bool getFirstExclusionZoneCenter(int16_t& outX, int16_t& outY) const;
+    
+    /**
      * @brief Check if a keep-out map is currently loaded
      */
     bool hasKeepOutMap() const { return _keepOutMap.bitmap != nullptr; }

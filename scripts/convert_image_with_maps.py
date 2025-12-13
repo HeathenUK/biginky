@@ -228,6 +228,8 @@ parser.add_argument('--map-confidence', type=float, default=0.3,
                     help='YOLO confidence threshold for object detection (0.0-1.0, default: 0.3)')
 parser.add_argument('--map-expand', type=int, default=50,
                     help='Pixels to expand around detected objects (default: 50)')
+parser.add_argument('--map-method', choices=['segmentation', 'boxes'], default='segmentation',
+                    help='Detection method: segmentation (precise, follows outline) or boxes (faster, rectangular)')
 parser.add_argument('--verbose', action='store_true',
                     help='Print detailed processing information')
 
@@ -279,6 +281,7 @@ def process_image(image_file):
                 resized_image,
                 confidence=args.map_confidence,
                 expand_margin=args.map_expand,
+                use_segmentation=(args.map_method == 'segmentation'),
                 verbose=args.verbose
             )
 

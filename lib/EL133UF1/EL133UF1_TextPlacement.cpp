@@ -98,6 +98,13 @@ void TextPlacementAnalyzer::clearExclusionZones() {
     Serial.println("[TextPlacement] Cleared all exclusion zones");
 }
 
+bool TextPlacementAnalyzer::getFirstExclusionZoneCenter(int16_t& outX, int16_t& outY) const {
+    if (_numExclusionZones == 0) return false;
+    outX = _exclusionZones[0].centerX;
+    outY = _exclusionZones[0].centerY;
+    return true;
+}
+
 bool TextPlacementAnalyzer::overlapsExclusionZone(int16_t x, int16_t y, int16_t w, int16_t h) const {
     for (int i = 0; i < _numExclusionZones; i++) {
         if (_exclusionZones[i].overlaps(x, y, w, h)) {
@@ -687,6 +694,32 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     // Clamp to 0-1
     if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
     if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
+    
+    // Bonus for positions that balance existing text elements
+    // If there's an exclusion zone (previous text), prefer positions far from it
+    if (_numExclusionZones > 0) {
+        int16_t ex_cx = _exclusionZones[0].centerX;
+        int16_t ex_cy = _exclusionZones[0].centerY;
+        
+        // Calculate distance from this region center to exclusion zone center
+        int16_t cx = x + w/2;
+        int16_t cy = y + h/2;
+        float dx = (float)(cx - ex_cx);
+        float dy = (float)(cy - ex_cy);
+        float distance = sqrtf(dx*dx + dy*dy);
+        
+        // Normalize distance (0-1 range, where 1 = far apart)
+        // Assume display is ~2000px diagonal
+        float normalizedDistance = distance / 2000.0f;
+        if (normalizedDistance > 1.0f) normalizedDistance = 1.0f;
+        
+        // Apply distance bonus (up to 20% score increase for well-separated elements)
+        float distanceBonus = normalizedDistance * 0.2f;
+        metrics.overallScore += distanceBonus;
+        
+        // Clamp again after bonus
+        if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
+    }
     
     // Debug: Log regions with any keep-out overlap
     if (_keepOutMap.bitmap && keepOutCoverage > 0.0f) {

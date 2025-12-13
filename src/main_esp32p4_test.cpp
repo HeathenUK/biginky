@@ -734,8 +734,8 @@ static void auto_cycle_task(void* arg) {
                                 ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
     
     // Add the time/date block as an exclusion zone so quote won't overlap
-    // Padding of 50px ensures some breathing room between elements
-    textPlacement.addExclusionZone(bestPos, 50);
+    // Larger padding to create visual separation between elements
+    textPlacement.addExclusionZone(bestPos, 150);  // Increased from 50 to 150px
 
     // ================================================================
     // QUOTE - Intelligently positioned with automatic line wrapping

@@ -1110,9 +1110,11 @@ static void auto_cycle_task(void* arg) {
                     Serial.println(" FAILED (timeout)");
                 }
                 
-                // Disconnect WiFi to save power
+                // Disconnect WiFi and put C6 into low-power mode
                 WiFi.disconnect(true);
+                WiFi.setSleep(WIFI_PS_MAX_MODEM);  // Tell C6 to enter max power save
                 WiFi.mode(WIFI_OFF);
+                Serial.println("WiFi disconnected, C6 in low-power mode");
             } else {
                 Serial.println("WiFi connection failed");
             }

@@ -1322,20 +1322,20 @@ void TextPlacementAnalyzer::drawQuote(EL133UF1_TTF* ttf, const QuoteLayoutResult
     int16_t quoteLineGap = quoteLineHeight / 4;
     int16_t gapBeforeAuthor = ttf->getTextHeight(authorFontSize) / 2;
     
-    // Calculate positions
+    // Calculate block edges
     // Block is centered at position.x, position.y
-    // Quote is at the top of the block, author at the bottom
     int16_t blockTop = layout.position.y - layout.totalHeight / 2;
+    int16_t blockLeft = layout.position.x - layout.totalWidth / 2;
     int16_t blockRight = layout.position.x + layout.totalWidth / 2;
     
-    // Draw quote lines (centered horizontally)
+    // Draw quote lines (left-aligned)
     if (layout.quoteLines == 1) {
-        // Single line - center it
+        // Single line - left aligned
         int16_t quoteY = blockTop + quoteLineHeight / 2;
-        ttf->drawTextAlignedOutlined(layout.position.x, quoteY, layout.wrappedQuote, quoteFontSize,
-                                     textColor, outlineColor, ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+        ttf->drawTextAlignedOutlined(blockLeft, quoteY, layout.wrappedQuote, quoteFontSize,
+                                     textColor, outlineColor, ALIGN_LEFT, ALIGN_MIDDLE, outlineWidth);
     } else {
-        // Multi-line - draw each line centered
+        // Multi-line - draw each line left-aligned
         int16_t startY = blockTop + quoteLineHeight / 2;
         
         // Need to make a mutable copy for strtok-style parsing
@@ -1351,10 +1351,10 @@ void TextPlacementAnalyzer::drawQuote(EL133UF1_TTF* ttf, const QuoteLayoutResult
                 *nextLine = '\0';
             }
             
-            // Draw this line centered
+            // Draw this line left-aligned
             int16_t lineY = startY + i * (quoteLineHeight + quoteLineGap);
-            ttf->drawTextAlignedOutlined(layout.position.x, lineY, line, quoteFontSize,
-                                         textColor, outlineColor, ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+            ttf->drawTextAlignedOutlined(blockLeft, lineY, line, quoteFontSize,
+                                         textColor, outlineColor, ALIGN_LEFT, ALIGN_MIDDLE, outlineWidth);
             
             // Move to next line
             if (nextLine) {

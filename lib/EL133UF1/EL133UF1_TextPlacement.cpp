@@ -647,7 +647,10 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     // Get variance (but don't overwrite if we stored keepOutCoverage there)
     float originalVariance = metrics.variance;
     metrics.variance = computeVariance(display, x, y, w, h);
-    float keepOutCoverage = originalVariance;  // Restore
+    // keepOutCoverage already declared earlier, just restore it
+    if (originalVariance != 0.0f) {
+        keepOutCoverage = originalVariance;  // Restore from where we stored it
+    }
     
     // Get edge density
     metrics.edgeDensity = computeEdgeDensity(display, x, y, w, h);

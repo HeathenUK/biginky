@@ -40,7 +40,10 @@
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
 #include "EL133UF1_TextPlacement.h"
+
 #include "fonts/opensans.h"
+#include "fonts/dancing.h"
+
 #include "es8311_simple.h"
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
 #include <time.h>
@@ -643,11 +646,6 @@ static void auto_cycle_task(void* arg) {
     
     // Clear any previous exclusion zones (fresh start for this frame)
     textPlacement.clearExclusionZones();
-    
-    // Randomize placement order for variety
-    // Sometimes place time/date first, sometimes quote first
-    bool placeTimeFirst = (random(2) == 0);
-    Serial.printf("[Layout] Placement order: %s first\n", placeTimeFirst ? "Time/Date" : "Quote");
     
     // Get text dimensions for both time and date
     // Adaptive sizing: try smaller sizes if keep-out areas block placement
@@ -2170,11 +2168,11 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     // Try to load keep-out map for this image (if available)
     bool mapLoaded = loadKeepOutMapForImage();
     
-    // Debug: visualize keep-out areas (disabled for production)
-    // if (mapLoaded) {
-    //     Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
-    //     textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
-    // }
+    // Debug: visualize keep-out areas
+    if (mapLoaded) {
+        Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
+        textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
+    }
     
     return true;
 }
@@ -2294,7 +2292,7 @@ void drawTestPattern() {
 void drawTTFTest() {
     Serial.println("Drawing TTF test...");
     
-    if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+    if (!ttf.loadFont(dancing_otf, dancing_otf_len)) {
         Serial.println("ERROR: Failed to load TTF font!");
         return;
     }
@@ -2402,7 +2400,7 @@ void setup() {
     
     // Load font once (clock overlay uses it)
     if (!ttf.fontLoaded()) {
-        if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+        if (!ttf.loadFont(dancing_otf, dancing_otf_len)) {
             Serial.println("WARNING: Failed to load TTF font");
         }
     }

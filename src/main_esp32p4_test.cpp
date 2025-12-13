@@ -644,6 +644,11 @@ static void auto_cycle_task(void* arg) {
     // Clear any previous exclusion zones (fresh start for this frame)
     textPlacement.clearExclusionZones();
     
+    // Randomize placement order for variety
+    // Sometimes place time/date first, sometimes quote first
+    bool placeTimeFirst = (random(2) == 0);
+    Serial.printf("[Layout] Placement order: %s first\n", placeTimeFirst ? "Time/Date" : "Quote");
+    
     // Get text dimensions for both time and date
     // Adaptive sizing: try smaller sizes if keep-out areas block placement
     float timeFontSize = 160.0f;

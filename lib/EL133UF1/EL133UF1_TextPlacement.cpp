@@ -589,10 +589,10 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
         }
     }
     
-    // Collect all "good enough" candidates (within 80% of best score)
-    // Higher threshold (80% vs 70%) because distance bonus is now very strong
-    // This ensures we still get variety while favoring spread-out positions
-    const float acceptableThreshold = bestScore * 0.8f;
+    // Collect all "good enough" candidates (within 65% of best score)
+    // Lower threshold (65%) to ensure more variety in selection
+    // Even with strong distance bonus, we want multiple viable options
+    const float acceptableThreshold = bestScore * 0.65f;
     int goodCandidates[64];  // Max positions to consider for variety
     int numGood = 0;
     
@@ -713,6 +713,15 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     }
     
     // Clamp to 0-1
+    if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
+    if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
+    
+    // Add small random noise to introduce variety (±5% random variation)
+    // This prevents the same position from always winning
+    float noise = ((float)random(100) / 1000.0f) - 0.05f;  // Range: -0.05 to +0.05
+    metrics.overallScore += noise;
+    
+    // Clamp again after noise
     if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
     if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
     

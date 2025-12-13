@@ -614,6 +614,33 @@ struct MediaMapping {
 static std::vector<MediaMapping> g_media_mappings;
 static bool g_media_mappings_loaded = false;
 
+// Helper function to read a line from FatFs file (f_gets is not available in ESP-IDF)
+static bool f_read_line(FIL* fp, char* buffer, size_t bufsize) {
+    size_t pos = 0;
+    UINT bytesRead;
+    char ch;
+    
+    while (pos < bufsize - 1) {
+        FRESULT res = f_read(fp, &ch, 1, &bytesRead);
+        if (res != FR_OK || bytesRead == 0) {
+            buffer[pos] = '\0';
+            return (pos > 0);  // Return true if we read any characters
+        }
+        
+        if (ch == '\n') {
+            buffer[pos] = '\0';
+            return true;
+        }
+        
+        if (ch != '\r') {  // Skip CR characters
+            buffer[pos++] = ch;
+        }
+    }
+    
+    buffer[pos] = '\0';
+    return true;
+}
+
 /**
  * Load quotes from /quotes.txt on SD card
  * Format (one quote per pair of lines):
@@ -661,15 +688,8 @@ int loadQuotesFromSD() {
     bool readingQuote = true;
     int lineNum = 0;
     
-    while (f_gets(line, sizeof(line), &quotesFile)) {
+    while (f_read_line(&quotesFile, line, sizeof(line))) {
         lineNum++;
-        
-        // Remove trailing newline/CR
-        int len = strlen(line);
-        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
-            line[len-1] = '\0';
-            len--;
-        }
         
         String trimmed = String(line);
         trimmed.trim();
@@ -770,15 +790,8 @@ int loadMediaMappingsFromSD() {
     char line[256];
     int lineNum = 0;
     
-    while (f_gets(line, sizeof(line), &mediaFile)) {
+    while (f_read_line(&mediaFile, line, sizeof(line))) {
         lineNum++;
-        
-        // Remove trailing newline/CR
-        int len = strlen(line);
-        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
-            line[len-1] = '\0';
-            len--;
-        }
         
         String trimmed = String(line);
         trimmed.trim();

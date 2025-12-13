@@ -164,6 +164,8 @@
 #define PIN_CODEC_PA_EN 53   // PA_Ctrl (active high)
 #endif
 
+#define PIN_USER_LED 7
+
 // ============================================================================
 // Global objects
 // ============================================================================
@@ -2337,6 +2339,9 @@ void setup() {
     // Bring up PA enable early (matches known-good ESP-IDF example behavior)
     pinMode(PIN_CODEC_PA_EN, OUTPUT);
     digitalWrite(PIN_CODEC_PA_EN, HIGH);
+
+    pinMode(PIN_USER_LED, OUTPUT);
+    digitalWrite(PIN_USER_LED, LOW);    
     
     // Check if we woke from deep sleep FIRST (before any delays)
     esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();

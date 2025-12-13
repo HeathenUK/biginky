@@ -589,9 +589,10 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
         }
     }
     
-    // Collect all "good enough" candidates (within 70% of best score)
-    // This adds variety while ensuring quality placement
-    const float acceptableThreshold = bestScore * 0.7f;
+    // Collect all "good enough" candidates (within 80% of best score)
+    // Higher threshold (80% vs 70%) because distance bonus is now very strong
+    // This ensures we still get variety while favoring spread-out positions
+    const float acceptableThreshold = bestScore * 0.8f;
     int goodCandidates[64];  // Max positions to consider for variety
     int numGood = 0;
     
@@ -715,8 +716,8 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
     if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
     
-    // Bonus for positions that balance existing text elements
-    // If there's an exclusion zone (previous text), prefer positions far from it
+    // STRONG bonus for positions that balance existing text elements
+    // If there's an exclusion zone (previous text), heavily prefer positions far from it
     if (_numExclusionZones > 0) {
         int16_t ex_cx = _exclusionZones[0].x;
         int16_t ex_cy = _exclusionZones[0].y;
@@ -733,8 +734,28 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
         float normalizedDistance = distance / 2000.0f;
         if (normalizedDistance > 1.0f) normalizedDistance = 1.0f;
         
-        // Apply distance bonus (up to 20% score increase for well-separated elements)
-        float distanceBonus = normalizedDistance * 0.2f;
+        // VERY strong distance bonus (up to 50% score increase!)
+        // This heavily rewards spread-out compositions
+        float distanceBonus = normalizedDistance * 0.5f;
+        
+        // Extra bonus for opposite quadrants (diagonal placement)
+        // Check if this position is in a different quadrant than existing text
+        int16_t dispW = display->width();
+        int16_t dispH = display->height();
+        bool thisLeft = (cx < dispW/2);
+        bool thisTop = (cy < dispH/2);
+        bool exLeft = (ex_cx < dispW/2);
+        bool exTop = (ex_cy < dispH/2);
+        
+        // Diagonal bonus: if in opposite corners, add extra 15%
+        if ((thisLeft != exLeft) && (thisTop != exTop)) {
+            distanceBonus += 0.15f;
+        }
+        // Adjacent quadrant bonus: if in different quadrant (but not diagonal), add 5%
+        else if ((thisLeft != exLeft) || (thisTop != exTop)) {
+            distanceBonus += 0.05f;
+        }
+        
         metrics.overallScore += distanceBonus;
         
         // Clamp again after bonus

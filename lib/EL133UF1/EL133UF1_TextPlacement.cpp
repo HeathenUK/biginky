@@ -589,11 +589,31 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
         }
     }
     
-    TextPlacementRegion result = candidates[bestIdx];
+    // Collect all "good enough" candidates (within 70% of best score)
+    // This adds variety while ensuring quality placement
+    const float acceptableThreshold = bestScore * 0.7f;
+    int goodCandidates[64];  // Max positions to consider for variety
+    int numGood = 0;
+    
+    for (int i = 0; i < numCandidates && numGood < 64; i++) {
+        if (candidates[i].score >= acceptableThreshold) {
+            goodCandidates[numGood++] = i;
+        }
+    }
+    
+    // Randomly pick from good candidates (adds visual variety across refreshes)
+    int selectedIdx = (numGood > 0) ? goodCandidates[random(numGood)] : bestIdx;
+    
+    TextPlacementRegion result = candidates[selectedIdx];
     delete[] candidates;
     
-    Serial.printf("[TextPlacement] Best position: (%d,%d) score=%.3f\n",
-                  result.x, result.y, result.score);
+    if (numGood > 1) {
+        Serial.printf("[TextPlacement] Randomly selected 1 of %d good positions (score=%.3f, best=%.3f)\n",
+                      numGood, result.score, bestScore);
+    } else {
+        Serial.printf("[TextPlacement] Best position: (%d,%d) score=%.3f\n",
+                      result.x, result.y, result.score);
+    }
     
     return result;
 }
@@ -1624,6 +1644,10 @@ TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::scanForBestQuote
     
     Serial.printf("[TextPlacement] Scanning for quote, trying %d line layouts\n", maxPossibleLines);
     
+    // Store all layouts to allow randomization among good ones
+    QuoteLayoutResult layouts[3];  // Max 3 line layouts
+    int numLayouts = 0;
+    
     for (int targetLines = 1; targetLines <= maxPossibleLines; targetLines++) {
         char wrappedQuote[512];
         int actualLines = 0;
@@ -1645,18 +1669,45 @@ TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::scanForBestQuote
         TextPlacementRegion bestPos = scanForBestPosition(display, totalWidth, totalHeight,
                                                           textColor, outlineColor);
         
-        // Check if this is better than our current best
+        // Store this layout
+        if (numLayouts < 3) {
+            strncpy(layouts[numLayouts].wrappedQuote, wrappedQuote, sizeof(layouts[numLayouts].wrappedQuote) - 1);
+            layouts[numLayouts].wrappedQuote[sizeof(layouts[numLayouts].wrappedQuote) - 1] = '\0';
+            layouts[numLayouts].quoteWidth = quoteWidth;
+            layouts[numLayouts].quoteHeight = quoteHeight;
+            layouts[numLayouts].quoteLines = actualLines;
+            layouts[numLayouts].authorWidth = authorWidth;
+            layouts[numLayouts].authorHeight = authorHeight;
+            layouts[numLayouts].totalWidth = totalWidth;
+            layouts[numLayouts].totalHeight = totalHeight;
+            layouts[numLayouts].position = bestPos;
+            numLayouts++;
+        }
+        
+        // Track simple best for reference
         if (bestPos.score > bestResult.position.score) {
-            strncpy(bestResult.wrappedQuote, wrappedQuote, sizeof(bestResult.wrappedQuote) - 1);
-            bestResult.wrappedQuote[sizeof(bestResult.wrappedQuote) - 1] = '\0';
-            bestResult.quoteWidth = quoteWidth;
-            bestResult.quoteHeight = quoteHeight;
-            bestResult.quoteLines = actualLines;
-            bestResult.authorWidth = authorWidth;
-            bestResult.authorHeight = authorHeight;
-            bestResult.totalWidth = totalWidth;
-            bestResult.totalHeight = totalHeight;
-            bestResult.position = bestPos;
+            bestResult = layouts[numLayouts - 1];
+        }
+    }
+    
+    // Randomly pick among good layouts (within 80% of best score)
+    if (numLayouts > 1) {
+        float bestScore = bestResult.position.score;
+        float threshold = bestScore * 0.8f;
+        int goodLayouts[3];
+        int numGood = 0;
+        
+        for (int i = 0; i < numLayouts; i++) {
+            if (layouts[i].position.score >= threshold) {
+                goodLayouts[numGood++] = i;
+            }
+        }
+        
+        if (numGood > 1) {
+            int selected = goodLayouts[random(numGood)];
+            bestResult = layouts[selected];
+            Serial.printf("[TextPlacement] Randomly selected %d-line layout (1 of %d good options)\n",
+                         bestResult.quoteLines, numGood);
         }
     }
     

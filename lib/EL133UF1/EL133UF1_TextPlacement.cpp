@@ -679,6 +679,12 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
     if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
     
+    // Debug: Log regions with any keep-out overlap
+    if (_keepOutMap.bitmap && keepOutCoverage > 0.0f) {
+        Serial.printf("[KeepOut] Region (%d,%d %dx%d) has %.1f%% keep-out coverage, score=%.3f\n",
+                      x, y, w, h, keepOutCoverage * 100.0f, metrics.overallScore);
+    }
+    
     return metrics;
 }
 

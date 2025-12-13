@@ -100,8 +100,8 @@ void TextPlacementAnalyzer::clearExclusionZones() {
 
 bool TextPlacementAnalyzer::getFirstExclusionZoneCenter(int16_t& outX, int16_t& outY) const {
     if (_numExclusionZones == 0) return false;
-    outX = _exclusionZones[0].centerX;
-    outY = _exclusionZones[0].centerY;
+    outX = _exclusionZones[0].x;
+    outY = _exclusionZones[0].y;
     return true;
 }
 
@@ -698,8 +698,8 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     // Bonus for positions that balance existing text elements
     // If there's an exclusion zone (previous text), prefer positions far from it
     if (_numExclusionZones > 0) {
-        int16_t ex_cx = _exclusionZones[0].centerX;
-        int16_t ex_cy = _exclusionZones[0].centerY;
+        int16_t ex_cx = _exclusionZones[0].x;
+        int16_t ex_cy = _exclusionZones[0].y;
         
         // Calculate distance from this region center to exclusion zone center
         int16_t cx = x + w/2;

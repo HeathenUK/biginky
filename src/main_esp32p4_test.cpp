@@ -662,6 +662,62 @@ static void auto_cycle_task(void* arg) {
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
 
+    // ================================================================
+    // QUOTE - Intelligently positioned, avoiding time/date area
+    // ================================================================
+    const char* quoteText = "Vulnerability is not weakness; it's our greatest measure of courage  --Brene Brown";
+    const float quoteFontSize = 32.0f;
+    
+    int16_t quoteW = ttf.getTextWidth(quoteText, quoteFontSize);
+    int16_t quoteH = ttf.getTextHeight(quoteFontSize);
+    
+    // Generate candidate positions for the quote
+    // Avoid the area where time/date was placed
+    // Safe area after keepout (100px margins): x=[100, 1500], y=[100, 1100]
+    const int16_t keepout = 100;
+    const int16_t safeLeft = keepout + quoteW/2 + 20;
+    const int16_t safeRight = display.width() - keepout - quoteW/2 - 20;
+    const int16_t safeTop = keepout + quoteH/2 + 20;
+    const int16_t safeBottom = display.height() - keepout - quoteH/2 - 20;
+    
+    // Calculate time/date block bounds to avoid
+    int16_t timeDateTop = timeY - timeH/2 - 20;
+    int16_t timeDateBottom = dateY + dateH/2 + 20;
+    
+    TextPlacementRegion quoteCandidates[6];
+    int numQuoteCandidates = 0;
+    
+    // Bottom center (if time/date isn't there)
+    if (timeDateBottom < safeBottom - quoteH) {
+        quoteCandidates[numQuoteCandidates++] = {cx, safeBottom, quoteW, quoteH, 0};
+    }
+    // Top center (if time/date isn't there)
+    if (timeDateTop > safeTop + quoteH) {
+        quoteCandidates[numQuoteCandidates++] = {cx, safeTop, quoteW, quoteH, 0};
+    }
+    // Bottom left
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeLeft + 50), safeBottom, quoteW, quoteH, 0};
+    // Bottom right
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeRight - 50), safeBottom, quoteW, quoteH, 0};
+    // Top left
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeLeft + 50), safeTop, quoteW, quoteH, 0};
+    // Top right
+    quoteCandidates[numQuoteCandidates++] = {(int16_t)(safeRight - 50), safeTop, quoteW, quoteH, 0};
+    
+    // Find best position for quote
+    analysisStart = millis();
+    TextPlacementRegion bestQuotePos = textPlacement.findBestPosition(
+        &display, &ttf, quoteText, quoteFontSize,
+        quoteCandidates, numQuoteCandidates,
+        EL133UF1_WHITE, EL133UF1_BLACK);
+    Serial.printf("Quote placement analysis: %lu ms (score=%.2f, pos=%d,%d)\n",
+                  millis() - analysisStart, bestQuotePos.score, bestQuotePos.x, bestQuotePos.y);
+    
+    // Draw quote
+    ttf.drawTextAlignedOutlined(bestQuotePos.x, bestQuotePos.y, quoteText, quoteFontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+
     // Brief beep
     (void)audio_beep(880, 120);
     audio_stop();

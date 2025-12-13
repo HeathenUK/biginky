@@ -1283,39 +1283,43 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
     return true;
 }
 
+// Global to store the last displayed image filename (for map file lookup)
+static char g_lastImageFilename[64] = {0};
+
 /**
- * @brief Scan SD card root for BMP files and display a random one
+ * @brief Scan SD card root for PNG files and display a random one
  * 
- * Scans the root directory for .bmp files, picks one at random,
- * and streams it directly to the display (no large buffer needed).
+ * Scans the root directory for .png files, picks one at random,
+ * and displays it using the PNG decoder.
+ * Also stores the filename for later keep-out map lookup.
  * 
- * @return true if a BMP was found and displayed successfully
+ * @return true if a PNG was found and displayed successfully
  */
-bool displayRandomBmpFromSd() {
+bool displayRandomPngFromSd() {
     if (sd == nullptr) {
         Serial.println("SD: Card not initialized");
         return false;
     }
     
-    Serial.println("\n=== Scanning SD Card for BMP files ===");
+    Serial.println("\n=== Scanning SD Card for PNG files ===");
     
-    // First pass: count BMP files
+    // First pass: count PNG files
     FsFile root;
     if (!root.open("/")) {
         Serial.println("SD: Failed to open root directory");
         return false;
     }
     
-    int bmpCount = 0;
+    int pngCount = 0;
     FsFile entry;
     while (entry.openNext(&root, O_RDONLY)) {
         if (!entry.isDirectory()) {
             char name[64];
             entry.getName(name, sizeof(name));
             size_t len = strlen(name);
-            // Check for .bmp extension (case insensitive)
-            if (len > 4 && strcasecmp(name + len - 4, ".bmp") == 0) {
-                bmpCount++;
+            // Check for .png extension (case insensitive)
+            if (len > 4 && strcasecmp(name + len - 4, ".png") == 0) {
+                pngCount++;
                 Serial.printf("  Found: %s (%llu bytes)\n", name, entry.fileSize());
             }
         }
@@ -1323,16 +1327,16 @@ bool displayRandomBmpFromSd() {
     }
     root.close();
     
-    if (bmpCount == 0) {
-        Serial.println("  No BMP files found in root directory");
+    if (pngCount == 0) {
+        Serial.println("  No PNG files found in root directory");
         Serial.println("=====================================\n");
         return false;
     }
     
-    Serial.printf("  Total BMP files: %d\n", bmpCount);
+    Serial.printf("  Total PNG files: %d\n", pngCount);
     
     // Pick a random file
-    int targetIndex = micros() % bmpCount;
+    int targetIndex = micros() % pngCount;
     Serial.printf("  Randomly selected index: %d\n", targetIndex);
     
     // Second pass: find and open the selected file
@@ -1343,38 +1347,63 @@ bool displayRandomBmpFromSd() {
     
     char selectedName[64] = {0};
     int currentIndex = 0;
-    FsFile selectedFile;
     
     while (entry.openNext(&root, O_RDONLY)) {
         if (!entry.isDirectory()) {
             char name[64];
             entry.getName(name, sizeof(name));
             size_t len = strlen(name);
-            if (len > 4 && strcasecmp(name + len - 4, ".bmp") == 0) {
+            if (len > 4 && strcasecmp(name + len - 4, ".png") == 0) {
                 if (currentIndex == targetIndex) {
                     strncpy(selectedName, name, sizeof(selectedName) - 1);
                     Serial.printf("  Selected: %s (%llu bytes)\n", name, entry.fileSize());
                     
-                    // Open the file for streaming
-                    char fullPath[72];
-                    snprintf(fullPath, sizeof(fullPath), "/%s", name);
+                    // Store filename for map lookup later
+                    strncpy(g_lastImageFilename, name, sizeof(g_lastImageFilename) - 1);
+                    
                     entry.close();
                     root.close();
                     
-                    if (!selectedFile.open(fullPath, O_RDONLY)) {
+                    // Read entire PNG file into memory
+                    char fullPath[72];
+                    snprintf(fullPath, sizeof(fullPath), "/%s", name);
+                    
+                    FsFile pngFile;
+                    if (!pngFile.open(fullPath, O_RDONLY)) {
                         Serial.printf("SD: Failed to open %s\n", fullPath);
                         return false;
                     }
                     
-                    // Stream directly to display
-                    bool success = streamBmpToDisplay(selectedFile, selectedName);
-                    selectedFile.close();
-                    
-                    if (success) {
-                        Serial.printf("  Successfully displayed: %s\n", selectedName);
+                    size_t fileSize = pngFile.fileSize();
+                    uint8_t* pngData = (uint8_t*)malloc(fileSize);
+                    if (!pngData) {
+                        Serial.println("SD: Failed to allocate memory for PNG");
+                        pngFile.close();
+                        return false;
                     }
-                    Serial.println("=====================================\n");
-                    return success;
+                    
+                    if (pngFile.read(pngData, fileSize) != fileSize) {
+                        Serial.println("SD: Failed to read PNG file");
+                        free(pngData);
+                        pngFile.close();
+                        return false;
+                    }
+                    pngFile.close();
+                    
+                    // Draw PNG to display
+                    Serial.println("  Decoding PNG...");
+                    PNGResult result = png.draw(0, 0, pngData, fileSize);
+                    free(pngData);
+                    
+                    if (result == PNG_OK) {
+                        Serial.printf("  Successfully displayed: %s\n", selectedName);
+                        Serial.println("=====================================\n");
+                        return true;
+                    } else {
+                        Serial.printf("  PNG decode error: %s\n", png.getErrorString(result));
+                        Serial.println("=====================================\n");
+                        return false;
+                    }
                 }
                 currentIndex++;
             }
@@ -1383,8 +1412,70 @@ bool displayRandomBmpFromSd() {
     }
     root.close();
     
-    Serial.println("SD: Failed to find selected BMP");
+    Serial.println("SD: Failed to find selected PNG");
     return false;
+}
+
+/**
+ * @brief Load keep-out map for the last displayed image (if available)
+ * 
+ * Looks for a .map file matching the last displayed image filename.
+ * For example, if "landscape.bmp" was displayed, looks for "landscape.map".
+ * 
+ * @return true if map was found and loaded successfully
+ */
+bool loadKeepOutMapForImage() {
+    if (sd == nullptr) {
+        Serial.println("SD: Card not initialized, skipping map load");
+        return false;
+    }
+    
+    if (g_lastImageFilename[0] == '\0') {
+        Serial.println("SD: No image filename recorded, skipping map load");
+        return false;
+    }
+    
+    // Generate map filename (replace .png with .map)
+    char mapFilename[72];
+    strncpy(mapFilename, g_lastImageFilename, sizeof(mapFilename) - 1);
+    char* ext = strrchr(mapFilename, '.');
+    if (ext && strcasecmp(ext, ".png") == 0) {
+        strcpy(ext, ".map");
+    } else {
+        // Fallback: just append .map
+        strncat(mapFilename, ".map", sizeof(mapFilename) - strlen(mapFilename) - 1);
+    }
+    
+    Serial.printf("\n=== Checking for keep-out map ===\n");
+    Serial.printf("  Image: %s\n", g_lastImageFilename);
+    Serial.printf("  Map:   %s\n", mapFilename);
+    
+    // Check if map file exists
+    char fullPath[80];
+    snprintf(fullPath, sizeof(fullPath), "/%s", mapFilename);
+    
+    FsFile mapFile;
+    if (!mapFile.open(fullPath, O_RDONLY)) {
+        Serial.println("  Map file not found (using fallback salience detection)");
+        Serial.println("=====================================\n");
+        return false;
+    }
+    
+    Serial.printf("  Map file found: %llu bytes\n", mapFile.fileSize());
+    
+    // Load the map into text placement analyzer
+    bool success = textPlacement.loadKeepOutMap(mapFile);
+    mapFile.close();
+    
+    if (success) {
+        Serial.println("  Keep-out map loaded successfully!");
+        Serial.println("  Text placement will avoid ML-detected objects");
+    } else {
+        Serial.println("  Failed to load map (will use fallback)");
+    }
+    Serial.println("=====================================\n");
+    
+    return success;
 }
 #endif // DISABLE_SDIO_TEST
 
@@ -2018,9 +2109,14 @@ void doDisplayUpdate(int updateNumber) {
     bool backgroundSet = false;
     
     #ifndef DISABLE_SDIO_TEST
-    // Try to display a random BMP from SD card
+    // Try to display a random PNG from SD card
     if (sd != nullptr) {
-        backgroundSet = displayRandomBmpFromSd();
+        backgroundSet = displayRandomPngFromSd();
+        
+        // If we displayed a PNG, try to load its keep-out map (if available)
+        if (backgroundSet) {
+            loadKeepOutMapForImage();
+        }
     }
     #endif
     
@@ -2028,6 +2124,9 @@ void doDisplayUpdate(int updateNumber) {
     if (!backgroundSet) {
         Serial.println("  Using white background (no SD BMP)");
         display.clear(EL133UF1_WHITE);
+        
+        // Clear any previous keep-out map
+        textPlacement.clearKeepOutMap();
     }
     
     bitmapTotal = millis() - t0;

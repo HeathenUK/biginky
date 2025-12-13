@@ -180,6 +180,9 @@ TextPlacementAnalyzer textPlacement;
 EL133UF1_BMP bmpLoader;
 EL133UF1_PNG pngLoader;
 
+// Last loaded image filename (for keep-out map lookup)
+static String g_lastImagePath = "";
+
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 
@@ -642,43 +645,97 @@ static void auto_cycle_task(void* arg) {
     textPlacement.clearExclusionZones();
     
     // Get text dimensions for both time and date
-    const float timeFontSize = 160.0f;
-    const float dateFontSize = 48.0f;
-    const int16_t gapBetween = 20;  // Gap between time and date
+    // Adaptive sizing: try smaller sizes if keep-out areas block placement
+    float timeFontSize = 160.0f;
+    float dateFontSize = 48.0f;
+    const float minTimeFontSize = 80.0f;   // Don't go smaller than this
+    const float minDateFontSize = 24.0f;
+    const int16_t gapBetween = 20;
+    const int16_t timeOutline = 3;
+    const int16_t dateOutline = 2;
+    const float minAcceptableScore = 0.25f;  // Threshold for "good enough" placement
+    
+    TextPlacementRegion bestPos;
+    int16_t blockW, blockH;
+    int16_t timeW, timeH, dateW, dateH;  // Declare outside loop
+    int attempts = 0;
+    const int maxAttempts = 5;  // Try up to 5 different sizes
+    uint32_t analysisStart;  // Declare for reuse
+    
+    do {
+        attempts++;
+        
+        timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+        timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+        dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+        dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
 
-    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize);
-    int16_t timeH = ttf.getTextHeight(timeFontSize);
-    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize);
-    int16_t dateH = ttf.getTextHeight(dateFontSize);
+        // Combined block dimensions (time + gap + date)
+        blockW = max(timeW, dateW);
+        blockH = timeH + gapBetween + dateH;
 
-    // Combined block dimensions (time + gap + date)
-    int16_t blockW = max(timeW, dateW);
-    int16_t blockH = timeH + gapBetween + dateH;
-
-    // Scan the entire display to find the best position for time/date block
-    // Grid scanning evaluates many positions across the safe area
-    uint32_t analysisStart = millis();
-    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
-        &display, blockW, blockH,
-        EL133UF1_WHITE, EL133UF1_BLACK);
-    Serial.printf("Time/date placement scan: %lu ms (score=%.2f, pos=%d,%d)\n",
-                  millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
+        // Scan the entire display to find the best position for time/date block
+        analysisStart = millis();
+        bestPos = textPlacement.scanForBestPosition(
+            &display, blockW, blockH,
+            EL133UF1_WHITE, EL133UF1_BLACK);
+        
+        Serial.printf("Time/date placement attempt %d: size=%.0f/%.0f, score=%.2f, pos=%d,%d\n",
+                      attempts, timeFontSize, dateFontSize, bestPos.score, bestPos.x, bestPos.y);
+        
+        // If score is good enough, we're done
+        if (bestPos.score >= minAcceptableScore) {
+            Serial.printf("  -> Acceptable placement found (score %.2f >= %.2f)\n", 
+                         bestPos.score, minAcceptableScore);
+            break;
+        }
+        
+        // If at minimum size, have to accept what we have
+        if (timeFontSize <= minTimeFontSize || dateFontSize <= minDateFontSize) {
+            Serial.printf("  -> At minimum size, using best available (score=%.2f)\n", bestPos.score);
+            break;
+        }
+        
+        // Reduce font size by 15% and try again
+        timeFontSize *= 0.85f;
+        dateFontSize *= 0.85f;
+        if (timeFontSize < minTimeFontSize) timeFontSize = minTimeFontSize;
+        if (dateFontSize < minDateFontSize) dateFontSize = minDateFontSize;
+        
+        Serial.printf("  -> Score too low, reducing font size to %.0f/%.0f\n", 
+                     timeFontSize, dateFontSize);
+        
+    } while (attempts < maxAttempts);
+    
+    Serial.printf("Time/date placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
+                  timeFontSize, dateFontSize, bestPos.score, attempts);
+    
+    // Debug: show what area was checked for keep-out
+    int16_t checkX = bestPos.x - blockW/2;
+    int16_t checkY = bestPos.y - blockH/2;
+    Serial.printf("[DEBUG] Time/Date block checked: x=%d, y=%d, w=%d, h=%d (center=%d,%d)\n",
+                  checkX, checkY, blockW, blockH, bestPos.x, bestPos.y);
 
     // Calculate individual positions relative to the chosen block center
     int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
     int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
 
     // Draw time and date at best position
+    Serial.printf("[DEBUG] Drawing time at (%d,%d) with size %.0f, outline %d\n", 
+                  bestPos.x, timeY, timeFontSize, timeOutline);
+    Serial.printf("[DEBUG] Drawing date at (%d,%d) with size %.0f, outline %d\n", 
+                  bestPos.x, dateY, dateFontSize, dateOutline);
+    
     ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, 3);
+                                ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
     ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+                                ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
     
     // Add the time/date block as an exclusion zone so quote won't overlap
-    // Padding of 50px ensures some breathing room between elements
-    textPlacement.addExclusionZone(bestPos, 50);
+    // Larger padding to create visual separation between elements
+    textPlacement.addExclusionZone(bestPos, 150);  // Increased from 50 to 150px
 
     // ================================================================
     // QUOTE - Intelligently positioned with automatic line wrapping
@@ -701,23 +758,57 @@ static void auto_cycle_task(void* arg) {
     // Select a random quote
     const Quote& selectedQuote = quotes[random(numQuotes)];
     
-    const float quoteFontSize = 48.0f;
-    const float authorFontSize = 32.0f;
+    // Adaptive sizing for quote as well
+    float quoteFontSize = 48.0f;
+    float authorFontSize = 32.0f;
+    const float minQuoteFontSize = 28.0f;
+    const float minAuthorFontSize = 20.0f;
     
-    // Scan the entire display to find the best quote position
-    // This uses a grid-based search that evaluates many more positions than
-    // the old fixed-candidate approach, finding empty areas like the left
-    // quarter of the frame that might otherwise be missed.
-    analysisStart = millis();
-    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
-        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
-        EL133UF1_WHITE, EL133UF1_BLACK,
-        3,   // maxLines: try up to 3 lines
-        3);  // minWordsPerLine: at least 3 words per line
+    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout;
+    attempts = 0;
     
-    Serial.printf("Quote placement: %lu ms (score=%.2f, pos=%d,%d, %d lines)\n",
-                  millis() - analysisStart, quoteLayout.position.score, 
-                  quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
+    do {
+        attempts++;
+        
+        // Scan the entire display to find the best quote position
+        analysisStart = millis();
+        quoteLayout = textPlacement.scanForBestQuotePosition(
+            &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
+            EL133UF1_WHITE, EL133UF1_BLACK,
+            3,   // maxLines: try up to 3 lines
+            3);  // minWordsPerLine: at least 3 words per line
+        
+        Serial.printf("Quote placement attempt %d: size=%.0f/%.0f, score=%.2f, pos=%d,%d, %d lines\n",
+                      attempts, quoteFontSize, authorFontSize, quoteLayout.position.score,
+                      quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
+        
+        // If score is good enough, we're done
+        if (quoteLayout.position.score >= minAcceptableScore) {
+            Serial.printf("  -> Acceptable quote placement found (score %.2f >= %.2f)\n", 
+                         quoteLayout.position.score, minAcceptableScore);
+            break;
+        }
+        
+        // If at minimum size, have to accept what we have
+        if (quoteFontSize <= minQuoteFontSize || authorFontSize <= minAuthorFontSize) {
+            Serial.printf("  -> At minimum size, using best available (score=%.2f)\n", 
+                         quoteLayout.position.score);
+            break;
+        }
+        
+        // Reduce font size by 15% and try again
+        quoteFontSize *= 0.85f;
+        authorFontSize *= 0.85f;
+        if (quoteFontSize < minQuoteFontSize) quoteFontSize = minQuoteFontSize;
+        if (authorFontSize < minAuthorFontSize) authorFontSize = minAuthorFontSize;
+        
+        Serial.printf("  -> Score too low, reducing font size to %.0f/%.0f\n", 
+                     quoteFontSize, authorFontSize);
+        
+    } while (attempts < maxAttempts);
+    
+    Serial.printf("Quote placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
+                  quoteFontSize, authorFontSize, quoteLayout.position.score, attempts);
     Serial.printf("  Quote: \"%s\"\n", quoteLayout.wrappedQuote);
     Serial.printf("  Author: %s\n", selectedQuote.author);
     
@@ -1702,6 +1793,126 @@ int pngCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0
     return count;
 }
 
+// Load keep-out map for the currently displayed image
+bool loadKeepOutMapForImage() {
+    if (g_lastImagePath.isEmpty()) {
+        Serial.println("[KeepOut] No image path recorded");
+        return false;
+    }
+    
+    // Generate map filename (replace .png with .map)
+    String mapPath = g_lastImagePath;
+    int extPos = mapPath.lastIndexOf('.');
+    if (extPos > 0) {
+        mapPath = mapPath.substring(0, extPos) + ".map";
+    } else {
+        mapPath += ".map";
+    }
+    
+    Serial.println("\n=== Checking for keep-out map ===");
+    Serial.printf("  Image: %s\n", g_lastImagePath.c_str());
+    Serial.printf("  Map:   %s\n", mapPath.c_str());
+    
+    // Check if map file exists
+    String fatfsPath = "0:" + mapPath;
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.println("  Map file not found (using fallback salience detection)");
+        Serial.println("=====================================\n");
+        return false;
+    }
+    
+    Serial.printf("  Map file found: %lu bytes\n", (unsigned long)fno.fsize);
+    
+    // Open map file
+    FIL mapFile;
+    res = f_open(&mapFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("  Failed to open map file: %d\n", res);
+        return false;
+    }
+    
+    // Read header (16 bytes)
+    struct __attribute__((packed)) MapHeader {
+        char magic[5];
+        uint8_t version;
+        uint16_t width;
+        uint16_t height;
+        uint8_t reserved[6];
+    } header;
+    
+    UINT bytesRead = 0;
+    res = f_read(&mapFile, &header, sizeof(header), &bytesRead);
+    if (res != FR_OK || bytesRead != sizeof(header)) {
+        Serial.println("  Failed to read map header");
+        f_close(&mapFile);
+        return false;
+    }
+    
+    // Verify magic
+    if (memcmp(header.magic, "KOMAP", 5) != 0) {
+        Serial.println("  Invalid map file (bad magic)");
+        f_close(&mapFile);
+        return false;
+    }
+    
+    // Check version
+    if (header.version != 1) {
+        Serial.printf("  Unsupported map version: %d\n", header.version);
+        f_close(&mapFile);
+        return false;
+    }
+    
+    Serial.printf("  Map dimensions: %dx%d\n", header.width, header.height);
+    
+    // Calculate bitmap size
+    uint32_t bitmapSize = ((uint32_t)header.width * header.height + 7) / 8;
+    
+    // Allocate bitmap in PSRAM
+    uint8_t* bitmap = (uint8_t*)hal_psram_malloc(bitmapSize);
+    if (!bitmap) {
+        Serial.println("  Failed to allocate PSRAM for map bitmap");
+        f_close(&mapFile);
+        return false;
+    }
+    
+    // Read bitmap data
+    res = f_read(&mapFile, bitmap, bitmapSize, &bytesRead);
+    f_close(&mapFile);
+    
+    if (res != FR_OK || bytesRead != bitmapSize) {
+        Serial.printf("  Failed to read bitmap (got %u of %lu bytes)\n",
+                      (unsigned)bytesRead, (unsigned long)bitmapSize);
+        hal_psram_free(bitmap);
+        return false;
+    }
+    
+    // Reconstruct the full file in memory for the buffer loader
+    size_t fullSize = sizeof(header) + bitmapSize;
+    uint8_t* fullFile = (uint8_t*)malloc(fullSize);
+    if (!fullFile) {
+        Serial.println("  Failed to allocate temp buffer");
+        hal_psram_free(bitmap);
+        return false;
+    }
+    
+    memcpy(fullFile, &header, sizeof(header));
+    memcpy(fullFile + sizeof(header), bitmap, bitmapSize);
+    hal_psram_free(bitmap);
+    
+    // Load map using buffer method
+    bool success = textPlacement.loadKeepOutMapFromBuffer(fullFile, fullSize);
+    free(fullFile);
+    
+    if (success) {
+        Serial.println("  Text placement will avoid ML-detected objects");
+    }
+    Serial.println("=====================================\n");
+    
+    return success;
+}
+
 // Load a random PNG from SD card and display it (timed)
 void pngLoadRandom(const char* dirname = "/") {
     Serial.println("\n=== Loading Random PNG ===");
@@ -1735,6 +1946,9 @@ void pngLoadRandom(const char* dirname = "/") {
     int randomIndex = rand() % maxFiles;
     String selectedPath = paths[randomIndex];
     delete[] paths;
+    
+    // Store path for map lookup
+    g_lastImagePath = selectedPath;
 
     Serial.printf("Selected: %s\n", selectedPath.c_str());
     String fatfsPath = "0:" + selectedPath;
@@ -1796,6 +2010,9 @@ void pngLoadRandom(const char* dirname = "/") {
         return;
     }
     Serial.printf("PNG decode+draw: %lu ms\n", drawTime);
+    
+    // Try to load keep-out map for this image (if available)
+    loadKeepOutMapForImage();
 
     Serial.println("Updating display (20-30s for e-ink refresh)...");
     uint32_t refreshStart = millis();
@@ -1889,6 +2106,9 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     int randomIndex = rand() % maxFiles;
     String selectedPath = paths[randomIndex];
     delete[] paths;
+    
+    // Store path for keep-out map lookup
+    g_lastImagePath = selectedPath;
 
     Serial.printf("Selected PNG: %s\n", selectedPath.c_str());
     String fatfsPath = "0:" + selectedPath;
@@ -1941,6 +2161,16 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
         Serial.printf("PNG draw error: %s\n", pngLoader.getErrorString(pres));
         return false;
     }
+    
+    // Try to load keep-out map for this image (if available)
+    bool mapLoaded = loadKeepOutMapForImage();
+    
+    // Debug: visualize keep-out areas
+    if (mapLoaded) {
+        Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
+        textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
+    }
+    
     return true;
 }
 

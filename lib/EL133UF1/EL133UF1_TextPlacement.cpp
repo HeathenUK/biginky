@@ -68,7 +68,8 @@ float Spectra6Histogram::percentage(uint8_t spectraCode) const {
 TextPlacementAnalyzer::TextPlacementAnalyzer() 
     : _useParallel(true),  // Enable by default on ESP32-P4
       _keepout(),          // No keepout by default
-      _numExclusionZones(0)
+      _numExclusionZones(0),
+      _keepOutMap()        // No keep-out map by default
 {
     initLUT();
 }
@@ -95,6 +96,13 @@ bool TextPlacementAnalyzer::addExclusionZone(const TextPlacementRegion& region, 
 void TextPlacementAnalyzer::clearExclusionZones() {
     _numExclusionZones = 0;
     Serial.println("[TextPlacement] Cleared all exclusion zones");
+}
+
+bool TextPlacementAnalyzer::getFirstExclusionZoneCenter(int16_t& outX, int16_t& outY) const {
+    if (_numExclusionZones == 0) return false;
+    outX = _exclusionZones[0].x;
+    outY = _exclusionZones[0].y;
+    return true;
 }
 
 bool TextPlacementAnalyzer::overlapsExclusionZone(int16_t x, int16_t y, int16_t w, int16_t h) const {
@@ -125,6 +133,219 @@ bool TextPlacementAnalyzer::isWithinSafeArea(int16_t displayWidth, int16_t displ
     if (overlapsExclusionZone(x, y, w, h)) return false;
     
     return true;
+}
+
+// ============================================================================
+// Keep-Out Map Management
+// ============================================================================
+
+// RP2350/SdFat version
+#if !defined(DISABLE_SDIO_TEST) && (defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350) || defined(TARGET_RP2350))
+bool TextPlacementAnalyzer::loadKeepOutMap(FsFile& file) {
+    Serial.println("[TextPlacement] Loading keep-out map from SD card...");
+    
+    // Clear any existing map
+    clearKeepOutMap();
+    
+    // Read header (16 bytes)
+    struct __attribute__((packed)) MapHeader {
+        char magic[5];      // "KOMAP"
+        uint8_t version;
+        uint16_t width;
+        uint16_t height;
+        uint8_t reserved[6];
+    } header;
+    
+    if (file.read(&header, sizeof(header)) != sizeof(header)) {
+        Serial.println("[TextPlacement] ERROR: Failed to read map header");
+        return false;
+    }
+    
+    // Verify magic
+    if (memcmp(header.magic, "KOMAP", 5) != 0) {
+        Serial.println("[TextPlacement] ERROR: Invalid map file (bad magic)");
+        return false;
+    }
+    
+    // Check version
+    if (header.version != 1) {
+        Serial.printf("[TextPlacement] ERROR: Unsupported map version: %d\n", header.version);
+        return false;
+    }
+    
+    Serial.printf("[TextPlacement] Map dimensions: %dx%d\n", header.width, header.height);
+    
+    // Calculate bitmap size
+    uint32_t bitmapSize = ((uint32_t)header.width * header.height + 7) / 8;
+    Serial.printf("[TextPlacement] Bitmap size: %lu bytes (%.1f KB)\n", 
+                  bitmapSize, bitmapSize / 1024.0f);
+    
+    // Allocate bitmap
+    uint8_t* bitmap = (uint8_t*)malloc(bitmapSize);
+    if (!bitmap) {
+        Serial.println("[TextPlacement] ERROR: Failed to allocate bitmap memory");
+        return false;
+    }
+    
+    // Read bitmap data
+    size_t bytesRead = file.read(bitmap, bitmapSize);
+    if (bytesRead != bitmapSize) {
+        Serial.printf("[TextPlacement] ERROR: Failed to read bitmap (got %zu of %lu bytes)\n",
+                      bytesRead, bitmapSize);
+        free(bitmap);
+        return false;
+    }
+    
+    // Store in keep-out map structure
+    _keepOutMap.width = header.width;
+    _keepOutMap.height = header.height;
+    _keepOutMap.bitmap = bitmap;
+    
+    // Calculate coverage statistics
+    uint32_t keepOutPixels = 0;
+    for (uint32_t i = 0; i < bitmapSize; i++) {
+        // Count set bits in each byte
+        uint8_t byte = bitmap[i];
+        while (byte) {
+            keepOutPixels += (byte & 1);
+            byte >>= 1;
+        }
+    }
+    
+    float coverage = (float)keepOutPixels / (header.width * header.height) * 100.0f;
+    Serial.printf("[TextPlacement] Keep-out coverage: %.1f%% (%lu pixels)\n", 
+                  coverage, keepOutPixels);
+    
+    Serial.println("[TextPlacement] Keep-out map loaded successfully!");
+    return true;
+}
+#endif
+
+void TextPlacementAnalyzer::clearKeepOutMap() {
+    if (_keepOutMap.bitmap) {
+        free(_keepOutMap.bitmap);
+        _keepOutMap.bitmap = nullptr;
+    }
+    _keepOutMap.width = 0;
+    _keepOutMap.height = 0;
+}
+
+bool TextPlacementAnalyzer::loadKeepOutMapFromBuffer(const uint8_t* data, size_t dataSize) {
+    Serial.println("[TextPlacement] Loading keep-out map from buffer...");
+    
+    // Clear any existing map
+    clearKeepOutMap();
+    
+    // Check minimum size (header = 16 bytes)
+    if (dataSize < 16) {
+        Serial.println("[TextPlacement] ERROR: Buffer too small for header");
+        return false;
+    }
+    
+    // Read header
+    struct __attribute__((packed)) MapHeader {
+        char magic[5];
+        uint8_t version;
+        uint16_t width;
+        uint16_t height;
+        uint8_t reserved[6];
+    };
+    
+    const MapHeader* header = (const MapHeader*)data;
+    
+    // Verify magic
+    if (memcmp(header->magic, "KOMAP", 5) != 0) {
+        Serial.println("[TextPlacement] ERROR: Invalid map file (bad magic)");
+        return false;
+    }
+    
+    // Check version
+    if (header->version != 1) {
+        Serial.printf("[TextPlacement] ERROR: Unsupported map version: %d\n", header->version);
+        return false;
+    }
+    
+    Serial.printf("[TextPlacement] Map dimensions: %dx%d\n", header->width, header->height);
+    
+    // Calculate bitmap size
+    uint32_t bitmapSize = ((uint32_t)header->width * header->height + 7) / 8;
+    Serial.printf("[TextPlacement] Bitmap size: %lu bytes (%.1f KB)\n", 
+                  bitmapSize, bitmapSize / 1024.0f);
+    
+    // Check buffer has enough data
+    if (dataSize < 16 + bitmapSize) {
+        Serial.printf("[TextPlacement] ERROR: Buffer too small (need %lu, have %zu)\n",
+                      16 + bitmapSize, dataSize);
+        return false;
+    }
+    
+    // Allocate bitmap
+    uint8_t* bitmap = (uint8_t*)malloc(bitmapSize);
+    if (!bitmap) {
+        Serial.println("[TextPlacement] ERROR: Failed to allocate bitmap memory");
+        return false;
+    }
+    
+    // Copy bitmap data
+    memcpy(bitmap, data + 16, bitmapSize);
+    
+    // Store in keep-out map structure
+    _keepOutMap.width = header->width;
+    _keepOutMap.height = header->height;
+    _keepOutMap.bitmap = bitmap;
+    
+    // Calculate coverage statistics
+    uint32_t keepOutPixels = 0;
+    for (uint32_t i = 0; i < bitmapSize; i++) {
+        // Count set bits in each byte
+        uint8_t byte = bitmap[i];
+        while (byte) {
+            keepOutPixels += (byte & 1);
+            byte >>= 1;
+        }
+    }
+    
+    float coverage = (float)keepOutPixels / (header->width * header->height) * 100.0f;
+    Serial.printf("[TextPlacement] Keep-out coverage: %.1f%% (%lu pixels)\n", 
+                  coverage, keepOutPixels);
+    
+    Serial.println("[TextPlacement] Keep-out map loaded successfully!");
+    return true;
+}
+
+void TextPlacementAnalyzer::debugDrawKeepOutAreas(EL133UF1* display, uint8_t color) {
+    if (!_keepOutMap.bitmap || !display) {
+        Serial.println("[KeepOut Debug] No map loaded or invalid display");
+        return;
+    }
+    
+    Serial.println("[KeepOut Debug] Drawing keep-out area boundaries...");
+    uint32_t pixelsDrawn = 0;
+    
+    // Draw borders around keep-out areas
+    // We'll draw a pixel in the debug color if it's a keep-out pixel 
+    // adjacent to a non-keep-out pixel (edge detection)
+    for (uint16_t y = 0; y < _keepOutMap.height; y++) {
+        for (uint16_t x = 0; x < _keepOutMap.width; x++) {
+            if (_keepOutMap.isKeepOut(x, y)) {
+                // Check if this is an edge pixel (has at least one non-keep-out neighbor)
+                bool isEdge = false;
+                
+                // Check 4-connected neighbors
+                if (x > 0 && !_keepOutMap.isKeepOut(x-1, y)) isEdge = true;
+                if (x < _keepOutMap.width-1 && !_keepOutMap.isKeepOut(x+1, y)) isEdge = true;
+                if (y > 0 && !_keepOutMap.isKeepOut(x, y-1)) isEdge = true;
+                if (y < _keepOutMap.height-1 && !_keepOutMap.isKeepOut(x, y+1)) isEdge = true;
+                
+                if (isEdge) {
+                    display->setPixel(x, y, color);
+                    pixelsDrawn++;
+                }
+            }
+        }
+    }
+    
+    Serial.printf("[KeepOut Debug] Drew %lu edge pixels\n", (unsigned long)pixelsDrawn);
 }
 
 TextPlacementAnalyzer::~TextPlacementAnalyzer() {
@@ -299,10 +520,11 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
     Serial.printf("[TextPlacement] Scanning grid: %dx%d (%d positions), step=%dx%d\n",
                   numX, numY, maxCandidates, gridStepX, gridStepY);
     
-    // Generate grid candidates, skipping those that overlap exclusion zones
+    // Generate grid candidates, skipping those that overlap exclusion zones or keep-out areas
     TextPlacementRegion* candidates = new TextPlacementRegion[maxCandidates];
     int numCandidates = 0;
     int skippedByExclusion = 0;
+    int skippedByKeepOut = 0;
     
     for (int16_t cy = safeTop; cy <= safeBottom && numCandidates < maxCandidates; cy += gridStepY) {
         for (int16_t cx = safeLeft; cx <= safeRight && numCandidates < maxCandidates; cx += gridStepX) {
@@ -311,12 +533,28 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
                 skippedByExclusion++;
                 continue;  // Skip this position entirely
             }
+            
+            // Check if this position overlaps keep-out areas (> 10%)
+            // This is an optimization to avoid scoring obviously bad positions
+            if (_keepOutMap.bitmap) {
+                int16_t rx = cx - blockWidth / 2;
+                int16_t ry = cy - blockHeight / 2;
+                float coverage = _keepOutMap.getKeepOutCoverage(rx, ry, blockWidth, blockHeight);
+                if (coverage > 0.10f) {  // Reject >10% overlap
+                    skippedByKeepOut++;
+                    continue;  // Skip overlapped positions
+                }
+            }
+            
             candidates[numCandidates++] = {cx, cy, blockWidth, blockHeight, 0.0f};
         }
     }
     
     if (skippedByExclusion > 0) {
         Serial.printf("[TextPlacement] Skipped %d positions due to exclusion zones\n", skippedByExclusion);
+    }
+    if (skippedByKeepOut > 0) {
+        Serial.printf("[TextPlacement] Skipped %d positions due to keep-out map (>50%% overlap)\n", skippedByKeepOut);
     }
     
     if (numCandidates == 0) {
@@ -388,11 +626,38 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     if (y + h > display->height()) h = display->height() - y;
     if (w <= 0 || h <= 0) return metrics;
     
+    // Check keep-out map FIRST (if available)
+    // If region overlaps keep-out areas AT ALL, apply severe penalty or reject
+    float keepOutCoverage = 0.0f;
+    if (_keepOutMap.bitmap) {
+        keepOutCoverage = _keepOutMap.getKeepOutCoverage(x, y, w, h);
+        
+        // STRICT POLICY: ANY overlap with keep-out areas is very bad
+        // We want text to NEVER overlap detected objects
+        // > 10% overlap: complete rejection
+        // 5-10% overlap: severe penalty (score * 0.1)
+        // 1-5% overlap: heavy penalty (score * 0.3)
+        // < 1% overlap: moderate penalty (score * 0.7)
+        if (keepOutCoverage > 0.10f) {
+            // Complete rejection - unacceptable overlap with objects
+            metrics.overallScore = 0.0f;
+            return metrics;
+        } else if (keepOutCoverage > 0.0f) {
+            // Store coverage for later penalty application
+            metrics.variance = keepOutCoverage;
+        }
+    }
+    
     // Get histogram
     getColorHistogram(display, x, y, w, h, metrics.histogram);
     
-    // Get variance
+    // Get variance (but don't overwrite if we stored keepOutCoverage there)
+    float originalVariance = metrics.variance;
     metrics.variance = computeVariance(display, x, y, w, h);
+    // keepOutCoverage already declared earlier, just restore it
+    if (originalVariance != 0.0f) {
+        keepOutCoverage = originalVariance;  // Restore from where we stored it
+    }
     
     // Get edge density
     metrics.edgeDensity = computeEdgeDensity(display, x, y, w, h);
@@ -412,9 +677,55 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
                            _weights.uniformity * metrics.uniformityScore +
                            _weights.edgeAvoidance * edgeScore;
     
+    // Apply keep-out penalty if there was partial overlap
+    if (_keepOutMap.bitmap && keepOutCoverage > 0.0f) {
+        // VERY aggressive penalty for any keep-out overlap
+        float penalty;
+        if (keepOutCoverage > 0.05f) {
+            penalty = 0.1f;  // 5-10% overlap: keep only 10% of score
+        } else if (keepOutCoverage > 0.01f) {
+            penalty = 0.3f;  // 1-5% overlap: keep only 30% of score
+        } else {
+            penalty = 0.7f;  // <1% overlap: keep 70% of score
+        }
+        metrics.overallScore *= penalty;
+    }
+    
     // Clamp to 0-1
     if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
     if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
+    
+    // Bonus for positions that balance existing text elements
+    // If there's an exclusion zone (previous text), prefer positions far from it
+    if (_numExclusionZones > 0) {
+        int16_t ex_cx = _exclusionZones[0].x;
+        int16_t ex_cy = _exclusionZones[0].y;
+        
+        // Calculate distance from this region center to exclusion zone center
+        int16_t cx = x + w/2;
+        int16_t cy = y + h/2;
+        float dx = (float)(cx - ex_cx);
+        float dy = (float)(cy - ex_cy);
+        float distance = sqrtf(dx*dx + dy*dy);
+        
+        // Normalize distance (0-1 range, where 1 = far apart)
+        // Assume display is ~2000px diagonal
+        float normalizedDistance = distance / 2000.0f;
+        if (normalizedDistance > 1.0f) normalizedDistance = 1.0f;
+        
+        // Apply distance bonus (up to 20% score increase for well-separated elements)
+        float distanceBonus = normalizedDistance * 0.2f;
+        metrics.overallScore += distanceBonus;
+        
+        // Clamp again after bonus
+        if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
+    }
+    
+    // Debug: Log regions with any keep-out overlap
+    if (_keepOutMap.bitmap && keepOutCoverage > 0.0f) {
+        Serial.printf("[KeepOut] Region (%d,%d %dx%d) has %.1f%% keep-out coverage, score=%.3f\n",
+                      x, y, w, h, keepOutCoverage * 100.0f, metrics.overallScore);
+    }
     
     return metrics;
 }

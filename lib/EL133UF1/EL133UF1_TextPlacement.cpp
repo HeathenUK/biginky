@@ -196,6 +196,116 @@ TextPlacementRegion TextPlacementAnalyzer::findBestPosition(
     return result;
 }
 
+// ============================================================================
+// Grid-based scanning methods
+// ============================================================================
+
+TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
+    EL133UF1* display, EL133UF1_TTF* ttf,
+    const char* text, float fontSize,
+    uint8_t textColor, uint8_t outlineColor,
+    int16_t gridStepX, int16_t gridStepY)
+{
+    if (!display || !ttf || !text) {
+        return TextPlacementRegion{0, 0, 0, 0, 0.0f};
+    }
+    
+    // Get text dimensions
+    int16_t blockWidth = ttf->getTextWidth(text, fontSize);
+    int16_t blockHeight = ttf->getTextHeight(fontSize);
+    
+    return scanForBestPosition(display, blockWidth, blockHeight, 
+                               textColor, outlineColor, gridStepX, gridStepY);
+}
+
+TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
+    EL133UF1* display,
+    int16_t blockWidth, int16_t blockHeight,
+    uint8_t textColor, uint8_t outlineColor,
+    int16_t gridStepX, int16_t gridStepY)
+{
+    if (!display || blockWidth <= 0 || blockHeight <= 0) {
+        return TextPlacementRegion{0, 0, 0, 0, 0.0f};
+    }
+    
+    int16_t dispW = display->width();
+    int16_t dispH = display->height();
+    
+    // Calculate safe area bounds (inside keepout margins)
+    int16_t safeLeft = _keepout.left + blockWidth / 2;
+    int16_t safeRight = dispW - _keepout.right - blockWidth / 2;
+    int16_t safeTop = _keepout.top + blockHeight / 2;
+    int16_t safeBottom = dispH - _keepout.bottom - blockHeight / 2;
+    
+    if (safeLeft >= safeRight || safeTop >= safeBottom) {
+        Serial.println("[TextPlacement] Warning: Safe area too small for text!");
+        return TextPlacementRegion{(int16_t)(dispW/2), (int16_t)(dispH/2), 
+                                   blockWidth, blockHeight, 0.0f};
+    }
+    
+    // Calculate grid steps if not provided
+    // Aim for roughly 8-12 positions per axis for good coverage without being too slow
+    if (gridStepX <= 0) {
+        int16_t safeWidth = safeRight - safeLeft;
+        gridStepX = max((int16_t)50, (int16_t)(safeWidth / 10));
+    }
+    if (gridStepY <= 0) {
+        int16_t safeHeight = safeBottom - safeTop;
+        gridStepY = max((int16_t)50, (int16_t)(safeHeight / 8));
+    }
+    
+    // Count grid positions
+    int numX = (safeRight - safeLeft) / gridStepX + 1;
+    int numY = (safeBottom - safeTop) / gridStepY + 1;
+    int maxCandidates = numX * numY;
+    
+    Serial.printf("[TextPlacement] Scanning grid: %dx%d (%d positions), step=%dx%d\n",
+                  numX, numY, maxCandidates, gridStepX, gridStepY);
+    
+    // Generate grid candidates
+    TextPlacementRegion* candidates = new TextPlacementRegion[maxCandidates];
+    int numCandidates = 0;
+    
+    for (int16_t cy = safeTop; cy <= safeBottom && numCandidates < maxCandidates; cy += gridStepY) {
+        for (int16_t cx = safeLeft; cx <= safeRight && numCandidates < maxCandidates; cx += gridStepX) {
+            candidates[numCandidates++] = {cx, cy, blockWidth, blockHeight, 0.0f};
+        }
+    }
+    
+    // Score all candidates (uses parallel scoring on ESP32-P4 if enabled)
+#if defined(SOC_PPA_SUPPORTED) && SOC_PPA_SUPPORTED
+    if (_useParallel && numCandidates > 2) {
+        scoreRegionsParallel(display, candidates, numCandidates, textColor, outlineColor);
+    } else
+#endif
+    {
+        for (int i = 0; i < numCandidates; i++) {
+            int16_t rx = candidates[i].drawX();
+            int16_t ry = candidates[i].drawY();
+            candidates[i].score = scoreRegion(display, rx, ry, blockWidth, blockHeight,
+                                              textColor, outlineColor);
+        }
+    }
+    
+    // Find best
+    int bestIdx = 0;
+    float bestScore = candidates[0].score;
+    for (int i = 1; i < numCandidates; i++) {
+        if (candidates[i].score > bestScore) {
+            bestScore = candidates[i].score;
+            bestIdx = i;
+        }
+    }
+    
+    TextPlacementRegion result = candidates[bestIdx];
+    delete[] candidates;
+    
+    Serial.printf("[TextPlacement] Best position: (%d,%d) score=%.3f\n",
+                  result.x, result.y, result.score);
+    
+    return result;
+}
+
 float TextPlacementAnalyzer::scoreRegion(EL133UF1* display, int16_t x, int16_t y,
                                           int16_t w, int16_t h,
                                           uint8_t textColor, uint8_t outlineColor)
@@ -1096,6 +1206,107 @@ TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::findBestQuotePos
         bestResult.totalHeight = quoteLineHeight + gapBeforeAuthor + authorHeight;
         bestResult.position = candidates[0];
         bestResult.position.score = 0.0f;
+    }
+    
+    return bestResult;
+}
+
+TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::scanForBestQuotePosition(
+    EL133UF1* display, EL133UF1_TTF* ttf,
+    const Quote& quote, float quoteFontSize, float authorFontSize,
+    uint8_t textColor, uint8_t outlineColor,
+    int maxLines, int minWordsPerLine)
+{
+    QuoteLayoutResult bestResult;
+    memset(&bestResult, 0, sizeof(bestResult));
+    bestResult.position.score = -1.0f;
+    
+    if (!display || !ttf || !quote.text) {
+        return bestResult;
+    }
+    
+    int16_t dispW = display->width();
+    int16_t dispH = display->height();
+    
+    // Measure author text
+    char authorText[128];
+    snprintf(authorText, sizeof(authorText), "— %s", quote.author ? quote.author : "Unknown");
+    int16_t authorWidth = ttf->getTextWidth(authorText, authorFontSize);
+    int16_t authorHeight = ttf->getTextHeight(authorFontSize);
+    int16_t gapBeforeAuthor = authorHeight / 2;
+    
+    // Count words in quote
+    int wordCount = 0;
+    const char* p = quote.text;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        wordCount++;
+        while (*p && *p != ' ') p++;
+    }
+    
+    // Get line metrics for quote
+    int16_t quoteLineHeight = ttf->getTextHeight(quoteFontSize);
+    int16_t quoteLineGap = quoteLineHeight / 4;
+    
+    // Get full quote width for target calculations
+    int16_t fullQuoteWidth = ttf->getTextWidth(quote.text, quoteFontSize);
+    
+    // Try different numbers of lines
+    int maxPossibleLines = wordCount / minWordsPerLine;
+    if (maxPossibleLines < 1) maxPossibleLines = 1;
+    if (maxPossibleLines > maxLines) maxPossibleLines = maxLines;
+    
+    Serial.printf("[TextPlacement] Scanning for quote, trying %d line layouts\n", maxPossibleLines);
+    
+    for (int targetLines = 1; targetLines <= maxPossibleLines; targetLines++) {
+        char wrappedQuote[512];
+        int actualLines = 0;
+        
+        // Calculate target width for this number of lines
+        int16_t targetWidth = (targetLines == 1) ? 0 : (fullQuoteWidth / targetLines) + 50;
+        
+        int16_t quoteWidth = wrapText(ttf, quote.text, quoteFontSize, targetWidth,
+                                       wrappedQuote, sizeof(wrappedQuote), &actualLines);
+        
+        // Calculate quote block dimensions
+        int16_t quoteHeight = actualLines * quoteLineHeight + (actualLines - 1) * quoteLineGap;
+        
+        // Total block dimensions (quote + gap + author)
+        int16_t totalWidth = max(quoteWidth, authorWidth);
+        int16_t totalHeight = quoteHeight + gapBeforeAuthor + authorHeight;
+        
+        // Use grid scanning to find best position for this layout
+        TextPlacementRegion bestPos = scanForBestPosition(display, totalWidth, totalHeight,
+                                                          textColor, outlineColor);
+        
+        // Check if this is better than our current best
+        if (bestPos.score > bestResult.position.score) {
+            strncpy(bestResult.wrappedQuote, wrappedQuote, sizeof(bestResult.wrappedQuote) - 1);
+            bestResult.wrappedQuote[sizeof(bestResult.wrappedQuote) - 1] = '\0';
+            bestResult.quoteWidth = quoteWidth;
+            bestResult.quoteHeight = quoteHeight;
+            bestResult.quoteLines = actualLines;
+            bestResult.authorWidth = authorWidth;
+            bestResult.authorHeight = authorHeight;
+            bestResult.totalWidth = totalWidth;
+            bestResult.totalHeight = totalHeight;
+            bestResult.position = bestPos;
+        }
+    }
+    
+    // If no valid position found, use single-line at display center
+    if (bestResult.position.score < 0) {
+        strncpy(bestResult.wrappedQuote, quote.text, sizeof(bestResult.wrappedQuote) - 1);
+        bestResult.quoteWidth = fullQuoteWidth;
+        bestResult.quoteHeight = quoteLineHeight;
+        bestResult.quoteLines = 1;
+        bestResult.authorWidth = authorWidth;
+        bestResult.authorHeight = authorHeight;
+        bestResult.totalWidth = max(fullQuoteWidth, authorWidth);
+        bestResult.totalHeight = quoteLineHeight + gapBeforeAuthor + authorHeight;
+        bestResult.position = {(int16_t)(dispW/2), (int16_t)(dispH/2), 
+                               bestResult.totalWidth, bestResult.totalHeight, 0.0f};
     }
     
     return bestResult;

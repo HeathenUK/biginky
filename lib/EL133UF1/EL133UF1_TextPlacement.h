@@ -215,6 +215,50 @@ public:
         uint8_t textColor, uint8_t outlineColor);
     
     /**
+     * @brief Scan the entire display to find the best text position
+     * 
+     * Uses a grid-based search to evaluate positions across the entire
+     * safe area (inside keepout margins). Much more thorough than using
+     * a small number of predefined candidates.
+     * 
+     * @param display Pointer to display instance
+     * @param ttf Pointer to TTF renderer (for text metrics)
+     * @param text Text string to be placed
+     * @param fontSize Font size in pixels
+     * @param textColor Primary text color
+     * @param outlineColor Outline color
+     * @param gridStepX Horizontal step between candidate positions (default: auto)
+     * @param gridStepY Vertical step between candidate positions (default: auto)
+     * @return Best position found with score
+     */
+    TextPlacementRegion scanForBestPosition(
+        EL133UF1* display, EL133UF1_TTF* ttf,
+        const char* text, float fontSize,
+        uint8_t textColor, uint8_t outlineColor,
+        int16_t gridStepX = 0, int16_t gridStepY = 0);
+    
+    /**
+     * @brief Scan for best position with a pre-defined text block size
+     * 
+     * Use this when you know the dimensions of the text block ahead of time
+     * (e.g., for multi-line text or combined text elements).
+     * 
+     * @param display Pointer to display instance
+     * @param blockWidth Width of text block in pixels
+     * @param blockHeight Height of text block in pixels
+     * @param textColor Primary text color
+     * @param outlineColor Outline color
+     * @param gridStepX Horizontal step (0 = auto, based on block size)
+     * @param gridStepY Vertical step (0 = auto, based on block size)
+     * @return Best position found with score
+     */
+    TextPlacementRegion scanForBestPosition(
+        EL133UF1* display,
+        int16_t blockWidth, int16_t blockHeight,
+        uint8_t textColor, uint8_t outlineColor,
+        int16_t gridStepX = 0, int16_t gridStepY = 0);
+    
+    /**
      * @brief Score a single region for text placement
      * 
      * @param display Pointer to display instance
@@ -415,6 +459,29 @@ public:
         EL133UF1* display, EL133UF1_TTF* ttf,
         const Quote& quote, float quoteFontSize, float authorFontSize,
         const TextPlacementRegion* candidates, int numCandidates,
+        uint8_t textColor, uint8_t outlineColor,
+        int maxLines = 3, int minWordsPerLine = 3);
+    
+    /**
+     * @brief Scan entire display to find optimal quote position
+     * 
+     * Uses grid-based search across the entire safe area to find the best
+     * position for a quote. More thorough than predefined candidates.
+     * 
+     * @param display Pointer to display instance
+     * @param ttf Pointer to TTF renderer
+     * @param quote Quote with text and author
+     * @param quoteFontSize Font size for quote text
+     * @param authorFontSize Font size for author
+     * @param textColor Primary text color
+     * @param outlineColor Outline color
+     * @param maxLines Maximum lines for quote text (default 3)
+     * @param minWordsPerLine Minimum words per line (default 3)
+     * @return Layout result with wrapped text and optimal position
+     */
+    QuoteLayoutResult scanForBestQuotePosition(
+        EL133UF1* display, EL133UF1_TTF* ttf,
+        const Quote& quote, float quoteFontSize, float authorFontSize,
         uint8_t textColor, uint8_t outlineColor,
         int maxLines = 3, int minWordsPerLine = 3);
     

@@ -629,26 +629,19 @@ static void auto_cycle_task(void* arg) {
     int16_t blockW = max(timeW, dateW);
     int16_t blockH = timeH + gapBetween + dateH;
 
-    // Generate candidate positions for the combined time+date block
+    // Scan the entire display to find the best position for time/date block
+    // Grid scanning evaluates many positions across the safe area
+    uint32_t analysisStart = millis();
+    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
+        &display, blockW, blockH,
+        EL133UF1_WHITE, EL133UF1_BLACK);
+    Serial.printf("Time/date placement scan: %lu ms (score=%.2f, pos=%d,%d)\n",
+                  millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
+    
+    // For reference in quote placement
     const int16_t cx = display.width() / 2;
     const int16_t cy = display.height() / 2;
-    const int16_t margin = 100;
-
-    TextPlacementRegion candidates[5];
-    candidates[0] = {cx, cy, blockW, blockH, 0};                                    // Screen center
-    candidates[1] = {cx, (int16_t)(margin + blockH/2), blockW, blockH, 0};          // Top
-    candidates[2] = {cx, (int16_t)(cy - 100), blockW, blockH, 0};                   // Upper-center
-    candidates[3] = {cx, (int16_t)(cy + 100), blockW, blockH, 0};                   // Lower-center
-    candidates[4] = {cx, (int16_t)(display.height() - margin - blockH/2), blockW, blockH, 0}; // Bottom
-
-    // Find best position for the combined block
-    uint32_t analysisStart = millis();
-    TextPlacementRegion bestPos = textPlacement.findBestPosition(
-        &display, &ttf, timeBuf, timeFontSize,
-        candidates, 5,
-        EL133UF1_WHITE, EL133UF1_BLACK);
-    Serial.printf("Text placement analysis: %lu ms (score=%.2f, pos=%d,%d)\n",
-                  millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
+    (void)cx; (void)cy;
 
     // Calculate individual positions relative to the chosen block center
     int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
@@ -686,47 +679,13 @@ static void auto_cycle_task(void* arg) {
     const float quoteFontSize = 32.0f;
     const float authorFontSize = 24.0f;
     
-    // Generate candidate positions for the quote (dimensions will be set by wrapper)
-    // Safe area after keepout (100px margins): x=[100, 1500], y=[100, 1100]
-    const int16_t keepoutMargin = 100;
-    const int16_t padding = 50;
-    
-    // Calculate time/date block bounds to avoid overlapping
-    int16_t timeDateTop = timeY - timeH/2 - 30;
-    int16_t timeDateBottom = dateY + dateH/2 + 30;
-    int16_t timeDateLeft = bestPos.x - blockW/2 - 30;
-    int16_t timeDateRight = bestPos.x + blockW/2 + 30;
-    (void)timeDateTop; (void)timeDateBottom; (void)timeDateLeft; (void)timeDateRight;
-    
-    // Generate diverse candidate positions for the quote
-    // The wrapper will try different line configurations at each position
-    TextPlacementRegion quoteCandidates[8];
-    int numQuoteCandidates = 0;
-    
-    // Positions are specified as centers; dimensions will be filled by findBestQuotePosition
-    // Bottom center
-    quoteCandidates[numQuoteCandidates++] = {cx, (int16_t)(display.height() - keepoutMargin - padding), 0, 0, 0};
-    // Top center
-    quoteCandidates[numQuoteCandidates++] = {cx, (int16_t)(keepoutMargin + padding), 0, 0, 0};
-    // Left center (avoid time/date if it's in center)
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(keepoutMargin + 200), cy, 0, 0, 0};
-    // Right center
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(display.width() - keepoutMargin - 200), cy, 0, 0, 0};
-    // Bottom left
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(keepoutMargin + 200), (int16_t)(display.height() - keepoutMargin - padding), 0, 0, 0};
-    // Bottom right
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(display.width() - keepoutMargin - 200), (int16_t)(display.height() - keepoutMargin - padding), 0, 0, 0};
-    // Top left
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(keepoutMargin + 200), (int16_t)(keepoutMargin + padding), 0, 0, 0};
-    // Top right
-    quoteCandidates[numQuoteCandidates++] = {(int16_t)(display.width() - keepoutMargin - 200), (int16_t)(keepoutMargin + padding), 0, 0, 0};
-    
-    // Find best quote layout (quote + author as a block)
-    // This tries 1, 2, and 3 line layouts at each candidate position
+    // Scan the entire display to find the best quote position
+    // This uses a grid-based search that evaluates many more positions than
+    // the old fixed-candidate approach, finding empty areas like the left
+    // quarter of the frame that might otherwise be missed.
     analysisStart = millis();
-    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.findBestQuotePosition(
+    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
         &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
-        quoteCandidates, numQuoteCandidates,
         EL133UF1_WHITE, EL133UF1_BLACK,
         3,   // maxLines: try up to 3 lines
         3);  // minWordsPerLine: at least 3 words per line

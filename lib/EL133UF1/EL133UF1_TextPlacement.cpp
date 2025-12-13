@@ -306,6 +306,41 @@ bool TextPlacementAnalyzer::loadKeepOutMapFromBuffer(const uint8_t* data, size_t
     return true;
 }
 
+void TextPlacementAnalyzer::debugDrawKeepOutAreas(EL133UF1* display, uint8_t color) {
+    if (!_keepOutMap.bitmap || !display) {
+        Serial.println("[KeepOut Debug] No map loaded or invalid display");
+        return;
+    }
+    
+    Serial.println("[KeepOut Debug] Drawing keep-out area boundaries...");
+    uint32_t pixelsDrawn = 0;
+    
+    // Draw borders around keep-out areas
+    // We'll draw a pixel in the debug color if it's a keep-out pixel 
+    // adjacent to a non-keep-out pixel (edge detection)
+    for (uint16_t y = 0; y < _keepOutMap.height; y++) {
+        for (uint16_t x = 0; x < _keepOutMap.width; x++) {
+            if (_keepOutMap.isKeepOut(x, y)) {
+                // Check if this is an edge pixel (has at least one non-keep-out neighbor)
+                bool isEdge = false;
+                
+                // Check 4-connected neighbors
+                if (x > 0 && !_keepOutMap.isKeepOut(x-1, y)) isEdge = true;
+                if (x < _keepOutMap.width-1 && !_keepOutMap.isKeepOut(x+1, y)) isEdge = true;
+                if (y > 0 && !_keepOutMap.isKeepOut(x, y-1)) isEdge = true;
+                if (y < _keepOutMap.height-1 && !_keepOutMap.isKeepOut(x, y+1)) isEdge = true;
+                
+                if (isEdge) {
+                    display->drawPixel(x, y, color);
+                    pixelsDrawn++;
+                }
+            }
+        }
+    }
+    
+    Serial.printf("[KeepOut Debug] Drew %lu edge pixels\n", (unsigned long)pixelsDrawn);
+}
+
 TextPlacementAnalyzer::~TextPlacementAnalyzer() {
 }
 

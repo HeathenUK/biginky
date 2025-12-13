@@ -392,6 +392,17 @@ public:
     void clearKeepOutMap();
     
     /**
+     * @brief Draw debug visualization of keep-out areas
+     * 
+     * Draws colored outlines around keep-out regions for debugging.
+     * Call this after loading the PNG but before text placement.
+     * 
+     * @param display Display instance to draw on
+     * @param color Color to use for keep-out borders (default: red)
+     */
+    void debugDrawKeepOutAreas(EL133UF1* display, uint8_t color = EL133UF1_RED);
+    
+    /**
      * @brief Check if a keep-out map is currently loaded
      */
     bool hasKeepOutMap() const { return _keepOutMap.bitmap != nullptr; }

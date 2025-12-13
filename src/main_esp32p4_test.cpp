@@ -2075,7 +2075,12 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     }
     
     // Try to load keep-out map for this image (if available)
-    loadKeepOutMapForImage();
+    bool mapLoaded = loadKeepOutMapForImage();
+    
+    // Debug: visualize keep-out areas
+    if (mapLoaded) {
+        textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
+    }
     
     return true;
 }

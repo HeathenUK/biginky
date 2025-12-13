@@ -648,11 +648,13 @@ static void auto_cycle_task(void* arg) {
     const float timeFontSize = 160.0f;
     const float dateFontSize = 48.0f;
     const int16_t gapBetween = 20;  // Gap between time and date
+    const int16_t timeOutline = 3;   // Outline width for time
+    const int16_t dateOutline = 2;   // Outline width for date
 
-    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize);
-    int16_t timeH = ttf.getTextHeight(timeFontSize);
-    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize);
-    int16_t dateH = ttf.getTextHeight(dateFontSize);
+    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+    int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+    int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
 
     // Combined block dimensions (time + gap + date)
     int16_t blockW = max(timeW, dateW);
@@ -674,10 +676,10 @@ static void auto_cycle_task(void* arg) {
     // Draw time and date at best position
     ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, 3);
+                                ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
     ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+                                ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
     
     // Add the time/date block as an exclusion zone so quote won't overlap
     // Padding of 50px ensures some breathing room between elements

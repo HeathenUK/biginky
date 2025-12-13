@@ -2192,67 +2192,75 @@ void doDisplayUpdate(int updateNumber) {
 #endif  // AI image generation disabled
     
     // ================================================================
-    // TIME - Large outlined text, intelligently positioned
+    // TIME + DATE - Intelligently positioned as a combined block
     // ================================================================
     
     // Display the PREDICTED time (what it will be when refresh completes)
     time_t time_sec = (time_t)(display_time_ms / 1000);
     struct tm* tm = gmtime(&time_sec);
     char timeBuf[16];
+    char dateBuf[32];
     strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", tm);
+    strftime(dateBuf, sizeof(dateBuf), "%A, %d %B %Y", tm);
     
-    // Get text dimensions for time
+    // Get text dimensions for both time and date
     const float timeFontSize = 160.0f;
+    const float dateFontSize = 48.0f;
+    const int16_t gapBetween = 20;  // Gap between time and date
+    
     int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize);
     int16_t timeH = ttf.getTextHeight(timeFontSize);
+    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize);
+    int16_t dateH = ttf.getTextHeight(dateFontSize);
     
-    // Generate candidate positions for time display
-    // We try: center, upper-center, lower-center, and avoid corners (battery/next info there)
-    TextPlacementRegion timeCandidates[5];
+    // Combined block dimensions (time + gap + date)
+    int16_t blockW = max(timeW, dateW);
+    int16_t blockH = timeH + gapBetween + dateH;
+    
+    // Generate candidate positions for the combined time+date block
+    // Each candidate (x,y) is the CENTER of the combined block
     int16_t cx = display.width() / 2;
     int16_t cy = display.height() / 2;
-    timeCandidates[0] = {cx, cy - 50, timeW, timeH, 0};           // Center (offset up for date)
-    timeCandidates[1] = {cx, (int16_t)(timeH/2 + 80), timeW, timeH, 0};  // Top area
-    timeCandidates[2] = {cx, (int16_t)(cy - 150), timeW, timeH, 0};      // Upper-center
-    timeCandidates[3] = {cx, (int16_t)(cy + 100), timeW, timeH, 0};      // Lower-center
-    timeCandidates[4] = {cx, (int16_t)(display.height() - timeH/2 - 150), timeW, timeH, 0}; // Bottom area
+    const int16_t margin = 100;  // Keep away from edges (for battery/next info)
     
-    // Find best position based on background analysis
+    TextPlacementRegion candidates[5];
+    candidates[0] = {cx, cy, blockW, blockH, 0};                                    // Screen center
+    candidates[1] = {cx, (int16_t)(margin + blockH/2), blockW, blockH, 0};          // Top
+    candidates[2] = {cx, (int16_t)(cy - 100), blockW, blockH, 0};                   // Upper-center
+    candidates[3] = {cx, (int16_t)(cy + 100), blockW, blockH, 0};                   // Lower-center  
+    candidates[4] = {cx, (int16_t)(display.height() - margin - blockH/2), blockW, blockH, 0}; // Bottom
+    
+    // Find best position for the combined block
+    // The analyzer uses the blockW/blockH dimensions from candidates for region analysis
     t0 = millis();
-    TextPlacementRegion bestTimePos = textPlacement.findBestPosition(
+    TextPlacementRegion bestPos = textPlacement.findBestPosition(
         &display, &ttf, timeBuf, timeFontSize,
-        timeCandidates, 5,
+        candidates, 5,
         EL133UF1_WHITE, EL133UF1_BLACK);
     uint32_t analysisTime = millis() - t0;
-    Serial.printf("  Text placement analysis: %lu ms (score=%.2f)\n", analysisTime, bestTimePos.score);
+    Serial.printf("  Text placement analysis: %lu ms (score=%.2f, pos=%d,%d)\n", 
+                  analysisTime, bestPos.score, bestPos.x, bestPos.y);
     
-    // Draw time at best position
+    // Calculate individual positions relative to the chosen block center
+    // Time is centered in upper portion of block
+    // Date is centered in lower portion of block
+    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);      // Time center Y
+    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);      // Date center Y
+    
+    // Draw time
     t0 = millis();
-    ttf.drawTextAlignedOutlined(bestTimePos.x, bestTimePos.y, timeBuf, timeFontSize,
+    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
                                  EL133UF1_WHITE, EL133UF1_BLACK,
                                  ALIGN_CENTER, ALIGN_MIDDLE, 3);
     t1 = millis() - t0;
     ttfTotal += t1;
-    Serial.printf("  TTF time 160px: %lu ms (at %d,%d)\n", t1, bestTimePos.x, bestTimePos.y);
+    Serial.printf("  TTF time 160px: %lu ms\n", t1);
     
-    // ================================================================
-    // DATE - Below time, positioned relative to time location
-    // ================================================================
-    char dateBuf[32];
-    strftime(dateBuf, sizeof(dateBuf), "%A, %d %B %Y", tm);
-    
-    // Position date below the time (relative to where time was placed)
-    int16_t dateY = bestTimePos.y + timeH/2 + 50;  // 50px gap below time
-    
-    // Make sure date doesn't go off screen or overlap with bottom info
-    if (dateY > display.height() - 100) {
-        dateY = display.height() - 100;
-    }
-    
+    // Draw date (same X center as time)
     t0 = millis();
-    ttf.drawTextAlignedOutlined(bestTimePos.x, dateY, dateBuf, 48.0,
+    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
                                  EL133UF1_WHITE, EL133UF1_BLACK,
-                                 ALIGN_CENTER, ALIGN_TOP, 2);
+                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
     t1 = millis() - t0;
     ttfTotal += t1;
     Serial.printf("  TTF date 48px:  %lu ms\n", t1);

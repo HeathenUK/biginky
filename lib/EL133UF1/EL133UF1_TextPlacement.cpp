@@ -101,16 +101,18 @@ TextPlacementRegion TextPlacementAnalyzer::findBestPosition(
         return TextPlacementRegion{0, 0, 0, 0, 0.0f};
     }
     
-    // Get text dimensions
-    int16_t textWidth = ttf->getTextWidth(text, fontSize);
-    int16_t textHeight = ttf->getTextHeight(fontSize);
+    // Get text dimensions (used as fallback if candidate dimensions are 0)
+    int16_t defaultWidth = ttf->getTextWidth(text, fontSize);
+    int16_t defaultHeight = ttf->getTextHeight(fontSize);
     
-    // Copy candidates and fill in dimensions
+    // Copy candidates and fill in dimensions if not already set
+    // This allows callers to specify custom dimensions (e.g., for combined text blocks)
     TextPlacementRegion* scored = new TextPlacementRegion[numCandidates];
     for (int i = 0; i < numCandidates; i++) {
         scored[i] = candidates[i];
-        scored[i].width = textWidth;
-        scored[i].height = textHeight;
+        // Only use default dimensions if candidate has zero dimensions
+        if (scored[i].width <= 0) scored[i].width = defaultWidth;
+        if (scored[i].height <= 0) scored[i].height = defaultHeight;
         scored[i].score = 0.0f;
     }
     
@@ -121,12 +123,12 @@ TextPlacementRegion TextPlacementAnalyzer::findBestPosition(
     } else
 #endif
     {
-        // Sequential scoring
+        // Sequential scoring - use each candidate's own dimensions
         for (int i = 0; i < numCandidates; i++) {
             int16_t rx = scored[i].drawX();
             int16_t ry = scored[i].drawY();
             scored[i].score = scoreRegion(display, rx, ry, 
-                                          textWidth, textHeight,
+                                          scored[i].width, scored[i].height,
                                           textColor, outlineColor);
         }
     }

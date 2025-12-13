@@ -1283,11 +1283,15 @@ bool streamBmpToDisplay(FsFile& file, const char* filename) {
     return true;
 }
 
+// Global to store the last displayed image filename (for map file lookup)
+static char g_lastImageFilename[64] = {0};
+
 /**
  * @brief Scan SD card root for BMP files and display a random one
  * 
  * Scans the root directory for .bmp files, picks one at random,
  * and streams it directly to the display (no large buffer needed).
+ * Also stores the filename for later keep-out map lookup.
  * 
  * @return true if a BMP was found and displayed successfully
  */
@@ -1355,6 +1359,9 @@ bool displayRandomBmpFromSd() {
                     strncpy(selectedName, name, sizeof(selectedName) - 1);
                     Serial.printf("  Selected: %s (%llu bytes)\n", name, entry.fileSize());
                     
+                    // Store filename for map lookup later
+                    strncpy(g_lastImageFilename, name, sizeof(g_lastImageFilename) - 1);
+                    
                     // Open the file for streaming
                     char fullPath[72];
                     snprintf(fullPath, sizeof(fullPath), "/%s", name);
@@ -1385,6 +1392,68 @@ bool displayRandomBmpFromSd() {
     
     Serial.println("SD: Failed to find selected BMP");
     return false;
+}
+
+/**
+ * @brief Load keep-out map for the last displayed image (if available)
+ * 
+ * Looks for a .map file matching the last displayed image filename.
+ * For example, if "landscape.bmp" was displayed, looks for "landscape.map".
+ * 
+ * @return true if map was found and loaded successfully
+ */
+bool loadKeepOutMapForImage() {
+    if (sd == nullptr) {
+        Serial.println("SD: Card not initialized, skipping map load");
+        return false;
+    }
+    
+    if (g_lastImageFilename[0] == '\0') {
+        Serial.println("SD: No image filename recorded, skipping map load");
+        return false;
+    }
+    
+    // Generate map filename (replace .bmp with .map)
+    char mapFilename[72];
+    strncpy(mapFilename, g_lastImageFilename, sizeof(mapFilename) - 1);
+    char* ext = strrchr(mapFilename, '.');
+    if (ext && strcasecmp(ext, ".bmp") == 0) {
+        strcpy(ext, ".map");
+    } else {
+        // Fallback: just append .map
+        strncat(mapFilename, ".map", sizeof(mapFilename) - strlen(mapFilename) - 1);
+    }
+    
+    Serial.printf("\n=== Checking for keep-out map ===\n");
+    Serial.printf("  Image: %s\n", g_lastImageFilename);
+    Serial.printf("  Map:   %s\n", mapFilename);
+    
+    // Check if map file exists
+    char fullPath[80];
+    snprintf(fullPath, sizeof(fullPath), "/%s", mapFilename);
+    
+    FsFile mapFile;
+    if (!mapFile.open(fullPath, O_RDONLY)) {
+        Serial.println("  Map file not found (using fallback salience detection)");
+        Serial.println("=====================================\n");
+        return false;
+    }
+    
+    Serial.printf("  Map file found: %llu bytes\n", mapFile.fileSize());
+    
+    // Load the map into text placement analyzer
+    bool success = textPlacement.loadKeepOutMap(mapFile);
+    mapFile.close();
+    
+    if (success) {
+        Serial.println("  Keep-out map loaded successfully!");
+        Serial.println("  Text placement will avoid ML-detected objects");
+    } else {
+        Serial.println("  Failed to load map (will use fallback)");
+    }
+    Serial.println("=====================================\n");
+    
+    return success;
 }
 #endif // DISABLE_SDIO_TEST
 
@@ -2021,6 +2090,11 @@ void doDisplayUpdate(int updateNumber) {
     // Try to display a random BMP from SD card
     if (sd != nullptr) {
         backgroundSet = displayRandomBmpFromSd();
+        
+        // If we displayed a BMP, try to load its keep-out map (if available)
+        if (backgroundSet) {
+            loadKeepOutMapForImage();
+        }
     }
     #endif
     
@@ -2028,6 +2102,9 @@ void doDisplayUpdate(int updateNumber) {
     if (!backgroundSet) {
         Serial.println("  Using white background (no SD BMP)");
         display.clear(EL133UF1_WHITE);
+        
+        // Clear any previous keep-out map
+        textPlacement.clearKeepOutMap();
     }
     
     bitmapTotal = millis() - t0;

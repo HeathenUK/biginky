@@ -9,6 +9,10 @@ A PlatformIO/Arduino-Pico driver for the EL133UF1 13.3" Spectra 6 e-ink panel, d
 - **Full frame buffer**: Easy pixel manipulation
 - **Simple API**: Clear, setPixel, fillRect, drawRect, and more
 - **Optimized for RP2350**: Takes advantage of the Pico Plus 2 W's 8MB PSRAM
+- **🆕 ML-Based Text Placement**: Automatically avoid placing text over detected objects
+- **SD Card Support**: Display BMPs from SD card with intelligent text overlay
+- **TTF Font Rendering**: High-quality text rendering with outline support
+- **Intelligent Layout**: Automatic text positioning based on image content
 
 ## Hardware Requirements
 
@@ -208,9 +212,52 @@ void setVFlip(bool flip);
 uint8_t* getBuffer();
 ```
 
+## ML-Based Keep-Out Text Placement (NEW!)
+
+This project now includes intelligent text placement using machine learning to detect objects and avoid placing text over them!
+
+### Quick Start
+
+```bash
+# 1. Convert images with ML object detection
+pip install pillow numpy torch ultralytics opencv-python
+python scripts/prepare_eink_image.py photo.jpg /sd_card/
+
+# 2. Copy to SD card (both .bmp and .map files)
+cp /sd_card/*.bmp /media/sdcard/
+cp /sd_card/*.map /media/sdcard/
+
+# 3. Device automatically uses maps when available!
+```
+
+### How It Works
+
+- **Python Script**: Uses YOLOv8 to detect objects (people, animals, vehicles, etc.)
+- **Binary Map**: Generates compact keep-out bitmap (~234KB for 1600×1200)
+- **Firmware**: Automatically loads maps from SD card
+- **Smart Placement**: Text avoids detected objects, falls back to salience detection
+
+### Documentation
+
+- **Quick Start**: [`QUICKSTART_ML_KEEPOUT.md`](QUICKSTART_ML_KEEPOUT.md) - Get started in 5 minutes
+- **Full Guide**: [`KEEPOUT_MAP_README.md`](KEEPOUT_MAP_README.md) - Comprehensive documentation
+- **Changes**: [`CHANGES_ML_KEEPOUT.md`](CHANGES_ML_KEEPOUT.md) - Technical details
+
+### Example
+
+```
+Input: landscape.jpg
+  ↓ (YOLO detects: mountain, tree, lake)
+Output: landscape.bmp + landscape.map
+  ↓ (copy to SD card)
+Result: Time/date text avoids mountains and trees!
+```
+
 ## Memory Usage
 
 The frame buffer requires approximately **1.92 MB** of RAM (1600 × 1200 bytes). The Pico Plus 2 W has 8 MB of PSRAM, making this feasible.
+
+**With ML Keep-Out Maps**: An additional ~234 KB is used when a map is loaded from SD card (freed after use).
 
 ## Refresh Time
 

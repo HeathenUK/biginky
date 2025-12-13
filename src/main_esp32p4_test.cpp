@@ -645,29 +645,68 @@ static void auto_cycle_task(void* arg) {
     textPlacement.clearExclusionZones();
     
     // Get text dimensions for both time and date
-    const float timeFontSize = 160.0f;
-    const float dateFontSize = 48.0f;
-    const int16_t gapBetween = 20;  // Gap between time and date
-    const int16_t timeOutline = 3;   // Outline width for time
-    const int16_t dateOutline = 2;   // Outline width for date
+    // Adaptive sizing: try smaller sizes if keep-out areas block placement
+    float timeFontSize = 160.0f;
+    float dateFontSize = 48.0f;
+    const float minTimeFontSize = 80.0f;   // Don't go smaller than this
+    const float minDateFontSize = 24.0f;
+    const int16_t gapBetween = 20;
+    const int16_t timeOutline = 3;
+    const int16_t dateOutline = 2;
+    const float minAcceptableScore = 0.3f;  // Threshold for "good enough" placement
+    
+    TextPlacementRegion bestPos;
+    int16_t blockW, blockH;
+    int attempts = 0;
+    const int maxAttempts = 5;  // Try up to 5 different sizes
+    
+    do {
+        attempts++;
+        
+        int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+        int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+        int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+        int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
 
-    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
-    int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
-    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
-    int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
+        // Combined block dimensions (time + gap + date)
+        blockW = max(timeW, dateW);
+        blockH = timeH + gapBetween + dateH;
 
-    // Combined block dimensions (time + gap + date)
-    int16_t blockW = max(timeW, dateW);
-    int16_t blockH = timeH + gapBetween + dateH;
-
-    // Scan the entire display to find the best position for time/date block
-    // Grid scanning evaluates many positions across the safe area
-    uint32_t analysisStart = millis();
-    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
-        &display, blockW, blockH,
-        EL133UF1_WHITE, EL133UF1_BLACK);
-    Serial.printf("Time/date placement scan: %lu ms (score=%.2f, pos=%d,%d)\n",
-                  millis() - analysisStart, bestPos.score, bestPos.x, bestPos.y);
+        // Scan the entire display to find the best position for time/date block
+        uint32_t analysisStart = millis();
+        bestPos = textPlacement.scanForBestPosition(
+            &display, blockW, blockH,
+            EL133UF1_WHITE, EL133UF1_BLACK);
+        
+        Serial.printf("Time/date placement attempt %d: size=%.0f/%.0f, score=%.2f, pos=%d,%d\n",
+                      attempts, timeFontSize, dateFontSize, bestPos.score, bestPos.x, bestPos.y);
+        
+        // If score is good enough, we're done
+        if (bestPos.score >= minAcceptableScore) {
+            Serial.printf("  -> Acceptable placement found (score %.2f >= %.2f)\n", 
+                         bestPos.score, minAcceptableScore);
+            break;
+        }
+        
+        // If at minimum size, have to accept what we have
+        if (timeFontSize <= minTimeFontSize || dateFontSize <= minDateFontSize) {
+            Serial.printf("  -> At minimum size, using best available (score=%.2f)\n", bestPos.score);
+            break;
+        }
+        
+        // Reduce font size by 15% and try again
+        timeFontSize *= 0.85f;
+        dateFontSize *= 0.85f;
+        if (timeFontSize < minTimeFontSize) timeFontSize = minTimeFontSize;
+        if (dateFontSize < minDateFontSize) dateFontSize = minDateFontSize;
+        
+        Serial.printf("  -> Score too low, reducing font size to %.0f/%.0f\n", 
+                     timeFontSize, dateFontSize);
+        
+    } while (attempts < maxAttempts);
+    
+    Serial.printf("Time/date placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
+                  timeFontSize, dateFontSize, bestPos.score, attempts);
     
     // Debug: show what area was checked for keep-out
     int16_t checkX = bestPos.x - blockW/2;
@@ -717,23 +756,57 @@ static void auto_cycle_task(void* arg) {
     // Select a random quote
     const Quote& selectedQuote = quotes[random(numQuotes)];
     
-    const float quoteFontSize = 48.0f;
-    const float authorFontSize = 32.0f;
+    // Adaptive sizing for quote as well
+    float quoteFontSize = 48.0f;
+    float authorFontSize = 32.0f;
+    const float minQuoteFontSize = 28.0f;
+    const float minAuthorFontSize = 20.0f;
     
-    // Scan the entire display to find the best quote position
-    // This uses a grid-based search that evaluates many more positions than
-    // the old fixed-candidate approach, finding empty areas like the left
-    // quarter of the frame that might otherwise be missed.
-    analysisStart = millis();
-    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
-        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
-        EL133UF1_WHITE, EL133UF1_BLACK,
-        3,   // maxLines: try up to 3 lines
-        3);  // minWordsPerLine: at least 3 words per line
+    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout;
+    attempts = 0;
     
-    Serial.printf("Quote placement: %lu ms (score=%.2f, pos=%d,%d, %d lines)\n",
-                  millis() - analysisStart, quoteLayout.position.score, 
-                  quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
+    do {
+        attempts++;
+        
+        // Scan the entire display to find the best quote position
+        analysisStart = millis();
+        quoteLayout = textPlacement.scanForBestQuotePosition(
+            &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
+            EL133UF1_WHITE, EL133UF1_BLACK,
+            3,   // maxLines: try up to 3 lines
+            3);  // minWordsPerLine: at least 3 words per line
+        
+        Serial.printf("Quote placement attempt %d: size=%.0f/%.0f, score=%.2f, pos=%d,%d, %d lines\n",
+                      attempts, quoteFontSize, authorFontSize, quoteLayout.position.score,
+                      quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
+        
+        // If score is good enough, we're done
+        if (quoteLayout.position.score >= minAcceptableScore) {
+            Serial.printf("  -> Acceptable quote placement found (score %.2f >= %.2f)\n", 
+                         quoteLayout.position.score, minAcceptableScore);
+            break;
+        }
+        
+        // If at minimum size, have to accept what we have
+        if (quoteFontSize <= minQuoteFontSize || authorFontSize <= minAuthorFontSize) {
+            Serial.printf("  -> At minimum size, using best available (score=%.2f)\n", 
+                         quoteLayout.position.score);
+            break;
+        }
+        
+        // Reduce font size by 15% and try again
+        quoteFontSize *= 0.85f;
+        authorFontSize *= 0.85f;
+        if (quoteFontSize < minQuoteFontSize) quoteFontSize = minQuoteFontSize;
+        if (authorFontSize < minAuthorFontSize) authorFontSize = minAuthorFontSize;
+        
+        Serial.printf("  -> Score too low, reducing font size to %.0f/%.0f\n", 
+                     quoteFontSize, authorFontSize);
+        
+    } while (attempts < maxAttempts);
+    
+    Serial.printf("Quote placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
+                  quoteFontSize, authorFontSize, quoteLayout.position.score, attempts);
     Serial.printf("  Quote: \"%s\"\n", quoteLayout.wrappedQuote);
     Serial.printf("  Author: %s\n", selectedQuote.author);
     

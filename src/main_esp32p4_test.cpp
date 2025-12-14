@@ -2052,6 +2052,172 @@ void sdReadTest() {
     Serial.println("===========================\n");
 }
 
+/**
+ * @brief Comprehensive SD card benchmark using FatFS direct API
+ * 
+ * Tests raw read performance with various buffer sizes to show the impact
+ * of the SRAM buffer optimization (vs PSRAM). Uses FatFS f_read() directly
+ * which goes through our ff_memalloc() implementation.
+ */
+void sdBenchmarkFatFS() {
+    Serial.println("\n============================================");
+    Serial.println("  FatFS SD Card Benchmark (SRAM Buffers)");
+    Serial.println("============================================");
+    Serial.println("This tests raw FatFS read performance.");
+    Serial.println("With SRAM buffers (ff_memalloc patch), expect ~10x");
+    Serial.println("faster speeds vs PSRAM buffers.\n");
+    
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted. Mounting...");
+        if (!sdInitDirect(false)) {
+            Serial.println("Failed to mount SD card!");
+            return;
+        }
+    }
+    
+    // Find a large file to test with (preferably >1MB)
+    FF_DIR dir;
+    FILINFO fno;
+    String testFilePath = "";
+    size_t testFileSize = 0;
+    
+    FRESULT res = f_opendir(&dir, "0:");
+    if (res != FR_OK) {
+        Serial.printf("f_opendir failed: %d\n", res);
+        return;
+    }
+    
+    while (true) {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK || fno.fname[0] == 0) break;
+        if (fno.fattrib & AM_DIR) continue;
+        
+        // Look for a file >500KB for meaningful benchmark
+        if (fno.fsize > 500 * 1024 && fno.fsize > testFileSize) {
+            testFilePath = "0:/" + String(fno.fname);
+            testFileSize = fno.fsize;
+        }
+    }
+    f_closedir(&dir);
+    
+    if (testFilePath.length() == 0) {
+        Serial.println("No file >500KB found. Creating test file...");
+        
+        // Create a 1MB test file
+        FIL testFile;
+        res = f_open(&testFile, "0:/benchmark.bin", FA_CREATE_ALWAYS | FA_WRITE);
+        if (res != FR_OK) {
+            Serial.printf("Failed to create test file: %d\n", res);
+            return;
+        }
+        
+        uint8_t* buf = (uint8_t*)malloc(8192);
+        if (!buf) {
+            Serial.println("Failed to allocate write buffer");
+            f_close(&testFile);
+            return;
+        }
+        memset(buf, 0x55, 8192);
+        
+        Serial.print("Writing 2MB test file");
+        uint32_t writeStart = millis();
+        UINT written;
+        for (int i = 0; i < 256; i++) {  // 256 * 8KB = 2MB
+            res = f_write(&testFile, buf, 8192, &written);
+            if (res != FR_OK) break;
+            if (i % 32 == 0) Serial.print(".");
+        }
+        f_close(&testFile);
+        free(buf);
+        
+        uint32_t writeTime = millis() - writeStart;
+        Serial.printf(" done in %lu ms (%.2f MB/s)\n", writeTime, 
+                      2.0 / (writeTime / 1000.0));
+        
+        testFilePath = "0:/benchmark.bin";
+        testFileSize = 2 * 1024 * 1024;
+    }
+    
+    Serial.printf("\nTest file: %s (%.2f MB)\n", testFilePath.c_str(), 
+                  testFileSize / (1024.0 * 1024.0));
+    
+    // Open the test file
+    FIL file;
+    res = f_open(&file, testFilePath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("f_open failed: %d\n", res);
+        return;
+    }
+    
+    // Limit read size to 2MB for reasonable test duration
+    size_t readSize = min(testFileSize, (size_t)(2 * 1024 * 1024));
+    
+    Serial.println("\n--- Sequential Read Benchmark ---");
+    Serial.println("Buffer Size    Time (ms)   Speed (MB/s)   Notes");
+    Serial.println("--------------------------------------------------------");
+    
+    // Test different buffer sizes
+    size_t bufferSizes[] = {512, 1024, 4096, 8192, 16384, 32768};
+    int numSizes = sizeof(bufferSizes) / sizeof(bufferSizes[0]);
+    
+    for (int i = 0; i < numSizes; i++) {
+        size_t bufSize = bufferSizes[i];
+        
+        // Allocate read buffer (from heap, not FatFS internal buffers)
+        uint8_t* readBuf = (uint8_t*)malloc(bufSize);
+        if (!readBuf) {
+            Serial.printf("%6zu        (alloc failed)\n", bufSize);
+            continue;
+        }
+        
+        // Seek to start
+        f_lseek(&file, 0);
+        
+        // Read the file
+        size_t totalRead = 0;
+        UINT bytesRead;
+        uint32_t startTime = millis();
+        
+        while (totalRead < readSize) {
+            res = f_read(&file, readBuf, bufSize, &bytesRead);
+            if (res != FR_OK || bytesRead == 0) break;
+            totalRead += bytesRead;
+        }
+        
+        uint32_t elapsed = millis() - startTime;
+        float speedMBs = (totalRead / (1024.0 * 1024.0)) / (elapsed / 1000.0);
+        
+        const char* notes = "";
+        if (bufSize == 4096) notes = "<-- FatFS sector size";
+        if (bufSize == 8192) notes = "<-- Optimal for SRAM";
+        
+        Serial.printf("%6zu        %8lu    %8.2f       %s\n", 
+                      bufSize, elapsed, speedMBs, notes);
+        
+        free(readBuf);
+    }
+    
+    f_close(&file);
+    
+    // Show memory info
+    Serial.println("\n--- Memory Allocation Info ---");
+    Serial.printf("FatFS buffers allocated via ff_memalloc() in SRAM\n");
+    Serial.printf("(Not PSRAM - this is the key performance optimization)\n");
+    
+    // Get heap info if available
+    #ifdef ESP_PLATFORM
+    Serial.printf("Free internal heap: %lu bytes\n", 
+                  (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    Serial.printf("Free PSRAM:         %lu bytes\n", 
+                  (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    #endif
+    
+    Serial.println("\n============================================");
+    Serial.println("Expected results with SRAM buffers: 8-15 MB/s");
+    Serial.println("With PSRAM buffers (old): ~1-2 MB/s");
+    Serial.println("============================================\n");
+}
+
 void sdUnmount() {
     if (!sdCardMounted) {
         Serial.println("SD card not mounted");
@@ -3064,6 +3230,7 @@ void setup() {
 #endif
 #if SDMMC_ENABLED
     Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=test, 'U'=unmount, 'D'=diag, 'P'=power cycle, 'O/o'=pwr on/off");
+    Serial.println("           'F'=FatFS benchmark (tests SRAM buffer optimization)");
     Serial.println("  BMP:     'B'=load random BMP, 'b'=list BMP files");
 #endif
     Serial.println("  Sleep:   'z'=status, '1'=10s, '2'=30s, '3'=60s, '5'=5min deep sleep");
@@ -3420,6 +3587,10 @@ void loop() {
             if (sdCardMounted) {
                 sdReadTest();
             }
+        }
+        else if (c == 'F') {
+            // FatFS benchmark - tests SRAM buffer optimization
+            sdBenchmarkFatFS();
         }
         else if (c == 'U') {
             if (sd_card != nullptr) {

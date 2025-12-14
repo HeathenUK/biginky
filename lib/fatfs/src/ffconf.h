@@ -350,8 +350,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+/* Sync object type for FF_FS_REENTRANT (FreeRTOS mutex) */
+#if FF_FS_REENTRANT
+typedef SemaphoreHandle_t FF_SYNC_t;
+#endif
+
 /* Some memory allocation functions are declared here in addition to ff.h, so that
    they can be used also by external code when LFN feature is disabled.
+   
+   IMPORTANT: ff_memalloc() is implemented in ffsystem.c to use internal SRAM
+   (not PSRAM) for ~10x better SD card I/O performance.
  */
 void* ff_memalloc (unsigned msize);
 void ff_memfree(void*);

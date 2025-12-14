@@ -59,46 +59,53 @@ void ff_memfree(void* mblock)
 }
 
 #if FF_FS_REENTRANT
+/* Array of mutexes for each volume (ESP-IDF style API uses volume index) */
+static SemaphoreHandle_t s_fatfs_mutex[FF_VOLUMES];
+
 /**
- * @brief Create a sync object (mutex)
+ * @brief Create a sync object (mutex) for a volume
  * @param vol Volume number
- * @param sobj Pointer to sync object
  * @return 1 on success, 0 on failure
  */
-int ff_mutex_create(int vol, FF_SYNC_t* sobj)
+int ff_mutex_create(int vol)
 {
-    *sobj = xSemaphoreCreateMutex();
-    return (*sobj != NULL) ? 1 : 0;
+    if (vol < 0 || vol >= FF_VOLUMES) return 0;
+    s_fatfs_mutex[vol] = xSemaphoreCreateMutex();
+    return (s_fatfs_mutex[vol] != NULL) ? 1 : 0;
 }
 
 /**
- * @brief Delete a sync object
- * @param sobj Sync object to delete
- * @return 1 on success
+ * @brief Delete a sync object for a volume
+ * @param vol Volume number
  */
-int ff_mutex_delete(FF_SYNC_t sobj)
+void ff_mutex_delete(int vol)
 {
-    vSemaphoreDelete(sobj);
-    return 1;
+    if (vol >= 0 && vol < FF_VOLUMES && s_fatfs_mutex[vol] != NULL) {
+        vSemaphoreDelete(s_fatfs_mutex[vol]);
+        s_fatfs_mutex[vol] = NULL;
+    }
 }
 
 /**
- * @brief Request a sync object (lock mutex)
- * @param sobj Sync object
+ * @brief Lock sync object for a volume
+ * @param vol Volume number
  * @return 1 on success, 0 on timeout
  */
-int ff_mutex_take(FF_SYNC_t sobj)
+int ff_mutex_take(int vol)
 {
-    return (xSemaphoreTake(sobj, FF_FS_TIMEOUT) == pdTRUE) ? 1 : 0;
+    if (vol < 0 || vol >= FF_VOLUMES || s_fatfs_mutex[vol] == NULL) return 0;
+    return (xSemaphoreTake(s_fatfs_mutex[vol], FF_FS_TIMEOUT) == pdTRUE) ? 1 : 0;
 }
 
 /**
- * @brief Release a sync object (unlock mutex)
- * @param sobj Sync object
+ * @brief Unlock sync object for a volume
+ * @param vol Volume number
  */
-void ff_mutex_give(FF_SYNC_t sobj)
+void ff_mutex_give(int vol)
 {
-    xSemaphoreGive(sobj);
+    if (vol >= 0 && vol < FF_VOLUMES && s_fatfs_mutex[vol] != NULL) {
+        xSemaphoreGive(s_fatfs_mutex[vol]);
+    }
 }
 #endif /* FF_FS_REENTRANT */
 

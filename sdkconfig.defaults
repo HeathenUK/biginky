@@ -15,6 +15,14 @@ CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
 CONFIG_FATFS_USE_LABEL=y
 
+# SD Card Performance Optimization:
+# Force FatFS buffers to use internal SRAM instead of PSRAM.
+# PSRAM buffers cause ~10x slowdown due to higher latency on external memory bus.
+# With SECTOR_4096 and max_files=5, this uses ~20-25KB of internal SRAM for buffers.
+# Reference: ESP filesystem libs use PSRAM by default which negates SDIO speed gains.
+CONFIG_FATFS_ALLOC_PREFER_EXTRAM=n
+CONFIG_FATFS_SECTOR_4096=y
+
 # SDMMC configuration
 CONFIG_SOC_SDMMC_HOST_SUPPORTED=y
 

@@ -206,6 +206,25 @@ Image sunset.png has audio mapping: ocean_waves.wav
 - Large WAV files (>5 seconds) may take longer to play
 - The system can handle up to 100 quotes and media mappings efficiently
 
+### Critical: FatFS Buffer Location (SRAM vs PSRAM)
+
+**This project is configured to use internal SRAM for filesystem buffers instead of PSRAM.**
+
+By default, ESP-IDF allocates FatFS buffers in PSRAM when `CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y` is set. While this saves internal SRAM, it causes **~10x performance degradation** for SD card I/O because:
+
+1. PSRAM has significantly higher access latency than internal SRAM
+2. Every file read/write operation goes through these buffers
+3. Even with DMA, the external memory bus becomes a bottleneck
+
+The setting `CONFIG_FATFS_ALLOC_PREFER_EXTRAM=n` in `sdkconfig.defaults` ensures FatFS uses internal SRAM, providing much faster SD card performance (~10x speedup).
+
+**Memory Impact:**
+- Per-file buffer: 4KB (with `CONFIG_FATFS_SECTOR_4096=y`)
+- With `max_files=5`: ~20-25KB of internal SRAM used
+- This tradeoff is worthwhile for the massive I/O performance gain
+
+If you're experiencing slow SD card reads, verify this setting is applied after a full rebuild.
+
 ## Future Enhancements
 
 Potential features for future versions:

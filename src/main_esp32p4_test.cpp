@@ -30,6 +30,30 @@
 // Only compile this file for ESP32 builds
 #if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 
+// ============================================================================
+// SRAM Buffer Optimization for FatFS (must be before any includes)
+// ============================================================================
+// ESP-IDF's default ff_memalloc uses PSRAM which is ~10x slower than SRAM.
+// This wrapper forces allocation from internal SRAM for much faster SD I/O.
+// Linked via -Wl,--wrap=ff_memalloc in platformio.ini
+// ============================================================================
+#include "esp_heap_caps.h"
+#include <stdio.h>
+
+extern "C" void* __wrap_ff_memalloc(unsigned int msize)
+{
+    void* ptr = heap_caps_malloc(msize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
+    if (ptr == NULL) {
+        ptr = heap_caps_malloc(msize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    static int count = 0;
+    if (count++ < 3) {
+        printf("[SRAM] ff_memalloc(%u) -> %p\n", msize, ptr);
+    }
+    return ptr;
+}
+// ============================================================================
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>

@@ -3078,7 +3078,6 @@ void setup() {
 #endif
 #if SDMMC_ENABLED
     Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=test, 'U'=unmount, 'D'=diag, 'P'=power cycle, 'O/o'=pwr on/off");
-    Serial.println("           'F'=FatFS benchmark (tests SRAM buffer optimization)");
     Serial.println("  BMP:     'B'=load random BMP, 'b'=list BMP files");
 #endif
     Serial.println("  Sleep:   'z'=status, '1'=10s, '2'=30s, '3'=60s, '5'=5min deep sleep");
@@ -3435,10 +3434,6 @@ void loop() {
             if (sdCardMounted) {
                 sdReadTest();
             }
-        }
-        else if (c == 'F') {
-            // FatFS benchmark - tests SRAM buffer optimization
-            sdBenchmarkFatFS();
         }
         else if (c == 'U') {
             if (sd_card != nullptr) {

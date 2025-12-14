@@ -2764,11 +2764,11 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     // Try to load keep-out map for this image (if available)
     bool mapLoaded = loadKeepOutMapForImage();
     
-    // Debug: visualize keep-out areas
-    if (mapLoaded) {
-        Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
-        textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
-    }
+    // // Debug: visualize keep-out areas
+    // if (mapLoaded) {
+    //     Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
+    //     textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
+    // }
     
     return true;
 }

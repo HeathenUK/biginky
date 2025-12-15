@@ -59,6 +59,8 @@ pio run --target upload
 pio device monitor
 ```
 
+> **Audio dependency**: WAV playback now relies on Espressif's `esp-gmf` component (for `esp_audio_simple_player`). Make sure the component is available to the build—either via your Arduino platform package or by adding `esp-gmf` to the project's `lib/` or component path—so the headers resolve without stubs.
+
 ## WiFi Configuration
 
 WiFi credentials are stored in the on-board EEPROM and configured via serial:

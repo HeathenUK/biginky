@@ -40,6 +40,26 @@ Default pin configuration for **Pimoroni Inky Impression 13.3"** connected to **
 
 > **Note**: The EL133UF1 uses two chip select lines because the panel is driven by two controllers (left and right halves). Uses **SPI1** (not SPI0).
 
+### ESP32-P4 Pin Configuration
+
+For **ESP32-P4-WIFI6** builds, the pin mapping matches Pico physical locations:
+
+| Function | ESP32-P4 GPIO | Physical Pin | Description |
+|----------|---------------|--------------|-------------|
+| SPI SCK  | GPIO3         | 14           | SPI clock |
+| SPI MOSI | GPIO2         | 15           | SPI data |
+| CS0      | GPIO23        | 31           | Chip Select 0 (left half) |
+| CS1      | GPIO48        | 21           | Chip Select 1 (right half) |
+| DC       | GPIO26        | 29           | Data/Command |
+| RESET    | GPIO22        | 32           | Reset |
+| BUSY     | GPIO47        | 22           | Busy signal |
+| Switch A | GPIO25        | -            | Active-low switch A |
+| Switch B | GPIO50        | -            | Active-low switch B |
+| Switch C | GPIO21        | -            | Active-low switch C |
+| Switch D | GPIO51        | -            | Active-low switch D |
+
+> **Note**: Switches A, B, C, and D are active-low (pressed = LOW, released = HIGH). They are connected to GPIO25, GPIO50, GPIO21, and GPIO51 respectively.
+
 ## Installation
 
 ### PlatformIO (Recommended)

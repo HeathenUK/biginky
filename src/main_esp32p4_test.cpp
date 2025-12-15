@@ -1,12 +1,11 @@
 /**
  * @file main_esp32p4_test.cpp
- * @brief Minimal test application for ESP32-P4 porting
+ * @brief ESP32-P4 application for EL133UF1 e-ink display
  * 
- * This is a simplified version of main.cpp for testing the EL133UF1
- * display driver on ESP32-P4. It focuses only on basic display functionality
- * without WiFi, SD card, or complex power management.
+ * Full-featured application for the EL133UF1 13.3" Spectra 6 e-ink display
+ * on ESP32-P4. Includes WiFi, SD card support, deep sleep, and all features.
  * 
- * Build with: pio run -e esp32p4_minimal
+ * Build with: pio run -e esp32p4
  * 
  * === PIN MAPPING FOR WAVESHARE ESP32-P4-WIFI6 ===
  * Uses same PHYSICAL pin locations as Pico Plus 2 W (form-factor compatible)
@@ -34,6 +33,8 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <vector>
+#include "driver/gpio.h"
+#include "esp_sleep.h"
 #include "platform_hal.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
@@ -49,6 +50,11 @@
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
 #include <time.h>
 #include <sys/time.h>
+
+// ESP8266Audio for robust WAV parsing and playback
+#include "AudioOutputI2S.h"
+#include "AudioGeneratorWAV.h"
+#include "AudioFileSource.h"
 
 // WiFi support for ESP32-P4 (via ESP32-C6 companion chip)
 #if !defined(DISABLE_WIFI) || defined(ENABLE_WIFI_TEST)
@@ -68,6 +74,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "esp_ldo_regulator.h"
+#include "ff.h"  // FatFs for custom AudioFileSource
 #define SDMMC_ENABLED 1
 #else
 #define SDMMC_ENABLED 0
@@ -99,6 +106,14 @@
 #endif
 #ifndef PIN_BUSY
 #define PIN_BUSY      47    // GPIO47 = Pico GP17 (pin 22)
+#endif
+#ifndef PIN_SW_D
+#define PIN_SW_D      51    // GPIO51 = Switch D (active-low)
+#endif
+// GPIO51 is bridged to GPIO4 for deep sleep wake capability
+// GPIO4 is an LP GPIO (0-15) and can wake from deep sleep
+#ifndef PIN_SW_D_BRIDGE
+#define PIN_SW_D_BRIDGE  4   // GPIO51 bridged to GPIO4 (LP GPIO) for deep sleep wake
 #endif
 
 // RTC I2C pins
@@ -192,19 +207,20 @@ static String g_lastImagePath = "";
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
+RTC_DATA_ATTR uint32_t lastMediaIndex = 0;  // Track last displayed image from media.txt
 RTC_DATA_ATTR uint32_t ntpSyncCounter = 0;  // Counter for periodic NTP resync
+RTC_DATA_ATTR bool usingMediaMappings = false;  // Track if we're using media.txt or scanning all PNGs
+RTC_DATA_ATTR char lastAudioFile[64] = "";  // Last audio file path for instant playback on switch D wake
 
 // ============================================================================
 // Audio: ES8311 + I2S test tone
 // ============================================================================
-#include "driver/i2s_common.h"
-#include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <math.h>
 
 static ES8311Simple g_codec;
-static i2s_chan_handle_t g_i2s_tx = nullptr;
+static AudioOutputI2S* g_audio_output = nullptr;
 static TaskHandle_t g_audio_task = nullptr;
 static volatile bool g_audio_running = false;
 static int g_audio_volume_pct = 50;  // UI percent (0..100), mapped into codec range below
@@ -226,6 +242,7 @@ static TaskHandle_t g_auto_cycle_task = nullptr;
 
 // Forward declarations (defined later in file under SDMMC_ENABLED)
 #if SDMMC_ENABLED
+bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
 bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
 bool sdInitDirect(bool mode1bit = false);
 
@@ -254,55 +271,52 @@ static void i2c_scan(TwoWire& w) {
 }
 
 static bool audio_i2s_init(uint32_t sample_rate_hz) {
-    if (g_i2s_tx != nullptr) {
+    if (g_audio_output != nullptr) {
         return true;
     }
 
-    // Use a fixed I2S peripheral for repeatability during bring-up.
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true;
-
-    i2s_chan_handle_t tx_handle = nullptr;
-    esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle, nullptr /* rx */);
-    if (err != ESP_OK) {
-        Serial.printf("I2S: i2s_new_channel failed: %s\n", esp_err_to_name(err));
+    // Initialize ESP8266Audio's I2S output with legacy driver
+    // This will be used for WAV playback via ESP8266Audio
+    g_audio_output = new AudioOutputI2S(0, AudioOutputI2S::EXTERNAL_I2S, 8, AudioOutputI2S::APLL_DISABLE);
+    
+    // Set pinout including MCLK (required for ES8311)
+    if (!g_audio_output->SetPinout(PIN_CODEC_BCLK, PIN_CODEC_LRCK, PIN_CODEC_DOUT, PIN_CODEC_MCLK)) {
+        Serial.println("I2S: SetPinout failed");
+        delete g_audio_output;
+        g_audio_output = nullptr;
         return false;
     }
-
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate_hz),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = (gpio_num_t)PIN_CODEC_MCLK,
-            .bclk = (gpio_num_t)PIN_CODEC_BCLK,
-            .ws   = (gpio_num_t)PIN_CODEC_LRCK,
-            .dout = (gpio_num_t)PIN_CODEC_DOUT,
-            .din  = (gpio_num_t)PIN_CODEC_DIN,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv   = false,
-            },
-        },
-    };
-    // Ensure MCLK is generated at 256 * Fs (matches ES8311 mclk_div=256)
-    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
-
-    err = i2s_channel_init_std_mode(tx_handle, &std_cfg);
-    if (err != ESP_OK) {
-        Serial.printf("I2S: init std mode failed: %s\n", esp_err_to_name(err));
-        i2s_del_channel(tx_handle);
+    
+    // Enable MCLK output
+    if (!g_audio_output->SetMclk(true)) {
+        Serial.println("I2S: SetMclk failed");
+    }
+    
+    // Set sample rate
+    if (!g_audio_output->SetRate(sample_rate_hz)) {
+        Serial.printf("I2S: SetRate failed for %u Hz\n", sample_rate_hz);
+        delete g_audio_output;
+        g_audio_output = nullptr;
         return false;
     }
-
-    err = i2s_channel_enable(tx_handle);
-    if (err != ESP_OK) {
-        Serial.printf("I2S: enable failed: %s\n", esp_err_to_name(err));
-        i2s_del_channel(tx_handle);
+    
+    // Set bits per sample
+    if (!g_audio_output->SetBitsPerSample(16)) {
+        Serial.println("I2S: SetBitsPerSample failed");
+        delete g_audio_output;
+        g_audio_output = nullptr;
         return false;
     }
-
-    g_i2s_tx = tx_handle;
+    
+    // Initialize I2S (this will call the legacy driver)
+    if (!g_audio_output->begin()) {
+        Serial.println("I2S: begin failed");
+        delete g_audio_output;
+        g_audio_output = nullptr;
+        return false;
+    }
+    
+    Serial.println("I2S: Initialized with legacy driver (ESP8266Audio)");
     return true;
 }
 
@@ -327,16 +341,18 @@ static void audio_task(void* arg) {
             buf[i * 2 + 0] = v; // L
             buf[i * 2 + 1] = v; // R
         }
-        size_t bytes_written = 0;
-        esp_err_t err = i2s_channel_write(g_i2s_tx, buf, sizeof(buf), &bytes_written, portMAX_DELAY);
-        if (err != ESP_OK) {
-            Serial.printf("I2S: write failed: %s\n", esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(10));
+        // Write samples using ESP8266Audio's ConsumeSample
+        for (size_t i = 0; i < 256; i++) {
+            int16_t samples[2] = {buf[i * 2], buf[i * 2 + 1]};
+            if (g_audio_output && !g_audio_output->ConsumeSample(samples)) {
+                Serial.println("I2S: ConsumeSample failed");
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
         }
         static uint32_t loops = 0;
         loops++;
         if ((loops % 400) == 0) {
-            Serial.printf("I2S: streaming... last write %u bytes\n", (unsigned)bytes_written);
+            Serial.printf("I2S: streaming... (%u samples)\n", (unsigned)(256 * 2));
         }
     }
     vTaskDelete(nullptr);
@@ -408,10 +424,13 @@ static bool audio_start(bool verbose) {
         Serial.println("ES8311: probe failed");
     }
 
+    // Initialize I2S first (ESP8266Audio legacy driver)
     if (!audio_i2s_init(sample_rate)) {
         Serial.println("Audio: I2S init failed");
         return false;
     }
+    
+    // Note: I2S is now initialized by ESP8266Audio, clocks should be running
 
     if (!g_codec.configureI2S(sample_rate, bits)) {
         Serial.println("ES8311: configure I2S failed (clocking mismatch?)");
@@ -432,17 +451,21 @@ static bool audio_start(bool verbose) {
         (void)g_codec.dumpRegisters(0x00, 0x45);
     }
 
-    g_audio_running = true;
-    xTaskCreatePinnedToCore(audio_task, "audio_tone", 4096, nullptr, 5, &g_audio_task, 0);
+    // Note: audio_task (440Hz test tone) is only needed for testing
+    // For WAV playback, we don't need it - ESP8266Audio handles I2S directly
+    // Only start audio_task if we're not in fast wake path (SW_D wake)
+    // For SW_D wake, we skip the test tone task to avoid I2S conflicts
+    g_audio_running = false;  // Don't start test tone task for WAV playback
+    g_audio_task = nullptr;
 
-    Serial.println("Audio: started 440Hz sine tone");
+    Serial.println("Audio: I2S and codec initialized (ready for WAV playback)");
     return true;
 }
 
 static bool audio_beep(uint32_t freq_hz, uint32_t duration_ms) {
     const uint32_t sample_rate = 44100;
     const int bits = 16;
-    if (!g_codec_ready || g_i2s_tx == nullptr) {
+    if (!g_codec_ready || g_audio_output == nullptr) {
         // Initialize codec + I2S quietly
         if (!audio_start(false)) {
             return false;
@@ -476,11 +499,13 @@ static bool audio_beep(uint32_t freq_hz, uint32_t duration_ms) {
             buf[i * 2 + 0] = v;
             buf[i * 2 + 1] = v;
         }
-        size_t bytes_written = 0;
-        esp_err_t err = i2s_channel_write(g_i2s_tx, buf, frames * 2 * sizeof(int16_t), &bytes_written, portMAX_DELAY);
-        if (err != ESP_OK) {
-            Serial.printf("I2S: beep write failed: %s\n", esp_err_to_name(err));
-            break;
+        // Write samples using ESP8266Audio's ConsumeSample
+        for (size_t i = 0; i < frames; i++) {
+            int16_t samples[2] = {buf[i * 2], buf[i * 2 + 1]};
+            if (!g_audio_output || !g_audio_output->ConsumeSample(samples)) {
+                Serial.println("I2S: beep ConsumeSample failed");
+                break;
+            }
         }
         frames_done += (uint32_t)frames;
     }
@@ -490,11 +515,8 @@ static bool audio_beep(uint32_t freq_hz, uint32_t duration_ms) {
 static void audio_stop() {
     g_audio_running = false;
     // task self-deletes
-    if (g_i2s_tx) {
-        (void)i2s_channel_disable(g_i2s_tx);
-        (void)i2s_del_channel(g_i2s_tx);
-        g_i2s_tx = nullptr;
-    }
+    // Note: ESP8266Audio's I2S is managed by the library, we don't need to delete it
+    // The AudioOutputI2S object will be reused for WAV playback
     if (g_codec_ready) {
         (void)g_codec.stopAll();
         g_codec_ready = false;
@@ -505,7 +527,82 @@ static void audio_stop() {
 static void sleepNowSeconds(uint32_t seconds) {
     Serial.printf("Sleeping for %lu seconds...\n", (unsigned long)seconds);
     Serial.flush();
+    
+    // Enable timer wake
     esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
+    
+    // ESP32-P4 can only wake from deep sleep using LP GPIOs (0-15) via ext1
+    // Switch D is on GPIO51, which is NOT an LP GPIO
+    // If GPIO51 is bridged to an LP GPIO (e.g., GPIO4), use PIN_SW_D_BRIDGE to enable wake
+    
+    gpio_num_t swD_pin = (gpio_num_t)PIN_SW_D;
+    gpio_num_t wake_pin = (PIN_SW_D_BRIDGE >= 0) ? (gpio_num_t)PIN_SW_D_BRIDGE : swD_pin;
+    
+    // Configure GPIO51 as input with pull-up (normal switch reading, even if bridged)
+    gpio_config_t io_conf_sw = {};
+    io_conf_sw.pin_bit_mask = (1ULL << swD_pin);
+    io_conf_sw.mode = GPIO_MODE_INPUT;
+    io_conf_sw.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf_sw.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf_sw.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&io_conf_sw);
+    
+    // Check if we can wake from deep sleep (LP GPIO 0-15)
+    #ifdef CONFIG_IDF_TARGET_ESP32P4
+    if (wake_pin <= 15) {
+        // LP GPIO - can wake from deep sleep using ext1
+        if (PIN_SW_D_BRIDGE >= 0) {
+            Serial.printf("Switch D (GPIO%d) bridged to GPIO%d (LP GPIO) for deep sleep wake\n", 
+                         swD_pin, wake_pin);
+        } else {
+            Serial.printf("Configuring GPIO%d (LP GPIO) for deep sleep wake\n", wake_pin);
+        }
+        
+        // Configure wake pin as input with pull-up (active-low switch)
+        gpio_config_t io_conf = {};
+        io_conf.pin_bit_mask = (1ULL << wake_pin);
+        io_conf.mode = GPIO_MODE_INPUT;
+        io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io_conf.intr_type = GPIO_INTR_DISABLE;
+        gpio_config(&io_conf);
+        
+        // Use ext1 wakeup for ESP32-P4 (ext0 not supported)
+        uint64_t gpio_mask = (1ULL << wake_pin);
+        esp_err_t err = esp_sleep_enable_ext1_wakeup(gpio_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+        if (err != ESP_OK) {
+            Serial.printf("WARNING: Failed to enable ext1 wake on GPIO%d: %d\n", wake_pin, err);
+        } else {
+            Serial.printf("GPIO%d configured for deep sleep wake (ext1, active-low)\n", wake_pin);
+            if (PIN_SW_D_BRIDGE >= 0) {
+                Serial.println("  (GPIO51 bridged to this pin - Switch D will trigger wake)");
+            }
+        }
+    } else {
+        // Not an LP GPIO - cannot wake from deep sleep
+        Serial.printf("WARNING: GPIO%d is not an LP GPIO (0-15) and cannot wake from deep sleep on ESP32-P4\n", wake_pin);
+        if (PIN_SW_D_BRIDGE < 0) {
+            Serial.println("Switch D wake from deep sleep is not supported. Only timer wake is enabled.");
+            Serial.println("To enable switch wake:");
+            Serial.println("  1. Bridge GPIO51 to an LP GPIO (0-15, e.g., GPIO4)");
+            Serial.println("  2. Define PIN_SW_D_BRIDGE in code (e.g., #define PIN_SW_D_BRIDGE 4)");
+            Serial.println("  3. Or use light sleep instead (any GPIO can wake)");
+        }
+    }
+    #else
+    // Other ESP32 variants - try gpio_wakeup API
+    gpio_config_t io_conf = {};
+    io_conf.pin_bit_mask = (1ULL << swD_pin);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&io_conf);
+    
+    esp_sleep_enable_gpio_wakeup();
+    gpio_wakeup_enable(swD_pin, GPIO_INTR_LOW_LEVEL);
+    #endif
+    
     delay(50);
     esp_deep_sleep_start();
 }
@@ -513,20 +610,43 @@ static void sleepNowSeconds(uint32_t seconds) {
 static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSleepSeconds) {
     time_t now = time(nullptr);
     if (now <= 1577836800) {  // time invalid
+        Serial.printf("Time invalid, sleeping for fallback: %lu seconds\n", (unsigned long)fallback_seconds);
         sleepNowSeconds(fallback_seconds);
+        return;  // Never returns, but makes intent clear
     }
 
-    uint32_t sec = (uint32_t)(now % 60);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    uint32_t sec = (uint32_t)tm_utc.tm_sec;
+    
+    // Calculate seconds until next minute boundary
+    // If we're at :00, we want to sleep 60 seconds to reach :00 of next minute
+    // If we're at :30, we want to sleep 30 seconds to reach :00 of next minute
     uint32_t sleep_s = 60 - sec;
-    if (sleep_s == 0) sleep_s = 60;
+    
+    // If we're exactly at :00, sleep a full minute (60 seconds)
+    // This is already handled by the calculation above, but make it explicit
+    if (sleep_s == 0) {
+        sleep_s = 60;  // At :00, sleep to next :00
+    }
+    
     // Avoid very short sleeps (USB/serial jitter); skip to next minute
-    if (sleep_s < 5) sleep_s += 60;
-    // Sanity clamp
-    if (sleep_s > 120) sleep_s = fallback_seconds;
+    // If we have less than 5 seconds until next minute, sleep to the minute after that
+    if (sleep_s < 5 && sleep_s > 0) {
+        sleep_s += 60;
+        Serial.printf("Sleep duration too short (%lu), adding 60 seconds\n", (unsigned long)(sleep_s - 60));
+    }
+    
+    // Sanity clamp - if calculation is way off, use fallback
+    if (sleep_s > 120) {
+        Serial.printf("Sleep calculation too large (%lu), using fallback\n", (unsigned long)sleep_s);
+        sleep_s = fallback_seconds;
+    }
 
-    Serial.printf("Sleeping until next minute: %lu seconds (sec=%lu)\n",
-                  (unsigned long)sleep_s, (unsigned long)sec);
+    Serial.printf("Current time: %02d:%02d:%02d, sleeping until next minute: %lu seconds\n",
+                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, (unsigned long)sleep_s);
     sleepNowSeconds(sleep_s);
+    // Never returns
 }
 
 #if WIFI_ENABLED
@@ -597,6 +717,91 @@ static bool ensureTimeValid(uint32_t timeout_ms = 0) {
 // ============================================================================
 
 #if SDMMC_ENABLED
+
+// Note: We now use ESP8266Audio's AudioOutputI2S directly (g_audio_output)
+// No custom wrapper needed
+
+// ============================================================================
+// Custom AudioFileSource for FatFs
+// ============================================================================
+class AudioFileSourceFatFs : public AudioFileSource {
+public:
+    AudioFileSourceFatFs(const char* filename) : file_(nullptr), filename_(filename) {}
+    
+    virtual bool open(const char* filename) override {
+        if (file_) {
+            f_close(file_);
+        }
+        
+        filename_ = filename;
+        file_ = (FIL*)malloc(sizeof(FIL));
+        if (!file_) {
+            return false;
+        }
+        
+        FRESULT res = f_open(file_, filename, FA_READ);
+        if (res != FR_OK) {
+            free(file_);
+            file_ = nullptr;
+            return false;
+        }
+        
+        return true;
+    }
+    
+    virtual uint32_t read(void* data, uint32_t len) override {
+        if (!file_) return 0;
+        
+        UINT bytes_read = 0;
+        FRESULT res = f_read(file_, data, len, &bytes_read);
+        if (res != FR_OK) {
+            return 0;
+        }
+        return bytes_read;
+    }
+    
+    virtual bool seek(int32_t pos, int dir) override {
+        if (!file_) return false;
+        
+        if (dir == SEEK_SET) {
+            return (f_lseek(file_, pos) == FR_OK);
+        } else if (dir == SEEK_CUR) {
+            FSIZE_t current = f_tell(file_);
+            return (f_lseek(file_, current + pos) == FR_OK);
+        } else if (dir == SEEK_END) {
+            FSIZE_t size = f_size(file_);
+            return (f_lseek(file_, size + pos) == FR_OK);
+        }
+        return false;
+    }
+    
+    virtual bool close() override {
+        if (file_) {
+            f_close(file_);
+            free(file_);
+            file_ = nullptr;
+        }
+        return true;
+    }
+    
+    virtual bool isOpen() override {
+        return (file_ != nullptr);
+    }
+    
+    virtual uint32_t getSize() override {
+        if (!file_) return 0;
+        return (uint32_t)f_size(file_);
+    }
+    
+    virtual uint32_t getPos() override {
+        if (!file_) return 0;
+        return (uint32_t)f_tell(file_);
+    }
+
+private:
+    FIL* file_;
+    const char* filename_;
+};
 
 // Structure to hold loaded quotes from SD card
 struct LoadedQuote {
@@ -804,8 +1009,10 @@ int loadMediaMappingsFromSD() {
         }
         
         // Parse format: image.png,audio.wav
+        // Also allow: image.png (no comma = no audio, will use fallback beep)
         int commaPos = trimmed.indexOf(',');
         if (commaPos > 0 && commaPos < (int)trimmed.length() - 1) {
+            // Format: image.png,audio.wav
             String imageName = trimmed.substring(0, commaPos);
             String audioFile = trimmed.substring(commaPos + 1);
             imageName.trim();
@@ -824,6 +1031,33 @@ int loadMediaMappingsFromSD() {
             
             Serial.printf("  [%d] %s -> %s\n", g_media_mappings.size(),
                          imageName.c_str(), audioFile.c_str());
+        } else if (commaPos < 0 && trimmed.length() > 0) {
+            // Format: image.png (no comma = image only, no audio mapping)
+            // This allows explicitly listing images that should be shown but use fallback beep
+            String imageName = trimmed;
+            imageName.trim();
+            
+            // Extract just the filename (remove path if present)
+            int slashPos = imageName.lastIndexOf('/');
+            if (slashPos >= 0) {
+                imageName = imageName.substring(slashPos + 1);
+            }
+            
+            // Check if it looks like an image file
+            if (imageName.length() > 0 && 
+                (imageName.endsWith(".png") || imageName.endsWith(".bmp") || 
+                 imageName.endsWith(".jpg") || imageName.endsWith(".jpeg"))) {
+                MediaMapping mm;
+                mm.imageName = imageName;
+                mm.audioFile = "";  // Empty audio = will use fallback beep
+                g_media_mappings.push_back(mm);
+                
+                Serial.printf("  [%d] %s -> (no audio, will use fallback beep)\n", 
+                             g_media_mappings.size(), imageName.c_str());
+            } else {
+                Serial.printf("  Warning: Invalid format on line %d: %s (expected image filename)\n", 
+                             lineNum, line);
+            }
         } else {
             Serial.printf("  Warning: Invalid format on line %d: %s\n", lineNum, line);
         }
@@ -869,29 +1103,36 @@ String getAudioForImage(const String& imagePath) {
 }
 
 /**
- * Play a WAV file from SD card
- * Simple 16-bit mono/stereo WAV player
+ * Play a WAV file from SD card using ESP8266Audio library
+ * Handles WAV parsing robustly and uses existing ES8311/I2S setup
  * Returns: true if playback successful
  */
 bool playWavFile(const String& wavPath) {
-    Serial.printf("\n=== Playing WAV: %s ===\n", wavPath.c_str());
+    // Only log for non-beep files (beep.wav is a silent fallback)
+    bool isBeep = (wavPath == "beep.wav" || wavPath.endsWith("/beep.wav"));
+    if (!isBeep) {
+        Serial.printf("\n=== Playing WAV: %s ===\n", wavPath.c_str());
+    }
     
     if (!sdCardMounted && sd_card == nullptr) {
-        Serial.println("  SD card not mounted");
+        if (!isBeep) {
+            Serial.println("  SD card not mounted");
+        }
         return false;
     }
     
-    // Initialize audio if needed
-    if (!g_codec_ready || g_i2s_tx == nullptr) {
+    // Initialize ES8311 codec and I2S if needed
+    // This ensures PA is powered and codec is configured
+    if (!g_codec_ready || g_audio_output == nullptr) {
         if (!audio_start(false)) {
-            Serial.println("  Failed to initialize audio");
+            Serial.println("  Failed to initialize ES8311 codec");
             return false;
         }
-        g_audio_running = false;  // Stop any continuous tone
+        g_audio_running = false;  // Stop any continuous tone task
         delay(10);
     }
     
-    // Set volume to reasonable level
+    // Set volume to reasonable level and unmute
     (void)g_codec.setDacVolumePercentMapped(60, kCodecVolumeMinPct, kCodecVolumeMaxPct);
     (void)g_codec.setMute(false);
     
@@ -906,145 +1147,235 @@ bool playWavFile(const String& wavPath) {
     FILINFO fno;
     FRESULT res = f_stat(fatfsPath.c_str(), &fno);
     if (res != FR_OK) {
-        Serial.printf("  WAV file not found: %s\n", wavPath.c_str());
-        return false;
-    }
-    
-    // Open file
-    FIL wavFile;
-    res = f_open(&wavFile, fatfsPath.c_str(), FA_READ);
-    if (res != FR_OK) {
-        Serial.printf("  Failed to open WAV file: %d\n", res);
-        return false;
-    }
-    
-    // Read WAV header (44 bytes minimum)
-    uint8_t header[44];
-    UINT bytesRead = 0;
-    res = f_read(&wavFile, header, 44, &bytesRead);
-    if (res != FR_OK || bytesRead != 44) {
-        Serial.println("  Failed to read WAV header");
-        f_close(&wavFile);
-        return false;
-    }
-    
-    // Verify RIFF header
-    if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
-        Serial.println("  Not a valid WAV file");
-        f_close(&wavFile);
-        return false;
-    }
-    
-    // Parse basic WAV header
-    uint16_t audioFormat = header[20] | (header[21] << 8);
-    uint16_t numChannels = header[22] | (header[23] << 8);
-    uint32_t sampleRate = header[24] | (header[25] << 8) | (header[26] << 16) | (header[27] << 24);
-    uint16_t bitsPerSample = header[34] | (header[35] << 8);
-    
-    Serial.printf("  Format: %d, Channels: %d, Rate: %lu Hz, Bits: %d\n",
-                  audioFormat, numChannels, (unsigned long)sampleRate, bitsPerSample);
-    
-    // Only support PCM format
-    if (audioFormat != 1) {
-        Serial.println("  Only PCM WAV files supported");
-        f_close(&wavFile);
-        return false;
-    }
-    
-    // Find data chunk
-    uint32_t dataSize = 0;
-    bool foundData = false;
-    
-    // Skip to data chunk (after fmt chunk)
-    f_lseek(&wavFile, 36);
-    
-    while (!foundData) {
-        uint8_t chunkHeader[8];
-        res = f_read(&wavFile, chunkHeader, 8, &bytesRead);
-        if (res != FR_OK || bytesRead != 8) break;
-        
-        if (memcmp(chunkHeader, "data", 4) == 0) {
-            dataSize = chunkHeader[4] | (chunkHeader[5] << 8) | (chunkHeader[6] << 16) | (chunkHeader[7] << 24);
-            foundData = true;
-        } else {
-            // Skip this chunk
-            uint32_t chunkSize = chunkHeader[4] | (chunkHeader[5] << 8) | (chunkHeader[6] << 16) | (chunkHeader[7] << 24);
-            f_lseek(&wavFile, f_tell(&wavFile) + chunkSize);
+        // Silently fail for beep.wav (expected fallback), log for other files
+        if (wavPath != "beep.wav" && !wavPath.endsWith("/beep.wav")) {
+            Serial.printf("  WAV file not found: %s\n", wavPath.c_str());
         }
-    }
-    
-    if (!foundData || dataSize == 0) {
-        Serial.println("  No data chunk found in WAV file");
-        f_close(&wavFile);
         return false;
     }
     
-    Serial.printf("  Data size: %lu bytes (%.2f seconds)\n",
-                  (unsigned long)dataSize,
-                  (float)dataSize / (sampleRate * numChannels * (bitsPerSample / 8)));
-    
-    // Allocate playback buffer
-    const size_t bufferSize = 4096;
-    uint8_t* buffer = (uint8_t*)malloc(bufferSize);
-    if (!buffer) {
-        Serial.println("  Failed to allocate playback buffer");
-        f_close(&wavFile);
+    // Create custom audio source and output using our existing I2S handle
+    AudioFileSourceFatFs* file = new AudioFileSourceFatFs(fatfsPath.c_str());
+    if (!file->open(fatfsPath.c_str())) {
+        // Silently fail for beep.wav (expected fallback), log for other files
+        if (wavPath != "beep.wav" && !wavPath.endsWith("/beep.wav")) {
+            Serial.printf("  Failed to open WAV file: %s\n", fatfsPath.c_str());
+        }
+        delete file;
         return false;
     }
     
-    // Play audio data
-    uint32_t bytesPlayed = 0;
-    while (bytesPlayed < dataSize) {
-        size_t toRead = min((size_t)(dataSize - bytesPlayed), bufferSize);
-        
-        res = f_read(&wavFile, buffer, toRead, &bytesRead);
-        if (res != FR_OK || bytesRead == 0) {
+    // Use the global I2S output (already initialized with ES8311 pins)
+    // ESP8266Audio will use the legacy I2S driver we initialized
+    AudioOutputI2S* out = g_audio_output;
+    if (out == nullptr) {
+        Serial.println("  I2S output not initialized");
+        file->close();
+        delete file;
+        return false;
+    }
+    
+    // Create WAV generator
+    AudioGeneratorWAV* wav = new AudioGeneratorWAV();
+    
+    // Only log for non-beep files (beep.wav is a silent fallback)
+    if (!isBeep) {
+        Serial.println("  Starting playback...");
+    }
+    uint32_t startTime = millis();
+    
+    // Begin playback - ESP8266Audio handles all WAV parsing
+    if (!wav->begin(file, out)) {
+        // Silently fail for beep.wav (expected fallback), log for other files
+        if (!isBeep) {
+            Serial.println("  Failed to start WAV playback");
+        }
+        file->close();
+        delete file;
+        delete wav;
+        return false;
+    }
+    
+    // Play until complete
+    while (wav->isRunning()) {
+        if (!wav->loop()) {
+            wav->stop();
             break;
         }
-        
-        // Convert mono to stereo if needed
-        if (numChannels == 1 && bitsPerSample == 16) {
-            // Allocate stereo buffer
-            uint8_t* stereoBuffer = (uint8_t*)malloc(bytesRead * 2);
-            if (stereoBuffer) {
-                int16_t* monoSamples = (int16_t*)buffer;
-                int16_t* stereoSamples = (int16_t*)stereoBuffer;
-                size_t numSamples = bytesRead / 2;
-                
-                for (size_t i = 0; i < numSamples; i++) {
-                    stereoSamples[i * 2] = monoSamples[i];
-                    stereoSamples[i * 2 + 1] = monoSamples[i];
-                }
-                
-                size_t written = 0;
-                esp_err_t err = i2s_channel_write(g_i2s_tx, stereoBuffer, bytesRead * 2, &written, portMAX_DELAY);
-                free(stereoBuffer);
-                
-                if (err != ESP_OK) {
-                    Serial.printf("  I2S write error: %s\n", esp_err_to_name(err));
-                    break;
-                }
-            }
-        } else {
-            // Stereo or unsupported format - write directly
-            size_t written = 0;
-            esp_err_t err = i2s_channel_write(g_i2s_tx, buffer, bytesRead, &written, portMAX_DELAY);
-            if (err != ESP_OK) {
-                Serial.printf("  I2S write error: %s\n", esp_err_to_name(err));
-                break;
-            }
-        }
-        
-        bytesPlayed += bytesRead;
+        // Small delay to prevent tight loop
+        delay(1);
     }
     
-    free(buffer);
-    f_close(&wavFile);
+    uint32_t duration = millis() - startTime;
+    // Only log for non-beep files (beep.wav is a silent fallback)
+    if (!isBeep) {
+        Serial.printf("  Playback complete (%.2f seconds)\n", duration / 1000.0f);
+        Serial.println("========================================\n");
+    }
     
-    Serial.printf("  Playback complete (%lu bytes played)\n", (unsigned long)bytesPlayed);
-    Serial.println("========================================\n");
+    // Cleanup (don't delete out - it's g_audio_output and will be reused)
+    wav->stop();
+    file->close();
+    delete wav;
+    delete file;
     
     return true;
+}
+
+/**
+ * Handle wake from switch D - play current audio and go back to sleep
+ * FAST PATH: Minimal delays, no WiFi, no NTP, no display init, no SD file reads - just audio playback
+ * Uses RTC-stored last audio file path for instant playback
+ */
+static void handleSwitchDWake() {
+    uint32_t wakeStart = millis();
+    Serial.println("\n=== SW_D: Fast audio playback (wake from deep sleep) ===");
+    
+    // Calculate time remaining until next minute wake BEFORE playing audio
+    time_t now_before = time(nullptr);
+    uint32_t secondsUntilWake = kCycleSleepSeconds;  // Default fallback
+    bool timeValid = (now_before > 1577836800);
+    
+    if (timeValid) {
+        struct tm tm_utc;
+        gmtime_r(&now_before, &tm_utc);
+        uint32_t sec = (uint32_t)tm_utc.tm_sec;
+        uint32_t sleep_s = 60 - sec;
+        if (sleep_s == 0) sleep_s = 60;
+        if (sleep_s < 5 && sleep_s > 0) sleep_s += 60;
+        if (sleep_s > 120) sleep_s = kCycleSleepSeconds;
+        secondsUntilWake = sleep_s;
+        Serial.printf("Time before playback: %02d:%02d:%02d, %lu seconds until next wake\n",
+                      tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, (unsigned long)secondsUntilWake);
+    }
+    
+#if SDMMC_ENABLED
+    // Mount SD card if needed (fast path - no verbose output)
+    // Only mount if we have a stored audio file to play
+    bool needSD = (lastAudioFile[0] != '\0');
+    Serial.printf("Stored audio file: %s\n", lastAudioFile[0] != '\0' ? lastAudioFile : "(none)");
+    
+    if (needSD && !sdCardMounted && sd_card == nullptr) {
+        Serial.println("Mounting SD card...");
+        if (!sdInitDirect(false)) {
+            Serial.println("SD mount failed - going back to sleep");
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+            return;
+        }
+        Serial.println("SD card mounted");
+    } else if (sdCardMounted) {
+        Serial.println("SD card already mounted");
+    }
+    
+    // After GPIO wake from deep sleep, hardware may be in a different state than timer wake
+    // However, PA_EN is already HIGH from setup(), so don't power cycle it
+    // (Normal wake path keeps PA_EN HIGH and doesn't power cycle - that's why it works)
+    Serial.println("Re-initializing audio hardware after GPIO wake...");
+    
+    // Ensure PA_EN is HIGH (it should already be from setup(), but be safe)
+    pinMode(PIN_CODEC_PA_EN, OUTPUT);
+    digitalWrite(PIN_CODEC_PA_EN, HIGH);
+    
+    // Small delay to let hardware settle after GPIO wake
+    delay(50);
+    
+    // Delete existing audio output to ensure clean I2S state
+    if (g_audio_output != nullptr) {
+        Serial.println("Deleting I2S output object...");
+        delete g_audio_output;
+        g_audio_output = nullptr;
+        delay(50);  // Let I2S driver fully uninitialize
+    }
+    g_audio_running = false;
+    g_codec_ready = false;
+    g_codec_wire = nullptr;
+    
+    // Additional delay to let hardware fully settle after GPIO wake
+    delay(50);
+    
+    // Re-initialize audio system from scratch (required after deep sleep)
+    Serial.println("Initializing audio from scratch...");
+    if (!audio_start(false)) {  // false = minimal logging for speed
+        Serial.println("SW_D: Audio init failed, going back to sleep");
+        sleepNowSeconds(kCycleSleepSeconds);
+        return;
+    }
+    Serial.println("Audio hardware initialized");
+    
+    // Critical: I2S driver needs time to stabilize after deep sleep wake
+    // The I2S DMA buffers and clock domain need to be fully ready before playback
+    delay(300);  // Longer delay for I2S to fully stabilize after GPIO wake
+    
+    // Use stored audio file path directly from RTC memory (no SD file reads, no mapping lookup)
+    String audioFile = "";
+    if (lastAudioFile[0] != '\0') {
+        audioFile = String(lastAudioFile);
+    } else {
+        // Fallback if no stored path (shouldn't happen, but be safe)
+        audioFile = "beep.wav";
+    }
+    
+    Serial.printf("Playing: %s\n", audioFile.c_str());
+    uint32_t playStart = millis();
+    
+    // Play the audio (minimal logging inside playWavFile for beep.wav)
+    bool played = playWavFile(audioFile);
+    
+    uint32_t playDuration = millis() - playStart;
+    Serial.printf("Playback %s (took %lu ms)\n", played ? "complete" : "failed", (unsigned long)playDuration);
+    
+    audio_stop();
+#else
+    // No SD card - just go back to sleep
+    Serial.println("SD card not available");
+#endif
+
+    uint32_t totalWakeTime = millis() - wakeStart;
+    Serial.printf("Total wake time: %lu ms\n", (unsigned long)totalWakeTime);
+    
+    // Check if audio playback took longer than time remaining until next wake
+    // If so, we've already passed the scheduled wake time - proceed to next cycle instead of sleeping
+    if (timeValid && totalWakeTime > (secondsUntilWake * 1000)) {
+        Serial.printf("Audio playback (%lu ms) exceeded wake time (%lu ms) - proceeding to next cycle\n",
+                      (unsigned long)totalWakeTime, (unsigned long)(secondsUntilWake * 1000));
+        
+        // Advance to next media item (as if normal wake had occurred)
+        if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+            lastMediaIndex = (lastMediaIndex + 1) % g_media_mappings.size();
+            Serial.printf("Advanced to next media item: index %lu\n", (unsigned long)lastMediaIndex);
+        }
+        
+        // Return to setup() to continue with normal cycle (display update, etc.)
+        // We'll set a flag to indicate we should skip the SW_D fast path check
+        Serial.println("Returning to normal cycle path...");
+        return;  // This will return to setup() and continue normal initialization
+    }
+    
+    // Normal case: we haven't passed the wake time, so sleep until next minute
+    time_t now = time(nullptr);
+    if (now <= 1577836800) {
+        // Time invalid - use fallback
+        Serial.printf("Time invalid, sleeping for fallback: %lu seconds\n", (unsigned long)kCycleSleepSeconds);
+        sleepNowSeconds(kCycleSleepSeconds);
+        return;
+    }
+    
+    // Calculate sleep until next minute
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    uint32_t sec = (uint32_t)tm_utc.tm_sec;
+    uint32_t sleep_s = 60 - sec;
+    if (sleep_s == 0) sleep_s = 60;
+    if (sleep_s < 5 && sleep_s > 0) sleep_s += 60;
+    if (sleep_s > 120) sleep_s = kCycleSleepSeconds;
+    
+    Serial.printf("Current time: %02d:%02d:%02d, sleeping until next minute: %lu seconds\n",
+                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, (unsigned long)sleep_s);
+    Serial.println("========================================\n");
+    Serial.flush();
+    
+    sleepNowSeconds(sleep_s);
+    // Never returns
 }
 
 #endif // SDMMC_ENABLED
@@ -1148,15 +1479,44 @@ static void auto_cycle_task(void* arg) {
         loadMediaMappingsFromSD();
     }
     
-    // Now load the PNG
-    bool ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+    // Now load the PNG - prefer media.txt mappings if available
+    bool ok = false;
+    int maxRetries = 5;  // Try up to 5 different images if one fails
+    
+    // If media.txt has valid images, use ONLY those
+    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+        Serial.println("Using images from media.txt (cycling through mapped images only)");
+        usingMediaMappings = true;
+        for (int retry = 0; retry < maxRetries && !ok; retry++) {
+            ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+            if (!ok && retry < maxRetries - 1) {
+                Serial.printf("PNG load failed, trying next image from media.txt (attempt %d/%d)...\n", 
+                             retry + 1, maxRetries);
+                // Advance to next image by incrementing the index
+                lastMediaIndex++;
+            }
+        }
+    } else {
+        // Fallback: scan all PNG files on SD card
+        Serial.println("No media.txt mappings found, scanning all PNG files on SD card");
+        usingMediaMappings = false;
+        for (int retry = 0; retry < maxRetries && !ok; retry++) {
+            ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+            if (!ok && retry < maxRetries - 1) {
+                Serial.printf("PNG load failed, trying next image (attempt %d/%d)...\n", 
+                             retry + 1, maxRetries);
+                // Advance to next image by incrementing the index
+                lastImageIndex++;
+            }
+        }
+    }
 #else
     bool ok = false;
     Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");
 #endif
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     if (!ok) {
-        Serial.println("PNG draw failed; sleeping anyway");
+        Serial.println("PNG draw failed after retries; sleeping anyway");
         if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
         sleepNowSeconds(kCycleSleepSeconds);
     }
@@ -1396,42 +1756,51 @@ static void auto_cycle_task(void* arg) {
     // Add quote as exclusion zone for any future text elements (e.g., battery %)
     textPlacement.addExclusionZone(quoteLayout.position, 50);
 
-    // ================================================================
-    // AUDIO - Play WAV file for this image (or fallback to beep)
-    // ================================================================
-    
-#if SDMMC_ENABLED
-    String audioFile = getAudioForImage(g_lastImagePath);
-    if (audioFile.length() > 0) {
-        Serial.printf("Image %s has audio mapping: %s\n", g_lastImagePath.c_str(), audioFile.c_str());
-        if (playWavFile(audioFile)) {
-            Serial.println("Audio playback complete");
-        } else {
-            Serial.println("Audio playback failed, playing fallback beep");
-            (void)audio_beep(880, 120);
-        }
-    } else {
-        Serial.println("No audio mapping for this image, playing fallback beep");
-        (void)audio_beep(880, 120);
-    }
-    audio_stop();
-#else
-    // No SD card - just play beep
-    (void)audio_beep(880, 120);
-    audio_stop();
-#endif
-
-    // Refresh display
+    // Refresh display first (e-ink refresh takes 20-30 seconds)
     Serial.println("Updating display (e-ink refresh)...");
     uint32_t refreshStart = millis();
     display.update();
     uint32_t refreshMs = millis() - refreshStart;
     Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
 
-    if (time_ok) {
-        sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+    // ================================================================
+    // AUDIO - Play WAV file for this image (or fallback to beep)
+    // Now plays AFTER display refresh is complete
+    // ================================================================
+    
+#if SDMMC_ENABLED
+    String audioFile = getAudioForImage(g_lastImagePath);
+    if (audioFile.length() > 0) {
+        Serial.printf("Image %s has audio mapping: %s\n", g_lastImagePath.c_str(), audioFile.c_str());
+        // Store in RTC memory for instant playback on switch D wake
+        strncpy(lastAudioFile, audioFile.c_str(), sizeof(lastAudioFile) - 1);
+        lastAudioFile[sizeof(lastAudioFile) - 1] = '\0';
+        if (playWavFile(audioFile)) {
+            Serial.println("Audio playback complete");
+        } else {
+            // Try to play beep.wav from SD root, silently fail if not available
+            strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
+            playWavFile("beep.wav");  // Returns false if file missing/invalid, no sound
+        }
+    } else {
+        // Try to play beep.wav from SD root, silently fail if not available
+        strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
+        playWavFile("beep.wav");  // Returns false if file missing/invalid, no sound
     }
-    sleepNowSeconds(kCycleSleepSeconds);
+    audio_stop();
+#else
+    // No SD card - no audio available
+    Serial.println("SD card not available, no audio");
+#endif
+
+    if (time_ok) {
+        Serial.println("Time is valid, calculating sleep until next minute...");
+        sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        // Never returns - device enters deep sleep
+    } else {
+        Serial.println("Time not valid, sleeping for fallback duration (60 seconds)");
+        sleepNowSeconds(kCycleSleepSeconds);
+    }
 }
 
 // ============================================================================
@@ -2673,6 +3042,93 @@ void pngListFiles(const char* dirname = "/") {
     Serial.println("=====================================\n");
 }
 
+// Draw a PNG from media.txt mappings into the display buffer (no display.update), return timing info.
+bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms) {
+    if (out_sd_read_ms) *out_sd_read_ms = 0;
+    if (out_decode_ms) *out_decode_ms = 0;
+
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        return false;
+    }
+
+    // Cycle through images from media.txt sequentially
+    size_t mediaCount = g_media_mappings.size();
+    lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
+    const MediaMapping& mapping = g_media_mappings[lastMediaIndex];
+    
+    Serial.printf("Image %lu of %zu from media.txt: %s\n", 
+                  (unsigned long)(lastMediaIndex + 1), mediaCount, mapping.imageName.c_str());
+    
+    // Build full path
+    String imagePath = "/" + mapping.imageName;
+    if (!imagePath.startsWith("/")) {
+        imagePath = "/" + imagePath;
+    }
+    g_lastImagePath = imagePath;
+    
+    String fatfsPath = "0:" + imagePath;
+
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("f_stat failed for %s: %d\n", fatfsPath.c_str(), res);
+        return false;
+    }
+    size_t fileSize = fno.fsize;
+
+    FIL pngFile;
+    res = f_open(&pngFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("f_open failed for %s: %d\n", fatfsPath.c_str(), res);
+        return false;
+    }
+
+    uint32_t loadStart = millis();
+    uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!pngData) {
+        Serial.println("Failed to allocate PSRAM buffer for PNG!");
+        f_close(&pngFile);
+        return false;
+    }
+
+    UINT bytesRead = 0;
+    res = f_read(&pngFile, pngData, fileSize, &bytesRead);
+    f_close(&pngFile);
+    uint32_t loadTime = millis() - loadStart;
+    if (out_sd_read_ms) *out_sd_read_ms = loadTime;
+    if (res != FR_OK) {
+        Serial.printf("f_read failed: %d\n", res);
+        hal_psram_free(pngData);
+        return false;
+    }
+    if (bytesRead != fileSize) {
+        Serial.printf("Warning: only read %u/%u bytes\n", (unsigned)bytesRead, (unsigned)fileSize);
+    }
+
+    uint32_t decodeStart = millis();
+    display.clear(EL133UF1_WHITE);
+    PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
+    uint32_t decodeTime = millis() - decodeStart;
+    if (out_decode_ms) *out_decode_ms = decodeTime;
+    hal_psram_free(pngData);
+
+    if (pres != PNG_OK) {
+        Serial.printf("PNG draw error: %s\n", pngLoader.getErrorString(pres));
+        return false;
+    }
+    
+    // Try to load keep-out map for this image (if available)
+    bool mapLoaded = loadKeepOutMapForImage();
+    
+    // Debug: visualize keep-out areas
+    if (mapLoaded) {
+        Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
+        textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
+    }
+    
+    return true;
+}
+
 // Draw a random PNG into the display buffer (no display.update), return timing info.
 bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms) {
     if (out_sd_read_ms) *out_sd_read_ms = 0;
@@ -2922,6 +3378,36 @@ void drawTTFTest() {
 // ============================================================================
 
 void setup() {
+    // Check wake cause IMMEDIATELY (before any initialization)
+    esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+    // ESP32-P4 uses ext1 for GPIO wake (not ext0 or gpio_wakeup)
+    // Check for both GPIO and EXT1 wake causes for compatibility
+    bool wokeFromSwitchD = (wakeCause == ESP_SLEEP_WAKEUP_GPIO || 
+                           wakeCause == ESP_SLEEP_WAKEUP_EXT1);
+    
+    // FAST PATH: If switch D woke us, skip ALL initialization and go straight to audio
+    if (wokeFromSwitchD) {
+        // Initialize serial for debug output (but minimal delay)
+        Serial.begin(115200);
+        delay(50);  // Brief delay for serial to stabilize
+        
+        // Minimal initialization - just PA enable for audio
+        pinMode(PIN_CODEC_PA_EN, OUTPUT);
+        digitalWrite(PIN_CODEC_PA_EN, HIGH);
+        
+        // GPIO wake may need extra time for hardware to stabilize
+        // (timer wake doesn't have this issue)
+        delay(100);  // Let hardware stabilize after GPIO wake
+        
+        handleSwitchDWake();
+        
+        // If handleSwitchDWake() returns (instead of sleeping), it means we've passed
+        // the scheduled wake time and should proceed with normal cycle
+        // Continue with normal initialization below
+        Serial.println("SW_D wake completed, continuing with normal cycle...");
+    }
+    
+    // Normal boot path - initialize everything
     Serial.begin(115200);
 
     // Bring up PA enable early (matches known-good ESP-IDF example behavior)
@@ -2931,8 +3417,7 @@ void setup() {
     pinMode(PIN_USER_LED, OUTPUT);
     digitalWrite(PIN_USER_LED, LOW);    
     
-    // Check if we woke from deep sleep FIRST (before any delays)
-    esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+    // Check if we woke from deep sleep (non-switch-D wake)
     bool wokeFromSleep = (wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED);
     
     if (wokeFromSleep) {

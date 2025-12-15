@@ -121,6 +121,7 @@ static bool g_codec_ready = false;
 static uint32_t g_audio_sample_rate_hz = 0;
 static esp_codec_dev_handle_t g_gmf_codec = nullptr;
 static esp_audio_simple_player_handle_t g_gmf_player = nullptr;
+static void audio_stop();
 
 static TwoWire g_codec_wire0(0);
 static TwoWire g_codec_wire1(1);

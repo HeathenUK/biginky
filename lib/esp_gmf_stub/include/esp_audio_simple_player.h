@@ -19,9 +19,12 @@ typedef struct {
     void* out;
     void* monitor;
     int task_prio;
+    int task_stack;
+    int prefer_sample_rate;
+    int prefer_channel;
 } esp_audio_simple_player_cfg_t;
 
-#define ESP_AUDIO_SIMPLE_PLAYER_DEFAULT_CFG() ((esp_audio_simple_player_cfg_t){ .in = NULL, .out = NULL, .monitor = NULL, .task_prio = 5 })
+#define ESP_AUDIO_SIMPLE_PLAYER_DEFAULT_CFG() ((esp_audio_simple_player_cfg_t){ .in = NULL, .out = NULL, .monitor = NULL, .task_prio = 5, .task_stack = 4096, .prefer_sample_rate = 0, .prefer_channel = 0 })
 
 esp_audio_simple_player_handle_t esp_audio_simple_player_create(const esp_audio_simple_player_cfg_t* cfg);
 esp_err_t esp_audio_simple_player_destroy(esp_audio_simple_player_handle_t handle);

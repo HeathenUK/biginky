@@ -37,6 +37,7 @@
 #include "driver/gpio.h"
 #include "esp_sleep.h"
 #include "platform_hal.h"
+#include "sleep_hal.h"  // ESP32-P4 sleep functions (sleep_set_time_ms, sleep_get_time_ms)
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
 #include "EL133UF1_BMP.h"
@@ -237,9 +238,15 @@ static String g_lastImagePath = "";
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
 RTC_DATA_ATTR uint32_t lastMediaIndex = 0;  // Track last displayed image from media.txt
-RTC_DATA_ATTR uint32_t ntpSyncCounter = 0;  // Counter for periodic NTP resync
+RTC_DATA_ATTR uint32_t ntpSyncCounter = 0;  // Counter for periodic NTP resync (deprecated - use wakeCount instead)
+RTC_DATA_ATTR uint32_t wakeCount = 0;  // Total wake count (both hourly and SMS check) for periodic time sync
 RTC_DATA_ATTR bool usingMediaMappings = false;  // Track if we're using media.txt or scanning all PNGs
 RTC_DATA_ATTR char lastAudioFile[64] = "";  // Last audio file path for instant playback on switch D wake
+
+// Dual wake architecture state tracking
+RTC_DATA_ATTR uint8_t lastWakeType = 0;  // 0 = SMS check, 1 = Hourly cycle
+RTC_DATA_ATTR uint64_t lastSMSCheckTime = 0;  // Timestamp of last SMS check (Unix time)
+RTC_DATA_ATTR bool lteModuleWasRegistered = false;  // Track if LTE module was registered last time
 
 // ============================================================================
 // Audio: ES8311 + I2S test tone
@@ -710,6 +717,69 @@ static void sleepNowSeconds(uint32_t seconds) {
     
     delay(50);
     esp_deep_sleep_start();
+}
+
+/**
+ * Calculate sleep duration based on wake type
+ * @param isHourlyWake true if this was an hourly wake (XX:00), false for SMS check wake
+ * @param fallback_seconds fallback duration if time is invalid
+ * @return sleep duration in seconds
+ */
+static uint32_t calculateSleepDuration(bool isHourlyWake, uint32_t fallback_seconds = kCycleSleepSeconds) {
+    time_t now = time(nullptr);
+    if (now <= 1577836800) {  // time invalid
+        Serial.printf("Time invalid, using fallback: %lu seconds\n", (unsigned long)fallback_seconds);
+        return fallback_seconds;
+    }
+
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    uint32_t sleep_s = 0;
+    
+    if (isHourlyWake) {
+        // Hourly wake: sleep until next hour (XX:00)
+        // Calculate minutes until next hour
+        uint32_t minutesUntilNextHour = 60 - tm_utc.tm_min;
+        sleep_s = minutesUntilNextHour * 60;
+        
+        // If we're exactly at XX:00, sleep a full hour
+        if (sleep_s == 0) {
+            sleep_s = 3600;  // 1 hour
+        }
+        
+        Serial.printf("Hourly wake: Current time %02d:%02d:%02d, sleeping until next hour: %lu seconds (%lu minutes)\n",
+                     tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, 
+                     (unsigned long)sleep_s, (unsigned long)(sleep_s / 60));
+    } else {
+        // SMS check wake: sleep until next minute (XX:MM+1)
+        uint32_t sec = (uint32_t)tm_utc.tm_sec;
+        
+        // Calculate seconds until next minute boundary
+        sleep_s = 60 - sec;
+        
+        // If we're exactly at :00, sleep a full minute (60 seconds)
+        if (sleep_s == 0) {
+            sleep_s = 60;
+        }
+        
+        // Avoid very short sleeps (USB/serial jitter); skip to next minute
+        // If we have less than 5 seconds until next minute, sleep to the minute after that
+        if (sleep_s < 5 && sleep_s > 0) {
+            sleep_s += 60;
+            Serial.printf("Sleep duration too short (%lu), adding 60 seconds\n", (unsigned long)(sleep_s - 60));
+        }
+        
+        Serial.printf("SMS check wake: Current time %02d:%02d:%02d, sleeping until next minute: %lu seconds\n",
+                     tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, (unsigned long)sleep_s);
+    }
+    
+    // Sanity clamp - if calculation is way off, use fallback
+    if (sleep_s > 7200) {  // More than 2 hours seems wrong
+        Serial.printf("Sleep calculation too large (%lu), using fallback\n", (unsigned long)sleep_s);
+        sleep_s = fallback_seconds;
+    }
+    
+    return sleep_s;
 }
 
 static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSleepSeconds) {
@@ -1485,24 +1555,51 @@ static void handleSwitchDWake() {
 
 #endif // SDMMC_ENABLED
 
+/**
+ * Perform hourly cycle (full display update path)
+ * This is called on hourly wakes (XX:00) to update the display with new image/quote
+ * Includes: time sync, SD card, image loading, display update, audio beep, SMS check
+ * 
+ * Note: This function contains the core cycle logic. The auto_cycle_task FreeRTOS task
+ * will be updated to call this function. For now, the logic remains in auto_cycle_task
+ * and will be refactored in a later phase.
+ */
+static void performHourlyCycle() {
+    lastWakeType = 1;  // Mark as hourly wake
+    g_cycle_count++;
+    Serial.printf("\n=== Hourly Cycle #%lu ===\n", (unsigned long)g_cycle_count);
+    
+    // For Phase 1, we'll trigger the existing auto_cycle_task logic
+    // In Phase 4, we'll refactor to extract the core logic here
+    // The auto_cycle_task currently handles the full cycle, so we note that
+    // it should be called for hourly wakes
+    
+    // TODO Phase 4: Extract core cycle logic from auto_cycle_task into here
+}
+
 static void auto_cycle_task(void* arg) {
     (void)arg;
     g_cycle_count++;
     Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
 
-    // Increment NTP sync counter
-    ntpSyncCounter++;
-    
     // Check if time is valid
     bool time_ok = ensureTimeValid();
     
-    // Resync time every 5 wake cycles to keep time accurate
-    // Prefer LTE over WiFi/NTP if LTE is available
-    if (ntpSyncCounter >= 5) {
-        Serial.println("\n=== Periodic Time Resync (every 5 cycles) ===");
-        ntpSyncCounter = 0;  // Reset counter
-
-        bool time_synced = false;
+    // Time sync logic is now handled in setup() based on wakeCount
+    // Only do periodic resync here if time is invalid (fallback)
+    // Note: wakeCount is incremented in setup(), so we check if we need sync here
+    bool needsTimeSync = !time_ok || (wakeCount >= 20);
+    bool time_synced = false;
+    
+    if (needsTimeSync && time_ok) {
+        // Periodic resync (20+ wakes) - reset counter
+        wakeCount = 0;
+    }
+    
+    // Only attempt time sync in hourly cycle if time is invalid (fallback)
+    // Normal periodic sync happens in setup() before routing
+    if (!time_ok) {
+        Serial.println("\n=== Time Invalid - Attempting Resync (fallback) ===");
 
 #if LTE_ENABLED
         // Try LTE first (preferred method) - inline version to avoid forward declaration issues
@@ -1616,12 +1713,25 @@ static void auto_cycle_task(void* arg) {
                         int quote_end = time_response.indexOf("\"", cclk_pos);
                         if (quote_end > cclk_pos) {
                             String time_str = time_response.substring(cclk_pos, quote_end);
+                            // Format: "yy/MM/dd,hh:mm:ss±zz"
                             int year = time_str.substring(0, 2).toInt();
                             int month = time_str.substring(3, 5).toInt();
                             int day = time_str.substring(6, 8).toInt();
                             int hour = time_str.substring(9, 11).toInt();
                             int minute = time_str.substring(12, 14).toInt();
                             int second = time_str.substring(15, 17).toInt();
+                            
+                            // Parse timezone offset (±zz) - in quarters of an hour
+                            int tz_offset_quarters = 0;
+                            if (time_str.length() >= 18) {
+                                char tz_sign = time_str.charAt(17);
+                                if (tz_sign == '+' || tz_sign == '-') {
+                                    String tz_str = time_str.substring(18);
+                                    tz_str.trim();
+                                    int tz_val = tz_str.toInt();
+                                    tz_offset_quarters = (tz_sign == '-') ? -tz_val : tz_val;
+                                }
+                            }
                             
                             if (year < 100) year += 2000;
                             
@@ -1635,11 +1745,13 @@ static void auto_cycle_task(void* arg) {
                             timeinfo.tm_isdst = 0;
                             
                             time_t unix_time = mktime(&timeinfo);
+                            // Adjust for timezone offset (convert to UTC)
+                            int tz_offset_seconds = tz_offset_quarters * 900;
+                            unix_time -= tz_offset_seconds;
                             if (unix_time >= 0) {
-                                struct timeval tv;
-                                tv.tv_sec = unix_time;
-                                tv.tv_usec = 0;
-                                settimeofday(&tv, NULL);
+                                // Set persistent RTC time (survives deep sleep) - this also sets system time
+                                uint64_t time_ms = (uint64_t)unix_time * 1000ULL;
+                                sleep_set_time_ms(time_ms);
                                 Serial.printf(" OK! Time set\n");
                                 time_ok = true;
                                 time_synced = true;
@@ -1726,8 +1838,11 @@ static void auto_cycle_task(void* arg) {
 #endif
 
         Serial.println("==========================================\n");
-    } else {
-        Serial.printf("Time resync in %lu more cycles\n", (unsigned long)(5 - ntpSyncCounter));
+        if (time_synced) {
+            time_ok = true;  // Update time_ok if sync succeeded
+        }
+    } else if (time_ok) {
+        Serial.printf("Time valid, next resync in %lu more wakes\n", (unsigned long)(20 - wakeCount));
     }
 
     uint32_t sd_ms = 0, dec_ms = 0;
@@ -2065,8 +2180,13 @@ static void auto_cycle_task(void* arg) {
 #endif
 
     if (time_ok) {
-        Serial.println("Time is valid, calculating sleep until next minute...");
-        sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        // After hourly cycle, sleep until next MINUTE (not next hour!)
+        // This ensures per-minute SMS checks continue between hourly cycles
+        Serial.println("Hourly cycle complete, sleeping until next minute for SMS checks...");
+        uint32_t sleepDuration = calculateSleepDuration(false);  // false = minute wake (SMS check)
+        Serial.printf("Sleeping for %lu seconds until next minute\n", (unsigned long)sleepDuration);
+        Serial.flush();
+        sleepNowSeconds(sleepDuration);
         // Never returns - device enters deep sleep
     } else {
         Serial.println("Time not valid, sleeping for fallback duration (60 seconds)");
@@ -4046,11 +4166,13 @@ struct SMSMessage {
 // Parse SMS timestamp from format "yy/MM/dd,hh:mm:ss±zz" to time_t
 time_t parseSMSTimestamp(const String& timestamp_str) {
     // Format: "yy/MM/dd,hh:mm:ss±zz"
-    // Example: "25/12/20,22:52:29+0"
+    // Example: "25/12/20,22:52:29+0" or "25/12/20,22:52:29-4"
     if (timestamp_str.length() < 17) {
         return 0;
     }
     
+    // Extract date/time components (first 17 chars: "yy/MM/dd,hh:mm:ss")
+    // Format is: "yy/MM/dd,hh:mm:ss±zz" where yy is 2-digit year
     int year = timestamp_str.substring(0, 2).toInt();
     int month = timestamp_str.substring(3, 5).toInt();
     int day = timestamp_str.substring(6, 8).toInt();
@@ -4058,13 +4180,29 @@ time_t parseSMSTimestamp(const String& timestamp_str) {
     int minute = timestamp_str.substring(12, 14).toInt();
     int second = timestamp_str.substring(15, 17).toInt();
     
-    // Convert 2-digit year to 4-digit (assume 2000s)
+    // Parse timezone offset (±zz) - in quarters of an hour
+    int tz_offset_quarters = 0;
+    if (timestamp_str.length() >= 18) {
+        char tz_sign = timestamp_str.charAt(17);
+        if (tz_sign == '+' || tz_sign == '-') {
+            String tz_str = timestamp_str.substring(18);
+            tz_str.trim();
+            int tz_val = tz_str.toInt();
+            tz_offset_quarters = (tz_sign == '-') ? -tz_val : tz_val;
+        }
+    }
+    
+    // Convert 2-digit year to 4-digit
+    // According to A76XX manual, year format is "yy" where:
+    // - 00-99 represents 2000-2099
+    // So "25" = 2025, "21" = 2021, etc.
+    int full_year = year;
     if (year < 100) {
-        year += 2000;
+        full_year = year + 2000;
     }
     
     struct tm timeinfo;
-    timeinfo.tm_year = year - 1900;
+    timeinfo.tm_year = full_year - 1900;
     timeinfo.tm_mon = month - 1;
     timeinfo.tm_mday = day;
     timeinfo.tm_hour = hour;
@@ -4072,10 +4210,23 @@ time_t parseSMSTimestamp(const String& timestamp_str) {
     timeinfo.tm_sec = second;
     timeinfo.tm_isdst = 0;
     
-    return mktime(&timeinfo);
+    time_t unix_time = mktime(&timeinfo);
+    
+    // Adjust for timezone offset (convert to UTC)
+    // Note: SMS timestamps are typically in local time, but we want UTC for comparison
+    // The offset is in quarters of an hour (1 quarter = 15 minutes = 900 seconds)
+    int tz_offset_seconds = tz_offset_quarters * 900;
+    unix_time -= tz_offset_seconds; // Subtract offset to get UTC
+    
+    if (unix_time <= 0) {
+        return 0;
+    }
+    
+    return unix_time;
 }
 
 // Collect all SMS from a storage location and add to vector
+// SIMPLE: Use AT+CMGL="ALL" and parse line by line
 bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, std::vector<SMSMessage>& messages) {
     // Set text mode
     serial->print("AT+CMGF=1\r");
@@ -4087,15 +4238,34 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
     
     // Switch to storage location if needed
     if (storage_name != "current") {
+        // Set all three storage areas (read, write, receive) to the specified location
         String cmd = "AT+CPMS=\"" + storage_name + "\",\"" + storage_name + "\",\"" + storage_name + "\"\r";
         serial->print(cmd);
         serial->flush();
         delay(500);
-        while (serial->available()) {
-            serial->read();
+        
+        // Read and verify response
+        String cpms_response = "";
+        uint32_t cpms_start = millis();
+        while ((millis() - cpms_start) < 2000) {
+            while (serial->available()) {
+                char c = serial->read();
+                cpms_response += c;
+                if (cpms_response.indexOf("OK") >= 0 || cpms_response.indexOf("ERROR") >= 0) {
+                    break;
+                }
+            }
+            if (cpms_response.indexOf("OK") >= 0 || cpms_response.indexOf("ERROR") >= 0) break;
+            delay(10);
+        }
+        
+        // If CPMS failed, this storage location might not be available
+        if (cpms_response.indexOf("ERROR") >= 0) {
+            return false;
         }
     } else {
-        // For "current", just flush to ensure clean state
+        // For "current", just query what's currently set (don't change it)
+        // This ensures we check whatever storage is currently active
         delay(200);
         while (serial->available()) {
             serial->read();
@@ -4105,13 +4275,13 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
     // Request all messages
     serial->print("AT+CMGL=\"ALL\"\r");
     serial->flush();
-    delay(300);
+    delay(500);
     
     String response = "";
     uint32_t start = millis();
     bool found_ok = false;
     
-    // Read response (timeout 10 seconds for boot check)
+    // Read response
     while ((millis() - start) < 10000) {
         while (serial->available()) {
             char c = serial->read();
@@ -4129,131 +4299,205 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
         delay(10);
     }
     
-    if (!found_ok) {
-        // Debug: show what we got (or didn't get)
-        if (response.length() > 0) {
-            // Truncate if too long for debug output
-            String debug_resp = response;
-            if (debug_resp.length() > 200) {
-                debug_resp = debug_resp.substring(0, 200) + "...(truncated)";
-            }
-            Serial.printf("  [DEBUG] AT+CMGL failed for %s. Response: [%s]\n", 
-                         storage_name.c_str(), debug_resp.c_str());
-        } else {
-            Serial.printf("  [DEBUG] AT+CMGL failed for %s. No response (timeout)\n", 
-                         storage_name.c_str());
-        }
+    if (!found_ok || response.length() == 0) {
         return false;
     }
     
-    // Parse messages from response
-    // Format: +CMGL: <index>,"<stat>","<oa>","","<scts>"<CR><LF><data><CR><LF>
+    // Simple parser: find each +CMGL: line, extract header and text
     int pos = 0;
-    int message_count = 0;
+    int parsed_count = 0;
+    
     while ((pos = response.indexOf("+CMGL:", pos)) >= 0) {
-        message_count++;
-        int line_start = pos;
-        int line_end = response.indexOf("\r\n", line_start);
-        if (line_end < 0) line_end = response.indexOf("\n", line_start);
-        if (line_end < 0) break;
+        // Find end of header line
+        int header_end = response.indexOf("\r\n", pos);
+        if (header_end < 0) header_end = response.indexOf("\n", pos);
+        if (header_end < 0) break;
         
-        String header = response.substring(line_start, line_end);
+        String header = response.substring(pos, header_end);
         
         // Parse header: +CMGL: <index>,"<stat>","<oa>","","<scts>"
-        int stat_start = header.indexOf("\"", header.indexOf(":"));
-        if (stat_start < 0) {
-            pos = line_end + 2;
-            continue;
+        // Extract sender (quotes 3-4) and timestamp (quotes 7-8)
+        int quote_count = 0;
+        int sender_start = -1, sender_end = -1;
+        int timestamp_start = -1, timestamp_end = -1;
+        
+        for (int i = 0; i < header.length(); i++) {
+            if (header.charAt(i) == '"') {
+                quote_count++;
+                if (quote_count == 3) {
+                    sender_start = i + 1;
+                } else if (quote_count == 4) {
+                    sender_end = i;
+                } else if (quote_count == 7) {
+                    timestamp_start = i + 1;
+                } else if (quote_count == 8) {
+                    timestamp_end = i;
+                    break;
+                }
+            }
         }
-        int stat_end = header.indexOf("\"", stat_start + 1);
-        if (stat_end < 0) {
-            pos = line_end + 2;
+        
+        if (sender_start < 0 || sender_end <= sender_start || timestamp_start < 0 || timestamp_end <= timestamp_start) {
+            pos = header_end + 2;
             continue;
         }
         
-        // Get sender (oa)
-        int oa_start = header.indexOf("\"", stat_end + 1);
-        if (oa_start < 0) {
-            pos = line_end + 2;
-            continue;
-        }
-        int oa_end = header.indexOf("\"", oa_start + 1);
-        if (oa_end < 0) {
-            pos = line_end + 2;
-            continue;
-        }
-        String sender = header.substring(oa_start + 1, oa_end);
+        String sender = header.substring(sender_start, sender_end);
+        String timestamp_str = header.substring(timestamp_start, timestamp_end);
         
-        // Get timestamp (scts) - format: "oa","","scts"
-        // After oa_end, we have: ,"","<scts>"
-        // So: comma, empty quoted field, comma, quoted timestamp
-        int comma1 = header.indexOf(",", oa_end + 1);
-        if (comma1 < 0) {
-            pos = line_end + 2;
-            continue;
-        }
-        // Skip the empty "" field - find the comma after it
-        int comma2 = header.indexOf(",", comma1 + 1);
-        if (comma2 < 0) {
-            pos = line_end + 2;
-            continue;
-        }
-        // Now find the quote that starts the timestamp (after comma2)
-        int scts_start = header.indexOf("\"", comma2 + 1);
-        if (scts_start < 0) {
-            pos = line_end + 2;
-            continue;
-        }
-        int scts_end = header.indexOf("\"", scts_start + 1);
-        if (scts_end < 0) {
-            pos = line_end + 2;
-            continue;
-        }
-        String timestamp_str = header.substring(scts_start + 1, scts_end);
+        // Find message text - everything after header until next +CMGL: or OK
+        int text_start = header_end;
+        if (text_start < response.length() && response.charAt(text_start) == '\r') text_start++;
+        if (text_start < response.length() && response.charAt(text_start) == '\n') text_start++;
         
-        // Get message text (next line)
-        int text_start = line_end + 2;
-        int text_end = response.indexOf("\r\n", text_start);
-        if (text_end < 0) text_end = response.indexOf("\n", text_start);
-        if (text_end < 0) text_end = response.length();
+        // Find next +CMGL: or OK
+        int next_cmgl = response.indexOf("\r\n+CMGL:", text_start);
+        if (next_cmgl < 0) next_cmgl = response.indexOf("\n+CMGL:", text_start);
+        int next_ok = response.indexOf("\r\nOK", text_start);
+        if (next_ok < 0) next_ok = response.indexOf("\nOK", text_start);
+        
+        int text_end = response.length();
+        if (next_cmgl >= 0 && (next_ok < 0 || next_cmgl < next_ok)) {
+            text_end = next_cmgl;
+        } else if (next_ok >= 0) {
+            text_end = next_ok;
+        }
+        
+        // Remove trailing CRLF
+        while (text_end > text_start && 
+               (response.charAt(text_end - 1) == '\r' || response.charAt(text_end - 1) == '\n')) {
+            text_end--;
+        }
         
         String text = response.substring(text_start, text_end);
         text.trim();
         
-        // Create SMS message
-        SMSMessage msg;
-        msg.text = text;
-        msg.sender = sender;
-        msg.timestamp_str = timestamp_str;
-        msg.timestamp = parseSMSTimestamp(timestamp_str);
-        msg.storage = storage_name;
+        time_t timestamp = parseSMSTimestamp(timestamp_str);
         
-        messages.push_back(msg);
+        // Check for concatenated messages - look for embedded timestamp
+        int split_pos = -1;
+        String embedded_ts = "";
+        time_t embedded_time = 0;
         
-        pos = text_end + 2;
+        for (int i = 0; i <= text.length() - 17; i++) {
+            if (text.charAt(i) >= '0' && text.charAt(i) <= '9' &&
+                text.charAt(i+1) >= '0' && text.charAt(i+1) <= '9' &&
+                text.charAt(i+2) == '/' &&
+                text.charAt(i+3) >= '0' && text.charAt(i+3) <= '9' &&
+                text.charAt(i+4) >= '0' && text.charAt(i+4) <= '9' &&
+                text.charAt(i+5) == '/' &&
+                text.charAt(i+6) >= '0' && text.charAt(i+6) <= '9' &&
+                text.charAt(i+7) >= '0' && text.charAt(i+7) <= '9' &&
+                text.charAt(i+8) == ',' &&
+                i+16 < text.length() &&
+                text.charAt(i+9) >= '0' && text.charAt(i+9) <= '2' &&
+                text.charAt(i+10) >= '0' && text.charAt(i+10) <= '9' &&
+                text.charAt(i+11) == ':' &&
+                text.charAt(i+12) >= '0' && text.charAt(i+12) <= '5' &&
+                text.charAt(i+13) >= '0' && text.charAt(i+13) <= '9' &&
+                text.charAt(i+14) == ':' &&
+                text.charAt(i+15) >= '0' && text.charAt(i+15) <= '5' &&
+                text.charAt(i+16) >= '0' && text.charAt(i+16) <= '9' &&
+                i+18 < text.length() &&
+                (text.charAt(i+17) == '+' || text.charAt(i+17) == '-')) {
+                
+                int ts_end = i + 18;
+                while (ts_end < text.length() && ts_end < i + 21 && 
+                       text.charAt(ts_end) >= '0' && text.charAt(ts_end) <= '9') {
+                    ts_end++;
+                }
+                String test_ts = text.substring(i, ts_end);
+                time_t test_time = parseSMSTimestamp(test_ts);
+                if (test_time > timestamp && test_time > 0) {
+                    split_pos = i;
+                    while (split_pos > 0 && text.charAt(split_pos - 1) != '\n' && 
+                           text.charAt(split_pos - 1) != '\r') {
+                        split_pos--;
+                    }
+                    if (split_pos > 0 && text.charAt(split_pos - 1) == '\r') split_pos--;
+                    embedded_ts = test_ts;
+                    embedded_time = test_time;
+                    break;
+                }
+            }
+        }
+        
+        if (split_pos >= 0) {
+            // Split message
+            String first = text.substring(0, split_pos);
+            first.trim();
+            
+            int second_start = text.indexOf(embedded_ts, split_pos);
+            if (second_start >= 0) {
+                second_start += embedded_ts.length();
+                while (second_start < text.length() && 
+                       (text.charAt(second_start) == '"' || text.charAt(second_start) == ',' ||
+                        text.charAt(second_start) == '\r' || text.charAt(second_start) == '\n')) {
+                    second_start++;
+                }
+            } else {
+                second_start = split_pos;
+            }
+            String second = text.substring(second_start);
+            second.trim();
+            
+            if (first.length() > 0) {
+                SMSMessage msg1;
+                msg1.text = first;
+                msg1.sender = sender;
+                msg1.timestamp_str = timestamp_str;
+                msg1.timestamp = timestamp;
+                msg1.storage = storage_name;
+                messages.push_back(msg1);
+                parsed_count++;
+            }
+            if (second.length() > 0) {
+                SMSMessage msg2;
+                msg2.text = second;
+                msg2.sender = sender;
+                msg2.timestamp_str = embedded_ts;
+                msg2.timestamp = embedded_time;
+                msg2.storage = storage_name;
+                messages.push_back(msg2);
+                parsed_count++;
+            }
+        } else {
+            // Single message
+            SMSMessage msg;
+            msg.text = text;
+            msg.sender = sender;
+            msg.timestamp_str = timestamp_str;
+            msg.timestamp = timestamp;
+            msg.storage = storage_name;
+            messages.push_back(msg);
+            parsed_count++;
+        }
+        
+        // Move to next message
+        if (next_cmgl >= 0) {
+            pos = next_cmgl + 2; // Skip past \r\n
+        } else {
+            pos = response.length();
+        }
     }
     
-    if (message_count > 0 && messages.empty()) {
-        // We found +CMGL lines but couldn't parse them - debug output
-        Serial.printf("  [DEBUG] Found %d +CMGL lines but parsed 0 messages from %s\n", message_count, storage_name.c_str());
-    }
-    
-    return !messages.empty();
+    return parsed_count > 0;
 }
 
+
 // Get most recent SMS from all storage locations
+// CRITICAL: We check ALL possible storage locations to ensure we never miss a message
 bool getMostRecentSMS(HardwareSerial* serial, SMSMessage& most_recent) {
     std::vector<SMSMessage> all_messages;
     
-    // Try SM (SIM card) first - most common location
-    bool sm_ok = collectSMSFromStorage(serial, "SM", all_messages);
+    // Check SM (SIM card) - most common location
+    collectSMSFromStorage(serial, "SM", all_messages);
     
-    // Also try ME (module memory)
-    bool me_ok = collectSMSFromStorage(serial, "ME", all_messages);
+    // Check ME (module memory) - also common
+    collectSMSFromStorage(serial, "ME", all_messages);
     
-    // Debug output
-    Serial.printf("  [DEBUG] Collected %zu messages (SM: %s, ME: %s)\n", 
-                  all_messages.size(), sm_ok ? "OK" : "failed", me_ok ? "OK" : "failed");
+    // Also check "current" storage (whatever is currently set)
+    collectSMSFromStorage(serial, "current", all_messages);
     
     if (all_messages.empty()) {
         return false;
@@ -4261,6 +4505,7 @@ bool getMostRecentSMS(HardwareSerial* serial, SMSMessage& most_recent) {
     
     // Remove duplicates (same text + sender + timestamp)
     // This can happen if messages are stored in multiple locations
+    size_t before_dedup = all_messages.size();
     std::sort(all_messages.begin(), all_messages.end(),
         [](const SMSMessage& a, const SMSMessage& b) {
             if (a.text != b.text) return a.text < b.text;
@@ -4274,7 +4519,6 @@ bool getMostRecentSMS(HardwareSerial* serial, SMSMessage& most_recent) {
             }),
         all_messages.end()
     );
-    
     if (all_messages.empty()) {
         return false;
     }
@@ -4285,10 +4529,22 @@ bool getMostRecentSMS(HardwareSerial* serial, SMSMessage& most_recent) {
             return a.timestamp > b.timestamp;
         });
     
+    // Show the 5 most recent messages
+    Serial.println("  Most recent messages:");
+    for (size_t i = 0; i < all_messages.size() && i < 5; i++) {
+        String display_text = all_messages[i].text;
+        display_text.replace("\r\n", " ");
+        display_text.replace("\n", " ");
+        display_text.replace("\r", " ");
+        if (display_text.length() > 60) {
+            display_text = display_text.substring(0, 57) + "...";
+        }
+        Serial.printf("    [%zu] %s from %s at %s\n",
+                     i + 1, display_text.c_str(), all_messages[i].sender.c_str(),
+                     all_messages[i].timestamp_str.c_str());
+    }
+    
     most_recent = all_messages[0];
-    Serial.printf("  [DEBUG] Most recent: %s from %s at %s (timestamp: %lu)\n",
-                  most_recent.text.c_str(), most_recent.sender.c_str(), 
-                  most_recent.timestamp_str.c_str(), (unsigned long)most_recent.timestamp);
     return true;
 }
 
@@ -4424,7 +4680,8 @@ bool lteFastBootCheck() {
     
     String time_str = time_response.substring(cclk_pos, quote_end);
     // Format: "yy/MM/dd,hh:mm:ss±zz"
-    // Example: "25/12/20,22:52:29+0"
+    // Example: "25/12/20,22:52:29+0" or "25/12/20,22:52:29-4"
+    // ±zz is timezone offset in quarters of an hour (e.g., +0 = UTC, +4 = UTC+1, -4 = UTC-1)
     
     int year = time_str.substring(0, 2).toInt();
     int month = time_str.substring(3, 5).toInt();
@@ -4433,12 +4690,25 @@ bool lteFastBootCheck() {
     int minute = time_str.substring(12, 14).toInt();
     int second = time_str.substring(15, 17).toInt();
     
+    // Parse timezone offset (±zz) - in quarters of an hour
+    int tz_offset_quarters = 0;
+    if (time_str.length() >= 18) {
+        char tz_sign = time_str.charAt(17);
+        if (tz_sign == '+' || tz_sign == '-') {
+            String tz_str = time_str.substring(18);
+            tz_str.trim();
+            int tz_val = tz_str.toInt();
+            tz_offset_quarters = (tz_sign == '-') ? -tz_val : tz_val;
+        }
+    }
+    
     // Convert 2-digit year to 4-digit (assume 2000s)
     if (year < 100) {
         year += 2000;
     }
     
     // Build struct tm and convert to time_t
+    // Note: LTE module returns time in UTC (typically +0), but we need to account for offset
     struct tm timeinfo;
     timeinfo.tm_year = year - 1900;
     timeinfo.tm_mon = month - 1;
@@ -4448,27 +4718,61 @@ bool lteFastBootCheck() {
     timeinfo.tm_sec = second;
     timeinfo.tm_isdst = 0;
     
+    // Convert to Unix timestamp (mktime interprets as local time, but we treat as UTC)
+    // Since we're setting system time, we need UTC. Use timegm if available, otherwise adjust.
     time_t unix_time = mktime(&timeinfo);
+    
+    // Adjust for timezone offset (convert from local timezone to UTC)
+    // tz_offset_quarters is in quarters of an hour, so multiply by 15 minutes = 900 seconds
+    int tz_offset_seconds = tz_offset_quarters * 900;
+    unix_time -= tz_offset_seconds;  // Subtract offset to get UTC
     if (unix_time < 0) {
         Serial.println(" invalid time");
         return false;
     }
     
-    // Set RTC time using settimeofday (ESP32 system time)
-    struct timeval tv;
-    tv.tv_sec = unix_time;
-    tv.tv_usec = 0;
-    settimeofday(&tv, NULL);
+    // Set persistent RTC time (survives deep sleep) - this also sets system time
+    uint64_t time_ms = (uint64_t)unix_time * 1000ULL;
+    sleep_set_time_ms(time_ms);
     
     Serial.printf("  RTC time set to %04d-%02d-%02d %02d:%02d:%02d\n", year, month, day, hour, minute, second);
-    
-    Serial.printf(" set to %04d-%02d-%02d %02d:%02d:%02d\n", year, month, day, hour, minute, second);
     
     // Get most recent SMS from all storage locations (sorted by timestamp)
     Serial.print("  Checking SMS...");
     SMSMessage most_recent;
     if (getMostRecentSMS(&Serial1, most_recent)) {
-        Serial.printf(" %s (%s): %s\n", most_recent.sender.c_str(), most_recent.timestamp_str.c_str(), most_recent.text.c_str());
+        // Check if this is a new message
+        bool was_stale = false;
+        if (lastSMSTimestamp > 0 && most_recent.timestamp < lastSMSTimestamp) {
+            lteSaveLastSMSTimestamp(most_recent.timestamp);
+            lastSMSCheckTime = most_recent.timestamp;
+            was_stale = true;
+        }
+        
+        bool is_new = (most_recent.timestamp > lastSMSTimestamp) || was_stale || 
+                      (most_recent.timestamp == lastSMSTimestamp && lastSMSCheckTime != (uint64_t)most_recent.timestamp);
+        
+        String display_text = most_recent.text;
+        display_text.replace("\r\n", " ");
+        display_text.replace("\n", " ");
+        display_text.replace("\r", " ");
+        if (display_text.length() > 60) {
+            display_text = display_text.substring(0, 57) + "...";
+        }
+        
+        if (is_new) {
+            Serial.printf(" NEW: %s (%s): %s\n", 
+                         most_recent.sender.c_str(), 
+                         most_recent.timestamp_str.c_str(), 
+                         display_text.c_str());
+            if (!was_stale) {
+                lteSaveLastSMSTimestamp(most_recent.timestamp);
+            }
+            lastSMSCheckTime = most_recent.timestamp;
+        } else {
+            Serial.printf(" %s (%s): %s\n", most_recent.sender.c_str(), most_recent.timestamp_str.c_str(), display_text.c_str());
+            lastSMSCheckTime = most_recent.timestamp;
+        }
     } else {
         Serial.println(" none found");
     }
@@ -4575,56 +4879,276 @@ bool lteBriefRegistrationAttempt() {
         delay(10);
     }
     
-    // Parse time: Format is +CCLK: "yy/MM/dd,hh:mm:ss±zz"
-    int cclk_pos = time_response.indexOf("+CCLK: \"");
-    if (cclk_pos >= 0) {
-        cclk_pos += 8;
-        int quote_end = time_response.indexOf("\"", cclk_pos);
-        if (quote_end > cclk_pos) {
-            String time_str = time_response.substring(cclk_pos, quote_end);
-            // Format: "yy/MM/dd,hh:mm:ss±zz"
-            // Example: "25/12/20,22:52:29+0"
-            
-            int year = time_str.substring(0, 2).toInt();
-            int month = time_str.substring(3, 5).toInt();
-            int day = time_str.substring(6, 8).toInt();
-            int hour = time_str.substring(9, 11).toInt();
-            int minute = time_str.substring(12, 14).toInt();
-            int second = time_str.substring(15, 17).toInt();
-            
-            // Convert 2-digit year to 4-digit (assume 2000s)
-            if (year < 100) {
-                year += 2000;
-            }
-            
-            // Build struct tm and convert to time_t
-            struct tm timeinfo;
-            timeinfo.tm_year = year - 1900;
-            timeinfo.tm_mon = month - 1;
-            timeinfo.tm_mday = day;
-            timeinfo.tm_hour = hour;
-            timeinfo.tm_min = minute;
-            timeinfo.tm_sec = second;
-            timeinfo.tm_isdst = 0;
-            
-            time_t unix_time = mktime(&timeinfo);
-            if (unix_time >= 0) {
-                // Set RTC time
-                struct timeval tv;
-                tv.tv_sec = unix_time;
-                tv.tv_usec = 0;
-                settimeofday(&tv, NULL);
-                
-                Serial.printf(" %04d-%02d-%02d %02d:%02d:%02d\n", year, month, day, hour, minute, second);
-                delete tempModule;
-                return true;
-            }
+            // Parse time: Format is +CCLK: "yy/MM/dd,hh:mm:ss±zz"
+            int cclk_pos = time_response.indexOf("+CCLK: \"");
+            if (cclk_pos >= 0) {
+                cclk_pos += 8;
+                int quote_end = time_response.indexOf("\"", cclk_pos);
+                if (quote_end > cclk_pos) {
+                    String time_str = time_response.substring(cclk_pos, quote_end);
+                    // Format: "yy/MM/dd,hh:mm:ss±zz"
+                    // Example: "25/12/20,22:52:29+0"
+                    
+                    int year = time_str.substring(0, 2).toInt();
+                    int month = time_str.substring(3, 5).toInt();
+                    int day = time_str.substring(6, 8).toInt();
+                    int hour = time_str.substring(9, 11).toInt();
+                    int minute = time_str.substring(12, 14).toInt();
+                    int second = time_str.substring(15, 17).toInt();
+                    
+                    // Parse timezone offset (±zz) - in quarters of an hour
+                    int tz_offset_quarters = 0;
+                    if (time_str.length() >= 18) {
+                        char tz_sign = time_str.charAt(17);
+                        if (tz_sign == '+' || tz_sign == '-') {
+                            String tz_str = time_str.substring(18);
+                            tz_str.trim();
+                            int tz_val = tz_str.toInt();
+                            tz_offset_quarters = (tz_sign == '-') ? -tz_val : tz_val;
+                        }
+                    }
+                    
+                    // Convert 2-digit year to 4-digit (assume 2000s)
+                    if (year < 100) {
+                        year += 2000;
+                    }
+                    
+                    // Build struct tm and convert to time_t
+                    struct tm timeinfo;
+                    timeinfo.tm_year = year - 1900;
+                    timeinfo.tm_mon = month - 1;
+                    timeinfo.tm_mday = day;
+                    timeinfo.tm_hour = hour;
+                    timeinfo.tm_min = minute;
+                    timeinfo.tm_sec = second;
+                    timeinfo.tm_isdst = 0;
+                    
+                    time_t unix_time = mktime(&timeinfo);
+                    // Adjust for timezone offset (convert to UTC)
+                    int tz_offset_seconds = tz_offset_quarters * 900;
+                    unix_time -= tz_offset_seconds;
+                    if (unix_time >= 0) {
+                        // Set persistent RTC time (survives deep sleep) - this also sets system time
+                        uint64_t time_ms = (uint64_t)unix_time * 1000ULL;
+                        sleep_set_time_ms(time_ms);
+                        
+                        Serial.printf(" %04d-%02d-%02d %02d:%02d:%02d\n", year, month, day, hour, minute, second);
+                        delete tempModule;
+                        return true;
+                    }
         }
     }
     
     Serial.println("  Registration OK but time unavailable");
     delete tempModule;
     return false;
+}
+
+/**
+ * Perform SMS check only (minimal wake path)
+ * This is called on minute wakes (non-hourly) to quickly check for new SMS messages
+ * Key requirements:
+ * - LTE module must be registered before checking SMS
+ * - Minimal initialization (skip display, SD, audio)
+ * - Fast return to sleep
+ */
+static void performSMSCheckOnly() {
+    Serial.println("\n=== SMS Check Only (Minimal Wake) ===");
+    lastWakeType = 0;  // Mark as SMS check wake
+    // Note: wakeCount is incremented in setup() before routing, so it counts all wakes
+    
+    // Load APN and last SMS timestamp from NVS
+    lteLoadAPN();
+    lteLoadLastSMSTimestamp();
+    
+    // Check if LTE is configured
+    if (strlen(lteAPN) == 0) {
+        Serial.println("No LTE APN configured - skipping SMS check");
+        return;
+    }
+    
+    // Initialize Serial1 for LTE (minimal - module might already be on)
+    Serial1.end();
+    delay(50);
+    Serial1.begin(115200, SERIAL_8N1, PIN_LTE_RX, PIN_LTE_TX);
+    Serial1.setTimeout(2000);
+    delay(200);
+    
+    // Flush any garbage
+    while (Serial1.available()) {
+        Serial1.read();
+    }
+    
+    // Check if module is already on and responding
+    Serial.print("Checking if LTE module is on...");
+    bool module_ready = false;
+    for (int i = 0; i < 5; i++) {
+        while (Serial1.available()) {
+            Serial1.read();
+        }
+        
+        Serial1.print("ATE0\r");
+        Serial1.flush();
+        delay(300);
+        
+        String test_resp = "";
+        uint32_t resp_start = millis();
+        while ((millis() - resp_start) < 500) {
+            if (Serial1.available()) {
+                char c = Serial1.read();
+                test_resp += c;
+                if (test_resp.indexOf("OK") >= 0 || test_resp.indexOf("ERROR") >= 0) {
+                    break;
+                }
+            }
+            delay(10);
+        }
+        
+        if (test_resp.indexOf("OK") >= 0) {
+            module_ready = true;
+            Serial.println(" yes");
+            break;
+        }
+        
+        delay(200);
+    }
+    
+    if (!module_ready) {
+        Serial.println(" no");
+        Serial.println("LTE module not responding - skipping SMS check");
+        // Don't try to power on - that takes too long for a quick SMS check
+        // Will retry on next minute wake
+        return;
+    }
+    
+    // Flush again after echo disable
+    delay(200);
+    while (Serial1.available()) {
+        Serial1.read();
+    }
+    
+    // Check registration status (CRITICAL: must be registered to receive new SMS)
+    Serial.print("Checking registration...");
+    Serial1.print("AT+CEREG?\r");
+    Serial1.flush();
+    delay(300);
+    
+    String reg_response = "";
+    uint32_t reg_start = millis();
+    while ((millis() - reg_start) < 2000) {
+        if (Serial1.available()) {
+            char c = Serial1.read();
+            reg_response += c;
+            if (reg_response.indexOf("OK") >= 0 || reg_response.indexOf("ERROR") >= 0) {
+                break;
+            }
+        }
+        delay(10);
+    }
+    
+    // Parse registration status
+    bool is_registered = false;
+    int cereg_pos = reg_response.indexOf("+CEREG:");
+    if (cereg_pos >= 0) {
+        int comma1 = reg_response.indexOf(",", cereg_pos);
+        if (comma1 > cereg_pos) {
+            int comma2 = reg_response.indexOf(",", comma1 + 1);
+            int end = (comma2 > comma1) ? comma2 : reg_response.indexOf("\r", comma1);
+            if (end < 0) end = reg_response.indexOf("\n", comma1);
+            if (end < 0) end = reg_response.length();
+            
+            String status_str = reg_response.substring(comma1 + 1, end);
+            status_str.trim();
+            int status = status_str.toInt();
+            is_registered = (status == 1 || status == 5);  // 1=home, 5=roaming
+        }
+    }
+    
+    if (!is_registered) {
+        Serial.println(" not registered");
+        Serial.println("Attempting brief registration (required for SMS)...");
+        
+        // Try brief registration (30 second timeout)
+        bool reg_success = lteBriefRegistrationAttempt();
+        
+        if (!reg_success) {
+            Serial.println("Registration failed - cannot check SMS");
+            lteModuleWasRegistered = false;
+            return;
+        }
+        
+        Serial.println("Registration successful");
+        lteModuleWasRegistered = true;
+        
+        // Flush UART after registration
+        delay(500);
+        while (Serial1.available()) {
+            Serial1.read();
+        }
+    } else {
+        Serial.println(" registered");
+        lteModuleWasRegistered = true;
+    }
+    
+    // Now check for new SMS (module is registered)
+    Serial.print("Checking for new SMS...");
+    SMSMessage most_recent;
+    if (getMostRecentSMS(&Serial1, most_recent)) {
+        // Handle stale stored timestamp: if stored timestamp is newer than any visible message,
+        // it means the message was deleted or the timestamp is wrong - reset to most recent visible
+        bool was_stale = false;
+        if (lastSMSTimestamp > 0 && most_recent.timestamp < lastSMSTimestamp) {
+            // Reset to the most recent message we can actually see
+            lteSaveLastSMSTimestamp(most_recent.timestamp);
+            lastSMSCheckTime = most_recent.timestamp;
+            was_stale = true;
+        }
+        
+        // Check if this is a new message
+        bool is_new = false;
+        if (most_recent.timestamp > lastSMSTimestamp) {
+            is_new = true;
+        } else if (was_stale) {
+            is_new = true;
+        } else if (most_recent.timestamp == lastSMSTimestamp && lastSMSCheckTime != (uint64_t)most_recent.timestamp) {
+            is_new = true;
+        }
+        
+        if (is_new) {
+            if (was_stale) {
+                Serial.printf(" NEW (discovered after stale timestamp reset): %s (%s): %s\n", 
+                             most_recent.sender.c_str(), 
+                             most_recent.timestamp_str.c_str(), 
+                             most_recent.text.c_str());
+            } else {
+                Serial.printf(" NEW: %s (%s): %s\n", 
+                             most_recent.sender.c_str(), 
+                             most_recent.timestamp_str.c_str(), 
+                             most_recent.text.c_str());
+            }
+            
+            // Save the new timestamp (if not already saved by stale reset)
+            if (!was_stale) {
+                lteSaveLastSMSTimestamp(most_recent.timestamp);
+            }
+            // Always update lastSMSCheckTime to acknowledge we've seen this message
+            lastSMSCheckTime = most_recent.timestamp;
+            
+            // TODO: Process SMS command here (Phase 3)
+            // For now, just log it
+            Serial.println("  (Command processing will be added in Phase 3)");
+        } else {
+            Serial.printf(" (no new messages, last: %s from %s)\n",
+                         most_recent.timestamp_str.c_str(),
+                         most_recent.sender.c_str());
+            // Update lastSMSCheckTime even if not new, so we know we've checked
+            lastSMSCheckTime = most_recent.timestamp;
+        }
+    } else {
+        Serial.println(" none found or error reading SMS");
+    }
+    
+    Serial.println("=== SMS Check Complete ===");
 }
 
 // Run comprehensive LTE tests
@@ -5472,11 +5996,23 @@ void setup() {
     lteLoadAPN();
     lteLoadLastSMSTimestamp();  // Load last SMS timestamp for comparison
     
+    // Increment wake count (counts all wakes - both hourly and SMS check)
+    wakeCount++;
+    Serial.printf("Wake count: %lu (time sync every 20 wakes)\n", (unsigned long)wakeCount);
+    
     // Check if we need time sync
+    // Only sync if: 1) time is invalid, OR 2) we've had 20+ wakes (periodic resync)
     time_t now = time(nullptr);
     bool timeValid = (now > 1577836800);  // After Jan 1, 2020
+    bool needsTimeSync = !timeValid || (wakeCount >= 20);
     
-    if (!timeValid && strlen(lteAPN) > 0) {
+    if (needsTimeSync && strlen(lteAPN) > 0) {
+        if (!timeValid) {
+            Serial.println("Time invalid - attempting time sync via LTE...");
+        } else {
+            Serial.println("Periodic time resync (20+ wakes) - attempting sync via LTE...");
+            wakeCount = 0;  // Reset counter after sync
+        }
         // First try: Fast check (module already registered)
         bool lte_time_set = lteFastBootCheck();
         
@@ -5490,13 +6026,66 @@ void setup() {
             // Time was set by LTE - will skip WiFi/NTP later
             now = time(nullptr);
             timeValid = (now > 1577836800);
+            if (timeValid) {
+                Serial.println("Time sync successful via LTE");
+            }
+        } else {
+            Serial.println("LTE time sync failed - will try WiFi/NTP if needed");
+        }
+    } else if (needsTimeSync && strlen(lteAPN) == 0) {
+        // No LTE APN configured, but we need time sync
+        if (!timeValid) {
+            Serial.println("Time invalid and no LTE APN - WiFi/NTP sync will be attempted in hourly cycle");
         }
     }
+    
+    // ================================================================
+    // Dual Wake Architecture: Determine wake type AFTER time sync
+    // ================================================================
+    // Now that time is (hopefully) set, determine wake type
+    now = time(nullptr);
+    timeValid = (now > 1577836800);
+    bool isHourlyWake = false;
+    
+    if (timeValid) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        // Check if we're at the top of the hour (XX:00)
+        isHourlyWake = (tm_utc.tm_min == 0);
+        
+        Serial.printf("\n=== Wake Type Detection ===\n");
+        Serial.printf("Current time: %02d:%02d:%02d\n", tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        Serial.printf("Wake type: %s\n", isHourlyWake ? "HOURLY (XX:00) - Full cycle" : "SMS CHECK - Minimal wake");
+        Serial.println("===========================\n");
+    } else {
+        Serial.println("\n=== Wake Type Detection ===\n");
+        Serial.println("Time invalid - defaulting to SMS check wake");
+        Serial.println("===========================\n");
+        isHourlyWake = false;
+    }
+    
+    // Route to appropriate wake handler BEFORE the old SMS check code
+    if (!isHourlyWake) {
+        // SMS check wake: Minimal operations, fast return to sleep
+        Serial.println("Routing to SMS check only (minimal wake)...");
+        performSMSCheckOnly();
+        
+        // Calculate sleep duration and enter sleep
+        uint32_t sleepDuration = calculateSleepDuration(false);  // false = SMS check wake
+        Serial.printf("SMS check complete, sleeping for %lu seconds\n", (unsigned long)sleepDuration);
+        Serial.flush();
+        sleepNowSeconds(sleepDuration);
+        // Never returns
+    }
+    
+    // If we reach here, it's an hourly wake - continue with normal boot sequence
+    // The old SMS check code below will be skipped for hourly wakes in Phase 4
     
     // Always check for latest SMS on boot (regardless of time sync status)
     // This allows monitoring new messages even when time is already valid
     // Note: Serial1 is already initialized from power-on check above
     // IMPORTANT: Module must be registered to receive new SMS messages
+    // NOTE: For hourly wakes, this runs as part of the full cycle
     if (strlen(lteAPN) > 0) {
         Serial.println("\n[LTE SMS Check]");
         
@@ -5592,6 +6181,12 @@ void setup() {
                 // Get most recent SMS
                 SMSMessage most_recent;
                 if (getMostRecentSMS(&Serial1, most_recent)) {
+                    // Handle stale stored timestamp: if stored timestamp is newer than any visible message,
+                    // it means the message was deleted or the timestamp is wrong - reset to most recent visible
+                    if (lastSMSTimestamp > 0 && most_recent.timestamp < lastSMSTimestamp) {
+                        lteSaveLastSMSTimestamp(most_recent.timestamp);
+                    }
+                    
                     // Check if this is a new message (timestamp is newer than stored)
                     bool is_new = (most_recent.timestamp > lastSMSTimestamp);
                     
@@ -5629,6 +6224,12 @@ void setup() {
                     // Get most recent SMS
                     SMSMessage most_recent;
                     if (getMostRecentSMS(&Serial1, most_recent)) {
+                        // Handle stale stored timestamp: if stored timestamp is newer than any visible message,
+                        // it means the message was deleted or the timestamp is wrong - reset to most recent visible
+                        if (lastSMSTimestamp > 0 && most_recent.timestamp < lastSMSTimestamp) {
+                            lteSaveLastSMSTimestamp(most_recent.timestamp);
+                        }
+                        
                         // Check if this is a new message (timestamp is newer than stored)
                         bool is_new = (most_recent.timestamp > lastSMSTimestamp);
                         
@@ -5673,6 +6274,23 @@ void setup() {
         delay(100);  // Brief delay for serial to init
         Serial.println("\n=== Woke from deep sleep ===");
         Serial.printf("Boot count: %u, Wake cause: %d\n", sleepBootCount, wakeCause);
+        
+        // CRITICAL: Restore system time from persistent RTC (system time doesn't persist across deep sleep)
+        // This ensures time(nullptr) returns the correct time
+        uint64_t rtc_time_ms = sleep_get_time_ms();
+        if (rtc_time_ms > 1700000000000ULL) {  // Valid time (after 2023)
+            struct timeval tv;
+            tv.tv_sec = rtc_time_ms / 1000;
+            tv.tv_usec = (rtc_time_ms % 1000) * 1000;
+            settimeofday(&tv, NULL);
+            time_t restored_time = time(nullptr);
+            struct tm tm_utc;
+            gmtime_r(&restored_time, &tm_utc);
+            Serial.printf("System time restored from RTC: %02d:%02d:%02d\n", 
+                         tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        } else {
+            Serial.println("WARNING: RTC time invalid, system time not restored");
+        }
     } else {
         // Cold boot - wait for serial
         uint32_t start = millis();
@@ -5737,7 +6355,10 @@ void setup() {
         }
     }
 
+    // ================================================================
     // Auto cycle: random PNG + time/date overlay + beep + deep sleep
+    // (This path is now only for hourly wakes - SMS check path exits earlier)
+    // ================================================================
     if (kAutoCycleEnabled) {
         bool shouldRun = true;
         
@@ -6125,9 +6746,9 @@ void loop() {
             if (timestamp > 0) {
                 Serial.printf("Setting time to: %lu\n", timestamp);
                 
-                // Set internal RTC using settimeofday
-                struct timeval tv = { .tv_sec = (time_t)timestamp, .tv_usec = 0 };
-                settimeofday(&tv, nullptr);
+                // Set persistent RTC time (survives deep sleep) - this also sets system time
+                uint64_t time_ms = (uint64_t)timestamp * 1000ULL;
+                sleep_set_time_ms(time_ms);
                 delay(100);
                 
                 // Verify

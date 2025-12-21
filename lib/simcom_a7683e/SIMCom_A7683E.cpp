@@ -500,13 +500,19 @@ bool SIMCom_A7683E::waitForNetworkRegistration(uint32_t timeout_ms) {
     SIMComNetworkStatus lte_status = SIMCOM_NET_UNKNOWN;
     SIMComNetworkStatus gsm_status = SIMCOM_NET_UNKNOWN;
     int best_signal = -113;
+    int signal = -113;  // Current signal - declare outside loop for use in timeout message
     uint32_t last_status_print = 0;
+    uint32_t last_retry_time = 0;
+    int retry_count = 0;
+    const int MAX_RETRIES = 2;  // Limit aggressive retries to prevent infinite loops
+    const uint32_t RETRY_INTERVAL = 30000;  // 30 seconds between retries (increased from 15s)
+    const int MIN_SIGNAL_FOR_RETRY = -110;  // Only retry if signal is reasonable (better than -110 dBm)
     
     Serial.println("SIMCom A7683E: Waiting for network registration...");
     
     while (millis() - start < timeout_ms) {
         getRegistrationStatus(&lte_status, &gsm_status);
-        int signal = getSignalQuality();
+        signal = getSignalQuality();
         if (signal > best_signal) {
             best_signal = signal;
         }
@@ -519,8 +525,9 @@ bool SIMCom_A7683E::waitForNetworkRegistration(uint32_t timeout_ms) {
             return true;
         }
         
-        // Print status every 5 seconds
         uint32_t elapsed = millis() - start;
+        
+        // Print status every 5 seconds
         if (elapsed - last_status_print >= 5000) {
             const char* lte_name = (lte_status == 0) ? "Not registered" :
                                   (lte_status == 1) ? "Home" :
@@ -536,37 +543,75 @@ bool SIMCom_A7683E::waitForNetworkRegistration(uint32_t timeout_ms) {
             Serial.print(".");
         }
         
-        // If status is 0 (not registered, not searching) or 4 (unknown) for more than 15 seconds,
-        // try to trigger registration again with more aggressive approach
-        if ((lte_status == SIMCOM_NET_NOT_REGISTERED || lte_status == SIMCOM_NET_UNKNOWN) && 
-            elapsed > 15000 && (elapsed % 15000) < 1000) {
-            Serial.println("\nSIMCom A7683E: Still not registered, retrying with full re-initialization...");
+        // Handle different registration states appropriately:
+        // - Status 2 (Searching): Module is actively searching, wait patiently
+        // - Status 3 (Denied): Registration denied, retries won't help
+        // - Status 0 (Not registered) or 4 (Unknown): May benefit from retry, but only if:
+        //   * Signal quality is reasonable (better than -110 dBm)
+        //   * We haven't exceeded MAX_RETRIES
+        //   * Enough time has passed since last retry (exponential backoff)
+        
+        bool should_retry = false;
+        if (retry_count < MAX_RETRIES) {
+            // Only retry if status is 0 (not registered) or 4 (unknown)
+            // Don't retry if status is 2 (searching) - module is actively working
+            // Don't retry if status is 3 (denied) - retries won't help
+            if ((lte_status == SIMCOM_NET_NOT_REGISTERED || lte_status == SIMCOM_NET_UNKNOWN) &&
+                (gsm_status == SIMCOM_NET_NOT_REGISTERED || gsm_status == SIMCOM_NET_UNKNOWN)) {
+                // Check signal quality - only retry if signal is reasonable
+                if (signal >= MIN_SIGNAL_FOR_RETRY || best_signal >= MIN_SIGNAL_FOR_RETRY) {
+                    // Check if enough time has passed since last retry (exponential backoff)
+                    uint32_t time_since_last_retry = (last_retry_time == 0) ? elapsed : (millis() - last_retry_time);
+                    uint32_t retry_interval = RETRY_INTERVAL * (1 << retry_count);  // Exponential backoff: 30s, 60s, 120s...
+                    
+                    if (time_since_last_retry >= retry_interval && elapsed > 20000) {  // Wait at least 20s before first retry
+                        should_retry = true;
+                    }
+                } else {
+                    // Signal is too weak - don't retry aggressively
+                    if (elapsed - last_status_print >= 10000) {  // Print warning every 10s
+                        Serial.printf("\nSIMCom A7683E: Signal too weak (%d dBm) for reliable registration. Waiting...\n", signal);
+                        last_status_print = elapsed;  // Reset to avoid spam
+                    }
+                }
+            }
+        }
+        
+        if (should_retry) {
+            retry_count++;
+            last_retry_time = millis();
+            
+            Serial.printf("\nSIMCom A7683E: Retry %d/%d - Attempting to trigger registration (signal: %d dBm)...\n", 
+                         retry_count, MAX_RETRIES, signal);
             flushUART();
             
             // Try cycling CFUN: set to 0 (minimum), wait, then back to 1 (full)
             Serial.println("SIMCom A7683E: Cycling CFUN (0 -> 1)...");
-            sendAT("AT+CFUN=0");  // Minimum functionality
+            sendAT("AT+CFUN=0", 5000);  // Minimum functionality
             delay(2000);
-            sendAT("AT+CFUN=1");  // Full functionality
-            delay(3000);
+            sendAT("AT+CFUN=1", 10000);  // Full functionality (longer timeout)
+            delay(5000);  // Give module more time to reinitialize radio
             
             // Force network selection again
-            sendAT("AT+COPS=0");  // Force automatic network selection
-            delay(2000);
+            sendAT("AT+COPS=0", 5000);  // Force automatic network selection
+            delay(3000);  // Give module time to start network search
             
             // Re-enable URCs
-            sendAT("AT+CEREG=2");
+            sendAT("AT+CEREG=2", 3000);
             delay(500);
-            sendAT("AT+CREG=2");
+            sendAT("AT+CREG=2", 3000);
             delay(500);
+            
+            // Reset status print timer to show new status after retry
+            last_status_print = 0;
         }
         
         delay(1000);
     }
     
     Serial.println();
-    Serial.printf("SIMCom A7683E: Registration timeout! LTE=%d, GSM=%d, Signal=%d dBm\n",
-                 lte_status, gsm_status, best_signal);
+    Serial.printf("SIMCom A7683E: Registration timeout! LTE=%d, GSM=%d, Signal=%d dBm (best: %d), Retries: %d\n",
+                 lte_status, gsm_status, signal, best_signal, retry_count);
     return false;
 }
 
@@ -607,6 +652,7 @@ bool SIMCom_A7683E::setAPN(const char* apn, const char* username, const char* pa
 }
 
 bool SIMCom_A7683E::connect(uint32_t timeout_ms) {
+    uint32_t connect_start = millis();  // Track start time for timeout calculation
     Serial.println("SIMCom A7683E: Connecting to network...");
     
     // Flush any unsolicited messages
@@ -685,41 +731,57 @@ bool SIMCom_A7683E::connect(uint32_t timeout_ms) {
     delay(3000);  // Give module more time to start network search
     
     // Wait a bit before checking registration status (module needs time after COPS=0)
-    delay(1000);
+    delay(2000);  // Increased delay to allow module to process COPS=0
     
-    // Check initial registration status
-    SIMComNetworkStatus initial_lte, initial_gsm;
-    if (getRegistrationStatus(&initial_lte, &initial_gsm)) {
-        Serial.printf("SIMCom A7683E: Initial registration status: LTE=%d, GSM=%d\n", initial_lte, initial_gsm);
+    // Check current registration status - maybe we're already registered
+    // Check multiple times to ensure stability (module might be transitioning)
+    SIMComNetworkStatus lte_status, gsm_status;
+    bool already_registered = false;
+    int stable_checks = 0;
+    const int REQUIRED_STABLE_CHECKS = 2;  // Require 2 consecutive stable checks
+    
+    for (int check = 0; check < 3; check++) {
+        if (getRegistrationStatus(&lte_status, &gsm_status)) {
+            // If registered (1 = home, 5 = roaming), count as stable
+            if (lte_status == SIMCOM_NET_REGISTERED_HOME || lte_status == SIMCOM_NET_REGISTERED_ROAMING ||
+                gsm_status == SIMCOM_NET_REGISTERED_HOME || gsm_status == SIMCOM_NET_REGISTERED_ROAMING) {
+                stable_checks++;
+                if (stable_checks >= REQUIRED_STABLE_CHECKS) {
+                    already_registered = true;
+                    Serial.printf("SIMCom A7683E: Already registered and stable (LTE=%d, GSM=%d)!\n", 
+                                 lte_status, gsm_status);
+                    break;
+                }
+            } else {
+                // Not registered or different status - reset counter
+                stable_checks = 0;
+            }
+        }
+        
+        if (check < 2) {
+            delay(1000);  // Wait between checks
+        }
+    }
+    
+    if (already_registered) {
+        _connected = true;
+        _ip_address = "";
+        return true;
+    }
+    
+    // Not registered yet - show initial status and wait for registration
+    if (getRegistrationStatus(&lte_status, &gsm_status)) {
+        Serial.printf("SIMCom A7683E: Initial registration status: LTE=%d, GSM=%d\n", lte_status, gsm_status);
     } else {
         Serial.println("SIMCom A7683E: Could not read initial registration status (this is OK, will check during wait)");
     }
     
-    // Check current registration status first - maybe we're already registered
-    SIMComNetworkStatus lte_status, gsm_status;
-    if (getRegistrationStatus(&lte_status, &gsm_status)) {
-        // If already registered, verify it's stable
-        if (lte_status == SIMCOM_NET_REGISTERED_HOME || lte_status == SIMCOM_NET_REGISTERED_ROAMING ||
-            gsm_status == SIMCOM_NET_REGISTERED_HOME || gsm_status == SIMCOM_NET_REGISTERED_ROAMING) {
-            Serial.printf("SIMCom A7683E: Already registered (LTE=%d, GSM=%d), verifying stability...\n", lte_status, gsm_status);
-            // Verify registration is stable by checking again after a short delay
-            delay(1000);
-            if (getRegistrationStatus(&lte_status, &gsm_status)) {
-                if (lte_status == SIMCOM_NET_REGISTERED_HOME || lte_status == SIMCOM_NET_REGISTERED_ROAMING ||
-                    gsm_status == SIMCOM_NET_REGISTERED_HOME || gsm_status == SIMCOM_NET_REGISTERED_ROAMING) {
-                    Serial.println("SIMCom A7683E: Registration verified stable!");
-                    _connected = true;
-                    _ip_address = "";
-                    return true;
-                } else {
-                    Serial.printf("SIMCom A7683E: Registration lost (LTE=%d, GSM=%d), re-registering...\n", lte_status, gsm_status);
-                }
-            }
-        }
-    }
-    
     // Wait for network registration (following Pimoroni pattern - poll CEREG? until status 1 or 5)
-    if (!waitForNetworkRegistration(timeout_ms)) {
+    // Adjust timeout: subtract time already spent checking status
+    uint32_t time_spent = millis() - connect_start;
+    uint32_t remaining_timeout = (timeout_ms > time_spent) ? (timeout_ms - time_spent) : 10000;  // At least 10s
+    
+    if (!waitForNetworkRegistration(remaining_timeout)) {
         Serial.println("SIMCom A7683E: Network registration failed or timed out");
         return false;
     }

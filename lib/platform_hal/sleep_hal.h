@@ -15,7 +15,7 @@
 #if defined(PLATFORM_RP2350)
     #include "pico_sleep.h"
 #elif defined(PLATFORM_ESP32) || defined(PLATFORM_ESP32P4)
-    #include "esp32_sleep.h"
+    #include "../esp32_sleep/esp32_sleep.h"
 #else
     // Provide stub implementations for unknown platforms
     #warning "Unknown platform - sleep functions will be stubs"

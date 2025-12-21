@@ -4228,19 +4228,22 @@ time_t parseSMSTimestamp(const String& timestamp_str) {
 // SIMPLE: Use AT+CMGL="ALL" and parse line by line
 bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, std::vector<SMSMessage>& messages) {
     // Keep reads bounded so the SMS check cannot appear to hang forever
-    auto waitWithTimeout = [&](String& buffer, uint32_t timeout_ms) {
+    // We cap the total wait AND the quiet period so a stream of URCs cannot
+    // extend the wait indefinitely.
+    auto waitWithTimeout = [&](String& buffer, uint32_t timeout_ms, uint32_t quiet_ms) {
         uint32_t start = millis();
+        uint32_t last_activity = start;
         while ((millis() - start) < timeout_ms) {
             bool got_char = false;
             while (serial->available()) {
                 buffer += char(serial->read());
                 got_char = true;
+                last_activity = millis();
             }
-            if (got_char) {
-                start = millis();  // reset quiet timer when data arrives
-            } else {
-                delay(5);
+            if (!got_char && (millis() - last_activity) >= quiet_ms) {
+                break;  // nothing new for quiet_ms
             }
+            delay(5);
         }
     };
 
@@ -4260,7 +4263,7 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
         serial->flush();
 
         String cpms_response;
-        waitWithTimeout(cpms_response, 2000);
+        waitWithTimeout(cpms_response, 2000, 250);
 
         // If CPMS failed or never answered, this storage location might not be available
         if (cpms_response.length() == 0 || cpms_response.indexOf("ERROR") >= 0) {

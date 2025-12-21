@@ -4227,6 +4227,23 @@ time_t parseSMSTimestamp(const String& timestamp_str) {
 // Collect all SMS from a storage location and add to vector
 // SIMPLE: Use AT+CMGL="ALL" and parse line by line
 bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, std::vector<SMSMessage>& messages) {
+    // Keep reads bounded so the SMS check cannot appear to hang forever
+    auto waitWithTimeout = [&](String& buffer, uint32_t timeout_ms) {
+        uint32_t start = millis();
+        while ((millis() - start) < timeout_ms) {
+            bool got_char = false;
+            while (serial->available()) {
+                buffer += char(serial->read());
+                got_char = true;
+            }
+            if (got_char) {
+                start = millis();  // reset quiet timer when data arrives
+            } else {
+                delay(5);
+            }
+        }
+    };
+
     // Set text mode
     serial->print("AT+CMGF=1\r");
     serial->flush();
@@ -4234,32 +4251,20 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
     while (serial->available()) {
         serial->read();
     }
-    
+
     // Switch to storage location if needed
     if (storage_name != "current") {
         // Set all three storage areas (read, write, receive) to the specified location
         String cmd = "AT+CPMS=\"" + storage_name + "\",\"" + storage_name + "\",\"" + storage_name + "\"\r";
         serial->print(cmd);
         serial->flush();
-        delay(500);
-        
-        // Read and verify response
-        String cpms_response = "";
-        uint32_t cpms_start = millis();
-        while ((millis() - cpms_start) < 2000) {
-            while (serial->available()) {
-                char c = serial->read();
-                cpms_response += c;
-                if (cpms_response.indexOf("OK") >= 0 || cpms_response.indexOf("ERROR") >= 0) {
-                    break;
-                }
-            }
-            if (cpms_response.indexOf("OK") >= 0 || cpms_response.indexOf("ERROR") >= 0) break;
-            delay(10);
-        }
-        
-        // If CPMS failed, this storage location might not be available
-        if (cpms_response.indexOf("ERROR") >= 0) {
+
+        String cpms_response;
+        waitWithTimeout(cpms_response, 2000);
+
+        // If CPMS failed or never answered, this storage location might not be available
+        if (cpms_response.length() == 0 || cpms_response.indexOf("ERROR") >= 0) {
+            Serial.printf("  SMS: %s storage unavailable (CPMS timeout/ERROR)\n", storage_name.c_str());
             return false;
         }
     } else {
@@ -4270,22 +4275,23 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
             serial->read();
         }
     }
-    
+
     // Request all messages
     serial->print("AT+CMGL=\"ALL\"\r");
     serial->flush();
-    delay(500);
-    
-    String response = "";
-    uint32_t start = millis();
+
+    String response;
     bool found_ok = false;
-    
-    // Read response
-    while ((millis() - start) < 10000) {
+    uint32_t start = millis();
+
+    // Read response with a hard cap so we never block more than a few seconds per storage
+    while ((millis() - start) < 6000) {
+        bool got_any = false;
         while (serial->available()) {
             char c = serial->read();
             response += c;
-            
+            got_any = true;
+
             if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
                 found_ok = true;
                 break;
@@ -4295,10 +4301,21 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
             }
         }
         if (found_ok) break;
+        if (!got_any && (millis() - start) > 1500 && response.length() == 0) {
+            // No response at all after 1.5s - treat as failure to avoid hanging
+            break;
+        }
         delay(10);
     }
-    
-    if (!found_ok || response.length() == 0) {
+
+    if (response.length() == 0) {
+        Serial.printf("  SMS: No response from %s storage\n", storage_name.c_str());
+        return false;
+    }
+
+    if (!found_ok && response.indexOf("+CMGL:") < 0) {
+        Serial.printf("  SMS: Timeout listing %s storage (partial response shown)\n", storage_name.c_str());
+        Serial.println(response);
         return false;
     }
     
@@ -4489,13 +4506,13 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
 bool getMostRecentSMS(HardwareSerial* serial, SMSMessage& most_recent) {
     std::vector<SMSMessage> all_messages;
     
-    // Check SM (SIM card) - most common location
+    Serial.println("  Gathering SMS from SM storage...");
     collectSMSFromStorage(serial, "SM", all_messages);
-    
-    // Check ME (module memory) - also common
+
+    Serial.println("  Gathering SMS from ME storage...");
     collectSMSFromStorage(serial, "ME", all_messages);
-    
-    // Also check "current" storage (whatever is currently set)
+
+    Serial.println("  Gathering SMS from current storage...");
     collectSMSFromStorage(serial, "current", all_messages);
     
     if (all_messages.empty()) {

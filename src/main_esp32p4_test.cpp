@@ -4011,19 +4011,18 @@ void lteFullCheck() {
     
     // Step 3: Check SMS
     Serial.println("\n[3/3] Checking SMS...");
-    int unread_sms = 0, total_sms = 0;
-    if (lteModule->getSMSCount(&unread_sms, &total_sms)) {
-        Serial.printf("SMS: %d used, %d total capacity\n", unread_sms, total_sms);
-        
-        if (unread_sms > 0) {
-            Serial.println("\nListing SMS messages (max 5):");
-            lteModule->listSMS(5);
-        } else {
-            Serial.println("No SMS messages in storage");
-        }
+    int used_slots = 0, total_slots = 0;
+    if (lteModule->getSMSCount(&used_slots, &total_slots)) {
+        Serial.printf("SMS used in current storage: %d of %d\n", used_slots, total_slots);
     } else {
         Serial.println("SMS: Unable to read count");
     }
+
+    Serial.println("\nListing SMS messages (max 5):");
+    // Always list messages from both SM and ME storages. getSMSCount() only reports
+    // usage for the current storage, so gating on it may skip messages in the
+    // other storage.
+    lteModule->listSMS(5);
     
     Serial.println("\n=== Full Check Complete ===");
     
@@ -4042,6 +4041,59 @@ struct SMSMessage {
     time_t timestamp;  // Unix timestamp for sorting
     String storage;    // Which storage location (SM, ME, etc.)
 };
+
+// Drain any pending bytes from the LTE serial port
+void lteDrainSerial(HardwareSerial* serial) {
+    if (serial == nullptr) {
+        return;
+    }
+
+    while (serial->available()) {
+        serial->read();
+    }
+}
+
+// Send an SMS-related AT command and wait for OK/ERROR with a simple parser
+bool lteSendSMSAT(HardwareSerial* serial, const String& command, String& response, uint32_t timeout_ms = 5000) {
+    if (serial == nullptr) {
+        return false;
+    }
+
+    lteDrainSerial(serial);
+
+    response = "";
+    serial->print(command);
+    serial->print("\r");
+    serial->flush();
+
+    uint32_t start = millis();
+    bool found_ok = false;
+    bool found_error = false;
+
+    while ((millis() - start) < timeout_ms) {
+        while (serial->available()) {
+            char c = serial->read();
+            response += c;
+
+            if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
+                found_ok = true;
+                break;
+            }
+            if (response.indexOf("ERROR") >= 0 ||
+                response.indexOf("+CME ERROR:") >= 0 ||
+                response.indexOf("+CMS ERROR:") >= 0) {
+                found_error = true;
+                break;
+            }
+        }
+        if (found_ok || found_error) {
+            break;
+        }
+        delay(10);
+    }
+
+    return found_ok;
+}
 
 // Parse SMS timestamp from format "yy/MM/dd,hh:mm:ss±zz" to time_t
 time_t parseSMSTimestamp(const String& timestamp_str) {
@@ -4077,72 +4129,57 @@ time_t parseSMSTimestamp(const String& timestamp_str) {
 
 // Collect all SMS from a storage location and add to vector
 bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, std::vector<SMSMessage>& messages) {
-    // Set text mode
-    serial->print("AT+CMGF=1\r");
-    serial->flush();
-    delay(200);
-    while (serial->available()) {
-        serial->read();
+    // Set character set and text mode to ensure predictable output
+    String response;
+    if (!lteSendSMSAT(serial, "AT+CSCS=\"IRA\"", response, 2000)) {
+        Serial.printf("  [DEBUG] Failed to set SMS character set for %s. Response: [%s]\n",
+                      storage_name.c_str(), response.c_str());
+        return false;
     }
-    
+
+    if (!lteSendSMSAT(serial, "AT+CMGF=1", response, 2000)) {
+        Serial.printf("  [DEBUG] Failed to set SMS text mode for %s. Response: [%s]\n",
+                      storage_name.c_str(), response.c_str());
+        return false;
+    }
+
     // Switch to storage location if needed
     if (storage_name != "current") {
-        String cmd = "AT+CPMS=\"" + storage_name + "\",\"" + storage_name + "\",\"" + storage_name + "\"\r";
-        serial->print(cmd);
-        serial->flush();
-        delay(500);
-        while (serial->available()) {
-            serial->read();
+        String cmd = "AT+CPMS=\"" + storage_name + "\",\"" + storage_name + "\",\"" + storage_name + "\"";
+        if (!lteSendSMSAT(serial, cmd, response, 5000)) {
+            Serial.printf("  [DEBUG] AT+CPMS failed for %s. Response: [%s]\n",
+                          storage_name.c_str(), response.c_str());
+            return false;
+        }
+        if (response.indexOf("+CPMS:") < 0) {
+            Serial.printf("  [DEBUG] AT+CPMS for %s did not report counts. Raw: [%s]\n",
+                          storage_name.c_str(), response.c_str());
         }
     } else {
         // For "current", just flush to ensure clean state
-        delay(200);
-        while (serial->available()) {
-            serial->read();
-        }
+        lteDrainSerial(serial);
+        delay(150);
     }
-    
+
     // Request all messages
-    serial->print("AT+CMGL=\"ALL\"\r");
-    serial->flush();
-    delay(300);
-    
-    String response = "";
-    uint32_t start = millis();
-    bool found_ok = false;
-    
-    // Read response (timeout 10 seconds for boot check)
-    while ((millis() - start) < 10000) {
-        while (serial->available()) {
-            char c = serial->read();
-            response += c;
-            
-            if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
-                found_ok = true;
-                break;
-            }
-            if (response.endsWith("ERROR\r\n") || response.endsWith("ERROR\r")) {
-                break;
-            }
-        }
-        if (found_ok) break;
-        delay(10);
-    }
-    
-    if (!found_ok) {
-        // Debug: show what we got (or didn't get)
+    if (!lteSendSMSAT(serial, "AT+CMGL=\"ALL\"", response, 15000)) {
         if (response.length() > 0) {
-            // Truncate if too long for debug output
             String debug_resp = response;
             if (debug_resp.length() > 200) {
                 debug_resp = debug_resp.substring(0, 200) + "...(truncated)";
             }
-            Serial.printf("  [DEBUG] AT+CMGL failed for %s. Response: [%s]\n", 
-                         storage_name.c_str(), debug_resp.c_str());
+            Serial.printf("  [DEBUG] AT+CMGL failed for %s. Response: [%s]\n",
+                          storage_name.c_str(), debug_resp.c_str());
         } else {
-            Serial.printf("  [DEBUG] AT+CMGL failed for %s. No response (timeout)\n", 
-                         storage_name.c_str());
+            Serial.printf("  [DEBUG] AT+CMGL failed for %s. No response (timeout)\n",
+                          storage_name.c_str());
         }
+        return false;
+    }
+
+    if (response.indexOf("+CMS ERROR:") >= 0) {
+        Serial.printf("  [DEBUG] AT+CMGL returned CMS error for %s: [%s]\n",
+                      storage_name.c_str(), response.c_str());
         return false;
     }
     
@@ -4247,13 +4284,16 @@ bool getMostRecentSMS(HardwareSerial* serial, SMSMessage& most_recent) {
     
     // Try SM (SIM card) first - most common location
     bool sm_ok = collectSMSFromStorage(serial, "SM", all_messages);
-    
+
     // Also try ME (module memory)
     bool me_ok = collectSMSFromStorage(serial, "ME", all_messages);
-    
+
+    // Combined storage (MT) can be populated on some firmwares
+    bool mt_ok = collectSMSFromStorage(serial, "MT", all_messages);
+
     // Debug output
-    Serial.printf("  [DEBUG] Collected %zu messages (SM: %s, ME: %s)\n", 
-                  all_messages.size(), sm_ok ? "OK" : "failed", me_ok ? "OK" : "failed");
+    Serial.printf("  [DEBUG] Collected %zu messages (SM: %s, ME: %s, MT: %s)\n",
+                  all_messages.size(), sm_ok ? "OK" : "failed", me_ok ? "OK" : "failed", mt_ok ? "OK" : "failed");
     
     if (all_messages.empty()) {
         return false;
@@ -4735,19 +4775,18 @@ void lteTest() {
     
     // 5. SMS Information
     Serial.println("\n--- SMS Information ---");
-    int unread_sms = 0, total_sms = 0;
-    if (lteModule->getSMSCount(&unread_sms, &total_sms)) {
-        Serial.printf("SMS: %d used, %d total capacity\n", unread_sms, total_sms);
-        
-        if (unread_sms > 0) {
-            Serial.println("\nListing SMS messages (max 5):");
-            lteModule->listSMS(5);
-        } else {
-            Serial.println("No SMS messages in storage");
-        }
+    int used_slots = 0, total_slots = 0;
+    if (lteModule->getSMSCount(&used_slots, &total_slots)) {
+        Serial.printf("SMS used in current storage: %d of %d\n", used_slots, total_slots);
     } else {
         Serial.println("SMS: Unable to read count");
     }
+
+    Serial.println("\nListing SMS messages (max 5):");
+    // Always list messages from both SM and ME storages. getSMSCount() only reports
+    // usage for the current storage, so gating on it may skip messages in the
+    // other storage.
+    lteModule->listSMS(5);
     
     Serial.println("\n========================\n");
     

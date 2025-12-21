@@ -4131,16 +4131,15 @@ void lteFullCheck() {
     
     // Step 3: Check SMS
     Serial.println("\n[3/3] Checking SMS...");
-    int unread_sms = 0, total_sms = 0;
-    if (lteModule->getSMSCount(&unread_sms, &total_sms)) {
-        Serial.printf("SMS: %d used, %d total capacity\n", unread_sms, total_sms);
-        
-        if (unread_sms > 0) {
-            Serial.println("\nListing SMS messages (max 5):");
-            lteModule->listSMS(5);
-        } else {
-            Serial.println("No SMS messages in storage");
-        }
+    int used_slots = 0, total_sms = 0;
+    if (lteModule->getSMSCount(&used_slots, &total_sms)) {
+        Serial.printf("SMS used in current storage: %d of %d\n", used_slots, total_sms);
+
+        Serial.println("\nListing SMS messages (max 5):");
+        // Always list messages from both SM and ME storages. getSMSCount() only reports
+        // usage for the current storage, so gating on it may skip messages in the other
+        // storage.
+        lteModule->listSMS(5);
     } else {
         Serial.println("SMS: Unable to read count");
     }
@@ -5259,16 +5258,15 @@ void lteTest() {
     
     // 5. SMS Information
     Serial.println("\n--- SMS Information ---");
-    int unread_sms = 0, total_sms = 0;
-    if (lteModule->getSMSCount(&unread_sms, &total_sms)) {
-        Serial.printf("SMS: %d used, %d total capacity\n", unread_sms, total_sms);
-        
-        if (unread_sms > 0) {
-            Serial.println("\nListing SMS messages (max 5):");
-            lteModule->listSMS(5);
-        } else {
-            Serial.println("No SMS messages in storage");
-        }
+    int used_slots = 0, total_sms = 0;
+    if (lteModule->getSMSCount(&used_slots, &total_sms)) {
+        Serial.printf("SMS used in current storage: %d of %d\n", used_slots, total_sms);
+
+        Serial.println("\nListing SMS messages (max 5):");
+        // Always list messages from both SM and ME storages. getSMSCount() only reports
+        // usage for the current storage, so gating on it may skip messages in the other
+        // storage.
+        lteModule->listSMS(5);
     } else {
         Serial.println("SMS: Unable to read count");
     }

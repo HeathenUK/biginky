@@ -209,7 +209,8 @@ int SIMCom_A7683E::waitResponse(uint32_t timeout_ms, String& data) {
     // when they're responses to AT+CREG? and AT+CEREG? commands
     const char* urc_prefixes[] = {
         "+CGEV:", "+CCIOTOPTI:", "+CMTI:", "+CMT:",
-        "+CDS:", "+CBM:", "+CMGS:", "+CDSI:", "+CMGR:", "+CMGL:",
+        "+CDS:", "+CBM:", "+CMGS:", "+CDSI:",
+        // +CMGL: and +CMGR: are intentionally not filtered to preserve SMS listings
         "+CLIP:", "+CCWA:", "+COLP:", "+CSSI:", "+CSSU:", "+CUSD:",
         "+CRING:", "+RING:", "+NO CARRIER", "+BUSY", "+NO ANSWER"
         // Note: +CME ERROR: and +CMS ERROR: are handled specially below
@@ -1114,7 +1115,12 @@ bool SIMCom_A7683E::getSMSCount(int* unread, int* total) {
     
     String used_str = response.substring(comma1 + 1, comma2);
     used_str.trim();
-    *unread = used_str.toInt();  // Note: this is total used, not just unread
+    // NOTE: The `unread` output actually returns the number of *used* message slots in
+    // the current storage (both read and unread), because AT+CPMS? does not provide an
+    // unread count.  The `total` parameter returns the total number of SMS slots in the
+    // current storage.  To determine the number of unread messages, parse the results
+    // of AT+CMGL="REC UNREAD".
+    *unread = used_str.toInt();
     
     // Get total capacity
     int quote2 = response.indexOf("\"", comma2 + 1);
@@ -1141,218 +1147,70 @@ bool SIMCom_A7683E::getSMSCount(int* unread, int* total) {
 }
 
 bool SIMCom_A7683E::listSMS(int max_messages) {
+    bool found_ok = false;
+
+    (void)max_messages;  // Currently used for informational printing only
+
     // Set text mode
     if (!sendAT("AT+CMGF=1")) {
         Serial.println("SIMCom A7683E: Failed to set text mode (CMGF=1)");
         return false;
     }
-    
-    // Check what storage locations are available
-    Serial.println("SIMCom A7683E: Checking SMS storage locations...");
-    String cpms_response;
-    if (sendAT("AT+CPMS=?", cpms_response, 5000)) {
-        Serial.printf("SIMCom A7683E: Available storage: %s\n", cpms_response.c_str());
-    }
-    
-    // Check current storage setting first
-    String current_cpms;
-    String current_storage = "unknown";
-    if (sendAT("AT+CPMS?", current_cpms, 3000)) {
-        Serial.printf("SIMCom A7683E: Current storage: %s\n", current_cpms.c_str());
-        // Extract current storage name
-        int cpms_start = current_cpms.indexOf("+CPMS: \"");
-        if (cpms_start >= 0) {
-            cpms_start += 8;
-            int quote_end = current_cpms.indexOf("\"", cpms_start);
-            if (quote_end > cpms_start) {
-                current_storage = current_cpms.substring(cpms_start, quote_end);
-                Serial.printf("SIMCom A7683E: Current storage is: %s\n", current_storage.c_str());
-            }
-        }
-    }
-    
-    // Try to read from current storage first (whatever it is)
-    Serial.printf("SIMCom A7683E: Reading from current storage (%s)...\n", current_storage.c_str());
-    
-    // Get count from current storage
-    int unread_current = 0, total_current = 0;
-    if (getSMSCount(&unread_current, &total_current)) {
-        Serial.printf("SIMCom A7683E: Current storage (%s): %d used, %d total\n", current_storage.c_str(), unread_current, total_current);
-    } else {
-        Serial.println("SIMCom A7683E: Failed to get SMS count from current storage");
-    }
-    
-    // List messages from current storage
-    flushUART();
-    delay(200);
-    _serial->print("AT+CMGL=\"ALL\"");
-    _serial->print("\r");
-    _serial->flush();
-    
-    String response;
-    uint32_t start = millis();
-    bool found_ok = false;
-    bool found_error = false;
-    bool found_cms_error = false;
-    
-    Serial.printf("SIMCom A7683E: SMS Messages from %s:\n", current_storage.c_str());
-    
-    // Read response with longer timeout and progressive output
-    while ((millis() - start) < 30000) {  // 30 second timeout
-        while (_serial->available()) {
-            char c = _serial->read();
-            response += c;
-            Serial.print(c);
-            
-            if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
-                found_ok = true;
-                goto done_current;
-            }
-            if (response.endsWith("ERROR\r\n") || response.endsWith("ERROR\r")) {
-                found_error = true;
-                goto done_current;
-            }
-            // Check for CMS ERROR - but only treat as error if it's not just a URC after OK
-            if (response.indexOf("+CMS ERROR:") >= 0) {
-                // If we already have OK, this is just a URC, ignore it
-                if (response.indexOf("OK") >= 0) {
-                    found_cms_error = true;  // Mark it but don't treat as fatal
-                } else {
-                    found_error = true;
-                    goto done_current;
+
+    auto getCurrentStorage = [&]() -> String {
+        String current_cpms;
+        if (sendAT("AT+CPMS?", current_cpms, 3000)) {
+            int cpms_start = current_cpms.indexOf("+CPMS: \"");
+            if (cpms_start >= 0) {
+                cpms_start += 8;
+                int quote_end = current_cpms.indexOf("\"", cpms_start);
+                if (quote_end > cpms_start) {
+                    return current_cpms.substring(cpms_start, quote_end);
                 }
             }
-            if (response.indexOf("+CME ERROR:") >= 0) {
-                found_error = true;
-                goto done_current;
-            }
         }
-        delay(10);
-    }
-    
-done_current:
-    Serial.println();
-    if (found_cms_error && found_ok) {
-        Serial.println("SIMCom A7683E: Note - +CMS ERROR appeared but OK was received (likely a URC)");
-    }
-    
-    // If current storage is not SM, also try SM explicitly
+        return String("SM");
+    };
+
+    String current_storage = getCurrentStorage();
+    Serial.printf("SIMCom A7683E: Current storage is: %s\n", current_storage.c_str());
+
+    auto listFrom = [&](const String& storage) {
+        bool ok = false;
+        if (current_storage != storage) {
+            Serial.println(String("Switching SMS storage to ") + storage);
+            String set_storage_cmd = String("AT+CPMS=\"") + storage + "\",\"" + storage + "\",\"" + storage + "\"";
+            sendAT(set_storage_cmd.c_str(), 2000);
+            current_storage = storage;
+        }
+
+        int used_slots = 0;
+        int total_slots = 0;
+        if (getSMSCount(&used_slots, &total_slots)) {
+            Serial.printf("SIMCom A7683E: Storage %s: %d used, %d total\n", storage.c_str(), used_slots, total_slots);
+        }
+
+        Serial.printf("SIMCom A7683E: SMS Messages from %s:\n", storage.c_str());
+
+        String response;
+        ok = sendAT("AT+CMGL=\"ALL\"", response, 30000);
+        if (response.length() > 0) {
+            Serial.print(response);
+        }
+
+        if (ok || response.indexOf("+CMGL:") >= 0) {
+            found_ok = true;
+        }
+    };
+
+    // List from current, then SM, then ME storages
+    listFrom(current_storage);
     if (current_storage != "SM") {
-        Serial.println("SIMCom A7683E: Also trying SIM card storage (SM)...");
-        String cpms_sm_response;
-        if (sendAT("AT+CPMS=\"SM\",\"SM\",\"SM\"", cpms_sm_response, 3000)) {
-            Serial.printf("SIMCom A7683E: Successfully switched to SM storage. Response: [%s]\n", cpms_sm_response.c_str());
-            delay(500);
-            
-            // Get count from SM
-            int unread_sm = 0, total_sm = 0;
-            if (getSMSCount(&unread_sm, &total_sm)) {
-                Serial.printf("SIMCom A7683E: SM storage: %d used, %d total\n", unread_sm, total_sm);
-                
-                if (total_sm > 0) {
-                    // List messages from SM
-                    flushUART();
-                    _serial->print("AT+CMGL=\"ALL\"");
-                    _serial->print("\r");
-                    _serial->flush();
-                    
-                    response = "";
-                    start = millis();
-                    found_ok = false;
-                    found_error = false;
-                    
-                    Serial.println("SIMCom A7683E: SMS Messages from SM:");
-                    
-                    while ((millis() - start) < 30000) {
-                        while (_serial->available()) {
-                            char c = _serial->read();
-                            response += c;
-                            Serial.print(c);
-                            
-                            if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
-                                found_ok = true;
-                                goto done_sm;
-                            }
-                            if (response.endsWith("ERROR\r\n") || response.endsWith("ERROR\r")) {
-                                found_error = true;
-                                goto done_sm;
-                            }
-                            if (response.indexOf("+CME ERROR:") >= 0 || response.indexOf("+CMS ERROR:") >= 0) {
-                                found_error = true;
-                                goto done_sm;
-                            }
-                        }
-                        delay(10);
-                    }
-                    
-                done_sm:
-                    Serial.println();
-                }
-            }
-        } else {
-            Serial.printf("SIMCom A7683E: Failed to switch to SM storage. Response: [%s]\n", cpms_sm_response.c_str());
-        }
+        listFrom("SM");
     }
-    
-    // Also check module memory (ME) if current storage is not ME
     if (current_storage != "ME") {
-        Serial.println("SIMCom A7683E: Also checking module memory (ME)...");
-        flushUART();
-        delay(200);
-        String cpms_me_response;
-        if (sendAT("AT+CPMS=\"ME\",\"ME\",\"ME\"", cpms_me_response, 5000)) {
-            Serial.printf("SIMCom A7683E: Successfully switched to ME storage. Response: [%s]\n", cpms_me_response.c_str());
-            delay(500);
-            
-            int unread_me = 0, total_me = 0;
-            if (getSMSCount(&unread_me, &total_me)) {
-                Serial.printf("SIMCom A7683E: ME storage: %d used, %d total\n", unread_me, total_me);
-                
-                if (total_me > 0) {
-                    // List messages from ME
-                    flushUART();
-                    _serial->print("AT+CMGL=\"ALL\"");
-                    _serial->print("\r");
-                    _serial->flush();
-                    
-                    response = "";
-                    start = millis();
-                    found_ok = false;
-                    found_error = false;
-                    
-                    Serial.println("SIMCom A7683E: SMS Messages from ME:");
-                    
-                    while ((millis() - start) < 30000) {
-                        while (_serial->available()) {
-                            char c = _serial->read();
-                            response += c;
-                            Serial.print(c);
-                            
-                            if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
-                                found_ok = true;
-                                goto done_me;
-                            }
-                            if (response.endsWith("ERROR\r\n") || response.endsWith("ERROR\r")) {
-                                found_error = true;
-                                goto done_me;
-                            }
-                            if (response.indexOf("+CME ERROR:") >= 0 || response.indexOf("+CMS ERROR:") >= 0) {
-                                found_error = true;
-                                goto done_me;
-                            }
-                        }
-                        delay(10);
-                    }
-                    
-                done_me:
-                    Serial.println();
-                }
-            }
-        } else {
-            Serial.printf("SIMCom A7683E: Failed to switch to ME storage. Response: [%s]\n", cpms_me_response.c_str());
-        }
+        listFrom("ME");
     }
-    
-    // Return true if we found any messages (OK response) or if we successfully read from any storage
+
     return found_ok;
 }

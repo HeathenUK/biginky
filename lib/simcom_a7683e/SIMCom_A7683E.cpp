@@ -367,6 +367,55 @@ bool SIMCom_A7683E::sendAT(const char* command, String& response, uint32_t timeo
     return waitResponse(timeout_ms, response) == 1;
 }
 
+bool SIMCom_A7683E::sendATBounded(const char* command,
+                       String& response,
+                       uint32_t total_timeout_ms,
+                       uint32_t quiet_timeout_ms) {
+    flushUART();
+    _serial->print(command);
+    _serial->print("\r");
+    _serial->flush();
+
+    uint32_t start = millis();
+    uint32_t last_activity = start;
+    bool saw_ok = false;
+
+    while ((millis() - start) < total_timeout_ms) {
+        bool got_char = false;
+        while (_serial->available()) {
+            response += char(_serial->read());
+            last_activity = millis();
+            got_char = true;
+
+            if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
+                saw_ok = true;
+                break;
+            }
+            if (response.endsWith("ERROR\r\n") || response.endsWith("ERROR\r")) {
+                break;
+            }
+        }
+
+        if (saw_ok) {
+            break;
+        }
+
+        if (!got_char && response.length() > 0 && (millis() - last_activity) >= quiet_timeout_ms) {
+            // We got something but the line went quiet; stop waiting so URCs can't stretch waits forever
+            break;
+        }
+
+        if (!got_char && response.length() == 0 && (millis() - last_activity) >= quiet_timeout_ms) {
+            // No response at all within quiet_timeout_ms
+            break;
+        }
+
+        delay(5);
+    }
+
+    return saw_ok || response.length() > 0;
+}
+
 SIMComSimStatus SIMCom_A7683E::getSimStatus() {
     String response;
     if (!sendAT("AT+CPIN?", response)) {
@@ -1180,7 +1229,10 @@ bool SIMCom_A7683E::listSMS(int max_messages) {
         if (current_storage != storage) {
             Serial.println(String("Switching SMS storage to ") + storage);
             String set_storage_cmd = String("AT+CPMS=\"") + storage + "\",\"" + storage + "\",\"" + storage + "\"";
-            sendAT(set_storage_cmd.c_str(), 2000);
+            String cpms_response;
+            if (!sendATBounded(set_storage_cmd.c_str(), cpms_response, 5000, 800)) {
+                Serial.printf("SIMCom A7683E: CPMS switch to %s timed out or stayed quiet.\n", storage.c_str());
+            }
             current_storage = storage;
         }
 
@@ -1193,13 +1245,15 @@ bool SIMCom_A7683E::listSMS(int max_messages) {
         Serial.printf("SIMCom A7683E: SMS Messages from %s:\n", storage.c_str());
 
         String response;
-        ok = sendAT("AT+CMGL=\"ALL\"", response, 30000);
+        ok = sendATBounded("AT+CMGL=\"ALL\"", response, 10000, 750);
         if (response.length() > 0) {
             Serial.print(response);
         }
 
         bool has_messages = ok || response.indexOf("+CMGL:") >= 0;
-        if (has_messages) {
+        if (!has_messages) {
+            Serial.printf("SIMCom A7683E: No SMS payload returned from %s within bounds.\n", storage.c_str());
+        } else {
             found_ok = true;
         }
 

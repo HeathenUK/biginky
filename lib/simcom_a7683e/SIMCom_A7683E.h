@@ -254,6 +254,10 @@ private:
     // AT command helpers
     bool sendAT(const char* command, uint32_t timeout_ms = SIMCOM_AT_TIMEOUT_SHORT);
     bool sendAT(const char* command, String& response, uint32_t timeout_ms = SIMCOM_AT_TIMEOUT_SHORT);
+    bool sendATBounded(const char* command,
+                       String& response,
+                       uint32_t total_timeout_ms,
+                       uint32_t quiet_timeout_ms);
     int waitResponse(uint32_t timeout_ms = SIMCOM_AT_TIMEOUT_SHORT);
     int waitResponse(uint32_t timeout_ms, String& data);
     int waitResponse(uint32_t timeout_ms, const char* expected);

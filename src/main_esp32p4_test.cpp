@@ -4227,9 +4227,7 @@ time_t parseSMSTimestamp(const String& timestamp_str) {
 // Collect all SMS from a storage location and add to vector
 // SIMPLE: Use AT+CMGL="ALL" and parse line by line
 bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, std::vector<SMSMessage>& messages) {
-    // Keep reads bounded so the SMS check cannot appear to hang forever
-    // We cap the total wait AND the quiet period so a stream of URCs cannot
-    // extend the wait indefinitely.
+    // Keep reads bounded so the SMS check cannot appear to hang forever.
     auto waitWithTimeout = [&](String& buffer, uint32_t timeout_ms, uint32_t quiet_ms) {
         uint32_t start = millis();
         uint32_t last_activity = start;
@@ -4240,9 +4238,19 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
                 got_char = true;
                 last_activity = millis();
             }
-            if (!got_char && (millis() - last_activity) >= quiet_ms) {
-                break;  // nothing new for quiet_ms
+
+            if (!got_char) {
+                uint32_t silent = millis() - last_activity;
+                if (buffer.length() == 0 && silent >= quiet_ms) {
+                    // Nothing at all within the quiet window
+                    break;
+                }
+                if (buffer.length() > 0 && silent >= quiet_ms) {
+                    // We saw some response but the line went quiet; stop waiting
+                    break;
+                }
             }
+
             delay(5);
         }
     };
@@ -4263,7 +4271,7 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
         serial->flush();
 
         String cpms_response;
-        waitWithTimeout(cpms_response, 2000, 250);
+        waitWithTimeout(cpms_response, 2000, 400);
 
         // If CPMS failed or never answered, this storage location might not be available
         if (cpms_response.length() == 0 || cpms_response.indexOf("ERROR") >= 0) {
@@ -4286,14 +4294,17 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
     String response;
     bool found_ok = false;
     uint32_t start = millis();
+    uint32_t last_activity = start;
+    const uint32_t quiet_ms = 750;
 
     // Read response with a hard cap so we never block more than a few seconds per storage
-    while ((millis() - start) < 6000) {
+    while ((millis() - start) < 7000) {
         bool got_any = false;
         while (serial->available()) {
             char c = serial->read();
             response += c;
             got_any = true;
+            last_activity = millis();
 
             if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
                 found_ok = true;
@@ -4304,11 +4315,13 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
             }
         }
         if (found_ok) break;
-        if (!got_any && (millis() - start) > 1500 && response.length() == 0) {
-            // No response at all after 1.5s - treat as failure to avoid hanging
-            break;
+        if (!got_any) {
+            uint32_t silent = millis() - last_activity;
+            if (silent >= quiet_ms) {
+                break;
+            }
         }
-        delay(10);
+        delay(5);
     }
 
     if (response.length() == 0) {

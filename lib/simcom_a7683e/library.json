@@ -1,0 +1,14 @@
+{
+    "name": "simcom_a7683e",
+    "version": "1.0.0",
+    "description": "SIMCom A7683E 4G LTE module driver for Clipper breakout board",
+    "keywords": "lte, 4g, cellular, simcom, a7683e, ppp, modem",
+    "authors": [
+        {
+            "name": "biginky"
+        }
+    ],
+    "frameworks": ["arduino"],
+    "platforms": ["raspberrypi", "espressif32"]
+}
+

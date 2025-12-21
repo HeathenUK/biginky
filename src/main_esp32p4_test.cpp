@@ -4226,113 +4226,24 @@ time_t parseSMSTimestamp(const String& timestamp_str) {
 
 // Collect all SMS from a storage location and add to vector
 // SIMPLE: Use AT+CMGL="ALL" and parse line by line
-bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, std::vector<SMSMessage>& messages) {
-    // Keep reads bounded so the SMS check cannot appear to hang forever.
-    auto waitWithTimeout = [&](String& buffer, uint32_t timeout_ms, uint32_t quiet_ms) {
-        uint32_t start = millis();
-        uint32_t last_activity = start;
-        while ((millis() - start) < timeout_ms) {
-            bool got_char = false;
-            while (serial->available()) {
-                buffer += char(serial->read());
-                got_char = true;
-                last_activity = millis();
-            }
-
-            if (!got_char) {
-                uint32_t silent = millis() - last_activity;
-                if (buffer.length() == 0 && silent >= quiet_ms) {
-                    // Nothing at all within the quiet window
-                    break;
-                }
-                if (buffer.length() > 0 && silent >= quiet_ms) {
-                    // We saw some response but the line went quiet; stop waiting
-                    break;
-                }
-            }
-
-            delay(5);
-        }
-    };
-
-    // Set text mode
-    serial->print("AT+CMGF=1\r");
-    serial->flush();
-    delay(200);
-    while (serial->available()) {
-        serial->read();
+bool collectSMSFromStorage(SIMCom_A7683E* module, const String& storage_name, std::vector<SMSMessage>& messages) {
+    if (module == nullptr) {
+        Serial.println("  SMS: Module not available");
+        return false;
     }
-
-    // Switch to storage location if needed
-    if (storage_name != "current") {
-        // Set all three storage areas (read, write, receive) to the specified location
-        String cmd = "AT+CPMS=\"" + storage_name + "\",\"" + storage_name + "\",\"" + storage_name + "\"\r";
-        serial->print(cmd);
-        serial->flush();
-
-        String cpms_response;
-        waitWithTimeout(cpms_response, 2000, 400);
-
-        // If CPMS failed or never answered, this storage location might not be available
-        if (cpms_response.length() == 0 || cpms_response.indexOf("ERROR") >= 0) {
-            Serial.printf("  SMS: %s storage unavailable (CPMS timeout/ERROR)\n", storage_name.c_str());
-            return false;
-        }
-    } else {
-        // For "current", just query what's currently set (don't change it)
-        // This ensures we check whatever storage is currently active
-        delay(200);
-        while (serial->available()) {
-            serial->read();
-        }
-    }
-
-    // Request all messages
-    serial->print("AT+CMGL=\"ALL\"\r");
-    serial->flush();
 
     String response;
-    bool found_ok = false;
-    uint32_t start = millis();
-    uint32_t last_activity = start;
-    const uint32_t quiet_ms = 750;
-
-    // Read response with a hard cap so we never block more than a few seconds per storage
-    while ((millis() - start) < 7000) {
-        bool got_any = false;
-        while (serial->available()) {
-            char c = serial->read();
-            response += c;
-            got_any = true;
-            last_activity = millis();
-
-            if (response.endsWith("OK\r\n") || response.endsWith("OK\r")) {
-                found_ok = true;
-                break;
-            }
-            if (response.endsWith("ERROR\r\n") || response.endsWith("ERROR\r")) {
-                break;
-            }
+    if (!module->fetchSMSFromStorage(storage_name, response, 7000, 750)) {
+        if (response.length() == 0) {
+            Serial.printf("  SMS: %s storage unavailable or silent\n", storage_name.c_str());
+            return false;
         }
-        if (found_ok) break;
-        if (!got_any) {
-            uint32_t silent = millis() - last_activity;
-            if (silent >= quiet_ms) {
-                break;
-            }
+
+        if (response.indexOf("+CMGL:") < 0) {
+            Serial.printf("  SMS: Timeout listing %s storage (partial response shown)\n", storage_name.c_str());
+            Serial.println(response);
+            return false;
         }
-        delay(5);
-    }
-
-    if (response.length() == 0) {
-        Serial.printf("  SMS: No response from %s storage\n", storage_name.c_str());
-        return false;
-    }
-
-    if (!found_ok && response.indexOf("+CMGL:") < 0) {
-        Serial.printf("  SMS: Timeout listing %s storage (partial response shown)\n", storage_name.c_str());
-        Serial.println(response);
-        return false;
     }
     
     // Simple parser: find each +CMGL: line, extract header and text
@@ -4519,17 +4430,17 @@ bool collectSMSFromStorage(HardwareSerial* serial, const String& storage_name, s
 
 // Get most recent SMS from all storage locations
 // CRITICAL: We check ALL possible storage locations to ensure we never miss a message
-bool getMostRecentSMS(HardwareSerial* serial, SMSMessage& most_recent) {
+bool getMostRecentSMS(SIMCom_A7683E* module, SMSMessage& most_recent) {
     std::vector<SMSMessage> all_messages;
-    
+
     Serial.println("  Gathering SMS from SM storage...");
-    collectSMSFromStorage(serial, "SM", all_messages);
+    collectSMSFromStorage(module, "SM", all_messages);
 
     Serial.println("  Gathering SMS from ME storage...");
-    collectSMSFromStorage(serial, "ME", all_messages);
+    collectSMSFromStorage(module, "ME", all_messages);
 
     Serial.println("  Gathering SMS from current storage...");
-    collectSMSFromStorage(serial, "current", all_messages);
+    collectSMSFromStorage(module, "current", all_messages);
     
     if (all_messages.empty()) {
         return false;
@@ -4772,7 +4683,7 @@ bool lteFastBootCheck() {
     // Get most recent SMS from all storage locations (sorted by timestamp)
     Serial.print("  Checking SMS...");
     SMSMessage most_recent;
-    if (getMostRecentSMS(&Serial1, most_recent)) {
+    if (getMostRecentSMS(lteModule, most_recent)) {
         // Check if this is a new message
         bool was_stale = false;
         if (lastSMSTimestamp > 0 && most_recent.timestamp < lastSMSTimestamp) {
@@ -5125,7 +5036,7 @@ static void performSMSCheckOnly() {
     // Now check for new SMS (module is registered)
     Serial.print("Checking for new SMS...");
     SMSMessage most_recent;
-    if (getMostRecentSMS(&Serial1, most_recent)) {
+    if (getMostRecentSMS(lteModule, most_recent)) {
         // Handle stale stored timestamp: if stored timestamp is newer than any visible message,
         // it means the message was deleted or the timestamp is wrong - reset to most recent visible
         bool was_stale = false;
@@ -6211,7 +6122,7 @@ void setup() {
                 
                 // Get most recent SMS
                 SMSMessage most_recent;
-                if (getMostRecentSMS(&Serial1, most_recent)) {
+                if (getMostRecentSMS(lteModule, most_recent)) {
                     // Handle stale stored timestamp: if stored timestamp is newer than any visible message,
                     // it means the message was deleted or the timestamp is wrong - reset to most recent visible
                     if (lastSMSTimestamp > 0 && most_recent.timestamp < lastSMSTimestamp) {
@@ -6254,7 +6165,7 @@ void setup() {
                     
                     // Get most recent SMS
                     SMSMessage most_recent;
-                    if (getMostRecentSMS(&Serial1, most_recent)) {
+                    if (getMostRecentSMS(lteModule, most_recent)) {
                         // Handle stale stored timestamp: if stored timestamp is newer than any visible message,
                         // it means the message was deleted or the timestamp is wrong - reset to most recent visible
                         if (lastSMSTimestamp > 0 && most_recent.timestamp < lastSMSTimestamp) {

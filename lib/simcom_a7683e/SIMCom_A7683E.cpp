@@ -1271,3 +1271,38 @@ bool SIMCom_A7683E::listSMS(int max_messages) {
 
     return found_ok;
 }
+
+bool SIMCom_A7683E::fetchSMSFromStorage(const String& storage,
+                                        String& response,
+                                        uint32_t total_timeout_ms,
+                                        uint32_t quiet_timeout_ms) {
+    // Always operate in text mode before listing messages.
+    if (!sendAT("AT+CMGF=1")) {
+        Serial.println("SIMCom A7683E: Failed to set text mode before fetching SMS");
+        return false;
+    }
+
+    String current_storage = storage;
+    current_storage.toUpperCase();
+
+    if (current_storage != "CURRENT") {
+        String cpms_cmd = String("AT+CPMS=\"") + current_storage + "\",\"" + current_storage + "\",\"" + current_storage + "\"";
+        String cpms_response;
+        if (!sendATBounded(cpms_cmd.c_str(), cpms_response, total_timeout_ms, quiet_timeout_ms)) {
+            Serial.printf("SIMCom A7683E: CPMS switch to %s timed out or stayed quiet.\n", current_storage.c_str());
+            // If we got no response at all, bail. Otherwise continue and let the caller parse.
+            if (cpms_response.length() == 0) {
+                return false;
+            }
+        }
+    }
+
+    response = "";
+    bool ok = sendATBounded("AT+CMGL=\"ALL\"", response, total_timeout_ms, quiet_timeout_ms);
+    if (!ok && response.indexOf("+CMGL:") < 0) {
+        Serial.printf("SIMCom A7683E: No SMS payload returned from %s storage.\n", current_storage.c_str());
+        return false;
+    }
+
+    return response.length() > 0;
+}

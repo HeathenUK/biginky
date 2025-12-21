@@ -218,6 +218,19 @@ public:
     bool listSMS(int max_messages = 5);
 
     /**
+     * @brief Fetch SMS messages from a storage with bounded waits.
+     * @param storage Storage name ("SM", "ME", or "current" to leave unchanged)
+     * @param response Raw response buffer populated with any modem output
+     * @param total_timeout_ms Absolute cap for the request
+     * @param quiet_timeout_ms How long to wait after the last byte before bailing
+     * @return true if any SMS payload was returned, false otherwise
+     */
+    bool fetchSMSFromStorage(const String& storage,
+                             String& response,
+                             uint32_t total_timeout_ms = 7000,
+                             uint32_t quiet_timeout_ms = 750);
+
+    /**
      * @brief Check if connected to network
      * @return true if connected, false otherwise
      */

@@ -1175,7 +1175,7 @@ bool SIMCom_A7683E::listSMS(int max_messages) {
     String current_storage = getCurrentStorage();
     Serial.printf("SIMCom A7683E: Current storage is: %s\n", current_storage.c_str());
 
-    auto listFrom = [&](const String& storage) {
+    auto listFrom = [&](const String& storage) -> bool {
         bool ok = false;
         if (current_storage != storage) {
             Serial.println(String("Switching SMS storage to ") + storage);
@@ -1198,9 +1198,12 @@ bool SIMCom_A7683E::listSMS(int max_messages) {
             Serial.print(response);
         }
 
-        if (ok || response.indexOf("+CMGL:") >= 0) {
+        bool has_messages = ok || response.indexOf("+CMGL:") >= 0;
+        if (has_messages) {
             found_ok = true;
         }
+
+        return has_messages;
     };
 
     // List from current, then SM, then ME storages

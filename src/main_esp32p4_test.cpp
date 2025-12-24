@@ -60,7 +60,10 @@
 // WiFi support for ESP32-P4 (via ESP32-C6 companion chip)
 #if !defined(DISABLE_WIFI) || defined(ENABLE_WIFI_TEST)
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
+#include <ArduinoJson.h>
 #define WIFI_ENABLED 1
 #else
 #define WIFI_ENABLED 0
@@ -234,14 +237,16 @@ static AudioOutputI2S* g_audio_output = nullptr;
 static TaskHandle_t g_audio_task = nullptr;
 static volatile bool g_audio_running = false;
 static int g_audio_volume_pct = 50;  // UI percent (0..100), mapped into codec range below
+static Preferences volumePrefs;  // NVS preferences for volume storage
+static Preferences numbersPrefs;  // NVS preferences for allowed phone numbers
 static bool g_codec_ready = false;
 
 static TwoWire g_codec_wire0(0);
 static TwoWire g_codec_wire1(1);
 static TwoWire* g_codec_wire = nullptr;
 
-static constexpr int kCodecVolumeMinPct = 50; // inaudible below this (empirical)
-static constexpr int kCodecVolumeMaxPct = 80; // too loud above this (empirical)
+static constexpr int kCodecVolumeMinPct = 30; // inaudible below this (silent threshold)
+static constexpr int kCodecVolumeMaxPct = 80; // max volume (too loud above this)
 
 // Auto demo cycle settings: random PNG + clock overlay + short beep + deep sleep
 static constexpr bool kAutoCycleEnabled = true;
@@ -486,8 +491,8 @@ static bool audio_beep(uint32_t freq_hz, uint32_t duration_ms) {
         delay(10);
     }
 
-    // Ensure audible volume window
-    (void)g_codec.setDacVolumePercentMapped(60, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+    // Ensure audible volume from saved setting
+    (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
     (void)g_codec.setMute(false);
 
     const float two_pi = 2.0f * 3.14159265358979323846f;
@@ -1267,8 +1272,8 @@ bool playWavFile(const String& audioPath) {
         delay(10);
     }
     
-    // Set volume to reasonable level and unmute
-    (void)g_codec.setDacVolumePercentMapped(60, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+    // Set volume to saved level and unmute
+    (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
     (void)g_codec.setMute(false);
     
     // Validate file format
@@ -1558,6 +1563,20 @@ static bool handlePingCommand(const String& originalMessage);
 static bool handleNextCommand();
 static bool handleGoCommand(const String& parameter);
 static bool handleTextCommand(const String& parameter);
+static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor);
+static bool handleMultiTextCommand(const String& parameter);
+static bool handleGetCommand(const String& parameter);
+static bool handleVolumeCommand(const String& parameter);
+static bool handleNewNumberCommand(const String& parameter);
+static bool handleDelNumberCommand(const String& parameter);
+static bool handleListNumbersCommand();
+static bool handleShowCommand(const String& parameter);
+void volumeLoadFromNVS();  // Load volume from NVS (called on startup)
+void volumeSaveToNVS();    // Save volume to NVS (called when volume changes)
+bool isNumberAllowed(const String& number);  // Check if number is in allowed list
+bool addAllowedNumber(const String& number);  // Add number to allowed list in NVS
+bool removeAllowedNumber(const String& number);  // Remove number from allowed list in NVS
+void numbersLoadFromNVS();  // Load allowed numbers from NVS (called on startup)
 void mqttDisconnect();
 bool wifiConnectPersistent(int maxRetries = 10, uint32_t timeoutPerAttemptMs = 30000, bool required = true);
 #endif // WIFI_ENABLED
@@ -2017,11 +2036,11 @@ static void auto_cycle_task(void* arg) {
     }
 #endif
     
-    // Adaptive sizing for quote as well
-    float quoteFontSize = 48.0f;
-    float authorFontSize = 32.0f;
-    const float minQuoteFontSize = 28.0f;
-    const float minAuthorFontSize = 20.0f;
+    // Adaptive sizing for quote as well (doubled from original 48/32)
+    float quoteFontSize = 96.0f;
+    float authorFontSize = 64.0f;
+    const float minQuoteFontSize = 56.0f;  // Doubled from 28
+    const float minAuthorFontSize = 40.0f;  // Doubled from 20
     
     TextPlacementAnalyzer::QuoteLayoutResult quoteLayout;
     attempts = 0;
@@ -2479,6 +2498,21 @@ static String extractFromFieldFromMessage(const String& msg) {
  *   }
  */
 static bool handleMqttCommand(const String& command, const String& originalMessage) {
+    // Check if the sender number is allowed (all commands require this, including !newno)
+    // The hardcoded number +447816969344 is always allowed, so it can add numbers without locking us out
+    String senderNumber = extractFromFieldFromMessage(originalMessage);
+    if (senderNumber.length() == 0) {
+        Serial.println("ERROR: Could not extract sender number from message - command rejected");
+        return false;
+    }
+    
+    if (!isNumberAllowed(senderNumber)) {
+        Serial.printf("ERROR: Number %s is not in allowed list - command rejected\n", senderNumber.c_str());
+        return false;
+    }
+    
+    Serial.printf("Command from allowed number: %s\n", senderNumber.c_str());
+    
     if (command == "!clear") {
         return handleClearCommand();
     }
@@ -2496,9 +2530,186 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
         return handleGoCommand(param);
     }
     
-    if (command.startsWith("!text")) {
+    // Helper function to extract text parameter from command/message
+    auto extractTextParameter = [&](const String& cmdName) -> String {
+        String textToDisplay = "";
+        
+        // Check if it's JSON format
+        if (originalMessage.startsWith("{")) {
+            // Parse JSON to extract "text" field (preserving case)
+            StaticJsonDocument<2048> doc;
+            DeserializationError error = deserializeJson(doc, originalMessage);
+            if (!error && doc.containsKey("text")) {
+                textToDisplay = doc["text"].as<String>();
+            } else {
+                // JSON parse failed or no "text" field, try to extract manually
+                int textStart = originalMessage.indexOf("\"text\"");
+                if (textStart >= 0) {
+                    int colonPos = originalMessage.indexOf(':', textStart);
+                    int quoteStart = originalMessage.indexOf('"', colonPos);
+                    if (quoteStart >= 0) {
+                        int quoteEnd = originalMessage.indexOf('"', quoteStart + 1);
+                        if (quoteEnd > quoteStart) {
+                            textToDisplay = originalMessage.substring(quoteStart + 1, quoteEnd);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Not JSON - extract parameter from original message (preserving case)
+            String lowerMsg = originalMessage;
+            lowerMsg.toLowerCase();
+            int cmdPos = lowerMsg.indexOf(cmdName);
+            if (cmdPos >= 0) {
+                int spacePos = originalMessage.indexOf(' ', cmdPos + cmdName.length());
+                if (spacePos >= 0) {
+                    textToDisplay = originalMessage.substring(spacePos + 1);
+                    textToDisplay.trim();
+                }
+            }
+        }
+        
+        // Fallback to extracting from command if above failed
+        if (textToDisplay.length() == 0) {
+            textToDisplay = extractCommandParameter(command);
+        }
+        
+        // Remove command prefix if present (case insensitive)
+        textToDisplay.trim();
+        String lowerText = textToDisplay;
+        lowerText.toLowerCase();
+        String prefixToRemove = cmdName + " ";
+        if (lowerText.startsWith(prefixToRemove)) {
+            textToDisplay = textToDisplay.substring(prefixToRemove.length());
+            textToDisplay.trim();
+        }
+        
+        return textToDisplay;
+    };
+    
+    if (command.startsWith("!text") && !command.startsWith("!yellow_text") && 
+        !command.startsWith("!red_text") && !command.startsWith("!blue_text") && 
+        !command.startsWith("!green_text") && !command.startsWith("!black_text") &&
+        !command.startsWith("!multi_text")) {
+        String textToDisplay = extractTextParameter("!text");
+        return handleTextCommandWithColor(textToDisplay, EL133UF1_WHITE, EL133UF1_BLACK);
+    }
+    
+    if (command.startsWith("!yellow_text")) {
+        String textToDisplay = extractTextParameter("!yellow_text");
+        return handleTextCommandWithColor(textToDisplay, EL133UF1_YELLOW, EL133UF1_BLACK);
+    }
+    
+    if (command.startsWith("!red_text")) {
+        String textToDisplay = extractTextParameter("!red_text");
+        return handleTextCommandWithColor(textToDisplay, EL133UF1_RED, EL133UF1_BLACK);
+    }
+    
+    if (command.startsWith("!blue_text")) {
+        String textToDisplay = extractTextParameter("!blue_text");
+        return handleTextCommandWithColor(textToDisplay, EL133UF1_BLUE, EL133UF1_BLACK);
+    }
+    
+    if (command.startsWith("!green_text")) {
+        String textToDisplay = extractTextParameter("!green_text");
+        return handleTextCommandWithColor(textToDisplay, EL133UF1_GREEN, EL133UF1_BLACK);
+    }
+    
+    if (command.startsWith("!black_text")) {
+        String textToDisplay = extractTextParameter("!black_text");
+        return handleTextCommandWithColor(textToDisplay, EL133UF1_BLACK, EL133UF1_WHITE);
+    }
+    
+    if (command.startsWith("!multi_text")) {
+        String textToDisplay = extractTextParameter("!multi_text");
+        return handleMultiTextCommand(textToDisplay);
+    }
+    
+    if (command.startsWith("!get")) {
+        // Extract the "text" field from JSON message first, then extract URL from that
+        // This handles cases where the command is in a JSON payload
+        String textContent = "";
+        
+        // Check if original message is JSON
+        if (originalMessage.startsWith("{")) {
+            // Parse JSON to extract "text" field
+            StaticJsonDocument<2048> doc;
+            DeserializationError error = deserializeJson(doc, originalMessage);
+            if (!error && doc.containsKey("text")) {
+                textContent = doc["text"].as<String>();
+            } else {
+                // JSON parse failed, try manual extraction
+                int textStart = originalMessage.indexOf("\"text\"");
+                if (textStart >= 0) {
+                    int colonPos = originalMessage.indexOf(':', textStart);
+                    int quoteStart = originalMessage.indexOf('"', colonPos);
+                    if (quoteStart >= 0) {
+                        int quoteEnd = originalMessage.indexOf('"', quoteStart + 1);
+                        if (quoteEnd > quoteStart) {
+                            textContent = originalMessage.substring(quoteStart + 1, quoteEnd);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Not JSON - use original message directly
+            textContent = originalMessage;
+        }
+        
+        // Now extract the URL parameter from the text content (everything after "!get ")
+        String param = "";
+        String lowerText = textContent;
+        lowerText.toLowerCase();
+        int cmdPos = lowerText.indexOf("!get");
+        if (cmdPos >= 0) {
+            int spacePos = textContent.indexOf(' ', cmdPos + 4);
+            if (spacePos >= 0) {
+                param = textContent.substring(spacePos + 1);
+                param.trim();
+                // If there's a quote or comma at the end (from JSON), remove it
+                if (param.endsWith("\"") || param.endsWith(",") || param.endsWith("}")) {
+                    // Find the actual end of the parameter (before any JSON syntax)
+                    int endPos = param.length() - 1;
+                    while (endPos > 0 && (param.charAt(endPos) == '"' || param.charAt(endPos) == ',' || 
+                                          param.charAt(endPos) == '}' || param.charAt(endPos) == ' ')) {
+                        endPos--;
+                    }
+                    param = param.substring(0, endPos + 1);
+                    param.trim();
+                }
+            }
+        }
+        
+        // Fallback to extracting from command if above failed
+        if (param.length() == 0) {
+            param = extractCommandParameter(command);
+        }
+        
+        return handleGetCommand(param);
+    }
+    
+    if (command.startsWith("!volume")) {
         String param = extractCommandParameter(command);
-        return handleTextCommand(param);
+        return handleVolumeCommand(param);
+    }
+    
+    if (command.startsWith("!newno")) {
+        String param = extractCommandParameter(command);
+        return handleNewNumberCommand(param);
+    }
+    
+    if (command.startsWith("!delno")) {
+        String param = extractCommandParameter(command);
+        return handleDelNumberCommand(param);
+    }
+    
+    if (command == "!list") {
+        return handleListNumbersCommand();
+    }
+    
+    if (command.startsWith("!show")) {
+        String param = extractCommandParameter(command);
+        return handleShowCommand(param);
     }
     
     // Add more commands here as needed:
@@ -2747,8 +2958,8 @@ static bool handleNextCommand() {
         selectedQuote = fallbackQuotes[random(numQuotes)];
     }
     
-    float quoteFontSize = 48.0f;
-    float authorFontSize = 32.0f;
+    float quoteFontSize = 96.0f;  // Doubled from 48.0f
+    float authorFontSize = 64.0f;  // Doubled from 32.0f
     
     TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
         &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
@@ -2971,8 +3182,8 @@ static bool handleGoCommand(const String& parameter) {
         selectedQuote = fallbackQuotes[random(numQuotes)];
     }
     
-    float quoteFontSize = 48.0f;
-    float authorFontSize = 32.0f;
+    float quoteFontSize = 96.0f;  // Doubled from 48.0f
+    float authorFontSize = 64.0f;  // Doubled from 32.0f
     
     TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
         &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
@@ -3015,13 +3226,22 @@ static bool handleGoCommand(const String& parameter) {
  * Handle !text command - display text centered on screen, as large as possible
  * Format: !text <text with spaces> (e.g., "!text Hello there!")
  * Clears the display buffer and draws the text with outline, centered
+ * Supports multi-line wrapping for optimal space usage
  */
 static bool handleTextCommand(const String& parameter) {
-    Serial.println("Processing !text command...");
+    return handleTextCommandWithColor(parameter, EL133UF1_WHITE, EL133UF1_BLACK);
+}
+
+/**
+ * Handle text command with specified fill and outline colors
+ * Supports multi-line wrapping for optimal space usage
+ */
+static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor) {
+    Serial.println("Processing text command with color...");
     
     // Check if parameter was provided
     if (parameter.length() == 0) {
-        Serial.println("ERROR: !text command requires text parameter (e.g., !text Hello there!)");
+        Serial.println("ERROR: Text command requires text parameter");
         return false;
     }
     
@@ -3048,26 +3268,56 @@ static bool handleTextCommand(const String& parameter) {
     int16_t displayHeight = display.height();
     Serial.printf("Display size: %dx%d\n", displayWidth, displayHeight);
     
-    // Find maximum font size that fits the text on screen
+    // Margin requirements: at least 50 pixels on all sides
+    const int16_t margin = 50;
+    const int16_t outlineWidth = 3;  // Outline thickness
+    const int16_t availableWidth = displayWidth - (margin * 2);
+    const int16_t availableHeight = displayHeight - (margin * 2);
+    
+    // Find optimal font size with text wrapping
     // Use binary search for efficiency
     const float minFontSize = 20.0f;
     const float maxFontSize = 400.0f;
-    const int16_t outlineWidth = 3;  // Outline thickness
-    const int16_t padding = 40;  // Padding from edges
     
-    float fontSize = minFontSize;
+    float bestFontSize = minFontSize;
+    int bestNumLines = 0;
+    char wrappedText[512] = {0};
+    int16_t wrappedWidth = 0;
+    int16_t lineHeight = 0;
+    const int16_t lineGap = 5;  // Gap between lines
+    
+    // Binary search for optimal font size that fits with wrapping
     float low = minFontSize;
     float high = maxFontSize;
     
-    // Binary search for optimal font size
+    Serial.println("Finding optimal font size with text wrapping...");
+    
     while (high - low > 1.0f) {
-        fontSize = (low + high) / 2.0f;
+        float fontSize = (low + high) / 2.0f;
         
-        int16_t textWidth = ttf.getTextWidth(parameter.c_str(), fontSize) + (outlineWidth * 2);
-        int16_t textHeight = ttf.getTextHeight(fontSize) + (outlineWidth * 2);
+        // Wrap text at this font size
+        int numLines = 0;
+        int16_t maxLineWidth = textPlacement.wrapText(&ttf, parameter.c_str(), fontSize, 
+                                                       availableWidth, wrappedText, sizeof(wrappedText),
+                                                       &numLines);
         
-        if (textWidth <= (displayWidth - padding) && textHeight <= (displayHeight - padding)) {
+        if (numLines == 0) {
+            // Failed to wrap, try smaller
+            high = fontSize;
+            continue;
+        }
+        
+        // Calculate total height needed
+        int16_t textHeight = ttf.getTextHeight(fontSize);
+        int16_t totalHeight = (textHeight * numLines) + (lineGap * (numLines - 1)) + (outlineWidth * 2);
+        
+        // Check if it fits
+        if (maxLineWidth <= availableWidth && totalHeight <= availableHeight) {
             // Fits - try larger
+            bestFontSize = fontSize;
+            bestNumLines = numLines;
+            wrappedWidth = maxLineWidth;
+            lineHeight = textHeight;
             low = fontSize;
         } else {
             // Too large - try smaller
@@ -3075,42 +3325,902 @@ static bool handleTextCommand(const String& parameter) {
         }
     }
     
-    fontSize = low;  // Use the largest size that fits
+    // Final wrap at the best size
+    int numLines = 0;
+    wrappedWidth = textPlacement.wrapText(&ttf, parameter.c_str(), bestFontSize,
+                                          availableWidth, wrappedText, sizeof(wrappedText),
+                                          &numLines);
+    lineHeight = ttf.getTextHeight(bestFontSize);
+    int16_t totalHeight = (lineHeight * numLines) + (lineGap * (numLines - 1)) + (outlineWidth * 2);
     
-    // Final size calculation with margins
-    int16_t textWidth = ttf.getTextWidth(parameter.c_str(), fontSize) + (outlineWidth * 2);
-    int16_t textHeight = ttf.getTextHeight(fontSize) + (outlineWidth * 2);
-    
-    // If still doesn't fit perfectly, scale it down
-    if (textWidth > (displayWidth - padding) || textHeight > (displayHeight - padding)) {
-        float scaleW = (float)(displayWidth - padding) / (float)textWidth;
-        float scaleH = (float)(displayHeight - padding) / (float)textHeight;
-        float scale = (scaleW < scaleH) ? scaleW : scaleH;
-        fontSize = fontSize * scale * 0.95f;  // 95% to add small margin
-        
-        textWidth = ttf.getTextWidth(parameter.c_str(), fontSize) + (outlineWidth * 2);
-        textHeight = ttf.getTextHeight(fontSize) + (outlineWidth * 2);
-    }
-    
-    Serial.printf("Optimal font size: %.1f, text dimensions: %dx%d\n", fontSize, textWidth, textHeight);
+    Serial.printf("Optimal font size: %.1f, %d lines, wrapped width: %d, total height: %d\n", 
+                  bestFontSize, numLines, wrappedWidth, totalHeight);
     
     // Calculate centered position
     int16_t centerX = displayWidth / 2;
-    int16_t centerY = displayHeight / 2;
+    int16_t totalTextHeight = (lineHeight * numLines) + (lineGap * (numLines - 1));
+    int16_t startY = margin + (availableHeight - totalTextHeight) / 2 + (lineHeight / 2);  // Top of first line baseline
     
-    // Draw text centered with outline
-    Serial.println("Drawing text...");
-    ttf.drawTextAlignedOutlined(centerX, centerY, parameter.c_str(), fontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+    // Draw each line separately, centered
+    Serial.println("Drawing wrapped text (line by line)...");
+    
+    // Make a mutable copy for line splitting
+    char wrappedCopy[512];
+    strncpy(wrappedCopy, wrappedText, sizeof(wrappedCopy) - 1);
+    wrappedCopy[sizeof(wrappedCopy) - 1] = '\0';
+    
+    char* line = wrappedCopy;
+    for (int i = 0; i < numLines && line && *line; i++) {
+        // Find end of this line
+        char* nextLine = strchr(line, '\n');
+        if (nextLine) {
+            *nextLine = '\0';
+        }
+        
+        // Draw this line centered with specified colors
+        int16_t lineY = startY + i * (lineHeight + lineGap);
+        ttf.drawTextAlignedOutlined(centerX, lineY, line, bestFontSize,
+                                    fillColor, outlineColor,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+        
+        // Move to next line
+        if (nextLine) {
+            line = nextLine + 1;
+        } else {
+            break;
+        }
+    }
     
     // Update display
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
     Serial.println("Display updated");
     
-    Serial.println("!text command completed successfully");
+    Serial.println("Text command completed successfully");
     return true;
+}
+
+/**
+ * Handle !multi_text command - display text with randomized colors per character
+ * Format: !multi_text <text with spaces>
+ * Each character gets a random color from available palette
+ * Supports multi-line wrapping like !text
+ */
+static bool handleMultiTextCommand(const String& parameter) {
+    Serial.println("Processing !multi_text command...");
+    
+    // Check if parameter was provided
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !multi_text command requires text parameter");
+        return false;
+    }
+    
+    Serial.printf("Text to display (multi-color): \"%s\"\n", parameter.c_str());
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+    // Clear the display buffer to white
+    Serial.println("Clearing display buffer...");
+    display.clear(EL133UF1_WHITE);
+    
+    // Get display dimensions
+    int16_t displayWidth = display.width();
+    int16_t displayHeight = display.height();
+    
+    // Margin requirements: at least 50 pixels on all sides
+    const int16_t margin = 50;
+    const int16_t outlineWidth = 3;
+    const int16_t availableWidth = displayWidth - (margin * 2);
+    const int16_t availableHeight = displayHeight - (margin * 2);
+    
+    // Available colors for randomization (excludes BLACK - it uses white outline which looks inconsistent with other colors)
+    // All included colors use black outline for visual consistency
+    const uint8_t colors[] = {EL133UF1_WHITE, EL133UF1_YELLOW, EL133UF1_RED, EL133UF1_BLUE, EL133UF1_GREEN};
+    const int numColors = sizeof(colors) / sizeof(colors[0]);
+    
+    // Find optimal font size with text wrapping (same logic as handleTextCommandWithColor)
+    const float minFontSize = 20.0f;
+    const float maxFontSize = 400.0f;
+    float bestFontSize = minFontSize;
+    int bestNumLines = 0;
+    char wrappedText[512] = {0};
+    int16_t wrappedWidth = 0;
+    int16_t lineHeight = 0;
+    const int16_t lineGap = 5;
+    
+    // Binary search for optimal font size that fits with wrapping
+    float low = minFontSize;
+    float high = maxFontSize;
+    
+    Serial.println("Finding optimal font size with text wrapping...");
+    
+    while (high - low > 1.0f) {
+        float fontSize = (low + high) / 2.0f;
+        
+        // Wrap text at this font size
+        int numLines = 0;
+        int16_t maxLineWidth = textPlacement.wrapText(&ttf, parameter.c_str(), fontSize, 
+                                                       availableWidth, wrappedText, sizeof(wrappedText),
+                                                       &numLines);
+        
+        if (numLines == 0) {
+            high = fontSize;
+            continue;
+        }
+        
+        // Calculate total height needed
+        int16_t textHeight = ttf.getTextHeight(fontSize);
+        int16_t totalHeight = (textHeight * numLines) + (lineGap * (numLines - 1)) + (outlineWidth * 2);
+        
+        // Check if it fits
+        if (maxLineWidth <= availableWidth && totalHeight <= availableHeight) {
+            bestFontSize = fontSize;
+            bestNumLines = numLines;
+            wrappedWidth = maxLineWidth;
+            lineHeight = textHeight;
+            low = fontSize;
+        } else {
+            high = fontSize;
+        }
+    }
+    
+    // Final wrap at the best size
+    int numLines = 0;
+    wrappedWidth = textPlacement.wrapText(&ttf, parameter.c_str(), bestFontSize,
+                                          availableWidth, wrappedText, sizeof(wrappedText),
+                                          &numLines);
+    lineHeight = ttf.getTextHeight(bestFontSize);
+    
+    Serial.printf("Optimal font size: %.1f, %d lines\n", bestFontSize, numLines);
+    
+    // Calculate centered position
+    int16_t centerX = displayWidth / 2;
+    int16_t totalTextHeight = (lineHeight * numLines) + (lineGap * (numLines - 1));
+    int16_t startY = margin + (availableHeight - totalTextHeight) / 2 + (lineHeight / 2);
+    
+    // Draw each line, character by character with random colors
+    Serial.println("Drawing multi-color text (character by character, line by line)...");
+    
+    // Make a mutable copy for line splitting
+    char wrappedCopy[512];
+    strncpy(wrappedCopy, wrappedText, sizeof(wrappedCopy) - 1);
+    wrappedCopy[sizeof(wrappedCopy) - 1] = '\0';
+    
+    char* line = wrappedCopy;
+    for (int lineIdx = 0; lineIdx < numLines && line && *line; lineIdx++) {
+        // Find end of this line
+        char* nextLine = strchr(line, '\n');
+        if (nextLine) {
+            *nextLine = '\0';
+        }
+        
+        // Calculate line width and starting X position (centered)
+        int16_t lineWidth = ttf.getTextWidth(line, bestFontSize);
+        int16_t lineStartX = centerX - (lineWidth / 2);
+        int16_t lineY = startY + lineIdx * (lineHeight + lineGap);
+        
+        // Draw each character in this line with random color
+        int16_t currentX = lineStartX;
+        int lineLen = strlen(line);
+        
+        for (int i = 0; i < lineLen; i++) {
+            char ch[2] = {line[i], '\0'};
+            
+            // Skip spaces
+            if (ch[0] == ' ') {
+                int16_t spaceWidth = ttf.getTextWidth(" ", bestFontSize);
+                currentX += spaceWidth;
+                continue;
+            }
+            
+            // Random color for this character (all colors use black outline for consistency)
+            uint8_t fillColor = colors[random(numColors)];
+            uint8_t outlineColor = EL133UF1_BLACK;
+            
+            // Get width of this character
+            int16_t charWidth = ttf.getTextWidth(ch, bestFontSize);
+            
+            // Draw character at current position
+            ttf.drawTextAlignedOutlined(currentX + (charWidth / 2), lineY, ch, bestFontSize,
+                                        fillColor, outlineColor,
+                                        ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+            
+            // Advance X position
+            currentX += charWidth;
+        }
+        
+        // Move to next line
+        if (nextLine) {
+            line = nextLine + 1;
+        } else {
+            break;
+        }
+    }
+    
+    // Update display
+    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display updated");
+    
+    Serial.println("!multi_text command completed successfully");
+    return true;
+}
+
+/**
+ * Handle !get command - download a file via HTTP/HTTPS to SD card
+ * Format: !get <url> [filename]
+ * Examples: 
+ *   !get https://example.com/image.png
+ *   !get https://example.com/data.txt downloaded.txt
+ * If filename is not provided, extracts it from the URL
+ */
+static bool handleGetCommand(const String& parameter) {
+    Serial.println("Processing !get command...");
+    
+    // Check if parameter was provided
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !get command requires URL parameter (e.g., !get https://example.com/file.png)");
+        return false;
+    }
+    
+    Serial.printf("URL to download: %s\n", parameter.c_str());
+    
+#if !SDMMC_ENABLED
+    Serial.println("ERROR: SD card support not enabled");
+    return false;
+#else
+    
+#if WIFI_ENABLED
+    // Ensure WiFi is connected
+    if (!wifiLoadCredentials()) {
+        Serial.println("ERROR: WiFi credentials not available");
+        return false;
+    }
+    
+    if (!wifiConnectPersistent(5, 30000, false)) {
+        Serial.println("ERROR: Failed to connect to WiFi");
+        return false;
+    }
+    
+    Serial.println("WiFi connected");
+#endif // WIFI_ENABLED
+    
+    // Mount SD card if needed
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("Mounting SD card...");
+        if (!sdInitDirect(false)) {
+            Serial.println("ERROR: Failed to mount SD card!");
+            return false;
+        }
+        Serial.println("SD card mounted");
+    }
+    
+    // Parse URL and optional filename
+    String url = parameter;
+    String filename = "";
+    
+    // Check if there's a space (URL and filename separated)
+    int spacePos = url.indexOf(' ');
+    if (spacePos > 0) {
+        filename = url.substring(spacePos + 1);
+        filename.trim();
+        url = url.substring(0, spacePos);
+        url.trim();
+    }
+    
+    // If no filename provided, extract from URL
+    if (filename.length() == 0) {
+        // Extract filename from URL (last part after /)
+        int lastSlash = url.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash < (int)url.length() - 1) {
+            filename = url.substring(lastSlash + 1);
+            // Remove query parameters if any
+            int questionMark = filename.indexOf('?');
+            if (questionMark >= 0) {
+                filename = filename.substring(0, questionMark);
+            }
+        } else {
+            // No filename in URL, use default
+            filename = "downloaded_file";
+        }
+    }
+    
+    Serial.printf("Downloading: %s\n", url.c_str());
+    Serial.printf("Saving to: %s\n", filename.c_str());
+    
+#if WIFI_ENABLED
+    // Download file
+    HTTPClient http;
+    WiFiClientSecure secureClient;
+    WiFiClient plainClient;
+    
+    // Check if HTTPS
+    bool isHttps = url.startsWith("https://");
+    if (isHttps) {
+        secureClient.setInsecure();  // For testing - use proper cert validation in production
+        http.begin(secureClient, url);
+    } else {
+        http.begin(plainClient, url);
+    }
+    
+    http.setTimeout(30000);  // 30 second timeout
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    
+    Serial.println("Starting download...");
+    int httpCode = http.GET();
+    
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("HTTP error: %d\n", httpCode);
+        String errorPayload = http.getString();
+        if (errorPayload.length() > 0) {
+            Serial.printf("Error response: %s\n", errorPayload.c_str());
+        }
+        http.end();
+        return false;
+    }
+    
+    // Get content length
+    int contentLength = http.getSize();
+    Serial.printf("Content length: %d bytes\n", contentLength);
+    
+    // Build FatFs path (0: is the drive prefix)
+    String fatfsPath = "0:/";
+    fatfsPath += filename;
+    
+    // Open file for writing
+    FIL file;
+    FRESULT res = f_open(&file, fatfsPath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open file for writing: %d\n", res);
+        http.end();
+        return false;
+    }
+    
+    // Download and write in chunks
+    uint8_t buffer[512];
+    uint32_t totalBytes = 0;
+    uint32_t lastProgress = 0;
+    
+    WiFiClient* stream = http.getStreamPtr();
+    
+    Serial.println("Downloading and writing to SD card...");
+    while (http.connected() && (contentLength == -1 || totalBytes < (uint32_t)contentLength)) {
+        size_t available = stream->available();
+        if (available > 0) {
+            int bytesRead = stream->readBytes(buffer, min(available, (size_t)sizeof(buffer)));
+            if (bytesRead > 0) {
+                UINT bytesWritten = 0;
+                res = f_write(&file, buffer, bytesRead, &bytesWritten);
+                if (res != FR_OK || bytesWritten != (UINT)bytesRead) {
+                    Serial.printf("ERROR: Failed to write to file: %d (wrote %u of %d)\n", res, bytesWritten, bytesRead);
+                    f_close(&file);
+                    http.end();
+                    return false;
+                }
+                totalBytes += bytesWritten;
+                
+                // Print progress every 10KB
+                if (totalBytes - lastProgress >= 10240) {
+                    Serial.printf("Downloaded: %u bytes", totalBytes);
+                    if (contentLength > 0) {
+                        Serial.printf(" (%.1f%%)", (float)totalBytes * 100.0f / (float)contentLength);
+                    }
+                    Serial.println();
+                    lastProgress = totalBytes;
+                }
+            }
+        } else {
+            delay(10);
+        }
+    }
+    
+    // Sync and close file
+    f_sync(&file);
+    f_close(&file);
+    http.end();
+    
+    Serial.printf("Download complete: %u bytes written to %s\n", totalBytes, filename.c_str());
+    
+    return true;
+    
+#else
+    Serial.println("ERROR: WiFi support not enabled - cannot download files");
+    return false;
+#endif // WIFI_ENABLED
+    
+#endif // SDMMC_ENABLED
+}
+
+/**
+ * Handle !volume command - set audio volume (0-100)
+ * Format: !volume <0-100>
+ * Example: !volume 75
+ * Saves volume to NVS so it persists across reboots
+ */
+static bool handleVolumeCommand(const String& parameter) {
+    Serial.println("Processing !volume command...");
+    
+    if (parameter.length() == 0) {
+        Serial.printf("Current volume: %d%%\n", g_audio_volume_pct);
+        Serial.println("Usage: !volume <0-100>");
+        return false;
+    }
+    
+    int newVolume = parameter.toInt();
+    if (newVolume < 0 || newVolume > 100) {
+        Serial.printf("ERROR: Volume must be between 0 and 100 (got: %d)\n", newVolume);
+        return false;
+    }
+    
+    // Update volume
+    g_audio_volume_pct = newVolume;
+    
+    // Save to NVS
+    volumeSaveToNVS();
+    
+    // Apply volume if codec is ready
+    if (g_codec_ready) {
+        (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+        Serial.printf("Volume set to %d%% (mapped to codec range %d..%d%%)\n", 
+                     g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+    } else {
+        Serial.printf("Volume set to %d%% (will be applied when audio starts)\n", g_audio_volume_pct);
+    }
+    
+    return true;
+}
+
+/**
+ * Load volume from NVS (persistent storage)
+ * Called on startup to restore saved volume setting
+ */
+void volumeLoadFromNVS() {
+    if (!volumePrefs.begin("audio", true)) {  // Read-only
+        Serial.println("WARNING: Failed to open NVS for volume - using default (50%)");
+        g_audio_volume_pct = 50;
+        return;
+    }
+    
+    int savedVolume = volumePrefs.getInt("volume", 50);  // Default to 50 if not set
+    volumePrefs.end();
+    
+    // Clamp to valid range
+    if (savedVolume < 0) savedVolume = 0;
+    if (savedVolume > 100) savedVolume = 100;
+    
+    g_audio_volume_pct = savedVolume;
+    Serial.printf("Loaded volume from NVS: %d%%\n", g_audio_volume_pct);
+}
+
+/**
+ * Save volume to NVS (persistent storage)
+ * Called whenever volume is changed
+ */
+void volumeSaveToNVS() {
+    if (!volumePrefs.begin("audio", false)) {  // Read-write
+        Serial.println("WARNING: Failed to open NVS for saving volume");
+        return;
+    }
+    
+    volumePrefs.putInt("volume", g_audio_volume_pct);
+    volumePrefs.end();
+    
+    Serial.printf("Saved volume to NVS: %d%%\n", g_audio_volume_pct);
+}
+
+/**
+ * Handle !newno command - add a phone number to the allowed list
+ * Format: !newno <phone_number>
+ * Example: !newno +447401492609
+ * Note: This command requires the sender to be in the allowed list (hardcoded number +447816969344 can always add numbers)
+ */
+static bool handleNewNumberCommand(const String& parameter) {
+    Serial.println("Processing !newno command...");
+    
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !newno command requires phone number parameter (e.g., !newno +447401492609)");
+        return false;
+    }
+    
+    String number = parameter;
+    number.trim();
+    
+    // Validate that it looks like a phone number (starts with + and has digits)
+    if (!number.startsWith("+") || number.length() < 4) {
+        Serial.printf("ERROR: Invalid phone number format: %s (must start with + and be at least 4 characters)\n", number.c_str());
+        return false;
+    }
+    
+    // Check if it's already the hardcoded number
+    if (number == "+447816969344") {
+        Serial.println("This number is already hardcoded as allowed - no need to add it");
+        return true;
+    }
+    
+    // Add to NVS
+    if (addAllowedNumber(number)) {
+        Serial.printf("Successfully added number to allowed list: %s\n", number.c_str());
+        return true;
+    } else {
+        Serial.printf("ERROR: Failed to add number: %s\n", number.c_str());
+        return false;
+    }
+}
+
+/**
+ * Check if a phone number is in the allowed list (hardcoded + NVS)
+ */
+bool isNumberAllowed(const String& number) {
+    // Check hardcoded number first
+    if (number == "+447816969344") {
+        return true;
+    }
+    
+    // Load and check NVS numbers
+    if (!numbersPrefs.begin("numbers", true)) {  // Read-only
+        Serial.println("WARNING: Failed to open NVS for numbers - only hardcoded number allowed");
+        return false;
+    }
+    
+    // Get count of stored numbers
+    int count = numbersPrefs.getInt("count", 0);
+    bool found = false;
+    
+    for (int i = 0; i < count && i < 100; i++) {  // Limit to 100 numbers max
+        char key[16];
+        snprintf(key, sizeof(key), "num%d", i);
+        String storedNumber = numbersPrefs.getString(key, "");
+        
+        if (storedNumber == number) {
+            found = true;
+            break;
+        }
+    }
+    
+    numbersPrefs.end();
+    return found;
+}
+
+/**
+ * Add a phone number to the allowed list in NVS
+ */
+bool addAllowedNumber(const String& number) {
+    // First check if it already exists
+    if (isNumberAllowed(number)) {
+        Serial.printf("Number %s is already in the allowed list\n", number.c_str());
+        return true;  // Already exists, consider it success
+    }
+    
+    if (!numbersPrefs.begin("numbers", false)) {  // Read-write
+        Serial.println("ERROR: Failed to open NVS for saving numbers");
+        return false;
+    }
+    
+    // Get current count
+    int count = numbersPrefs.getInt("count", 0);
+    
+    // Check limit (max 100 numbers)
+    if (count >= 100) {
+        Serial.println("ERROR: Maximum number of allowed numbers (100) reached");
+        numbersPrefs.end();
+        return false;
+    }
+    
+    // Store the new number
+    char key[16];
+    snprintf(key, sizeof(key), "num%d", count);
+    numbersPrefs.putString(key, number);
+    
+    // Update count
+    count++;
+    numbersPrefs.putInt("count", count);
+    
+    numbersPrefs.end();
+    
+    Serial.printf("Added number %s to allowed list (total: %d)\n", number.c_str(), count);
+    return true;
+}
+
+/**
+ * Load allowed numbers from NVS (called on startup for verification/debugging)
+ */
+void numbersLoadFromNVS() {
+    if (!numbersPrefs.begin("numbers", true)) {  // Read-only
+        Serial.println("No allowed numbers list in NVS (only hardcoded number will be allowed)");
+        return;
+    }
+    
+    int count = numbersPrefs.getInt("count", 0);
+    if (count == 0) {
+        Serial.println("No additional allowed numbers in NVS (only hardcoded number)");
+        numbersPrefs.end();
+        return;
+    }
+    
+    Serial.printf("Loaded %d allowed number(s) from NVS:\n", count);
+    for (int i = 0; i < count && i < 100; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "num%d", i);
+        String number = numbersPrefs.getString(key, "");
+        if (number.length() > 0) {
+            Serial.printf("  [%d] %s\n", i + 1, number.c_str());
+        }
+    }
+    
+    numbersPrefs.end();
+}
+
+/**
+ * Handle !delno command - remove a phone number from the allowed list
+ * Format: !delno <phone_number>
+ * Example: !delno +447401492609
+ * Note: Cannot remove the hardcoded number +447816969344
+ */
+static bool handleDelNumberCommand(const String& parameter) {
+    Serial.println("Processing !delno command...");
+    
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !delno command requires phone number parameter (e.g., !delno +447401492609)");
+        return false;
+    }
+    
+    String number = parameter;
+    number.trim();
+    
+    // Cannot remove hardcoded number
+    if (number == "+447816969344") {
+        Serial.println("ERROR: Cannot remove hardcoded number +447816969344");
+        return false;
+    }
+    
+    // Remove from NVS
+    if (removeAllowedNumber(number)) {
+        Serial.printf("Successfully removed number from allowed list: %s\n", number.c_str());
+        return true;
+    } else {
+        Serial.printf("ERROR: Failed to remove number or number not found: %s\n", number.c_str());
+        return false;
+    }
+}
+
+/**
+ * Handle !list command - list all media files from media.txt
+ * Returns list via serial output
+ * Uses 1-indexed numbering to match !go command convention
+ */
+static bool handleListNumbersCommand() {
+    Serial.println("Processing !list command...");
+    
+#if SDMMC_ENABLED
+    // Mount SD card if needed
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("Mounting SD card...");
+        if (!sdInitDirect(false)) {
+            Serial.println("ERROR: Failed to mount SD card!");
+            return false;
+        }
+    }
+    
+    // Load media mappings if not already loaded
+    if (!g_media_mappings_loaded) {
+        loadMediaMappingsFromSD();
+    }
+    
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        Serial.println("\n=== Media Files ===");
+        Serial.println("No media.txt mappings found");
+        Serial.println("=============================\n");
+        return false;
+    }
+    
+    Serial.println("\n=== Media Files (from media.txt) ===");
+    size_t mediaCount = g_media_mappings.size();
+    
+    for (size_t i = 0; i < mediaCount; i++) {
+        const MediaMapping& mapping = g_media_mappings[i];
+        Serial.printf("  [%zu] %s", i + 1, mapping.imageName.c_str());
+        if (mapping.audioFile.length() > 0) {
+            Serial.printf(" -> %s", mapping.audioFile.c_str());
+        } else {
+            Serial.print(" -> (no audio, will use beep.wav)");
+        }
+        Serial.println();
+    }
+    
+    Serial.printf("\nTotal: %zu media file(s)\n", mediaCount);
+    Serial.println("=============================\n");
+    return true;
+    
+#else
+    Serial.println("ERROR: SD card support not enabled - cannot list media");
+    return false;
+#endif // SDMMC_ENABLED
+}
+
+/**
+ * Remove a phone number from the allowed list in NVS
+ */
+bool removeAllowedNumber(const String& number) {
+    if (!numbersPrefs.begin("numbers", false)) {  // Read-write
+        Serial.println("ERROR: Failed to open NVS for removing numbers");
+        return false;
+    }
+    
+    int count = numbersPrefs.getInt("count", 0);
+    if (count == 0) {
+        Serial.println("No numbers in NVS to remove");
+        numbersPrefs.end();
+        return false;
+    }
+    
+    // Find the number and its index
+    int foundIndex = -1;
+    for (int i = 0; i < count && i < 100; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "num%d", i);
+        String storedNumber = numbersPrefs.getString(key, "");
+        
+        if (storedNumber == number) {
+            foundIndex = i;
+            break;
+        }
+    }
+    
+    if (foundIndex == -1) {
+        Serial.printf("Number %s not found in allowed list\n", number.c_str());
+        numbersPrefs.end();
+        return false;
+    }
+    
+    // Shift all numbers after the found one forward by one position
+    for (int i = foundIndex; i < count - 1; i++) {
+        char keyFrom[16], keyTo[16];
+        snprintf(keyFrom, sizeof(keyFrom), "num%d", i + 1);
+        snprintf(keyTo, sizeof(keyTo), "num%d", i);
+        
+        String nextNumber = numbersPrefs.getString(keyFrom, "");
+        numbersPrefs.putString(keyTo, nextNumber);
+    }
+    
+    // Clear the last entry
+    char lastKey[16];
+    snprintf(lastKey, sizeof(lastKey), "num%d", count - 1);
+    numbersPrefs.remove(lastKey);
+    
+    // Update count
+    count--;
+    numbersPrefs.putInt("count", count);
+    
+    numbersPrefs.end();
+    
+    Serial.printf("Removed number %s from allowed list (remaining: %d)\n", number.c_str(), count);
+    return true;
+}
+
+/**
+ * Handle !show command - display a specific image file from SD card
+ * Format: !show <filename>
+ * Example: !show image.png
+ * Displays the image directly without going through media.txt
+ */
+static bool handleShowCommand(const String& parameter) {
+    Serial.println("Processing !show command...");
+    
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !show command requires filename parameter (e.g., !show image.png)");
+        return false;
+    }
+    
+    String filename = parameter;
+    filename.trim();
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+#if SDMMC_ENABLED
+    // Mount SD card if needed
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("Mounting SD card...");
+        if (!sdInitDirect(false)) {
+            Serial.println("ERROR: Failed to mount SD card!");
+            return false;
+        }
+    }
+    
+    // Build full path (assume root directory if no path specified)
+    String imagePath = filename;
+    if (!imagePath.startsWith("/")) {
+        imagePath = "/" + imagePath;
+    }
+    
+    String fatfsPath = "0:" + imagePath;
+    
+    Serial.printf("Loading image: %s\n", fatfsPath.c_str());
+    
+    // Check if file exists
+    FILINFO fno;
+    FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: File not found: %s (error: %d)\n", fatfsPath.c_str(), res);
+        return false;
+    }
+    
+    size_t fileSize = fno.fsize;
+    Serial.printf("File size: %u bytes\n", (unsigned)fileSize);
+    
+    // Open and read file
+    FIL pngFile;
+    res = f_open(&pngFile, fatfsPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open file: %s (error: %d)\n", fatfsPath.c_str(), res);
+        return false;
+    }
+    
+    // Allocate memory for PNG data
+    uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!pngData) {
+        Serial.println("ERROR: Failed to allocate PSRAM buffer for PNG!");
+        f_close(&pngFile);
+        return false;
+    }
+    
+    // Read file
+    UINT bytesRead = 0;
+    res = f_read(&pngFile, pngData, fileSize, &bytesRead);
+    f_close(&pngFile);
+    
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to read file: %d\n", res);
+        hal_psram_free(pngData);
+        return false;
+    }
+    
+    if (bytesRead != fileSize) {
+        Serial.printf("WARNING: Only read %u/%u bytes\n", (unsigned)bytesRead, (unsigned)fileSize);
+    }
+    
+    // Clear display and draw PNG
+    Serial.println("Drawing image to display...");
+    display.clear(EL133UF1_WHITE);
+    PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
+    hal_psram_free(pngData);
+    
+    if (pres != PNG_OK) {
+        Serial.printf("ERROR: PNG draw failed: %s\n", pngLoader.getErrorString(pres));
+        return false;
+    }
+    
+    // Update display
+    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display updated");
+    
+    Serial.println("!show command completed successfully");
+    return true;
+    
+#else
+    Serial.println("ERROR: SD card support not enabled - cannot load images");
+    return false;
+#endif // SDMMC_ENABLED
 }
 
 // Disconnect from MQTT
@@ -4973,6 +6083,12 @@ void setup() {
     
     // Normal boot path - initialize everything
     Serial.begin(115200);
+
+    // Load volume setting from NVS early (before any audio initialization)
+    volumeLoadFromNVS();
+    
+    // Load allowed phone numbers from NVS
+    numbersLoadFromNVS();
 
     // Bring up PA enable early (matches known-good ESP-IDF example behavior)
     pinMode(PIN_CODEC_PA_EN, OUTPUT);

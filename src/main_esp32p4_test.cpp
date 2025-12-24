@@ -65,6 +65,13 @@
 #define WIFI_ENABLED 0
 #endif
 
+// MQTT support using ESP-IDF esp-mqtt component
+#if WIFI_ENABLED
+#include "mqtt_client.h"
+#include "esp_crt_bundle.h"
+#include <string.h>
+#endif
+
 // SD Card support via SDMMC
 #if !defined(DISABLE_SDMMC)
 #include <SD_MMC.h>
@@ -112,8 +119,10 @@
 #endif
 // GPIO51 is bridged to GPIO4 for deep sleep wake capability
 // GPIO4 is an LP GPIO (0-15) and can wake from deep sleep
+// DISABLED: Switch D wake functionality temporarily disabled
 #ifndef PIN_SW_D_BRIDGE
-#define PIN_SW_D_BRIDGE  4   // GPIO51 bridged to GPIO4 (LP GPIO) for deep sleep wake
+// #define PIN_SW_D_BRIDGE  4   // GPIO51 bridged to GPIO4 (LP GPIO) for deep sleep wake
+#define PIN_SW_D_BRIDGE  -1  // Disabled - only timer wake enabled
 #endif
 
 // RTC I2C pins
@@ -239,6 +248,7 @@ static constexpr uint32_t kCycleSleepSeconds = 60;
 static constexpr uint32_t kCycleSerialEscapeMs = 2000; // cold boot escape to interactive
 RTC_DATA_ATTR uint32_t g_cycle_count = 0;
 static TaskHandle_t g_auto_cycle_task = nullptr;
+static bool g_config_mode_needed = false;  // Flag to indicate config mode is needed
 
 // Forward declarations (defined later in file under SDMMC_ENABLED)
 #if SDMMC_ENABLED
@@ -535,75 +545,28 @@ static void sleepNowSeconds(uint32_t seconds) {
     // Switch D is on GPIO51, which is NOT an LP GPIO
     // If GPIO51 is bridged to an LP GPIO (e.g., GPIO4), use PIN_SW_D_BRIDGE to enable wake
     
-    gpio_num_t swD_pin = (gpio_num_t)PIN_SW_D;
-    gpio_num_t wake_pin = (PIN_SW_D_BRIDGE >= 0) ? (gpio_num_t)PIN_SW_D_BRIDGE : swD_pin;
+    // DISABLED: Switch D wake functionality - no GPIO configuration needed
+    // GPIO wake functionality completely disabled to avoid interfering with bootloader entry
+    // Only timer wake is enabled (no GPIO pins are configured)
     
-    // Configure GPIO51 as input with pull-up (normal switch reading, even if bridged)
-    gpio_config_t io_conf_sw = {};
-    io_conf_sw.pin_bit_mask = (1ULL << swD_pin);
-    io_conf_sw.mode = GPIO_MODE_INPUT;
-    io_conf_sw.pull_up_en = GPIO_PULLUP_ENABLE;
-    io_conf_sw.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf_sw.intr_type = GPIO_INTR_DISABLE;
-    gpio_config(&io_conf_sw);
-    
-    // Check if we can wake from deep sleep (LP GPIO 0-15)
-    #ifdef CONFIG_IDF_TARGET_ESP32P4
-    if (wake_pin <= 15) {
-        // LP GPIO - can wake from deep sleep using ext1
-        if (PIN_SW_D_BRIDGE >= 0) {
-            Serial.printf("Switch D (GPIO%d) bridged to GPIO%d (LP GPIO) for deep sleep wake\n", 
-                         swD_pin, wake_pin);
-        } else {
-            Serial.printf("Configuring GPIO%d (LP GPIO) for deep sleep wake\n", wake_pin);
-        }
-        
-        // Configure wake pin as input with pull-up (active-low switch)
-        gpio_config_t io_conf = {};
-        io_conf.pin_bit_mask = (1ULL << wake_pin);
-        io_conf.mode = GPIO_MODE_INPUT;
-        io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-        io_conf.intr_type = GPIO_INTR_DISABLE;
-        gpio_config(&io_conf);
-        
-        // Use ext1 wakeup for ESP32-P4 (ext0 not supported)
-        uint64_t gpio_mask = (1ULL << wake_pin);
-        esp_err_t err = esp_sleep_enable_ext1_wakeup(gpio_mask, ESP_EXT1_WAKEUP_ANY_LOW);
-        if (err != ESP_OK) {
-            Serial.printf("WARNING: Failed to enable ext1 wake on GPIO%d: %d\n", wake_pin, err);
-        } else {
-            Serial.printf("GPIO%d configured for deep sleep wake (ext1, active-low)\n", wake_pin);
-            if (PIN_SW_D_BRIDGE >= 0) {
-                Serial.println("  (GPIO51 bridged to this pin - Switch D will trigger wake)");
-            }
-        }
-    } else {
-        // Not an LP GPIO - cannot wake from deep sleep
-        Serial.printf("WARNING: GPIO%d is not an LP GPIO (0-15) and cannot wake from deep sleep on ESP32-P4\n", wake_pin);
-        if (PIN_SW_D_BRIDGE < 0) {
-            Serial.println("Switch D wake from deep sleep is not supported. Only timer wake is enabled.");
-            Serial.println("To enable switch wake:");
-            Serial.println("  1. Bridge GPIO51 to an LP GPIO (0-15, e.g., GPIO4)");
-            Serial.println("  2. Define PIN_SW_D_BRIDGE in code (e.g., #define PIN_SW_D_BRIDGE 4)");
-            Serial.println("  3. Or use light sleep instead (any GPIO can wake)");
-        }
+    // Disconnect WiFi before deep sleep (but don't shut down ESP-Hosted completely)
+    // Just disconnect from network - ESP-Hosted will handle its own state
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Disconnecting WiFi before deep sleep...");
+        WiFi.disconnect(true);
+        delay(200);  // Give ESP-Hosted time to handle disconnection
+        Serial.println("WiFi disconnected");
     }
-    #else
-    // Other ESP32 variants - try gpio_wakeup API
-    gpio_config_t io_conf = {};
-    io_conf.pin_bit_mask = (1ULL << swD_pin);
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    gpio_config(&io_conf);
     
-    esp_sleep_enable_gpio_wakeup();
-    gpio_wakeup_enable(swD_pin, GPIO_INTR_LOW_LEVEL);
-    #endif
+    // Flush serial and ensure all operations complete before deep sleep
+    // This helps prevent bootloader assertion errors after wake
+    Serial.flush();
+    delay(200);  // Ensure serial flush and any pending operations complete
     
-    delay(50);
+    // Additional delay to ensure flash/SPI operations are fully complete
+    // The bootloader needs clean state to load the app partition correctly
+    delay(100);
+    
     esp_deep_sleep_start();
 }
 
@@ -650,42 +613,205 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
 }
 
 #if WIFI_ENABLED
+// Forward declaration
+void enterConfigMode();
+
 static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
     time_t now = time(nullptr);
     if (now > 1577836800) {  // 2020-01-01
         return true;
     }
 
+    // If timeout is 0, use a default reasonable timeout
+    if (timeout_ms == 0) {
+        timeout_ms = 60000;  // Default 60 seconds
+    }
+    
+    uint32_t overallStart = millis();
+
     // Load creds (if any) directly from NVS and try NTP.
     // (Don't call wifiLoadCredentials() here since it's defined later in this file.)
     Preferences p;
-    p.begin("wifi", true);
+    bool nvsOpened = p.begin("wifi", true);
+    if (!nvsOpened) {
+        Serial.println("\n========================================");
+        Serial.println("ERROR: Failed to open NVS for WiFi credentials!");
+        Serial.println("NVS may be corrupted or not initialized.");
+        Serial.println("Error: nvs_open failed (NOT_FOUND or other error)");
+        Serial.println("========================================");
+        Serial.println("Cannot open NVS - configuration mode needed.");
+        Serial.println("This function cannot enter config mode (called from task context).");
+        Serial.println("Returning false - caller should handle config mode.");
+        // Don't call enterConfigMode() here - it's called from a task context
+        // The caller (auto_cycle_task) will set flag and exit task
+        return false;
+    }
+    
     String ssid = p.getString("ssid", "");
     String psk = p.getString("psk", "");
     p.end();
 
     if (ssid.length() == 0) {
-        Serial.println("Time invalid and no WiFi credentials saved; cannot NTP sync.");
+        Serial.println("\n========================================");
+        Serial.println("ERROR: No WiFi credentials found in NVS!");
+        Serial.println("========================================");
+        Serial.println("Configuration mode needed.");
+        Serial.println("This function cannot enter config mode (called from task context).");
+        Serial.println("Returning false - caller should handle config mode.");
+        // Don't call enterConfigMode() here - it's called from a task context
+        // The caller (auto_cycle_task) will set flag and exit task
         return false;
     }
 
     Serial.printf("Time invalid; syncing NTP via WiFi SSID '%s'...\n", ssid.c_str());
+    
+    // Configure WiFi for better connection reliability
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);  // Disable WiFi sleep for better connection stability
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximum power for better range
+    WiFi.setAutoReconnect(true);  // Enable auto-reconnect
+    
+    // Try connecting with multiple retries, but respect overall timeout
+    int maxRetries = 15;
+    bool connected = false;
+    
+    for (int retry = 0; retry < maxRetries && !connected; retry++) {
+        // Check overall timeout
+        if ((millis() - overallStart) > timeout_ms) {
+            Serial.println("Overall timeout exceeded during WiFi connection attempts.");
+            break;
+        }
+        
+        if (retry > 0) {
+            Serial.printf("WiFi connection attempt %d/%d...\n", retry + 1, maxRetries);
+            delay(2000);  // Wait 2 seconds before retry
+            // Only disconnect if not already connected
+            if (WiFi.status() != WL_CONNECTED) {
+                WiFi.disconnect();
+                delay(500);
+            }
+        }
+        
+        Serial.print("Connecting");
+        // Only call begin if not already connected
+        if (WiFi.status() != WL_CONNECTED) {
     WiFi.begin(ssid.c_str(), psk.c_str());
+        }
 
     uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
-        delay(250);
+        uint32_t timeoutPerAttempt = 30000;  // 30 seconds per attempt
+        // Reduce timeout if we're close to overall timeout
+        uint32_t remainingTime = timeout_ms - (millis() - overallStart);
+        if (remainingTime < timeoutPerAttempt) {
+            timeoutPerAttempt = remainingTime;
+        }
+        
+        while (WiFi.status() != WL_CONNECTED && (millis() - start < timeoutPerAttempt)) {
+            // Check overall timeout
+            if ((millis() - overallStart) > timeout_ms) {
+                Serial.println("\nOverall timeout exceeded during WiFi connection.");
+                break;
+            }
+            
+            delay(500);
+            Serial.print(".");
+            
+            // Show progress every 5 seconds
+            if ((millis() - start) % 5000 < 500) {
+                Serial.printf(" [%lu s]", (millis() - start) / 1000);
+            }
+        }
+        Serial.println();
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            connected = true;
+            Serial.println("WiFi connected!");
+        } else {
+            Serial.printf("Connection attempt %d failed (status: %d)\n", retry + 1, WiFi.status());
+        }
     }
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("WiFi connect failed; cannot NTP sync.");
+    
+    if (!connected) {
+        Serial.println("WiFi connect failed after all retries; cannot NTP sync.");
+        // Don't retry indefinitely - respect timeout
+        Serial.println("WiFi connection failed, giving up NTP sync.");
         return false;
     }
 
     configTime(0, 0, "pool.ntp.org", "time.google.com");
 
-    start = millis();
-    while ((millis() - start) < timeout_ms) {
+    // NTP sync with retries - be persistent like WiFi connection
+    const int maxNtpRetries = 5;
+    const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
+    
+    for (int retry = 0; retry < maxNtpRetries; retry++) {
+        if (retry > 0) {
+            Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
+            delay(2000);  // Brief delay between retries
+        }
+        
+        Serial.print("Syncing NTP");
+        uint32_t start = millis();
+        bool synced = false;
+        
+        while ((millis() - start) < ntpTimeoutPerAttempt) {
+            now = time(nullptr);
+            if (now > 1577836800) {
+                struct tm tm_utc;
+                gmtime_r(&now, &tm_utc);
+                char buf[32];
+                strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+                Serial.printf("\nNTP sync OK: %s\n", buf);
+                // Keep WiFi connected - will be disconnected before deep sleep
+                return true;
+            }
+            delay(500);
+            if ((millis() - start) % 5000 == 0) {
+                Serial.print(".");
+            }
+        }
+        
+        Serial.println();
+        Serial.printf("NTP sync attempt %d timed out after %lu seconds\n", retry + 1, ntpTimeoutPerAttempt / 1000);
+        
+        // If WiFi is still connected, try reconfiguring NTP
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("WiFi still connected, reconfiguring NTP...");
+            configTime(0, 0, "pool.ntp.org", "time.google.com");
+        } else {
+            Serial.println("WiFi disconnected during NTP sync, will retry WiFi connection");
+            break;  // Break out to retry WiFi connection
+        }
+    }
+    
+    // If we've exhausted retries but WiFi is still connected, try a few more times
+    // but respect the overall timeout to prevent infinite loops
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("NTP sync failed after all retries, but WiFi is connected.");
+        Serial.println("Will try a few more times (respecting timeout)...");
+        
+        uint32_t overallStart = millis();
+        int additionalRetries = 3;  // Limit additional retries
+        
+        for (int extraRetry = 0; extraRetry < additionalRetries; extraRetry++) {
+            // Check if we've exceeded the overall timeout
+            if (timeout_ms > 0 && (millis() - overallStart) > timeout_ms) {
+                Serial.println("Overall timeout exceeded, giving up NTP sync.");
+                break;
+            }
+            
+            Serial.printf("Additional NTP sync retry %d of %d...\n", extraRetry + 1, additionalRetries);
+            configTime(0, 0, "pool.ntp.org", "time.google.com");
+            delay(2000);
+            
+            uint32_t start = millis();
+            while ((millis() - start) < ntpTimeoutPerAttempt) {
+                // Check overall timeout
+                if (timeout_ms > 0 && (millis() - overallStart) > timeout_ms) {
+                    Serial.println("Overall timeout exceeded during NTP sync.");
+                    return false;
+                }
+                
         now = time(nullptr);
         if (now > 1577836800) {
             struct tm tm_utc;
@@ -693,16 +819,16 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
             char buf[32];
             strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
             Serial.printf("NTP sync OK: %s\n", buf);
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
             return true;
         }
-        delay(250);
+                delay(500);
+            }
+            Serial.println("NTP sync retry timed out, trying again...");
+        }
     }
 
-    Serial.println("NTP sync timed out; continuing with invalid time.");
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    Serial.println("NTP sync failed; WiFi connection lost.");
+    // Keep WiFi connected if it still is - will be disconnected before deep sleep
     return false;
 }
 #else
@@ -1380,6 +1506,36 @@ static void handleSwitchDWake() {
 
 #endif // SDMMC_ENABLED
 
+// ============================================================================
+// WiFi/MQTT Variables and Functions (needed by auto_cycle_task)
+// ============================================================================
+
+#if WIFI_ENABLED
+// WiFi credentials - stored in NVS (persistent)
+static char wifiSSID[33] = "";
+static char wifiPSK[65] = "";
+static Preferences wifiPrefs;
+
+// Forward declarations for WiFi/MQTT functions
+bool wifiLoadCredentials();  // Returns true if credentials loaded, false if NVS failed or missing
+void enterConfigMode();  // Enter interactive configuration mode for WiFi credentials
+void mqttLoadConfig();
+void mqttSetConfig();
+void mqttStatus();
+bool mqttConnect();
+bool mqttCheckMessages(uint32_t timeoutMs);
+String mqttGetLastMessage();  // Get the last received message
+
+// MQTT command handling
+static String extractCommandFromMessage(const String& msg);
+static String extractFromFieldFromMessage(const String& msg);
+static bool handleMqttCommand(const String& command, const String& originalMessage = "");
+static bool handleClearCommand();
+static bool handlePingCommand(const String& originalMessage);
+void mqttDisconnect();
+bool wifiConnectPersistent(int maxRetries = 10, uint32_t timeoutPerAttemptMs = 30000, bool required = true);
+#endif // WIFI_ENABLED
+
 static void auto_cycle_task(void* arg) {
     (void)arg;
     g_cycle_count++;
@@ -1388,8 +1544,135 @@ static void auto_cycle_task(void* arg) {
     // Increment NTP sync counter
     ntpSyncCounter++;
     
-    // Check if time is valid
-    bool time_ok = ensureTimeValid();
+    // Check if time is valid (with timeout to prevent infinite loops)
+    // Use a shorter timeout initially to avoid blocking too long
+    bool time_ok = false;
+    time_t now = time(nullptr);
+    if (now > 1577836800) {  // Quick check first
+        time_ok = true;
+    } else {
+        // Only try NTP sync if we have WiFi credentials
+        // Use a limited timeout to prevent infinite loops
+        Serial.println("Time invalid, attempting NTP sync (with timeout)...");
+        time_ok = ensureTimeValid(60000);  // 60 second max timeout
+        if (!time_ok) {
+            Serial.println("\n========================================");
+            Serial.println("CRITICAL: Time sync failed - WiFi credentials required!");
+            Serial.println("========================================");
+            Serial.println("Configuration mode needed - exiting task to allow main loop to handle it.");
+            Serial.println("The main loop will enter configuration mode.");
+            // Set flag and exit task - let main loop handle config mode
+            g_config_mode_needed = true;
+            vTaskDelete(NULL);  // Delete this task - main loop will handle config
+            return;  // Should never reach here, but satisfy compiler
+        }
+        // Re-check time after sync attempt
+        now = time(nullptr);
+    }
+    
+    // Get current time to check if it's the top of the hour
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    bool isTopOfHour = (tm_utc.tm_min == 0);
+    
+    Serial.printf("Current time: %02d:%02d:%02d (isTopOfHour: %s)\n", 
+                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
+                  isTopOfHour ? "YES" : "NO");
+    
+    // If NOT top of hour, do MQTT check instead of display update
+    if (!isTopOfHour && time_ok) {
+        Serial.println("=== MQTT Check Cycle (not top of hour) ===");
+        
+#if WIFI_ENABLED
+        // Load WiFi and MQTT credentials
+        // If WiFi credentials fail to load, stop and wait for user configuration
+        if (!wifiLoadCredentials()) {
+            Serial.println("\n>>> CRITICAL: WiFi credentials not available <<<");
+            Serial.println("Cannot proceed with MQTT check without WiFi credentials.");
+            Serial.println("Configuration mode needed - exiting task to allow main loop to handle it.");
+            // Set flag and exit task - let main loop handle config mode
+            g_config_mode_needed = true;
+            vTaskDelete(NULL);  // Delete this task - main loop will handle config
+            return;  // Should never reach here, but satisfy compiler
+        }
+        
+        mqttLoadConfig();
+        
+        // Connect to WiFi - REQUIRED for MQTT, so be persistent
+        if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
+            // WiFi connected - proceed with MQTT
+            // Connect to MQTT and check for retained messages
+            if (mqttConnect()) {
+                // Wait for subscription and any retained messages (max 3 seconds)
+                delay(3000);
+                
+                // Check if we received a retained message
+                String commandToProcess = "";
+                String originalMessageForCommand = "";
+                if (mqttCheckMessages(100)) {
+                    String msg = mqttGetLastMessage();
+                    Serial.printf("New command received: %s\n", msg.c_str());
+                    
+                    // Extract command (but don't process yet - disconnect first)
+                    String command = extractCommandFromMessage(msg);
+                    if (command.length() > 0) {
+                        commandToProcess = command;  // Store for processing after disconnect
+                        originalMessageForCommand = msg;  // Store original message for commands that need it
+                    }
+                    
+                    // Message already processed and cleared in event handler
+                    // The blank retained message was published in the event handler
+                    // Give it a moment to complete before disconnecting
+                    delay(500);  // Allow time for blank retained message publish to complete
+                } else {
+                    Serial.println("No retained messages");
+                }
+                
+                // Disconnect from MQTT immediately after checking for messages
+                // This prevents connection issues during long-running commands (like display updates)
+                mqttDisconnect();
+                delay(200);
+                
+                // Now process the command (if any) after MQTT is fully disconnected
+                if (commandToProcess.length() > 0) {
+                    if (!handleMqttCommand(commandToProcess, originalMessageForCommand)) {
+                        Serial.printf("Unknown command: %s\n", commandToProcess.c_str());
+                    }
+                }
+            }
+            
+            // Keep WiFi connected - will be disconnected before deep sleep
+            Serial.println("WiFi staying connected");
+        } else {
+            Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
+        }
+#else
+        Serial.println("WiFi disabled - cannot check MQTT");
+#endif
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
+    }
+    
+    // Top of hour: proceed with normal display update cycle
+    Serial.println("=== Display Update Cycle (top of hour) ===");
+    
+    // Initialize display now that we know we need it (saves time/power on non-hourly wakes)
+    Serial.println("Initializing display...");
+    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+        Serial.println("ERROR: Display initialization failed!");
+        // On error, sleep and try again next cycle
+        sleepNowSeconds(60);
+        return;
+    }
+    Serial.println("Display initialized");
     
 #if WIFI_ENABLED
     // Resync NTP every 5 wake cycles to keep time accurate
@@ -1405,28 +1688,35 @@ static void auto_cycle_task(void* arg) {
         p.end();
         
         if (ssid.length() > 0) {
-            Serial.printf("Connecting to WiFi: %s\n", ssid.c_str());
-            WiFi.mode(WIFI_STA);
-            WiFi.begin(ssid.c_str(), psk.c_str());
+            // Load credentials into global variables for wifiConnectPersistent
+            strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+            strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
             
-            // Wait up to 10 seconds for connection
-            uint32_t start = millis();
-            while (WiFi.status() != WL_CONNECTED && (millis() - start < 10000)) {
-                delay(250);
-            }
-            
-            if (WiFi.status() == WL_CONNECTED) {
+            // Use persistent WiFi connection (NTP sync is important, so be persistent)
+            if (wifiConnectPersistent(8, 30000, true)) {  // 8 retries, 30s per attempt, required
                 Serial.println("WiFi connected");
                 
-                // Sync time via NTP
+                // Sync time via NTP (with retries for robustness)
+                const int maxNtpRetries = 5;
+                const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
+                bool ntpSynced = false;
+                time_t now = time(nullptr);
+                
+                for (int retry = 0; retry < maxNtpRetries && !ntpSynced; retry++) {
+                    if (retry > 0) {
+                        Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
+                        delay(2000);
+                    }
+                    
                 configTime(0, 0, "pool.ntp.org", "time.google.com");
                 
                 Serial.print("Syncing NTP");
-                start = millis();
-                time_t now = time(nullptr);
-                while (now < 1577836800 && (millis() - start < 10000)) {
-                    delay(250);
+                    uint32_t start = millis();
+                    while (now < 1577836800 && (millis() - start < ntpTimeoutPerAttempt)) {
+                        delay(500);
+                        if ((millis() - start) % 5000 == 0) {
                     Serial.print(".");
+                        }
                     now = time(nullptr);
                 }
                 
@@ -1438,15 +1728,22 @@ static void auto_cycle_task(void* arg) {
                     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
                     Serial.printf("Time synced: %s\n", buf);
                     time_ok = true;
+                        ntpSynced = true;
                 } else {
-                    Serial.println(" FAILED (timeout)");
+                        Serial.println(" FAILED!");
+                        if (retry < maxNtpRetries - 1) {
+                            Serial.println("Will retry NTP sync...");
+                        }
+                    }
                 }
                 
-                // Disconnect WiFi and put C6 into low-power mode
-                WiFi.disconnect(true);
-                WiFi.setSleep(WIFI_PS_MAX_MODEM);  // Tell C6 to enter max power save
-                WiFi.mode(WIFI_OFF);
-                Serial.println("WiFi disconnected, C6 in low-power mode");
+                if (!ntpSynced) {
+                    Serial.println("WARNING: NTP sync failed after all retries, but continuing...");
+                }
+                
+                // Don't disconnect WiFi here - we might need it for MQTT checks
+                // WiFi will be disconnected after MQTT check or before sleep
+                Serial.println("NTP sync complete, WiFi still connected for potential MQTT use");
             } else {
                 Serial.println("WiFi connection failed");
             }
@@ -1522,8 +1819,8 @@ static void auto_cycle_task(void* arg) {
     }
 
     // Overlay time/date with intelligent positioning
-    time_t now = time(nullptr);
-    struct tm tm_utc;
+    // Reuse time variables from earlier in function
+    now = time(nullptr);
     gmtime_r(&now, &tm_utc);
 
     char timeBuf[16];
@@ -1808,25 +2105,723 @@ static void auto_cycle_task(void* arg) {
 // ============================================================================
 
 #if WIFI_ENABLED
-// WiFi credentials - stored in NVS (persistent)
-static char wifiSSID[33] = "";
-static char wifiPSK[65] = "";
-static Preferences wifiPrefs;
+// WiFi credentials already declared above (before auto_cycle_task)
+
+// ============================================================================
+// MQTT Functions
+// ============================================================================
+
+// MQTT configuration - hardcoded
+#define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"  // Change this to your MQTT broker
+#define MQTT_BROKER_PORT 8883                        // TLS port (use 1883 for non-TLS)
+#define MQTT_CLIENT_ID "esp32p4_device"              // Client ID
+#define MQTT_USERNAME "e2XkCCjnqSpUIxeSKB7WR7z7BWa8B6YAqYQaSKYQd0CBavgu0qeV6c2GQ6Af4i8w"                 // MQTT username
+#define MQTT_PASSWORD ""                 // MQTT password
+#define MQTT_TOPIC_SUBSCRIBE "devices/twilio_sms_bridge/cmd"       // Topic to subscribe to
+#define MQTT_TOPIC_PUBLISH "devices/twilio_sms_bridge/outbox"            // Topic to publish to
+
+// MQTT runtime state
+static char mqttBroker[128] = MQTT_BROKER_HOSTNAME;
+static int mqttPort = MQTT_BROKER_PORT;
+static char mqttClientId[64] = MQTT_CLIENT_ID;
+static char mqttUsername[128] = MQTT_USERNAME;  // Increased for flespi.io tokens
+static char mqttPassword[64] = MQTT_PASSWORD;
+static char mqttTopicSubscribe[128] = MQTT_TOPIC_SUBSCRIBE;
+static char mqttTopicPublish[128] = MQTT_TOPIC_PUBLISH;
+static esp_mqtt_client_handle_t mqttClient = nullptr;
+static bool mqttMessageReceived = false;
+static String lastMqttMessage = "";
+static bool mqttConnected = false;
+
+// MQTT event handler
+static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+    esp_mqtt_client_handle_t client = event->client;
+    
+    switch (event->event_id) {
+        case MQTT_EVENT_CONNECTED:
+            mqttConnected = true;
+            
+            // Subscribe to topic if configured
+            if (strlen(mqttTopicSubscribe) > 0) {
+                // Subscribe with QoS 1 to ensure message delivery
+                int msg_id = esp_mqtt_client_subscribe(client, mqttTopicSubscribe, 1);
+                // Wait briefly for subscription confirmation and any retained messages
+            }
+            break;
+            
+        case MQTT_EVENT_SUBSCRIBED:
+            Serial.printf("MQTT subscription confirmed (msg_id: %d)\n", event->msg_id);
+            break;
+            
+        case MQTT_EVENT_UNSUBSCRIBED:
+            Serial.printf("MQTT unsubscribed (msg_id: %d)\n", event->msg_id);
+            break;
+            
+        case MQTT_EVENT_DISCONNECTED:
+            Serial.println("MQTT disconnected");
+            mqttConnected = false;
+            break;
+            
+        case MQTT_EVENT_DATA: {
+            // Extract message payload
+            char message[event->data_len + 1];
+            if (event->data_len > 0) {
+                memcpy(message, event->data, event->data_len);
+                message[event->data_len] = '\0';
+            } else {
+                message[0] = '\0';
+            }
+            
+            // Only process non-blank retained messages
+            if (event->retain && event->data_len > 0) {
+                lastMqttMessage = String(message);
+                mqttMessageReceived = true;
+                
+                // Clear the retained message by publishing an empty message with retain flag
+                if (strlen(mqttTopicSubscribe) > 0 && client != nullptr) {
+                    int msg_id = esp_mqtt_client_publish(client, mqttTopicSubscribe, "", 0, 1, 1);
+                    if (msg_id > 0) {
+                        Serial.printf("Published blank retained message to clear (msg_id: %d)\n", msg_id);
+                    }
+                }
+            }
+            // Ignore non-retained messages and blank retained messages
+            break;
+        }
+            
+        case MQTT_EVENT_ERROR:
+            {
+                Serial.printf("MQTT error: %s\n", esp_err_to_name(event->error_handle->error_type));
+                if (event->error_handle->error_type == MQTT_ERROR_TYPE_ESP_TLS) {
+                    Serial.printf("  ESP-TLS error: 0x%x\n", event->error_handle->esp_tls_last_esp_err);
+                } else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+                    Serial.printf("  Connection refused: 0x%x\n", event->error_handle->connect_return_code);
+                }
+                // Note: Don't set mqttConnected = false here - let DISCONNECT event handle it
+                // This prevents race conditions
+            }
+            break;
+            
+        default:
+            break;
+    }
+}
+
+// Load MQTT configuration (now using hardcoded values)
+void mqttLoadConfig() {
+    // Configuration is now hardcoded via #defines above
+    // Just ensure strings are properly initialized
+    strncpy(mqttBroker, MQTT_BROKER_HOSTNAME, sizeof(mqttBroker) - 1);
+    mqttPort = MQTT_BROKER_PORT;
+    strncpy(mqttClientId, MQTT_CLIENT_ID, sizeof(mqttClientId) - 1);
+    strncpy(mqttUsername, MQTT_USERNAME, sizeof(mqttUsername) - 1);
+    strncpy(mqttPassword, MQTT_PASSWORD, sizeof(mqttPassword) - 1);
+    strncpy(mqttTopicSubscribe, MQTT_TOPIC_SUBSCRIBE, sizeof(mqttTopicSubscribe) - 1);
+    strncpy(mqttTopicPublish, MQTT_TOPIC_PUBLISH, sizeof(mqttTopicPublish) - 1);
+    Serial.printf("MQTT config (hardcoded): broker=%s, port=%d, client_id=%s\n", 
+                  mqttBroker, mqttPort, mqttClientId);
+}
+
+// Save MQTT configuration (no-op since using hardcoded values)
+void mqttSaveConfig() {
+    Serial.println("MQTT configuration is hardcoded - edit #defines in source code to change");
+}
+
+// Connect to MQTT broker
+bool mqttConnect() {
+    if (strlen(mqttBroker) == 0) {
+        Serial.println("No MQTT broker configured");
+        return false;
+    }
+    
+    // Disconnect existing client if any
+    if (mqttClient != nullptr) {
+        esp_mqtt_client_stop(mqttClient);
+        esp_mqtt_client_destroy(mqttClient);
+        mqttClient = nullptr;
+    }
+    
+    // Reset message state for new connection
+    mqttMessageReceived = false;
+    lastMqttMessage = "";
+    
+    // Generate unique client ID if not set
+    if (strlen(mqttClientId) == 0) {
+        snprintf(mqttClientId, sizeof(mqttClientId), "esp32p4_%08X", (unsigned int)ESP.getEfuseMac());
+    }
+    
+    Serial.printf("Connecting to MQTT broker: %s:%d (TLS)\n", mqttBroker, mqttPort);
+    
+    // Configure MQTT client (ESP-IDF 5.x structure)
+    esp_mqtt_client_config_t mqtt_cfg = {};
+    mqtt_cfg.broker.address.hostname = mqttBroker;
+    mqtt_cfg.broker.address.port = mqttPort;
+    mqtt_cfg.credentials.client_id = mqttClientId;
+    
+    if (strlen(mqttUsername) > 0) {
+        mqtt_cfg.credentials.username = mqttUsername;
+        mqtt_cfg.credentials.authentication.password = mqttPassword;
+    }
+    
+    // Configure TLS/SSL transport (for port 8883)
+    if (mqttPort == 8883) {
+        // Enable TLS transport
+        mqtt_cfg.broker.address.transport = MQTT_TRANSPORT_OVER_SSL;
+        
+        // Use built-in CA certificate bundle for server verification (recommended)
+        // This verifies the server's certificate using the built-in CA bundle
+        // which includes common certificate authorities like those used by flespi.io
+        mqtt_cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    } else {
+        mqtt_cfg.broker.address.transport = MQTT_TRANSPORT_OVER_TCP;
+    }
+    
+    // Session settings
+    mqtt_cfg.session.keepalive = 60;
+    
+    // Network settings - configure timeouts and reconnection behavior
+    // Disable auto-reconnect since we're managing connections manually
+    // This prevents reconnection attempts after we intentionally disconnect
+    mqtt_cfg.network.reconnect_timeout_ms = 0;  // Disable auto-reconnect (0 = disabled)
+    mqtt_cfg.network.timeout_ms = 10000;  // Connection timeout (10 seconds)
+    
+    // Create and start MQTT client
+    mqttClient = esp_mqtt_client_init(&mqtt_cfg);
+    if (mqttClient == nullptr) {
+        Serial.println("Failed to initialize MQTT client");
+        return false;
+    }
+    
+    // Register event handler
+    esp_mqtt_client_register_event(mqttClient, MQTT_EVENT_ANY, mqttEventHandler, nullptr);
+    
+    // Start MQTT client (non-blocking)
+    esp_err_t err = esp_mqtt_client_start(mqttClient);
+    if (err != ESP_OK) {
+        Serial.printf("Failed to start MQTT client: %s\n", esp_err_to_name(err));
+        esp_mqtt_client_destroy(mqttClient);
+        mqttClient = nullptr;
+        return false;
+    }
+    
+    // Wait for connection to establish (TLS can take a few seconds)
+    uint32_t start = millis();
+    while (!mqttConnected && (millis() - start < 10000)) {
+        delay(200);
+    }
+    
+    return mqttConnected;
+}
+
+// Check for MQTT messages (non-blocking, processes messages for a short time)
+bool mqttCheckMessages(uint32_t timeoutMs) {
+    if (mqttClient == nullptr || !mqttConnected) {
+        return false;
+    }
+    
+    uint32_t start = millis();
+    while (millis() - start < timeoutMs) {
+        // esp-mqtt processes events in the background via event loop
+        // Just check if we received a retained message
+        if (mqttMessageReceived && lastMqttMessage.length() > 0) {
+            return true;
+        }
+        
+        // Check connection status - if we lost connection, exit early
+        if (!mqttConnected || mqttClient == nullptr) {
+            return false;
+        }
+        
+        delay(50);
+    }
+    
+    return false;  // No messages received
+}
+
+// Get the last received MQTT message
+String mqttGetLastMessage() {
+    return lastMqttMessage;
+}
+
+// ============================================================================
+// MQTT Command Handling
+// ============================================================================
+
+/**
+ * Extract command text from MQTT message
+ * Handles both plain text and JSON messages
+ * Returns lowercase, trimmed command string
+ */
+static String extractCommandFromMessage(const String& msg) {
+    String command = msg;
+    command.toLowerCase();
+    command.trim();
+    
+    // If message is JSON, try to extract "text" field
+    if (command.startsWith("{")) {
+        // Simple JSON parsing - look for "text":"..." pattern
+        int textStart = command.indexOf("\"text\"");
+        if (textStart >= 0) {
+            int colonPos = command.indexOf(':', textStart);
+            int quoteStart = command.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                int quoteEnd = command.indexOf('"', quoteStart + 1);
+                if (quoteEnd >= 0) {
+                    command = command.substring(quoteStart + 1, quoteEnd);
+                    command.toLowerCase();
+                    command.trim();
+                }
+            }
+        }
+    }
+    
+    return command;
+}
+
+/**
+ * Extract "from" field from JSON message
+ * Returns the "from" field value (e.g., "+447816969344") or empty string if not found
+ */
+static String extractFromFieldFromMessage(const String& msg) {
+    String result = "";
+    
+    // Only process JSON messages
+    if (!msg.startsWith("{")) {
+        return result;
+    }
+    
+    // Look for "from":"..." pattern
+    int fromStart = msg.indexOf("\"from\"");
+    if (fromStart >= 0) {
+        int colonPos = msg.indexOf(':', fromStart);
+        int quoteStart = msg.indexOf('"', colonPos);
+        if (quoteStart >= 0) {
+            int quoteEnd = msg.indexOf('"', quoteStart + 1);
+            if (quoteEnd >= 0) {
+                result = msg.substring(quoteStart + 1, quoteEnd);
+                result.trim();
+            }
+        }
+    }
+    
+    return result;
+}
+
+/**
+ * Main command dispatcher
+ * Returns true if command was handled, false if unknown
+ * 
+ * To add a new command:
+ * 1. Create a handler function: static bool handleXxxCommand()
+ * 2. Add a case in this function: if (command == "!xxx") return handleXxxCommand();
+ * 3. Add forward declaration near top of file (with other command handlers)
+ * 
+ * Example:
+ *   // Forward declaration (near line 1419)
+ *   static bool handleStatusCommand();
+ *   
+ *   // In handleMqttCommand() (this function):
+ *   if (command == "!status") {
+ *       return handleStatusCommand();
+ *   }
+ *   
+ *   // Implementation (after handleClearCommand):
+ *   static bool handleStatusCommand() {
+ *       // Your command logic here
+ *       return true;
+ *   }
+ */
+static bool handleMqttCommand(const String& command, const String& originalMessage) {
+    if (command == "!clear") {
+        return handleClearCommand();
+    }
+    
+    if (command == "!ping") {
+        return handlePingCommand(originalMessage);
+    }
+    
+    // Add more commands here as needed:
+    // if (command == "!status") {
+    //     return handleStatusCommand();
+    // }
+    // if (command == "!reboot") {
+    //     return handleRebootCommand();
+    // }
+    
+    return false;  // Unknown command
+}
+
+/**
+ * Handle !clear command - clear the e-ink display
+ */
+static bool handleClearCommand() {
+    Serial.println("Processing !clear command...");
+    
+    // Ensure display is initialized (may not be on MQTT-only wakes)
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        // Initialize SPI if needed
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+    // Clear the display buffer
+    Serial.println("Clearing display...");
+    display.clear(EL133UF1_WHITE);
+    
+    // Update the display (this takes ~20-30 seconds)
+    Serial.println("Updating display (this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display cleared and updated");
+    
+    return true;  // Command handled successfully
+}
+
+/**
+ * Handle !ping command - publish a ping response to MQTT with sender number
+ */
+static bool handlePingCommand(const String& originalMessage) {
+    Serial.println("Processing !ping command...");
+    
+    // Extract sender number from original message
+    String senderNumber = extractFromFieldFromMessage(originalMessage);
+    if (senderNumber.length() == 0) {
+        Serial.println("WARNING: Could not extract sender number from message, using empty number");
+    } else {
+        Serial.printf("Extracted sender number: %s\n", senderNumber.c_str());
+    }
+    
+    // Reconnect to MQTT to publish response
+    // (We disconnected after checking for messages, so need to reconnect)
+    if (!mqttConnect()) {
+        Serial.println("ERROR: Failed to connect to MQTT for ping response");
+        return false;
+    }
+    
+    // Wait for connection to be established
+    delay(1000);
+    
+    // Build URL-encoded form response: "To=+447816969344&From=+447401492609&Body=Pong"
+    // From is the device's number (hardcoded), To is the sender we're replying to
+    String formResponse = "To=";
+    formResponse += senderNumber;
+    formResponse += "&From=+447401492609";
+    formResponse += "&Body=Pong";
+    
+    // Publish ping response
+    if (mqttClient != nullptr && strlen(mqttTopicPublish) > 0) {
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicPublish, formResponse.c_str(), formResponse.length(), 1, 0);
+        if (msg_id > 0) {
+            Serial.printf("Published ping response to %s (msg_id: %d): %s\n", mqttTopicPublish, msg_id, formResponse.c_str());
+            // Give it a moment to send
+            delay(500);
+        } else {
+            Serial.println("ERROR: Failed to publish ping response");
+        }
+    } else {
+        Serial.println("ERROR: MQTT client not available or publish topic not set");
+    }
+    
+    // Disconnect after publishing
+    mqttDisconnect();
+    delay(200);
+    
+    return true;  // Command handled successfully
+}
+
+// Disconnect from MQTT
+void mqttDisconnect() {
+    if (mqttClient != nullptr) {
+        Serial.println("Disconnecting from MQTT...");
+        // Unregister event handler first to prevent events during shutdown
+        esp_mqtt_client_unregister_event(mqttClient, MQTT_EVENT_ANY, mqttEventHandler);
+        delay(100);
+        // Stop the client (this should prevent auto-reconnect)
+        esp_mqtt_client_stop(mqttClient);
+        delay(300);  // Give it more time to clean up and stop reconnection attempts
+        // Destroy the client
+        esp_mqtt_client_destroy(mqttClient);
+        mqttClient = nullptr;
+        mqttConnected = false;
+        Serial.println("MQTT disconnected and cleaned up");
+    }
+}
+
+// Set MQTT configuration via serial input (disabled - using hardcoded values)
+void mqttSetConfig() {
+    Serial.println("\n=== MQTT Configuration ===");
+    Serial.println("MQTT configuration is now hardcoded.");
+    Serial.println("Edit the #defines in the source code to change:");
+    Serial.println("  MQTT_BROKER_HOSTNAME");
+    Serial.println("  MQTT_BROKER_PORT");
+    Serial.println("  MQTT_USERNAME");
+    Serial.println("  MQTT_PASSWORD");
+    Serial.println("  MQTT_TOPIC_SUBSCRIBE");
+    Serial.println("  MQTT_TOPIC_PUBLISH");
+    Serial.println("==========================\n");
+    mqttStatus();  // Show current config
+}
+
+// Show MQTT configuration status
+void mqttStatus() {
+    Serial.println("\n=== MQTT Status ===");
+    mqttLoadConfig();  // Reload hardcoded config
+    
+    if (strlen(mqttBroker) > 0) {
+        Serial.printf("Broker: %s:%d\n", mqttBroker, mqttPort);
+        Serial.printf("Client ID: %s\n", strlen(mqttClientId) > 0 ? mqttClientId : "(auto-generated)");
+        if (strlen(mqttUsername) > 0) {
+            Serial.printf("Username: %s\n", mqttUsername);
+            Serial.println("Password: ***");
+        } else {
+            Serial.println("Authentication: None");
+        }
+        if (strlen(mqttTopicSubscribe) > 0) {
+            Serial.printf("Subscribe: %s\n", mqttTopicSubscribe);
+        } else {
+            Serial.println("Subscribe: (not configured)");
+        }
+        if (strlen(mqttTopicPublish) > 0) {
+            Serial.printf("Publish: %s\n", mqttTopicPublish);
+        } else {
+            Serial.println("Publish: (not configured)");
+        }
+        Serial.printf("Connection: %s\n", mqttConnected ? "Connected" : "Disconnected");
+    } else {
+        Serial.println("MQTT not configured.");
+        Serial.println("Use 'M' to configure MQTT settings.");
+    }
+    Serial.println("==================\n");
+}
+
+// Forward declarations
+void wifiClearCredentials();
+
+// Enter interactive configuration mode - loops until credentials are successfully set
+void enterConfigMode() {
+    Serial.println("\n\n========================================");
+    Serial.println("    CONFIGURATION MODE");
+    Serial.println("========================================");
+    Serial.println("WiFi credentials are required to continue.");
+    Serial.println("Please enter your WiFi network details below.");
+    Serial.println("========================================\n");
+    
+    while (true) {
+        // Prompt for SSID
+        Serial.print("WiFi SSID: ");
+        Serial.flush();
+        
+        // Wait for input with timeout
+        uint32_t start = millis();
+        String ssid = "";
+        while ((millis() - start) < 60000) {  // 60 second timeout
+            if (Serial.available()) {
+                ssid = Serial.readStringUntil('\n');
+                ssid.trim();
+                break;
+            }
+            delay(10);
+        }
+        
+        if (ssid.length() == 0) {
+            Serial.println("\nTimeout or empty input. Please try again.");
+            continue;
+        }
+        
+        if (ssid == "clear") {
+            wifiClearCredentials();
+            Serial.println("Credentials cleared. Please enter new credentials.");
+            continue;
+        }
+        
+        // Prompt for password
+        Serial.print("WiFi Password (or press Enter for open network): ");
+        Serial.flush();
+        
+        start = millis();
+        String psk = "";
+        while ((millis() - start) < 60000) {  // 60 second timeout
+            if (Serial.available()) {
+                psk = Serial.readStringUntil('\n');
+                psk.trim();
+                break;
+            }
+            delay(10);
+        }
+        
+        // Save credentials
+        strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        wifiSSID[sizeof(wifiSSID) - 1] = '\0';
+        strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+        wifiPSK[sizeof(wifiPSK) - 1] = '\0';
+        
+        // Save to NVS
+        wifiPrefs.begin("wifi", false);  // Read-write
+        wifiPrefs.putString("ssid", wifiSSID);
+        wifiPrefs.putString("psk", wifiPSK);
+        wifiPrefs.end();
+        
+        Serial.printf("\nCredentials saved: SSID='%s'\n", wifiSSID);
+        Serial.println("Verifying credentials were saved...");
+        
+        // Verify they were saved
+        wifiPrefs.begin("wifi", true);  // Read-only
+        String savedSSID = wifiPrefs.getString("ssid", "");
+        wifiPrefs.end();
+        
+        if (savedSSID.length() > 0 && savedSSID == wifiSSID) {
+            Serial.println("✓ Credentials verified and saved successfully!");
+            Serial.println("\n========================================");
+            Serial.println("Configuration complete!");
+            Serial.println("========================================\n");
+            return;  // Exit config mode
+        } else {
+            Serial.println("✗ ERROR: Failed to verify saved credentials!");
+            Serial.println("Please try again.\n");
+            continue;  // Loop back to try again
+        }
+    }
+}
 
 // Load WiFi credentials from NVS
-void wifiLoadCredentials() {
-    wifiPrefs.begin("wifi", true);  // Read-only
+// Returns true if credentials were loaded successfully, false if NVS failed or credentials missing
+bool wifiLoadCredentials() {
+    // Clear credentials first
+    wifiSSID[0] = '\0';
+    wifiPSK[0] = '\0';
+    
+    // Try to open NVS namespace
+    if (!wifiPrefs.begin("wifi", true)) {  // Read-only
+        Serial.println("\n========================================");
+        Serial.println("ERROR: Failed to open NVS for WiFi credentials!");
+        Serial.println("NVS may be corrupted or not initialized.");
+        Serial.println("========================================");
+        Serial.println("\n>>> CONFIGURATION REQUIRED <<<");
+        Serial.println("Please configure WiFi credentials using:");
+        Serial.println("  Command 'W' - Set WiFi credentials");
+        Serial.println("\nDevice will wait for configuration...");
+        return false;
+    }
+    
     String ssid = wifiPrefs.getString("ssid", "");
     String psk = wifiPrefs.getString("psk", "");
     wifiPrefs.end();
     
     if (ssid.length() > 0) {
         strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        wifiSSID[sizeof(wifiSSID) - 1] = '\0';  // Ensure null termination
         strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+        wifiPSK[sizeof(wifiPSK) - 1] = '\0';  // Ensure null termination
         Serial.printf("Loaded WiFi credentials for: %s\n", wifiSSID);
+        return true;
     } else {
-        Serial.println("No saved WiFi credentials");
+        // Configuration mode needed, but this function is called from task context
+        // Return false - caller should handle config mode by setting flag and exiting task
+        Serial.println("Configuration mode needed.");
+        Serial.println("This function cannot enter config mode (called from task context).");
+        Serial.println("Returning false - caller should handle config mode.");
+        return false;
     }
+}
+
+// Persistent WiFi connection function - keeps trying until connected
+// Returns true if connected, false only if credentials are missing
+bool wifiConnectPersistent(int maxRetries, uint32_t timeoutPerAttemptMs, bool required) {
+    if (strlen(wifiSSID) == 0) {
+        Serial.println("No WiFi credentials configured");
+        return false;
+    }
+    
+    Serial.printf("Connecting to WiFi: %s (persistent mode)\n", wifiSSID);
+    
+    // Configure WiFi for better connection reliability
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);  // Disable WiFi sleep for better connection stability
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximum power for better range
+    WiFi.setAutoReconnect(true);  // Enable auto-reconnect
+    
+    // Try connecting with multiple retries
+    for (int retry = 0; retry < maxRetries; retry++) {
+        if (retry > 0) {
+            Serial.printf("WiFi connection attempt %d/%d...\n", retry + 1, maxRetries);
+            delay(2000);  // Wait 2 seconds before retry
+            // Only disconnect if we're not already connected
+            if (WiFi.status() != WL_CONNECTED) {
+                WiFi.disconnect();
+                delay(500);
+            }
+        }
+        
+        Serial.print("Connecting");
+        // Only call begin if not already connected
+        if (WiFi.status() != WL_CONNECTED) {
+            WiFi.begin(wifiSSID, wifiPSK);
+        }
+        
+        uint32_t start = millis();
+        while (WiFi.status() != WL_CONNECTED && (millis() - start < timeoutPerAttemptMs)) {
+            delay(500);
+            Serial.print(".");
+            
+            // Show progress every 5 seconds
+            if ((millis() - start) % 5000 < 500) {
+                Serial.printf(" [%lu s]", (millis() - start) / 1000);
+            }
+        }
+        Serial.println();
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("WiFi connected!");
+            Serial.printf("  IP: %s\n", WiFi.localIP().toString().c_str());
+            Serial.printf("  RSSI: %d dBm\n", WiFi.RSSI());
+            Serial.printf("  Channel: %d\n", WiFi.channel());
+            return true;
+        } else {
+            Serial.printf("Connection attempt %d failed (status: %d)\n", retry + 1, WiFi.status());
+        }
+    }
+    
+    // All retries exhausted
+    if (required) {
+        Serial.println("ERROR: WiFi connection failed after all retries - this is required, will keep trying...");
+        // If required, keep trying indefinitely
+        while (WiFi.status() != WL_CONNECTED) {
+            Serial.println("Retrying WiFi connection (required)...");
+            delay(5000);  // Wait 5 seconds before retry
+            // Only disconnect if not already connected
+            if (WiFi.status() != WL_CONNECTED) {
+                WiFi.disconnect();
+                delay(500);
+                WiFi.begin(wifiSSID, wifiPSK);
+            }
+            
+            uint32_t start = millis();
+            while (WiFi.status() != WL_CONNECTED && (millis() - start < timeoutPerAttemptMs)) {
+                delay(500);
+                Serial.print(".");
+            }
+            Serial.println();
+            
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.println("WiFi connected after persistent retry!");
+                Serial.printf("  IP: %s\n", WiFi.localIP().toString().c_str());
+                Serial.printf("  RSSI: %d dBm\n", WiFi.RSSI());
+                Serial.printf("  Channel: %d\n", WiFi.channel());
+                return true;
+            }
+        }
+    } else {
+        Serial.println("WiFi connection failed after all retries");
+        return false;
+    }
+    
+    return true;  // Should never reach here, but satisfy compiler
 }
 
 // Save WiFi credentials to NVS
@@ -1881,17 +2876,8 @@ void wifiConnect() {
     Serial.printf("\n=== Connecting to WiFi ===\n");
     Serial.printf("SSID: %s\n", wifiSSID);
     
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(wifiSSID, wifiPSK);
-    
-    Serial.print("Connecting");
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - start < 30000)) {
-        Serial.print(".");
-        delay(500);
-    }
-    
-    if (WiFi.status() == WL_CONNECTED) {
+    // Use persistent WiFi connection for manual connect command
+    if (wifiConnectPersistent(10, 30000, false)) {  // 10 retries, 30s per attempt, not required (user command)
         Serial.println(" Connected!");
         Serial.printf("  IP Address: %s\n", WiFi.localIP().toString().c_str());
         Serial.printf("  Gateway:    %s\n", WiFi.gatewayIP().toString().c_str());
@@ -3422,7 +4408,8 @@ void setup() {
     
     if (wokeFromSleep) {
         // Quick boot after deep sleep - skip serial wait
-        delay(100);  // Brief delay for serial to init
+        // Add extra delay after deep sleep to let ESP-Hosted (ESP32-C6) stabilize
+        delay(500);  // Increased delay to let ESP-Hosted module stabilize after deep sleep
         Serial.println("\n=== Woke from deep sleep ===");
         Serial.printf("Boot count: %u, Wake cause: %d\n", sleepBootCount, wakeCause);
     } else {
@@ -3468,13 +4455,8 @@ void setup() {
     // Initialize SPI (always needed - ESP32 peripherals reset after deep sleep)
     displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
     
-    // Initialize display (required - PSRAM doesn't persist through deep sleep)
-    Serial.println("Initializing display...");
-    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
-        Serial.println("ERROR: Display initialization failed!");
-        while (1) delay(1000);
-    }
-    Serial.println("Display initialized");
+    // Display initialization deferred until we know we need it (top of hour)
+    // This saves time and power on non-hourly wakes when we're just doing MQTT checks
     
     // Initialize TTF renderer and BMP loader
     ttf.begin(&display);
@@ -3546,6 +4528,7 @@ void setup() {
     Serial.println("  System:  'i'=info");
 #if WIFI_ENABLED
     Serial.println("  WiFi:    'w'=connect, 'W'=set credentials, 'q'=scan, 'd'=disconnect, 'n'=NTP sync, 'x'=status");
+    Serial.println("  MQTT:    'J'=set config, 'K'=status, 'H'=connect, 'j'=disconnect");
 #endif
 #if SDMMC_ENABLED
     Serial.println("  SD Card: 'M'=mount(4-bit), 'm'=mount(1-bit), 'L'=list, 'I'=info, 'T'=test, 'U'=unmount, 'D'=diag, 'P'=power cycle, 'O/o'=pwr on/off");
@@ -3582,8 +4565,15 @@ void setup() {
     }
 
 #if WIFI_ENABLED
-    // Load saved credentials from NVS
-    wifiLoadCredentials();
+    // Load saved credentials from NVS - if this fails, stop and wait for configuration
+    if (!wifiLoadCredentials()) {
+        Serial.println("\n>>> CRITICAL: WiFi credentials not available <<<");
+        Serial.println("Cannot proceed with auto-connect without WiFi credentials.");
+        Serial.println("Device will wait in interactive mode for configuration.");
+        Serial.println("Use command 'W' to set WiFi credentials.");
+        // Stay in interactive mode - don't proceed with auto-connect
+    } else {
+        mqttLoadConfig();  // Load MQTT configuration
     
     // If time not valid, try to auto-connect and sync
     if (!timeValid) {
@@ -3636,8 +4626,11 @@ void setup() {
             Serial.println("\nNo WiFi credentials saved.");
             Serial.println(">>> Use 'W' to set WiFi credentials, then 'n' to sync time <<<");
         }
-    } else {
-        // Time is valid, just show WiFi status
+        }
+    }
+    
+    // If time is valid, show WiFi status
+    if (timeValid) {
         Serial.println("\n--- WiFi Status ---");
         Serial.printf("MAC: %s\n", WiFi.macAddress().c_str());
         if (strlen(wifiSSID) > 0) {
@@ -3659,6 +4652,7 @@ void setup() {
     Serial.println("  System:  'i'=info");
 #if WIFI_ENABLED
     Serial.println("  WiFi:    'w'=connect, 'W'=set creds, 'q'=scan, 'd'=disconnect, 'x'=status");
+    Serial.println("  MQTT:    'J'=set config, 'K'=status, 'H'=connect, 'j'=disconnect");
 #endif
 #if SDMMC_ENABLED
     Serial.println("  SD:      'M'/'m'=mount 4/1-bit, 'L'=list, 'I'=info, 'B'=rand BMP, 'G'=rand PNG");
@@ -3734,6 +4728,16 @@ void sleepTest(uint32_t seconds) {
 }
 
 void loop() {
+    // Check if config mode is needed (set by auto_cycle_task when credentials missing)
+    if (g_config_mode_needed) {
+        g_config_mode_needed = false;  // Clear flag
+        Serial.println("\n>>> Entering configuration mode (requested by auto-cycle task) <<<");
+        enterConfigMode();
+        // After config mode, credentials should be set - task will retry on next cycle
+        Serial.println("Configuration complete. Auto-cycle will retry on next wake.");
+        return;  // Don't process other commands this loop iteration
+    }
+    
     if (Serial.available()) {
         char c = Serial.read();
         
@@ -3876,6 +4880,23 @@ void loop() {
         }
         else if (c == 'n' || c == 'N') {
             wifiNtpSync();
+        }
+        else if (c == 'j' || c == 'J') {
+            mqttSetConfig();
+        }
+        else if (c == 'k' || c == 'K') {
+            mqttStatus();
+        }
+        else if (c == 'h' || c == 'H') {
+            if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("WiFi not connected! Connect first with 'w'");
+            } else {
+                mqttConnect();
+            }
+        }
+        else if (c == 'h' && c != 'H') {
+            // 'h' lowercase is disconnect (H uppercase is connect)
+            mqttDisconnect();
         }
 #endif
 #if SDMMC_ENABLED

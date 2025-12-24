@@ -51,9 +51,10 @@
 #include <time.h>
 #include <sys/time.h>
 
-// ESP8266Audio for robust WAV parsing and playback
+// ESP8266Audio for robust WAV and MP3 parsing and playback
 #include "AudioOutputI2S.h"
 #include "AudioGeneratorWAV.h"
+#include "AudioGeneratorMP3.h"
 #include "AudioFileSource.h"
 
 // WiFi support for ESP32-P4 (via ESP32-C6 companion chip)
@@ -1229,15 +1230,23 @@ String getAudioForImage(const String& imagePath) {
 }
 
 /**
- * Play a WAV file from SD card using ESP8266Audio library
- * Handles WAV parsing robustly and uses existing ES8311/I2S setup
+ * Play an audio file (WAV or MP3) from SD card using ESP8266Audio library
+ * Automatically detects file format based on extension (.wav or .mp3)
+ * Handles audio parsing robustly and uses existing ES8311/I2S setup
  * Returns: true if playback successful
  */
-bool playWavFile(const String& wavPath) {
+bool playWavFile(const String& audioPath) {
     // Only log for non-beep files (beep.wav is a silent fallback)
-    bool isBeep = (wavPath == "beep.wav" || wavPath.endsWith("/beep.wav"));
+    bool isBeep = (audioPath == "beep.wav" || audioPath.endsWith("/beep.wav"));
+    
+    // Detect file format from extension
+    String pathLower = audioPath;
+    pathLower.toLowerCase();
+    bool isMP3 = pathLower.endsWith(".mp3");
+    bool isWAV = pathLower.endsWith(".wav");
+    
     if (!isBeep) {
-        Serial.printf("\n=== Playing WAV: %s ===\n", wavPath.c_str());
+        Serial.printf("\n=== Playing %s: %s ===\n", isMP3 ? "MP3" : "WAV", audioPath.c_str());
     }
     
     if (!sdCardMounted && sd_card == nullptr) {
@@ -1262,20 +1271,28 @@ bool playWavFile(const String& wavPath) {
     (void)g_codec.setDacVolumePercentMapped(60, kCodecVolumeMinPct, kCodecVolumeMaxPct);
     (void)g_codec.setMute(false);
     
+    // Validate file format
+    if (!isMP3 && !isWAV) {
+        if (!isBeep) {
+            Serial.printf("  Unsupported audio format: %s (only .wav and .mp3 are supported)\n", audioPath.c_str());
+        }
+        return false;
+    }
+    
     // Build FatFs path
     String fatfsPath = "0:";
-    if (!wavPath.startsWith("/")) {
+    if (!audioPath.startsWith("/")) {
         fatfsPath += "/";
     }
-    fatfsPath += wavPath;
+    fatfsPath += audioPath;
     
     // Check if file exists
     FILINFO fno;
     FRESULT res = f_stat(fatfsPath.c_str(), &fno);
     if (res != FR_OK) {
         // Silently fail for beep.wav (expected fallback), log for other files
-        if (wavPath != "beep.wav" && !wavPath.endsWith("/beep.wav")) {
-            Serial.printf("  WAV file not found: %s\n", wavPath.c_str());
+        if (audioPath != "beep.wav" && !audioPath.endsWith("/beep.wav")) {
+            Serial.printf("  Audio file not found: %s\n", audioPath.c_str());
         }
         return false;
     }
@@ -1284,8 +1301,8 @@ bool playWavFile(const String& wavPath) {
     AudioFileSourceFatFs* file = new AudioFileSourceFatFs(fatfsPath.c_str());
     if (!file->open(fatfsPath.c_str())) {
         // Silently fail for beep.wav (expected fallback), log for other files
-        if (wavPath != "beep.wav" && !wavPath.endsWith("/beep.wav")) {
-            Serial.printf("  Failed to open WAV file: %s\n", fatfsPath.c_str());
+        if (audioPath != "beep.wav" && !audioPath.endsWith("/beep.wav")) {
+            Serial.printf("  Failed to open audio file: %s\n", fatfsPath.c_str());
         }
         delete file;
         return false;
@@ -1301,8 +1318,13 @@ bool playWavFile(const String& wavPath) {
         return false;
     }
     
-    // Create WAV generator
-    AudioGeneratorWAV* wav = new AudioGeneratorWAV();
+    // Create appropriate audio generator based on file format
+    AudioGenerator* generator = nullptr;
+    if (isMP3) {
+        generator = new AudioGeneratorMP3();
+    } else {
+        generator = new AudioGeneratorWAV();
+    }
     
     // Only log for non-beep files (beep.wav is a silent fallback)
     if (!isBeep) {
@@ -1310,22 +1332,22 @@ bool playWavFile(const String& wavPath) {
     }
     uint32_t startTime = millis();
     
-    // Begin playback - ESP8266Audio handles all WAV parsing
-    if (!wav->begin(file, out)) {
+    // Begin playback - ESP8266Audio handles all audio parsing
+    if (!generator->begin(file, out)) {
         // Silently fail for beep.wav (expected fallback), log for other files
         if (!isBeep) {
-            Serial.println("  Failed to start WAV playback");
+            Serial.printf("  Failed to start %s playback\n", isMP3 ? "MP3" : "WAV");
         }
         file->close();
         delete file;
-        delete wav;
+        delete generator;
         return false;
     }
     
     // Play until complete
-    while (wav->isRunning()) {
-        if (!wav->loop()) {
-            wav->stop();
+    while (generator->isRunning()) {
+        if (!generator->loop()) {
+            generator->stop();
             break;
         }
         // Small delay to prevent tight loop
@@ -1340,9 +1362,9 @@ bool playWavFile(const String& wavPath) {
     }
     
     // Cleanup (don't delete out - it's g_audio_output and will be reused)
-    wav->stop();
+    generator->stop();
     file->close();
-    delete wav;
+    delete generator;
     delete file;
     
     return true;
@@ -1528,10 +1550,14 @@ String mqttGetLastMessage();  // Get the last received message
 
 // MQTT command handling
 static String extractCommandFromMessage(const String& msg);
+static String extractCommandParameter(const String& command);
 static String extractFromFieldFromMessage(const String& msg);
 static bool handleMqttCommand(const String& command, const String& originalMessage = "");
 static bool handleClearCommand();
 static bool handlePingCommand(const String& originalMessage);
+static bool handleNextCommand();
+static bool handleGoCommand(const String& parameter);
+static bool handleTextCommand(const String& parameter);
 void mqttDisconnect();
 bool wifiConnectPersistent(int maxRetries = 10, uint32_t timeoutPerAttemptMs = 30000, bool required = true);
 #endif // WIFI_ENABLED
@@ -2380,6 +2406,26 @@ static String extractCommandFromMessage(const String& msg) {
 }
 
 /**
+ * Extract parameter from command (e.g., "!go 5" -> "5")
+ * Returns the parameter string, or empty string if no parameter
+ */
+static String extractCommandParameter(const String& command) {
+    String cmd = command;
+    cmd.trim();
+    
+    // Find the first space after the command
+    int spacePos = cmd.indexOf(' ');
+    if (spacePos < 0) {
+        return "";  // No parameter
+    }
+    
+    // Extract everything after the space
+    String param = cmd.substring(spacePos + 1);
+    param.trim();
+    return param;
+}
+
+/**
  * Extract "from" field from JSON message
  * Returns the "from" field value (e.g., "+447816969344") or empty string if not found
  */
@@ -2439,6 +2485,20 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
     
     if (command == "!ping") {
         return handlePingCommand(originalMessage);
+    }
+    
+    if (command == "!next") {
+        return handleNextCommand();
+    }
+    
+    if (command.startsWith("!go")) {
+        String param = extractCommandParameter(command);
+        return handleGoCommand(param);
+    }
+    
+    if (command.startsWith("!text")) {
+        String param = extractCommandParameter(command);
+        return handleTextCommand(param);
     }
     
     // Add more commands here as needed:
@@ -2533,6 +2593,524 @@ static bool handlePingCommand(const String& originalMessage) {
     delay(200);
     
     return true;  // Command handled successfully
+}
+
+/**
+ * Handle !next command - advance to next media item and update display
+ * This simulates what happens at the top of the hour: loads next image from media.txt,
+ * displays it with time/date and quote overlays, and plays the associated audio
+ */
+static bool handleNextCommand() {
+    Serial.println("Processing !next command...");
+    
+    // Ensure display is initialized (may not be on MQTT-only wakes)
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        // Initialize SPI if needed
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+#if SDMMC_ENABLED
+    // Mount SD card if needed
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("Mounting SD card...");
+        if (!sdInitDirect(false)) {
+            Serial.println("ERROR: Failed to mount SD card!");
+            return false;
+        }
+    }
+    
+    // Load configuration files from SD card if needed
+    if (!g_quotes_loaded) {
+        loadQuotesFromSD();
+    }
+    if (!g_media_mappings_loaded) {
+        loadMediaMappingsFromSD();
+    }
+    
+    // Check if we have media mappings
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        Serial.println("ERROR: No media.txt mappings found - cannot advance to next item");
+        return false;
+    }
+    
+    // Advance to next media item (pngDrawFromMediaMappings will increment lastMediaIndex)
+    Serial.printf("Current media index: %lu (of %zu)\n", 
+                  (unsigned long)lastMediaIndex, g_media_mappings.size());
+    
+    // Load the next PNG from media.txt (this increments lastMediaIndex automatically)
+    uint32_t sd_ms = 0, dec_ms = 0;
+    bool ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+    if (!ok) {
+        Serial.println("ERROR: Failed to load next image from media.txt");
+        return false;
+    }
+    
+    Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
+    Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
+    
+    // Get current time for overlay
+    time_t now = time(nullptr);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    
+    char timeBuf[16];
+    char dateBuf[48];
+    bool timeValid = (now > 1577836800); // after 2020-01-01
+    if (timeValid) {
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
+        
+        // Format date as "Saturday 13th of December 2025"
+        char dayName[12], monthName[12];
+        strftime(dayName, sizeof(dayName), "%A", &tm_utc);
+        strftime(monthName, sizeof(monthName), "%B", &tm_utc);
+        
+        int day = tm_utc.tm_mday;
+        int year = tm_utc.tm_year + 1900;
+        
+        const char* suffix;
+        if (day >= 11 && day <= 13) {
+            suffix = "th";
+        } else {
+            switch (day % 10) {
+                case 1: suffix = "st"; break;
+                case 2: suffix = "nd"; break;
+                case 3: suffix = "rd"; break;
+                default: suffix = "th"; break;
+            }
+        }
+        
+        snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
+                 dayName, day, suffix, monthName, year);
+    } else {
+        snprintf(timeBuf, sizeof(timeBuf), "--:--");
+        snprintf(dateBuf, sizeof(dateBuf), "time not set");
+    }
+    
+    // Set keepout margins and clear exclusion zones
+    textPlacement.setKeepout(100);
+    textPlacement.clearExclusionZones();
+    
+    // Draw time/date overlay (simplified version - reuse logic from hourly update)
+    float timeFontSize = 160.0f;
+    float dateFontSize = 48.0f;
+    const int16_t gapBetween = 20;
+    const int16_t timeOutline = 3;
+    const int16_t dateOutline = 2;
+    
+    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+    int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+    int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
+    
+    int16_t blockW = max(timeW, dateW);
+    int16_t blockH = timeH + gapBetween + dateH;
+    
+    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
+        &display, blockW, blockH,
+        EL133UF1_WHITE, EL133UF1_BLACK);
+    
+    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
+    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
+    
+    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
+    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
+    
+    textPlacement.addExclusionZone(bestPos, 150);
+    
+    // Draw quote overlay
+    using Quote = TextPlacementAnalyzer::Quote;
+    Quote selectedQuote;
+    
+    if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
+        int randomIndex = random(g_loaded_quotes.size());
+        selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
+        selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
+    } else {
+        static const Quote fallbackQuotes[] = {
+            {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
+            {"The only way to do great work is to love what you do", "Steve Jobs"},
+            {"In the middle of difficulty lies opportunity", "Albert Einstein"},
+            {"Be yourself; everyone else is already taken", "Oscar Wilde"},
+        };
+        static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
+        selectedQuote = fallbackQuotes[random(numQuotes)];
+    }
+    
+    float quoteFontSize = 48.0f;
+    float authorFontSize = 32.0f;
+    
+    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
+        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
+        EL133UF1_WHITE, EL133UF1_BLACK,
+        3, 3);
+    
+    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
+                            quoteFontSize, authorFontSize,
+                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
+    
+    // Update display
+    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display updated");
+    
+    // Play audio file for this image
+    String audioFile = getAudioForImage(g_lastImagePath);
+    if (audioFile.length() > 0) {
+        Serial.printf("Playing audio: %s\n", audioFile.c_str());
+        strncpy(lastAudioFile, audioFile.c_str(), sizeof(lastAudioFile) - 1);
+        lastAudioFile[sizeof(lastAudioFile) - 1] = '\0';
+        playWavFile(audioFile);
+    } else {
+        Serial.println("No audio file mapped for this image, playing beep.wav");
+        strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
+        playWavFile("beep.wav");
+    }
+    audio_stop();
+    
+    Serial.println("!next command completed successfully");
+    return true;
+#else
+    Serial.println("ERROR: SD card support not enabled - cannot load media");
+    return false;
+#endif
+}
+
+/**
+ * Handle !go command - jump to a specific media item by index (1-based)
+ * Format: !go <number> (e.g., "!go 1" jumps to the first item, "!go 5" jumps to the 5th item)
+ * Validates the index is within bounds before updating
+ * Note: User input is 1-based, but internally we use 0-based indexing
+ */
+static bool handleGoCommand(const String& parameter) {
+    Serial.println("Processing !go command...");
+    
+    // Check if parameter was provided
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !go command requires a number parameter (e.g., !go 1)");
+        return false;
+    }
+    
+    // Parse the parameter as a number (1-based from user)
+    int userInput = parameter.toInt();
+    if (userInput < 1) {
+        Serial.println("ERROR: Number must be 1 or greater");
+        return false;
+    }
+    
+    // Convert to 0-based index
+    int targetIndex = userInput - 1;
+    
+    // Ensure display is initialized (may not be on MQTT-only wakes)
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+#if SDMMC_ENABLED
+    // Mount SD card if needed
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("Mounting SD card...");
+        if (!sdInitDirect(false)) {
+            Serial.println("ERROR: Failed to mount SD card!");
+            return false;
+        }
+    }
+    
+    // Load configuration files from SD card if needed
+    if (!g_quotes_loaded) {
+        loadQuotesFromSD();
+    }
+    if (!g_media_mappings_loaded) {
+        loadMediaMappingsFromSD();
+    }
+    
+    // Check if we have media mappings
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        Serial.println("ERROR: No media.txt mappings found - cannot jump to specific item");
+        return false;
+    }
+    
+    // Validate index is within bounds (1 to size for user, 0 to size-1 internally)
+    size_t mediaCount = g_media_mappings.size();
+    if (userInput > (int)mediaCount) {
+        Serial.printf("ERROR: Number %d is out of bounds. Valid range: 1 to %zu\n", 
+                      userInput, mediaCount);
+        return false;
+    }
+    
+    Serial.printf("Jumping to media item %d of %zu (index %d)\n", userInput, mediaCount, targetIndex);
+    
+    // Set the index directly (without incrementing)
+    // We need to set it to targetIndex-1 so that pngDrawFromMediaMappings increments it to targetIndex
+    size_t mediaCount_uint = g_media_mappings.size();
+    lastMediaIndex = (targetIndex - 1 + mediaCount_uint) % mediaCount_uint;
+    
+    uint32_t sd_ms = 0, dec_ms = 0;
+    bool ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+    if (!ok) {
+        Serial.println("ERROR: Failed to load image from media.txt");
+        return false;
+    }
+    
+    // Verify we're at the correct index
+    if (lastMediaIndex != (size_t)targetIndex) {
+        Serial.printf("WARNING: Expected index %d but got %lu - correcting\n", 
+                      targetIndex, (unsigned long)lastMediaIndex);
+        lastMediaIndex = targetIndex;
+    }
+    
+    Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
+    Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
+    
+    // Get current time for overlay
+    time_t now = time(nullptr);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    
+    char timeBuf[16];
+    char dateBuf[48];
+    bool timeValid = (now > 1577836800); // after 2020-01-01
+    if (timeValid) {
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
+        
+        // Format date as "Saturday 13th of December 2025"
+        char dayName[12], monthName[12];
+        strftime(dayName, sizeof(dayName), "%A", &tm_utc);
+        strftime(monthName, sizeof(monthName), "%B", &tm_utc);
+        
+        int day = tm_utc.tm_mday;
+        int year = tm_utc.tm_year + 1900;
+        
+        const char* suffix;
+        if (day >= 11 && day <= 13) {
+            suffix = "th";
+        } else {
+            switch (day % 10) {
+                case 1: suffix = "st"; break;
+                case 2: suffix = "nd"; break;
+                case 3: suffix = "rd"; break;
+                default: suffix = "th"; break;
+            }
+        }
+        
+        snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
+                 dayName, day, suffix, monthName, year);
+    } else {
+        snprintf(timeBuf, sizeof(timeBuf), "--:--");
+        snprintf(dateBuf, sizeof(dateBuf), "time not set");
+    }
+    
+    // Set keepout margins and clear exclusion zones
+    textPlacement.setKeepout(100);
+    textPlacement.clearExclusionZones();
+    
+    // Draw time/date overlay
+    float timeFontSize = 160.0f;
+    float dateFontSize = 48.0f;
+    const int16_t gapBetween = 20;
+    const int16_t timeOutline = 3;
+    const int16_t dateOutline = 2;
+    
+    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+    int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+    int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
+    
+    int16_t blockW = max(timeW, dateW);
+    int16_t blockH = timeH + gapBetween + dateH;
+    
+    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
+        &display, blockW, blockH,
+        EL133UF1_WHITE, EL133UF1_BLACK);
+    
+    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
+    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
+    
+    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
+    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
+    
+    textPlacement.addExclusionZone(bestPos, 150);
+    
+    // Draw quote overlay
+    using Quote = TextPlacementAnalyzer::Quote;
+    Quote selectedQuote;
+    
+    if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
+        int randomIndex = random(g_loaded_quotes.size());
+        selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
+        selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
+    } else {
+        static const Quote fallbackQuotes[] = {
+            {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
+            {"The only way to do great work is to love what you do", "Steve Jobs"},
+            {"In the middle of difficulty lies opportunity", "Albert Einstein"},
+            {"Be yourself; everyone else is already taken", "Oscar Wilde"},
+        };
+        static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
+        selectedQuote = fallbackQuotes[random(numQuotes)];
+    }
+    
+    float quoteFontSize = 48.0f;
+    float authorFontSize = 32.0f;
+    
+    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
+        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
+        EL133UF1_WHITE, EL133UF1_BLACK,
+        3, 3);
+    
+    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
+                            quoteFontSize, authorFontSize,
+                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
+    
+    // Update display
+    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display updated");
+    
+    // Play audio file for this image
+    String audioFile = getAudioForImage(g_lastImagePath);
+    if (audioFile.length() > 0) {
+        Serial.printf("Playing audio: %s\n", audioFile.c_str());
+        strncpy(lastAudioFile, audioFile.c_str(), sizeof(lastAudioFile) - 1);
+        lastAudioFile[sizeof(lastAudioFile) - 1] = '\0';
+        playWavFile(audioFile);
+    } else {
+        Serial.println("No audio file mapped for this image, playing beep.wav");
+        strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
+        playWavFile("beep.wav");
+    }
+    audio_stop();
+    
+    Serial.printf("!go command completed successfully - now at item %lu of %zu\n", 
+                  (unsigned long)(lastMediaIndex + 1), mediaCount);
+    return true;
+#else
+    Serial.println("ERROR: SD card support not enabled - cannot load media");
+    return false;
+#endif
+}
+
+/**
+ * Handle !text command - display text centered on screen, as large as possible
+ * Format: !text <text with spaces> (e.g., "!text Hello there!")
+ * Clears the display buffer and draws the text with outline, centered
+ */
+static bool handleTextCommand(const String& parameter) {
+    Serial.println("Processing !text command...");
+    
+    // Check if parameter was provided
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !text command requires text parameter (e.g., !text Hello there!)");
+        return false;
+    }
+    
+    Serial.printf("Text to display: \"%s\"\n", parameter.c_str());
+    
+    // Ensure display is initialized (may not be on MQTT-only wakes)
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+    // Clear the display buffer to white
+    Serial.println("Clearing display buffer...");
+    display.clear(EL133UF1_WHITE);
+    
+    // Get display dimensions
+    int16_t displayWidth = display.width();
+    int16_t displayHeight = display.height();
+    Serial.printf("Display size: %dx%d\n", displayWidth, displayHeight);
+    
+    // Find maximum font size that fits the text on screen
+    // Use binary search for efficiency
+    const float minFontSize = 20.0f;
+    const float maxFontSize = 400.0f;
+    const int16_t outlineWidth = 3;  // Outline thickness
+    const int16_t padding = 40;  // Padding from edges
+    
+    float fontSize = minFontSize;
+    float low = minFontSize;
+    float high = maxFontSize;
+    
+    // Binary search for optimal font size
+    while (high - low > 1.0f) {
+        fontSize = (low + high) / 2.0f;
+        
+        int16_t textWidth = ttf.getTextWidth(parameter.c_str(), fontSize) + (outlineWidth * 2);
+        int16_t textHeight = ttf.getTextHeight(fontSize) + (outlineWidth * 2);
+        
+        if (textWidth <= (displayWidth - padding) && textHeight <= (displayHeight - padding)) {
+            // Fits - try larger
+            low = fontSize;
+        } else {
+            // Too large - try smaller
+            high = fontSize;
+        }
+    }
+    
+    fontSize = low;  // Use the largest size that fits
+    
+    // Final size calculation with margins
+    int16_t textWidth = ttf.getTextWidth(parameter.c_str(), fontSize) + (outlineWidth * 2);
+    int16_t textHeight = ttf.getTextHeight(fontSize) + (outlineWidth * 2);
+    
+    // If still doesn't fit perfectly, scale it down
+    if (textWidth > (displayWidth - padding) || textHeight > (displayHeight - padding)) {
+        float scaleW = (float)(displayWidth - padding) / (float)textWidth;
+        float scaleH = (float)(displayHeight - padding) / (float)textHeight;
+        float scale = (scaleW < scaleH) ? scaleW : scaleH;
+        fontSize = fontSize * scale * 0.95f;  // 95% to add small margin
+        
+        textWidth = ttf.getTextWidth(parameter.c_str(), fontSize) + (outlineWidth * 2);
+        textHeight = ttf.getTextHeight(fontSize) + (outlineWidth * 2);
+    }
+    
+    Serial.printf("Optimal font size: %.1f, text dimensions: %dx%d\n", fontSize, textWidth, textHeight);
+    
+    // Calculate centered position
+    int16_t centerX = displayWidth / 2;
+    int16_t centerY = displayHeight / 2;
+    
+    // Draw text centered with outline
+    Serial.println("Drawing text...");
+    ttf.drawTextAlignedOutlined(centerX, centerY, parameter.c_str(), fontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+    
+    // Update display
+    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display updated");
+    
+    Serial.println("!text command completed successfully");
+    return true;
 }
 
 // Disconnect from MQTT
@@ -4106,11 +4684,11 @@ bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms)
     // Try to load keep-out map for this image (if available)
     bool mapLoaded = loadKeepOutMapForImage();
     
-    // Debug: visualize keep-out areas
-    if (mapLoaded) {
-        Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
-        textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
-    }
+    // // Debug: visualize keep-out areas
+    // if (mapLoaded) {
+    //     Serial.printf("[DEBUG] Display dimensions: %dx%d\n", display.width(), display.height());
+    //     textPlacement.debugDrawKeepOutAreas(&display, EL133UF1_RED);
+    // }
     
     return true;
 }

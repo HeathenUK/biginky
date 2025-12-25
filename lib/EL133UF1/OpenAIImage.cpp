@@ -124,7 +124,9 @@ OpenAIResult OpenAIImage::generate(const char* prompt, uint8_t** outData, size_t
     Serial.println("OpenAI: Connecting to API...");
     
     WiFiClientSecure client;
-    client.setInsecure();  // Skip certificate verification (or use proper CA cert)
+    // Use setInsecure for now - SSL error -76 appears to be connection-related, not certificate
+    // The certificate bundle API for WiFiClientSecure requires different approach
+    client.setInsecure();
     client.setTimeout(timeoutMs / 1000);
     
     if (!client.connect(OPENAI_HOST, OPENAI_PORT)) {
@@ -174,18 +176,25 @@ OpenAIResult OpenAIImage::generate(const char* prompt, uint8_t** outData, size_t
     client.println("Connection: close");
     client.println();
     client.print(body);
+    client.flush();  // Ensure all data is sent before waiting for response
     
     Serial.printf("OpenAI: Request sent (%d bytes), waiting for response...\n", body.length());
     
     // Wait for response with timeout
     uint32_t startTime = millis();
     while (!client.available()) {
+        if (!client.connected()) {
+            snprintf(_lastError, sizeof(_lastError), "Connection closed before response");
+            client.stop();
+            return OPENAI_ERR_CONNECT_FAILED;
+        }
         if (millis() - startTime > timeoutMs) {
             snprintf(_lastError, sizeof(_lastError), "Timeout waiting for response");
             client.stop();
             return OPENAI_ERR_TIMEOUT;
         }
-        delay(100);
+        delay(50);  // Reduced delay for faster response detection
+        yield();  // Allow other tasks to run
     }
     
     Serial.printf("OpenAI: Response received after %lu ms\n", millis() - startTime);
@@ -194,9 +203,11 @@ OpenAIResult OpenAIImage::generate(const char* prompt, uint8_t** outData, size_t
     String response;
     bool headersEnded = false;
     int statusCode = 0;
+    uint32_t lastDataTime = millis();
     
     while (client.connected() || client.available()) {
         if (client.available()) {
+            lastDataTime = millis();  // Reset timeout when data arrives
             String line = client.readStringUntil('\n');
             line.trim();
             
@@ -218,6 +229,15 @@ OpenAIResult OpenAIImage::generate(const char* prompt, uint8_t** outData, size_t
                 // Accumulate body
                 response += line;
             }
+        } else {
+            // No data available - check if connection is dead
+            if (!client.connected() && millis() - lastDataTime > 5000) {
+                // Connection closed and no data for 5 seconds - likely failed
+                Serial.println("OpenAI: Connection closed unexpectedly during read");
+                break;
+            }
+            delay(10);  // Small delay when waiting for more data
+            yield();
         }
         
         if (millis() - startTime > timeoutMs) {
@@ -228,6 +248,13 @@ OpenAIResult OpenAIImage::generate(const char* prompt, uint8_t** outData, size_t
     }
     
     client.stop();
+    
+    // Check if we got a valid HTTP response
+    if (statusCode == 0) {
+        snprintf(_lastError, sizeof(_lastError), "No valid HTTP response received (connection may have failed)");
+        Serial.println("OpenAI: No HTTP status code received - connection likely failed");
+        return OPENAI_ERR_CONNECT_FAILED;
+    }
     
     if (statusCode != 200) {
         snprintf(_lastError, sizeof(_lastError), "HTTP error %d", statusCode);

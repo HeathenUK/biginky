@@ -10,6 +10,8 @@
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
 #include <pngle.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 // Global pointer for callback (pngle uses C callbacks)
 static EL133UF1_PNG* g_pngInstance = nullptr;
@@ -225,6 +227,7 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
     const size_t CHUNK_SIZE = 1024;
     size_t fed = 0;
     int result = 0;
+    uint32_t chunkCount = 0;
     
     while (fed < len) {
         size_t chunk = (len - fed > CHUNK_SIZE) ? CHUNK_SIZE : (len - fed);
@@ -248,6 +251,13 @@ PNGResult EL133UF1_PNG::draw(int16_t x, int16_t y, const uint8_t* data, size_t l
             fed += chunk;  // Advance anyway to avoid infinite loop
         } else {
             fed += result;
+        }
+        
+        // Yield to other tasks every 32 chunks (~32KB) to prevent watchdog timeout
+        chunkCount++;
+        if (chunkCount >= 32) {
+            vTaskDelay(1);  // Yield to other tasks, allows watchdog to be fed
+            chunkCount = 0;
         }
     }
     

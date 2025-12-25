@@ -42,6 +42,7 @@
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
 #include "EL133UF1_TextPlacement.h"
+#include "OpenAIImage.h"
 
 #include "fonts/opensans.h"
 #include "fonts/dancing.h"
@@ -214,6 +215,11 @@ TextPlacementAnalyzer textPlacement;
 EL133UF1_BMP bmpLoader;
 EL133UF1_PNG pngLoader;
 
+// OpenAI image generation
+OpenAIImage openai;
+static uint8_t* aiImageData = nullptr;
+static size_t aiImageLen = 0;
+
 // Last loaded image filename (for keep-out map lookup)
 static String g_lastImagePath = "";
 
@@ -239,7 +245,10 @@ static volatile bool g_audio_running = false;
 static int g_audio_volume_pct = 50;  // UI percent (0..100), mapped into codec range below
 static Preferences volumePrefs;  // NVS preferences for volume storage
 static Preferences numbersPrefs;  // NVS preferences for allowed phone numbers
+static Preferences sleepPrefs;  // NVS preferences for sleep duration setting
+static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
+static uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60)
 
 static TwoWire g_codec_wire0(0);
 static TwoWire g_codec_wire1(1);
@@ -587,33 +596,70 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
     struct tm tm_utc;
     gmtime_r(&now, &tm_utc);
     uint32_t sec = (uint32_t)tm_utc.tm_sec;
+    uint32_t min = (uint32_t)tm_utc.tm_min;
     
-    // Calculate seconds until next minute boundary
-    // If we're at :00, we want to sleep 60 seconds to reach :00 of next minute
-    // If we're at :30, we want to sleep 30 seconds to reach :00 of next minute
-    uint32_t sleep_s = 60 - sec;
-    
-    // If we're exactly at :00, sleep a full minute (60 seconds)
-    // This is already handled by the calculation above, but make it explicit
-    if (sleep_s == 0) {
-        sleep_s = 60;  // At :00, sleep to next :00
+    // Calculate seconds until next wake time based on sleep interval
+    // Sleep interval must be a factor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60)
+    // This ensures we always wake at :00 for the hourly media cycle
+    // We sleep until the NEXT aligned minute mark, never waking mid-minute
+    uint32_t interval_minutes = g_sleep_interval_minutes;
+    if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+        // Invalid interval, default to 1 minute
+        interval_minutes = 1;
+        Serial.println("WARNING: Invalid sleep interval, defaulting to 1 minute");
     }
     
-    // Avoid very short sleeps (USB/serial jitter); skip to next minute
-    // If we have less than 5 seconds until next minute, sleep to the minute after that
+    // Find which "slot" we're currently in (0-based, aligned to interval)
+    // For interval=1: slots are :00, :01, :02, ..., :59 (every minute)
+    // For interval=2: slots are :00, :02, :04, ..., :58 (every 2 minutes)
+    // For interval=4: slots are :00, :04, :08, ..., :56 (every 4 minutes)
+    uint32_t current_slot = (min / interval_minutes) * interval_minutes;
+    uint32_t next_slot = current_slot + interval_minutes;
+    
+    // If we're at a slot boundary and less than 5 seconds have passed, sleep to next slot
+    // (This handles the case where we just woke at an aligned minute)
+    if (min == current_slot && sec < 5) {
+        next_slot = current_slot + interval_minutes;
+    }
+    
+    // Calculate seconds until next aligned minute mark
+    uint32_t sleep_s;
+    if (next_slot < 60) {
+        // Next slot is in the same hour
+        sleep_s = (next_slot - min) * 60 - sec;
+    } else {
+        // Next slot wraps to next hour (which is always :00)
+        sleep_s = (60 - min) * 60 - sec;
+    }
+    
+    // Avoid very short sleeps (USB/serial jitter)
     if (sleep_s < 5 && sleep_s > 0) {
-        sleep_s += 60;
-        Serial.printf("Sleep duration too short (%lu), adding 60 seconds\n", (unsigned long)(sleep_s - 60));
+        sleep_s += interval_minutes * 60;
+        Serial.printf("Sleep duration too short (%lu), adding %lu seconds\n", 
+                     (unsigned long)(sleep_s - interval_minutes * 60), 
+                     (unsigned long)(interval_minutes * 60));
     }
     
     // Sanity clamp - if calculation is way off, use fallback
-    if (sleep_s > 120) {
+    if (sleep_s > interval_minutes * 60 + 60) {
         Serial.printf("Sleep calculation too large (%lu), using fallback\n", (unsigned long)sleep_s);
         sleep_s = fallback_seconds;
     }
+    
+    // Calculate wake time for logging (always at :XX:00, never :XX:YY with YY != 0)
+    // Use ceiling division to account for partial minutes: (sleep_s + 59) / 60
+    uint32_t minutes_to_add = (sleep_s + 59) / 60;  // Ceiling division
+    uint32_t total_minutes = min + minutes_to_add;
+    uint32_t wake_min = total_minutes % 60;
+    uint32_t wake_hour = tm_utc.tm_hour + (total_minutes / 60);
+    if (wake_hour >= 24) {
+        wake_hour = wake_hour % 24;
+    }
 
-    Serial.printf("Current time: %02d:%02d:%02d, sleeping until next minute: %lu seconds\n",
-                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, (unsigned long)sleep_s);
+    Serial.printf("Current time: %02d:%02d:%02d, sleep interval: %lu min, sleeping %lu seconds (wake at %02lu:%02lu:00)\n",
+                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, 
+                  (unsigned long)interval_minutes, (unsigned long)sleep_s,
+                  (unsigned long)wake_hour, (unsigned long)wake_min);
     sleepNowSeconds(sleep_s);
     // Never returns
 }
@@ -1513,17 +1559,46 @@ static void handleSwitchDWake() {
         return;
     }
     
-    // Calculate sleep until next minute
+    // Calculate sleep until next wake time based on sleep interval
     struct tm tm_utc;
     gmtime_r(&now, &tm_utc);
     uint32_t sec = (uint32_t)tm_utc.tm_sec;
-    uint32_t sleep_s = 60 - sec;
-    if (sleep_s == 0) sleep_s = 60;
-    if (sleep_s < 5 && sleep_s > 0) sleep_s += 60;
-    if (sleep_s > 120) sleep_s = kCycleSleepSeconds;
+    uint32_t min = (uint32_t)tm_utc.tm_min;
     
-    Serial.printf("Current time: %02d:%02d:%02d, sleeping until next minute: %lu seconds\n",
-                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, (unsigned long)sleep_s);
+    uint32_t interval_minutes = g_sleep_interval_minutes;
+    if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+        interval_minutes = 1;
+    }
+    
+    // Find next slot
+    uint32_t current_slot = (min / interval_minutes) * interval_minutes;
+    uint32_t next_slot = current_slot + interval_minutes;
+    
+    uint32_t sleep_s;
+    if (next_slot < 60) {
+        sleep_s = (next_slot - min) * 60 - sec;
+    } else {
+        sleep_s = (60 - min) * 60 - sec;
+    }
+    
+    if (sleep_s == 0) sleep_s = interval_minutes * 60;
+    if (sleep_s < 5 && sleep_s > 0) sleep_s += interval_minutes * 60;
+    if (sleep_s > interval_minutes * 60 + 60) sleep_s = kCycleSleepSeconds;
+    
+    // Calculate wake time for logging - use ceiling division to account for partial minutes
+    // (sleep_s + 59) / 60 gives us ceiling of sleep_s / 60
+    uint32_t minutes_to_add = (sleep_s + 59) / 60;  // Ceiling division
+    uint32_t total_minutes = min + minutes_to_add;
+    uint32_t wake_min = total_minutes % 60;
+    uint32_t wake_hour = tm_utc.tm_hour + (total_minutes / 60);
+    if (wake_hour >= 24) {
+        wake_hour = wake_hour % 24;
+    }
+    
+    Serial.printf("Current time: %02d:%02d:%02d, sleep interval: %lu min, sleeping %lu seconds (wake at %02lu:%02lu:00)\n",
+                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
+                  (unsigned long)interval_minutes, (unsigned long)sleep_s,
+                  (unsigned long)wake_hour, (unsigned long)wake_min);
     Serial.println("========================================\n");
     Serial.flush();
     
@@ -1569,9 +1644,13 @@ static bool handleGetCommand(const String& parameter);
 static bool handleVolumeCommand(const String& parameter);
 static bool handleNewNumberCommand(const String& parameter);
 static bool handleDelNumberCommand(const String& parameter);
-static bool handleListNumbersCommand();
+static bool handleListNumbersCommand(const String& originalMessage = "");
 static bool handleShowCommand(const String& parameter);
+static bool handleSleepDurationCommand(const String& parameter);
+static bool handleOAICommand(const String& parameter);
 void volumeLoadFromNVS();  // Load volume from NVS (called on startup)
+void sleepDurationLoadFromNVS();  // Load sleep duration from NVS (called on startup)
+void sleepDurationSaveToNVS();  // Save sleep duration to NVS
 void volumeSaveToNVS();    // Save volume to NVS (called when volume changes)
 bool isNumberAllowed(const String& number);  // Check if number is in allowed list
 bool addAllowedNumber(const String& number);  // Add number to allowed list in NVS
@@ -1649,9 +1728,10 @@ static void auto_cycle_task(void* arg) {
             // Connect to MQTT and check for retained messages
             if (mqttConnect()) {
                 // Wait for subscription and any retained messages (max 3 seconds)
+                // mqttCheckMessages handles connection state internally and will return false if disconnected
                 delay(3000);
                 
-                // Check if we received a retained message
+                // Check if we received a retained message (mqttCheckMessages checks connection state internally)
                 String commandToProcess = "";
                 String originalMessageForCommand = "";
                 if (mqttCheckMessages(100)) {
@@ -1677,12 +1757,13 @@ static void auto_cycle_task(void* arg) {
                 // This prevents connection issues during long-running commands (like display updates)
                 mqttDisconnect();
                 delay(200);
-                
+                    
                 // Now process the command (if any) after MQTT is fully disconnected
                 if (commandToProcess.length() > 0) {
-                    if (!handleMqttCommand(commandToProcess, originalMessageForCommand)) {
-                        Serial.printf("Unknown command: %s\n", commandToProcess.c_str());
-                    }
+                    // handleMqttCommand returns false for both "command not recognized" and "command failed"
+                    // We'll handle the "unknown command" message inside handleMqttCommand itself
+                    // to distinguish between unrecognized commands and command execution failures
+                    handleMqttCommand(commandToProcess, originalMessageForCommand);
                 }
             }
             
@@ -1802,60 +1883,104 @@ static void auto_cycle_task(void* arg) {
 #endif
 
     uint32_t sd_ms = 0, dec_ms = 0;
-#if SDMMC_ENABLED
-    // Mount SD card first if not already mounted
-    if (!sdCardMounted && sd_card == nullptr) {
-        if (!sdInitDirect(false)) {
-            Serial.println("Failed to mount SD card!");
-            Serial.println("SDMMC disabled; cannot load config or images. Sleeping.");
-            if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
-            sleepNowSeconds(kCycleSleepSeconds);
-        }
-    }
-    
-    // Load configuration files from SD card (only once)
-    if (!g_quotes_loaded) {
-        loadQuotesFromSD();
-    }
-    if (!g_media_mappings_loaded) {
-        loadMediaMappingsFromSD();
-    }
-    
-    // Now load the PNG - prefer media.txt mappings if available
     bool ok = false;
-    int maxRetries = 5;  // Try up to 5 different images if one fails
     
-    // If media.txt has valid images, use ONLY those
-    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-        Serial.println("Using images from media.txt (cycling through mapped images only)");
-        usingMediaMappings = true;
-        for (int retry = 0; retry < maxRetries && !ok; retry++) {
-            ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
-            if (!ok && retry < maxRetries - 1) {
-                Serial.printf("PNG load failed, trying next image from media.txt (attempt %d/%d)...\n", 
-                             retry + 1, maxRetries);
-                // Advance to next image by incrementing the index
-                lastMediaIndex++;
+    // AI image generation is ONLY available via !oai command - never auto-generate in hourly cycle
+    // Always use media.txt images from SD card for hourly updates
+    
+    // Load images from SD card
+#if SDMMC_ENABLED
+    if (!ok) {
+        // Mount SD card first if not already mounted
+        if (!sdCardMounted && sd_card == nullptr) {
+            if (!sdInitDirect(false)) {
+                Serial.println("Failed to mount SD card!");
+                Serial.println("SDMMC disabled; cannot load config or images. Sleeping.");
+                if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+                sleepNowSeconds(kCycleSleepSeconds);
             }
         }
-    } else {
-        // Fallback: scan all PNG files on SD card
-        Serial.println("No media.txt mappings found, scanning all PNG files on SD card");
-        usingMediaMappings = false;
-        for (int retry = 0; retry < maxRetries && !ok; retry++) {
-            ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
-            if (!ok && retry < maxRetries - 1) {
-                Serial.printf("PNG load failed, trying next image (attempt %d/%d)...\n", 
-                             retry + 1, maxRetries);
-                // Advance to next image by incrementing the index
-                lastImageIndex++;
+        
+        // Load configuration files from SD card (only once)
+        if (!g_quotes_loaded) {
+            loadQuotesFromSD();
+        }
+        
+        // ALWAYS try to load media.txt - retry if it fails
+        bool mediaLoadAttempted = false;
+        if (!g_media_mappings_loaded) {
+            Serial.println("Loading media.txt...");
+            int mappingsLoaded = loadMediaMappingsFromSD();
+            mediaLoadAttempted = true;
+            if (mappingsLoaded > 0) {
+                Serial.printf("Successfully loaded %d mappings from media.txt\n", mappingsLoaded);
+                usingMediaMappings = true;  // Mark that we're using media.txt
+            } else {
+                Serial.println("WARNING: Failed to load media.txt or file is empty");
+                // If we were previously using media.txt, keep trying - don't give up yet
+                if (usingMediaMappings) {
+                    Serial.println("Previously used media.txt - will retry loading on next attempt");
+                }
+            }
+        }
+        
+        // Now load the PNG - STRICTLY prefer media.txt mappings
+        int maxRetries = 5;  // Try up to 5 different images if one fails
+        
+        // If we have media.txt mappings (either just loaded or previously loaded), use ONLY those
+        // Never fall back to random unless media.txt was NEVER successfully loaded
+        if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+            Serial.println("Using images from media.txt (cycling through mapped images only)");
+            usingMediaMappings = true;
+            
+            // Ensure index is in bounds before starting retries
+            size_t mediaCount = g_media_mappings.size();
+            if (lastMediaIndex >= mediaCount) {
+                Serial.printf("WARNING: lastMediaIndex %lu out of bounds (max %zu), resetting to 0\n",
+                             (unsigned long)lastMediaIndex, mediaCount);
+                lastMediaIndex = 0;
+            }
+            
+            for (int retry = 0; retry < maxRetries && !ok; retry++) {
+                ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+                if (!ok && retry < maxRetries - 1) {
+                    Serial.printf("PNG load failed, trying next image from media.txt (attempt %d/%d)...\n", 
+                                 retry + 1, maxRetries);
+                    // pngDrawFromMediaMappings already increments lastMediaIndex internally,
+                    // so just call it again - no need to manually increment
+                }
+            }
+            
+            if (!ok) {
+                Serial.println("ERROR: Failed to load any image from media.txt after all retries");
+                Serial.println("Will sleep and retry on next wake - NOT falling back to random images");
+            }
+        } else if (usingMediaMappings) {
+            // We were using media.txt before but can't load it now - don't give up, just sleep
+            Serial.println("ERROR: media.txt was previously loaded but is now unavailable");
+            Serial.println("Will retry on next wake - NOT falling back to random images");
+            ok = false;  // Explicitly mark as failed
+        } else {
+            // Fallback: scan all PNG files on SD card (ONLY if media.txt was NEVER successfully loaded)
+            Serial.println("No media.txt mappings found, scanning all PNG files on SD card");
+            usingMediaMappings = false;
+            for (int retry = 0; retry < maxRetries && !ok; retry++) {
+                ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+                if (!ok && retry < maxRetries - 1) {
+                    Serial.printf("PNG load failed, trying next image (attempt %d/%d)...\n", 
+                                 retry + 1, maxRetries);
+                    // Advance to next image by incrementing the index
+                    lastImageIndex++;
+                }
             }
         }
     }
 #else
-    bool ok = false;
-    Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");
+    if (!ok) {
+        Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");
+    }
 #endif
+    
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     if (!ok) {
         Serial.println("PNG draw failed after retries; sleeping anyway");
@@ -1903,7 +2028,7 @@ static void auto_cycle_task(void* arg) {
     }
 
     // Set keepout margins (areas not visible to user due to bezel/frame)
-    textPlacement.setKeepout(100);  // 100px margin on all sides
+    textPlacement.setKeepout(120);  // 120px margin on all sides (accounts for outline width)
     
     // Clear any previous exclusion zones (fresh start for this frame)
     textPlacement.clearExclusionZones();
@@ -2243,8 +2368,10 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 } else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
                     Serial.printf("  Connection refused: 0x%x\n", event->error_handle->connect_return_code);
                 }
-                // Note: Don't set mqttConnected = false here - let DISCONNECT event handle it
-                // This prevents race conditions
+                // Set mqttConnected = false immediately on error to prevent hanging
+                // The connection is likely dead, so don't wait for DISCONNECT event
+                mqttConnected = false;
+                Serial.println("MQTT connection marked as failed due to error");
             }
             break;
             
@@ -2497,18 +2624,22 @@ static String extractFromFieldFromMessage(const String& msg) {
  *       return true;
  *   }
  */
+// Return values:
+//   true  = command recognized and executed successfully
+//   false = command recognized but execution failed (error messages already printed)
+//   The function prints "Unknown command" itself if the command is not recognized
 static bool handleMqttCommand(const String& command, const String& originalMessage) {
     // Check if the sender number is allowed (all commands require this, including !newno)
     // The hardcoded number +447816969344 is always allowed, so it can add numbers without locking us out
     String senderNumber = extractFromFieldFromMessage(originalMessage);
     if (senderNumber.length() == 0) {
         Serial.println("ERROR: Could not extract sender number from message - command rejected");
-        return false;
+        return false;  // Command rejected due to validation failure (not unknown)
     }
     
     if (!isNumberAllowed(senderNumber)) {
         Serial.printf("ERROR: Number %s is not in allowed list - command rejected\n", senderNumber.c_str());
-        return false;
+        return false;  // Command rejected due to validation failure (not unknown)
     }
     
     Serial.printf("Command from allowed number: %s\n", senderNumber.c_str());
@@ -2704,12 +2835,22 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
     }
     
     if (command == "!list") {
-        return handleListNumbersCommand();
+        return handleListNumbersCommand(originalMessage);
     }
     
     if (command.startsWith("!show")) {
         String param = extractCommandParameter(command);
         return handleShowCommand(param);
+    }
+    
+    if (command.startsWith("!sleep_duration")) {
+        String param = extractCommandParameter(command);
+        return handleSleepDurationCommand(param);
+    }
+    
+    if (command.startsWith("!oai")) {
+        String prompt = extractTextParameter("!oai");
+        return handleOAICommand(prompt);
     }
     
     // Add more commands here as needed:
@@ -2720,7 +2861,194 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
     //     return handleRebootCommand();
     // }
     
-    return false;  // Unknown command
+    // Command not recognized
+    Serial.printf("Unknown command: %s\n", command.c_str());
+    return false;
+}
+
+/**
+ * Handle !oai command - generate and display DALL-E 3 image from prompt
+ * Format: !oai <prompt>
+ * Example: !oai A beautiful landscape with mountains
+ */
+static bool handleOAICommand(const String& parameter) {
+    Serial.println("Processing !oai command...");
+    
+    // Check if prompt was provided
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !oai command requires a prompt parameter");
+        return false;
+    }
+    
+    Serial.printf("OpenAI prompt: \"%s\"\n", parameter.c_str());
+    
+    // Ensure display is initialized (may not be on MQTT-only wakes)
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+        
+        // Initialize PNG loader after display is ready
+        pngLoader.begin(&display);
+        pngLoader.setDithering(true);  // Enable dithering for better image quality
+    }
+    
+#if WIFI_ENABLED
+    // Ensure WiFi is connected (required for OpenAI API)
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected - connecting now...");
+        if (!wifiLoadCredentials()) {
+            Serial.println("ERROR: Failed to load WiFi credentials");
+            return false;
+        }
+        
+        if (!wifiConnectPersistent(10, 30000, true)) {
+            Serial.println("ERROR: Failed to connect to WiFi");
+            return false;
+        }
+    }
+    
+    // Check if API key is available
+    const char* apiKeyOpenAI = OPENAI_API_KEY;
+    if (apiKeyOpenAI == nullptr || strlen(apiKeyOpenAI) == 0) {
+        Serial.println("ERROR: OpenAI API key not configured");
+        return false;
+    }
+    
+    Serial.println("Generating AI image with OpenAI DALL-E 3...");
+    
+    // Allocate buffer for generated image (free any existing cached image first)
+    if (aiImageData != nullptr) {
+        free(aiImageData);
+        aiImageData = nullptr;
+        aiImageLen = 0;
+    }
+    
+    // Configure OpenAI client
+    openai.begin(apiKeyOpenAI);
+    openai.setModel(DALLE_3);
+    openai.setSize(DALLE_1792x1024);  // Landscape format for centering on 1600x1200 display
+    openai.setQuality(DALLE_STANDARD);
+    
+    // Generate image
+    uint32_t t0 = millis();
+    OpenAIResult result = openai.generate(parameter.c_str(), &aiImageData, &aiImageLen, 120000);  // 2 min timeout
+    uint32_t t1 = millis() - t0;
+    
+    if (result == OPENAI_OK && aiImageData != nullptr && aiImageLen > 0) {
+        Serial.printf("AI image generated: %zu bytes in %lu ms\n", aiImageLen, t1);
+        
+        // Clear display first
+        display.clear(EL133UF1_WHITE);
+        
+        // Draw AI-generated PNG centered on display (1792x1024 on 1600x1200)
+        int16_t centerX = (display.width() - 1792) / 2;  // May be negative, but PNG draw handles it
+        int16_t centerY = (display.height() - 1024) / 2; // Vertically centered
+        
+        Serial.printf("Drawing PNG to display at offset (%d, %d)...\n", centerX, centerY);
+        PNGResult pngResult = pngLoader.draw(centerX, centerY, aiImageData, aiImageLen);
+        
+        if (pngResult == PNG_OK) {
+            Serial.printf("AI image drawn successfully to buffer at offset (%d, %d)\n", centerX, centerY);
+            
+            // Verify display buffer is valid before update
+            if (display.getBuffer() == nullptr) {
+                Serial.println("ERROR: Display buffer is null after drawing - update will fail!");
+                free(aiImageData);
+                aiImageData = nullptr;
+                aiImageLen = 0;
+                return false;
+            }
+            
+            // Save image to SD card in separate directory to avoid mixing with media.txt images
+#if SDMMC_ENABLED
+            if (sdCardMounted || sd_card != nullptr || sdInitDirect(false)) {
+                const char* aiDir = "/ai_generated";
+                String fatfsDir = "0:" + String(aiDir);
+                
+                // Create directory if it doesn't exist
+                FILINFO fno;
+                FRESULT dirRes = f_stat(fatfsDir.c_str(), &fno);
+                if (dirRes != FR_OK) {
+                    Serial.printf("Creating directory: %s\n", aiDir);
+                    dirRes = f_mkdir(fatfsDir.c_str());
+                    if (dirRes != FR_OK && dirRes != FR_EXIST) {
+                        Serial.printf("WARNING: Failed to create directory %s: %d\n", aiDir, dirRes);
+                    }
+                }
+                
+                // Generate unique filename (timestamp-based)
+                time_t now = time(nullptr);
+                struct tm tm_utc;
+                gmtime_r(&now, &tm_utc);
+                char filename[64];
+                snprintf(filename, sizeof(filename), "%s/oai_%04d%02d%02d_%02d%02d%02d.png",
+                        aiDir, tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                        tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+                
+                String fatfsPath = "0:" + String(filename);
+                Serial.printf("Saving AI image to: %s\n", filename);
+                
+                FIL file;
+                FRESULT fileRes = f_open(&file, fatfsPath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+                if (fileRes == FR_OK) {
+                    UINT bytesWritten = 0;
+                    fileRes = f_write(&file, aiImageData, aiImageLen, &bytesWritten);
+                    f_close(&file);
+                    
+                    if (fileRes == FR_OK && bytesWritten == aiImageLen) {
+                        Serial.printf("AI image saved successfully: %u bytes\n", bytesWritten);
+                    } else {
+                        Serial.printf("WARNING: Failed to save AI image completely: wrote %u of %zu bytes\n",
+                                     bytesWritten, aiImageLen);
+                    }
+                } else {
+                    Serial.printf("WARNING: Failed to open file for writing: %d\n", fileRes);
+                }
+            } else {
+                Serial.println("WARNING: SD card not available - AI image not saved");
+            }
+#endif // SDMMC_ENABLED
+            
+            // Update display
+            Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+            Serial.flush();  // Ensure logs are flushed before blocking update
+            
+            uint32_t updateStart = millis();
+            display.update();
+            uint32_t updateMs = millis() - updateStart;
+            
+            Serial.printf("Display update completed in %lu ms (%.1f seconds)\n", 
+                         (unsigned long)updateMs, updateMs / 1000.0f);
+            Serial.flush();  // Flush after update completes
+            
+            Serial.println("!oai command completed successfully");
+            return true;
+        } else {
+            Serial.printf("PNG draw error: %s\n", pngLoader.getErrorString(pngResult));
+            free(aiImageData);
+            aiImageData = nullptr;
+            aiImageLen = 0;
+            return false;
+        }
+    } else {
+        Serial.printf("OpenAI generation failed: %s\n", openai.getLastError());
+        if (aiImageData != nullptr) {
+            free(aiImageData);
+            aiImageData = nullptr;
+            aiImageLen = 0;
+        }
+        return false;
+    }
+#else
+    Serial.println("ERROR: WiFi not enabled - cannot generate AI images");
+    return false;
+#endif // WIFI_ENABLED
 }
 
 /**
@@ -3818,6 +4146,87 @@ void volumeSaveToNVS() {
     Serial.printf("Saved volume to NVS: %d%%\n", g_audio_volume_pct);
 }
 
+
+/**
+ * Load sleep duration interval from NVS (persistent storage)
+ */
+void sleepDurationLoadFromNVS() {
+    if (!sleepPrefs.begin("sleep", true)) {  // Read-only
+        Serial.println("WARNING: Failed to open NVS for sleep duration - using default (1 minute)");
+        g_sleep_interval_minutes = 1;
+        return;
+    }
+    
+    uint8_t savedInterval = sleepPrefs.getUChar("interval", 1);  // Default to 1 if not set
+    sleepPrefs.end();
+    
+    // Validate: must be a factor of 60
+    // Valid factors: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60
+    if (savedInterval == 0 || 60 % savedInterval != 0) {
+        Serial.printf("WARNING: Invalid sleep interval %d in NVS (not a factor of 60), using default (1)\n", savedInterval);
+        g_sleep_interval_minutes = 1;
+    } else {
+        g_sleep_interval_minutes = savedInterval;
+        Serial.printf("Loaded sleep interval from NVS: %d minutes\n", g_sleep_interval_minutes);
+    }
+}
+
+/**
+ * Save sleep duration interval to NVS (persistent storage)
+ */
+void sleepDurationSaveToNVS() {
+    if (!sleepPrefs.begin("sleep", false)) {  // Read-write
+        Serial.println("WARNING: Failed to open NVS for saving sleep duration");
+        return;
+    }
+    
+    sleepPrefs.putUChar("interval", g_sleep_interval_minutes);
+    sleepPrefs.end();
+    
+    Serial.printf("Saved sleep interval to NVS: %d minutes\n", g_sleep_interval_minutes);
+}
+
+/**
+ * Handle !sleep_duration command - set sleep interval between MQTT wake-ups
+ * Format: !sleep_duration <minutes>
+ * Example: !sleep_duration 2 (wake every 2 minutes)
+ *          !sleep_duration 4 (wake every 4 minutes)
+ * Must be a factor of 60: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60
+ * Default is 1 (wake every minute)
+ */
+static bool handleSleepDurationCommand(const String& parameter) {
+    Serial.println("Processing !sleep_duration command...");
+    
+    if (parameter.length() == 0) {
+        Serial.printf("Current sleep interval: %d minutes\n", g_sleep_interval_minutes);
+        Serial.println("Usage: !sleep_duration <minutes>");
+        Serial.println("Valid values (must be factors of 60): 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
+        return false;
+    }
+    
+    int newInterval = parameter.toInt();
+    
+    // Validate: must be a factor of 60
+    if (newInterval <= 0 || newInterval > 60 || 60 % newInterval != 0) {
+        Serial.printf("ERROR: Sleep interval must be a factor of 60 (got: %d)\n", newInterval);
+        Serial.println("Valid values: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
+        return false;
+    }
+    
+    g_sleep_interval_minutes = (uint8_t)newInterval;
+    sleepDurationSaveToNVS();
+    
+    Serial.printf("Sleep interval set to %d minutes\n", g_sleep_interval_minutes);
+    Serial.printf("Device will wake at: ");
+    for (int i = 0; i < 60; i += newInterval) {
+        Serial.printf(":%02d", i);
+        if (i + newInterval < 60) Serial.print(", ");
+    }
+    Serial.println(" (and always at :00 for hourly media cycle)");
+    
+    return true;
+}
+
 /**
  * Handle !newno command - add a phone number to the allowed list
  * Format: !newno <phone_number>
@@ -3995,10 +4404,10 @@ static bool handleDelNumberCommand(const String& parameter) {
 
 /**
  * Handle !list command - list all media files from media.txt
- * Returns list via serial output
+ * Returns list via serial output and publishes to MQTT outbox
  * Uses 1-indexed numbering to match !go command convention
  */
-static bool handleListNumbersCommand() {
+static bool handleListNumbersCommand(const String& originalMessage) {
     Serial.println("Processing !list command...");
     
 #if SDMMC_ENABLED
@@ -4016,29 +4425,105 @@ static bool handleListNumbersCommand() {
         loadMediaMappingsFromSD();
     }
     
+    // Build response message
+    String responseBody = "";
+    
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        responseBody = "No media.txt mappings found";
         Serial.println("\n=== Media Files ===");
-        Serial.println("No media.txt mappings found");
+        Serial.println(responseBody);
         Serial.println("=============================\n");
-        return false;
-    }
-    
-    Serial.println("\n=== Media Files (from media.txt) ===");
-    size_t mediaCount = g_media_mappings.size();
-    
-    for (size_t i = 0; i < mediaCount; i++) {
-        const MediaMapping& mapping = g_media_mappings[i];
-        Serial.printf("  [%zu] %s", i + 1, mapping.imageName.c_str());
-        if (mapping.audioFile.length() > 0) {
-            Serial.printf(" -> %s", mapping.audioFile.c_str());
-        } else {
-            Serial.print(" -> (no audio, will use beep.wav)");
+    } else {
+        Serial.println("\n=== Media Files (from media.txt) ===");
+        size_t mediaCount = g_media_mappings.size();
+        
+        // Build response body with media list
+        for (size_t i = 0; i < mediaCount; i++) {
+            const MediaMapping& mapping = g_media_mappings[i];
+            String line = String("[") + String(i + 1) + "] " + mapping.imageName;
+            if (mapping.audioFile.length() > 0) {
+                line += " -> " + mapping.audioFile;
+            } else {
+                line += " -> (no audio, will use beep.wav)";
+            }
+            
+            Serial.printf("  [%zu] %s", i + 1, mapping.imageName.c_str());
+            if (mapping.audioFile.length() > 0) {
+                Serial.printf(" -> %s", mapping.audioFile.c_str());
+            } else {
+                Serial.print(" -> (no audio, will use beep.wav)");
+            }
+            Serial.println();
+            
+            // Add to response body (with newline)
+            if (responseBody.length() > 0) {
+                responseBody += "\n";
+            }
+            responseBody += line;
         }
-        Serial.println();
+        
+        responseBody += "\n\nTotal: " + String(mediaCount) + " media file(s)";
+        Serial.printf("\nTotal: %zu media file(s)\n", mediaCount);
+        Serial.println("=============================\n");
     }
     
-    Serial.printf("\nTotal: %zu media file(s)\n", mediaCount);
-    Serial.println("=============================\n");
+    // Publish response to MQTT outbox (similar to !ping)
+    String senderNumber = extractFromFieldFromMessage(originalMessage);
+    if (senderNumber.length() == 0) {
+        Serial.println("WARNING: Could not extract sender number from message, cannot send MQTT response");
+        return true;  // Still succeeded in listing, just couldn't send response
+    }
+    
+    // Reconnect to MQTT to publish response
+    // (We disconnected after checking for messages, so need to reconnect)
+    if (!mqttConnect()) {
+        Serial.println("ERROR: Failed to connect to MQTT for list response");
+        return true;  // Still succeeded in listing, just couldn't send response
+    }
+    
+    // Wait for connection to be established
+    delay(1000);
+    
+    // Build URL-encoded form response: "To=+447816969344&From=+447401492609&Body=..."
+    String formResponse = "To=";
+    formResponse += senderNumber;
+    formResponse += "&From=+447401492609";
+    formResponse += "&Body=";
+    // URL-encode the body (simple encoding - replace spaces with +, newlines with %0A)
+    for (size_t i = 0; i < responseBody.length(); i++) {
+        char c = responseBody.charAt(i);
+        if (c == ' ') {
+            formResponse += '+';
+        } else if (c == '\n') {
+            formResponse += "%0A";
+        } else if (c == '&' || c == '=') {
+            // URL-encode special characters
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)c);
+            formResponse += hex;
+        } else {
+            formResponse += c;
+        }
+    }
+    
+    // Publish list response
+    if (mqttClient != nullptr && strlen(mqttTopicPublish) > 0) {
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicPublish, formResponse.c_str(), formResponse.length(), 1, 0);
+        if (msg_id > 0) {
+            Serial.printf("Published list response to %s (msg_id: %d)\n", mqttTopicPublish, msg_id);
+            // Give it a moment to send
+            delay(500);
+        } else {
+            Serial.println("ERROR: Failed to publish list response");
+        }
+    } else {
+        Serial.println("ERROR: MQTT client not available or publish topic not set");
+    }
+    
+    // Disconnect after publishing
+    mqttDisconnect();
+    delay(200);
+    
     return true;
     
 #else
@@ -5394,6 +5879,7 @@ void bmpListFiles(const char* dirname = "/") {
 }
 
 // Count PNG files in a directory using FatFs (returns count, stores paths in array if provided)
+// Excludes /ai_generated directory to prevent mixing AI-generated images with media.txt images
 int pngCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0) {
     String fatfsPath = "0:";
     if (strcmp(dirname, "/") != 0) {
@@ -5413,12 +5899,26 @@ int pngCountFiles(const char* dirname, String* paths = nullptr, int maxCount = 0
     while (true) {
         res = f_readdir(&dir, &fno);
         if (res != FR_OK || fno.fname[0] == 0) break;
-        if (fno.fattrib & AM_DIR) continue;
+        
+        // Skip directories (including ai_generated)
+        if (fno.fattrib & AM_DIR) {
+            // When scanning root directory, explicitly skip ai_generated directory
+            if (strcmp(dirname, "/") == 0 && strcmp(fno.fname, "ai_generated") == 0) {
+                continue;
+            }
+            continue;
+        }
 
         String name = String(fno.fname);
         String lower = name;
         lower.toLowerCase();
         if (lower.endsWith(".png")) {
+            // When scanning root directory, skip any files that might be in ai_generated subdirectory
+            // (though they shouldn't appear here since we skip directories, but be safe)
+            if (strcmp(dirname, "/") == 0 && name.startsWith("oai_")) {
+                continue;  // Skip AI-generated files if they somehow appear in root
+            }
+            
             if (paths && count < maxCount) {
                 if (strcmp(dirname, "/") == 0) paths[count] = "/" + name;
                 else paths[count] = String(dirname) + "/" + name;
@@ -5727,6 +6227,15 @@ bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms)
 
     // Cycle through images from media.txt sequentially
     size_t mediaCount = g_media_mappings.size();
+    
+    // Safety check: if index is out of bounds (e.g., media.txt was reloaded with fewer items), reset to 0
+    if (lastMediaIndex >= mediaCount) {
+        Serial.printf("WARNING: lastMediaIndex %lu is out of bounds (max %zu), resetting to 0\n",
+                     (unsigned long)lastMediaIndex, mediaCount);
+        lastMediaIndex = 0;
+    }
+    
+    // Increment and wrap around
     lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
     const MediaMapping& mapping = g_media_mappings[lastMediaIndex];
     
@@ -6089,6 +6598,9 @@ void setup() {
     
     // Load allowed phone numbers from NVS
     numbersLoadFromNVS();
+    
+    // Load sleep duration interval from NVS
+    sleepDurationLoadFromNVS();
 
     // Bring up PA enable early (matches known-good ESP-IDF example behavior)
     pinMode(PIN_CODEC_PA_EN, OUTPUT);

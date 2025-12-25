@@ -1674,26 +1674,53 @@ TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::scanForBestQuote
     
     Serial.printf("[TextPlacement] Scanning for quote, trying %d line layouts\n", maxPossibleLines);
     
+    // Outline width used for drawing (from drawQuote call)
+    const int16_t outlineWidth = 2;
+    const int16_t outlinePadding = outlineWidth * 2;  // 2px outline on each side = 4px total per dimension
+    
     // Store all layouts to allow randomization among good ones
     QuoteLayoutResult layouts[3];  // Max 3 line layouts
     int numLayouts = 0;
+    
+    // Calculate available width accounting for keepout margins and outline
+    int16_t availableWidth = dispW - _keepout.left - _keepout.right - outlinePadding;
     
     for (int targetLines = 1; targetLines <= maxPossibleLines; targetLines++) {
         char wrappedQuote[512];
         int actualLines = 0;
         
         // Calculate target width for this number of lines
-        int16_t targetWidth = (targetLines == 1) ? 0 : (fullQuoteWidth / targetLines) + 50;
+        // Always constrain to available width, even for single-line quotes
+        int16_t targetWidth;
+        if (targetLines == 1) {
+            // For single line, use available width as constraint
+            targetWidth = availableWidth;
+        } else {
+            // For multi-line, aim for roughly equal line lengths
+            targetWidth = (fullQuoteWidth / targetLines) + 50;
+            if (targetWidth > availableWidth) {
+                targetWidth = availableWidth;
+            }
+        }
         
+        // Wrap text, ensuring it fits within available width (text width without outline)
         int16_t quoteWidth = wrapText(ttf, quote.text, quoteFontSize, targetWidth,
                                        wrappedQuote, sizeof(wrappedQuote), &actualLines);
+        
+        // Clamp quoteWidth to available width - wrapText should respect targetWidth, but be safe
+        if (quoteWidth > availableWidth) {
+            // If wrapped text is too wide, re-wrap with stricter constraint
+            quoteWidth = wrapText(ttf, quote.text, quoteFontSize, availableWidth,
+                                   wrappedQuote, sizeof(wrappedQuote), &actualLines);
+        }
         
         // Calculate quote block dimensions
         int16_t quoteHeight = actualLines * quoteLineHeight + (actualLines - 1) * quoteLineGap;
         
         // Total block dimensions (quote + gap + author)
-        int16_t totalWidth = max(quoteWidth, authorWidth);
-        int16_t totalHeight = quoteHeight + gapBeforeAuthor + authorHeight;
+        // Include outline padding so positioning accounts for the actual drawn text including outline
+        int16_t totalWidth = max(quoteWidth, authorWidth) + outlinePadding;
+        int16_t totalHeight = quoteHeight + gapBeforeAuthor + authorHeight + outlinePadding;
         
         // Use grid scanning to find best position for this layout
         TextPlacementRegion bestPos = scanForBestPosition(display, totalWidth, totalHeight,
@@ -1749,8 +1776,10 @@ TextPlacementAnalyzer::QuoteLayoutResult TextPlacementAnalyzer::scanForBestQuote
         bestResult.quoteLines = 1;
         bestResult.authorWidth = authorWidth;
         bestResult.authorHeight = authorHeight;
-        bestResult.totalWidth = max(fullQuoteWidth, authorWidth);
-        bestResult.totalHeight = quoteLineHeight + gapBeforeAuthor + authorHeight;
+        // Add outline width padding (2px outline on each side = 4px total per dimension)
+        const int16_t outlinePadding = 4;  // 2px outline on each side
+        bestResult.totalWidth = max(fullQuoteWidth, authorWidth) + outlinePadding;
+        bestResult.totalHeight = quoteLineHeight + gapBeforeAuthor + authorHeight + outlinePadding;
         bestResult.position = {(int16_t)(dispW/2), (int16_t)(dispH/2), 
                                bestResult.totalWidth, bestResult.totalHeight, 0.0f};
     }
@@ -1770,9 +1799,11 @@ void TextPlacementAnalyzer::drawQuote(EL133UF1_TTF* ttf, const QuoteLayoutResult
     
     // Calculate block edges
     // Block is centered at position.x, position.y
-    int16_t blockTop = layout.position.y - layout.totalHeight / 2;
-    int16_t blockLeft = layout.position.x - layout.totalWidth / 2;
-    int16_t blockRight = layout.position.x + layout.totalWidth / 2;
+    // layout.totalWidth includes outline padding (2*outlineWidth), so we need to offset by outlineWidth
+    // to position the text content itself correctly
+    int16_t blockTop = layout.position.y - layout.totalHeight / 2 + outlineWidth;
+    int16_t blockLeft = layout.position.x - layout.totalWidth / 2 + outlineWidth;
+    int16_t blockRight = layout.position.x + layout.totalWidth / 2 - outlineWidth;
     
     // Draw quote lines (left-aligned)
     if (layout.quoteLines == 1) {

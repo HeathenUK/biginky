@@ -306,12 +306,12 @@ bool EL133UF1::reconnect() {
 }
 
 void EL133UF1::_reset() {
-    // Reset sequence from Python reference (verified working)
-    // Pull reset LOW, wait 30ms, then HIGH, wait 30ms
+    // Reset sequence with extended hold times for better reliability
+    // Pull reset LOW, wait 150ms, then HIGH, wait 150ms
     digitalWrite(_resetPin, LOW);
-    delay(30);
+    delay(150);
     digitalWrite(_resetPin, HIGH);
-    delay(30);
+    delay(150);
 }
 
 bool EL133UF1::_busyWait(uint32_t timeoutMs) {
@@ -388,62 +388,79 @@ void EL133UF1::_sendCommand(uint8_t cmd, uint8_t csSel, const uint8_t* data, siz
 }
 
 void EL133UF1::_initSequence() {
-    // Initialization sequence from working CircuitPython reference
-    // 17 commands total, each with 90ms DC setup delay = ~1.5s
+    // Initialization sequence with extended delays between commands for better reliability
+    // 17 commands total, each with 90ms DC setup delay + 50ms inter-command delay
     
     // ANTM - Anti-crosstalk magic (CS0 only, must be first)
     const uint8_t antm[] = {0xC0, 0x1C, 0x1C, 0xCC, 0xCC, 0xCC, 0x15, 0x15, 0x55};
     _sendCommand(CMD_ANTM, CS0_SEL, antm, sizeof(antm));
+    delay(50);
 
     const uint8_t cmd66[] = {0x49, 0x55, 0x13, 0x5D, 0x05, 0x10};
     _sendCommand(CMD_CMD66, CS_BOTH_SEL, cmd66, sizeof(cmd66));
+    delay(50);
 
     const uint8_t psr[] = {0xDF, 0x69};
     _sendCommand(CMD_PSR, CS_BOTH_SEL, psr, sizeof(psr));
+    delay(50);
 
     const uint8_t pll[] = {0x08};
     _sendCommand(CMD_PLL, CS_BOTH_SEL, pll, sizeof(pll));
+    delay(50);
 
     const uint8_t cdi[] = {0xF7};
     _sendCommand(CMD_CDI, CS_BOTH_SEL, cdi, sizeof(cdi));
+    delay(50);
 
     const uint8_t tcon[] = {0x03, 0x03};
     _sendCommand(CMD_TCON, CS_BOTH_SEL, tcon, sizeof(tcon));
+    delay(50);
 
     const uint8_t agid[] = {0x10};
     _sendCommand(CMD_AGID, CS_BOTH_SEL, agid, sizeof(agid));
+    delay(50);
 
     const uint8_t pws[] = {0x22};
     _sendCommand(CMD_PWS, CS_BOTH_SEL, pws, sizeof(pws));
+    delay(50);
 
     const uint8_t ccset[] = {0x01};
     _sendCommand(CMD_CCSET, CS_BOTH_SEL, ccset, sizeof(ccset));
+    delay(50);
 
     // Resolution: 1200 x 800 per half (0x04B0 x 0x0320)
     const uint8_t tres[] = {0x04, 0xB0, 0x03, 0x20};
     _sendCommand(CMD_TRES, CS_BOTH_SEL, tres, sizeof(tres));
+    delay(50);
 
     // Power configuration
     const uint8_t pwr[] = {0x0F, 0x00, 0x28, 0x2C, 0x28, 0x38};
     _sendCommand(CMD_PWR, CS_BOTH_SEL, pwr, sizeof(pwr));
+    delay(50);
 
     const uint8_t en_buf[] = {0x07};
     _sendCommand(CMD_EN_BUF, CS_BOTH_SEL, en_buf, sizeof(en_buf));
+    delay(50);
 
     const uint8_t btst_p[] = {0xD8, 0x18};
     _sendCommand(CMD_BTST_P, CS_BOTH_SEL, btst_p, sizeof(btst_p));
+    delay(50);
 
     const uint8_t boost_vddp[] = {0x01};
     _sendCommand(CMD_BOOST_VDDP_EN, CS_BOTH_SEL, boost_vddp, sizeof(boost_vddp));
+    delay(50);
 
     const uint8_t btst_n[] = {0xD8, 0x18};
     _sendCommand(CMD_BTST_N, CS_BOTH_SEL, btst_n, sizeof(btst_n));
+    delay(50);
 
     const uint8_t buck_boost[] = {0x01};
     _sendCommand(CMD_BUCK_BOOST_VDDN, CS_BOTH_SEL, buck_boost, sizeof(buck_boost));
+    delay(50);
 
     const uint8_t vcom_power[] = {0x02};
     _sendCommand(CMD_TFT_VCOM_POWER, CS_BOTH_SEL, vcom_power, sizeof(vcom_power));
+    delay(50);
 }
 
 void EL133UF1::clear(uint8_t color) {

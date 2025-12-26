@@ -3,6 +3,7 @@ PlatformIO pre-build script to regenerate color LUT if needed.
 
 This script checks if the LUT header is older than the generator script
 and regenerates it if necessary.
+Also touches the main source file to force build date update.
 """
 
 Import("env")
@@ -43,5 +44,16 @@ def check_and_regenerate_lut(source, target, env):
         except Exception as e:
             print(f"Warning: Could not regenerate LUT: {e}")
 
-# Register the pre-build action
+def touch_main_file(source, target, env):
+    """Touch main source file to force build date update on every build."""
+    project_dir = env.subst("$PROJECT_DIR")
+    # Touch the main ESP32-P4 source file to force recompilation
+    # This ensures __DATE__ and __TIME__ macros are updated
+    main_file = os.path.join(project_dir, "src", "main_esp32p4_test.cpp")
+    if os.path.exists(main_file):
+        os.utime(main_file, None)
+        print("Touched main source file to update build date")
+
+# Register the pre-build actions
 env.AddPreAction("buildprog", check_and_regenerate_lut)
+env.AddPreAction("buildprog", touch_main_file)

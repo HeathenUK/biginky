@@ -8,10 +8,10 @@
  * Build with: pio run -e esp32p4
  * 
  * === PIN MAPPING FOR WAVESHARE ESP32-P4-WIFI6 ===
- * Uses same PHYSICAL pin locations as Pico Plus 2 W (form-factor compatible)
+ * Pin locations match Pico Plus 2 W form-factor (physical compatibility)
  * Configured via build flags in platformio.ini
  * 
- * Display SPI (Pico GP -> ESP32-P4 GPIO):
+ * Display SPI (GPIO pin assignments):
  *   SCLK    ->   GPIO3  (was GP10, pin 14)
  *   MOSI    ->   GPIO2  (was GP11, pin 15)
  *   CS0     ->   GPIO23 (was GP26, pin 31)
@@ -52,6 +52,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <stdio.h>
+#include <stdarg.h>  // For va_list in logging functions
 
 // ESP8266Audio for robust WAV and MP3 parsing and playback
 #include "AudioOutputI2S.h"
@@ -106,7 +107,7 @@
 // Override these with build flags or edit for your specific board
 // ============================================================================
 
-// Defaults for Waveshare ESP32-P4-WIFI6 - matches Pico physical pin locations
+// Defaults for Waveshare ESP32-P4-WIFI6 - matches Pico Plus 2 W form-factor (physical pin locations)
 #ifndef PIN_SPI_SCK
 #define PIN_SPI_SCK   3     // GPIO3 = Pico GP10 (pin 14)
 #endif
@@ -235,7 +236,16 @@ static String g_lastImagePath = "";
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
-RTC_DATA_ATTR uint32_t lastMediaIndex = 0;  // Track last displayed image from media.txt
+uint32_t lastMediaIndex = 0;  // Track last displayed image from media.txt (stored in NVS)
+static bool showOperationInProgress = false;  // Lock to prevent concurrent show operations
+
+// Structure for passing data to show media task
+struct ShowMediaTaskData {
+    int index;
+    bool* success;
+    size_t* nextIndex;
+    SemaphoreHandle_t completionSem;
+};
 RTC_DATA_ATTR uint32_t ntpSyncCounter = 0;  // Counter for periodic NTP resync
 RTC_DATA_ATTR bool usingMediaMappings = false;  // Track if we're using media.txt or scanning all PNGs
 RTC_DATA_ATTR char lastAudioFile[64] = "";  // Last audio file path for instant playback on switch D wake
@@ -245,6 +255,7 @@ RTC_DATA_ATTR char lastAudioFile[64] = "";  // Last audio file path for instant 
 // ============================================================================
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <math.h>
 
 static ES8311Simple g_codec;
@@ -256,6 +267,7 @@ static Preferences volumePrefs;  // NVS preferences for volume storage
 static Preferences numbersPrefs;  // NVS preferences for allowed phone numbers
 static Preferences sleepPrefs;  // NVS preferences for sleep duration setting
 static Preferences otaPrefs;  // NVS preferences for OTA version tracking
+static Preferences mediaPrefs;  // NVS preferences for media index storage
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 static uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60)
@@ -281,10 +293,139 @@ bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms)
 bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
 bool sdInitDirect(bool mode1bit = false);
 
+// NVS storage functions (defined later)
+void mediaIndexLoadFromNVS();  // Load media index from NVS (called on startup)
+void mediaIndexSaveToNVS();  // Save media index to NVS
+
 // SD card state variables (declared here for use by SD config functions)
 static bool sdCardMounted = false;
 static sdmmc_card_t* sd_card = nullptr;
 static esp_ldo_channel_handle_t ldo_vo4_handle = nullptr;
+
+// Logging system - writes to both Serial and SD card
+static FIL logFile;
+static bool logFileOpen = false;
+static const char* LOG_DIR = "0:/.logs";
+static const char* LOG_FILE = "0:/.logs/log.txt";
+static char LOG_ARCHIVE[64] = "0:/.logs/log_prev.txt";  // Will be updated with timestamp-based name during rotation
+
+// Store reference to original Serial object before macro redefinition
+extern HardwareSerial Serial;
+static HardwareSerial* const RealSerial = &Serial;
+
+// LogSerial class - Print subclass that writes to both Serial and log file
+class LogSerial : public Print {
+public:
+    virtual size_t write(uint8_t c) override {
+        // Always write to real Serial
+        size_t result = RealSerial->write(c);
+        
+        // Also write to log file if open
+        if (logFileOpen) {
+            UINT bw;
+            f_write(&logFile, &c, 1, &bw);
+            // Note: We don't flush on every byte for performance
+        }
+        
+        return result;
+    }
+    
+    virtual size_t write(const uint8_t *buffer, size_t size) override {
+        // Write to real Serial first
+        size_t result = RealSerial->write(buffer, size);
+        
+        // Also write to log file if open
+        if (logFileOpen) {
+            UINT bw;
+            f_write(&logFile, buffer, size, &bw);
+        }
+        
+        return result;
+    }
+    
+    // Forward available() to real Serial (Stream method)
+    int available() {
+        Stream* stream = (Stream*)RealSerial;
+        return stream->available();
+    }
+    
+    // Forward read() to real Serial (Stream method)
+    int read() {
+        Stream* stream = (Stream*)RealSerial;
+        return stream->read();
+    }
+    
+    // Forward peek() to real Serial (Stream method)
+    int peek() {
+        Stream* stream = (Stream*)RealSerial;
+        return stream->peek();
+    }
+    
+    // Forward readStringUntil() to real Serial (Stream method)
+    String readStringUntil(char terminator) {
+        Stream* stream = (Stream*)RealSerial;
+        return stream->readStringUntil(terminator);
+    }
+    
+    // Operator! for compatibility with "while (!Serial)" pattern
+    // HardwareSerial::operator!() checks if Serial is available (not ready)
+    bool operator!() const {
+        HardwareSerial* hwSerial = (HardwareSerial*)RealSerial;
+        return !(*hwSerial);
+    }
+    
+    // Forward flush() to both real Serial and log file
+    void flush() {
+        RealSerial->flush();
+        if (logFileOpen) {
+            f_sync(&logFile);
+        }
+    }
+    
+    // Forward begin() to real Serial
+    void begin(unsigned long baud) {
+        HardwareSerial* hwSerial = (HardwareSerial*)RealSerial;
+        hwSerial->begin(baud);
+    }
+    
+    // Forward printf-like methods
+    size_t printf(const char *format, ...) {
+        char buffer[512];
+        va_list args;
+        va_start(args, format);
+        int len = vsnprintf(buffer, sizeof(buffer), format, args);
+        va_end(args);
+        
+        if (len > 0 && len < (int)sizeof(buffer)) {
+            return write((const uint8_t*)buffer, len);
+        }
+        return 0;
+    }
+};
+
+// Global LogSerial instance
+LogSerial LogSerialInstance;
+
+// Redirect Serial to LogSerialInstance so all Serial.print/printf/etc. calls are logged to file
+#define Serial LogSerialInstance
+
+// Logging wrapper functions
+void logPrint(const char* str);
+void logPrintf(const char* format, ...);
+void logRotate();  // Archive current log and create new one
+bool logInit();    // Initialize logging (mount SD and open log file)
+void logFlush();   // Flush log file to ensure data is written
+void logClose();   // Close log file (call before deep sleep)
+
+// Helper to ensure SD is mounted (simplifies conditional mounting logic)
+static inline bool ensureSDMounted() {
+    if (sdCardMounted && sd_card != nullptr) {
+        return true;
+    }
+    // Try to mount if not already mounted
+    return sdInitDirect(false);
+}
+
 #endif
 
 static bool i2c_ping(TwoWire& w, uint8_t addr7) {
@@ -574,23 +715,46 @@ static void sleepNowSeconds(uint32_t seconds) {
     // GPIO wake functionality completely disabled to avoid interfering with bootloader entry
     // Only timer wake is enabled (no GPIO pins are configured)
     
+#if SDMMC_ENABLED
+    // Close log file before deep sleep to prevent queue access issues
+    // The log file uses FatFs which may have background tasks/queues
+    // FatFs and SDMMC driver may have background tasks that access FreeRTOS queues
+    if (logFileOpen) {
+        logClose();
+        // Additional delay to ensure all SD card operations and background tasks complete
+        // This is critical - FatFs/SDMMC background tasks must finish before WiFi disconnect
+        delay(300);
+        // Allow FreeRTOS to process any file system cleanup tasks
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+#endif
+    
     // Disconnect WiFi before deep sleep (but don't shut down ESP-Hosted completely)
     // Just disconnect from network - ESP-Hosted will handle its own state
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("Disconnecting WiFi before deep sleep...");
         WiFi.disconnect(true);
-        delay(200);  // Give ESP-Hosted time to handle disconnection
+        delay(500);  // Give WiFi and network stack time to handle disconnection
+        // Allow FreeRTOS to process network task cleanup
+        vTaskDelay(pdMS_TO_TICKS(200));
         Serial.println("WiFi disconnected");
     }
     
     // Flush serial and ensure all operations complete before deep sleep
     // This helps prevent bootloader assertion errors after wake
     Serial.flush();
-    delay(200);  // Ensure serial flush and any pending operations complete
+    delay(300);  // Ensure serial flush and any pending operations complete
     
     // Additional delay to ensure flash/SPI operations are fully complete
     // The bootloader needs clean state to load the app partition correctly
-    delay(100);
+    // Also allows any remaining background tasks to finish
+    // Critical: Give all background tasks (SD card, WiFi, MQTT cleanup) time to complete
+    vTaskDelay(pdMS_TO_TICKS(300));
+    delay(300);
+    
+    // Final check - ensure we're ready for deep sleep
+    // This gives any remaining FreeRTOS tasks one more chance to complete
+    vTaskDelay(pdMS_TO_TICKS(100));
     
     esp_deep_sleep_start();
 }
@@ -1627,6 +1791,7 @@ static void handleSwitchDWake() {
         if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
             lastMediaIndex = (lastMediaIndex + 1) % g_media_mappings.size();
             Serial.printf("Advanced to next media item: index %lu\n", (unsigned long)lastMediaIndex);
+            mediaIndexSaveToNVS();
         }
         
         // Return to setup() to continue with normal cycle (display update, etc.)
@@ -1720,6 +1885,7 @@ static String extractFromFieldFromMessage(const String& msg);
 static bool handleMqttCommand(const String& command, const String& originalMessage = "");
 static bool handleClearCommand();
 static bool handlePingCommand(const String& originalMessage);
+static bool handleIpCommand(const String& originalMessage);
 static bool handleNextCommand();
 static bool handleGoCommand(const String& parameter);
 static bool handleTextCommand(const String& parameter);
@@ -1733,6 +1899,7 @@ static bool handleListNumbersCommand(const String& originalMessage = "");
 static bool handleShowCommand(const String& parameter);
 static bool handleSleepIntervalCommand(const String& parameter);
 static bool handleOAICommand(const String& parameter);
+static bool handleManageCommand();  // Start management web interface
 static bool startSdBufferedOTA();  // Start SD-buffered OTA web server
 static void ota_server_task(void* arg);  // Task wrapper for OTA server
 void checkAndNotifyOTAUpdate();  // Check for firmware change and notify via MQTT
@@ -1740,6 +1907,8 @@ void volumeLoadFromNVS();  // Load volume from NVS (called on startup)
 void sleepDurationLoadFromNVS();  // Load sleep duration from NVS (called on startup)
 void sleepDurationSaveToNVS();  // Save sleep duration to NVS
 void volumeSaveToNVS();    // Save volume to NVS (called when volume changes)
+void mediaIndexLoadFromNVS();  // Load media index from NVS (called on startup)
+void mediaIndexSaveToNVS();  // Save media index to NVS
 bool isNumberAllowed(const String& number);  // Check if number is in allowed list
 bool addAllowedNumber(const String& number);  // Add number to allowed list in NVS
 bool removeAllowedNumber(const String& number);  // Remove number from allowed list in NVS
@@ -1830,7 +1999,7 @@ static void auto_cycle_task(void* arg) {
         
         mqttLoadConfig();
         
-        // Connect to WiFi - REQUIRED for MQTT, so be persistent
+        // Connect to WiFi - REQUIRED for MQTT, so be persistent (keep robust retry logic)
         if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
             // WiFi connected - check for OTA update notification first
             // This is safe to call multiple times - it only sends notification once per firmware change
@@ -1841,9 +2010,10 @@ static void auto_cycle_task(void* arg) {
             // WiFi connected - proceed with MQTT
             // Connect to MQTT and check for retained messages
             if (mqttConnect()) {
-                // Wait for subscription and any retained messages (max 3 seconds)
-                // mqttCheckMessages handles connection state internally and will return false if disconnected
-                delay(3000);
+                // Wait for subscription and any retained messages - OPTIMIZED: reduced from 3s to 1s
+                // Retained messages should arrive almost immediately after subscription completes
+                // This saves 2 seconds in the happy path while still allowing time for messages
+                delay(1000);
                 
                 // Check if we received a retained message (mqttCheckMessages checks connection state internally)
                 String commandToProcess = "";
@@ -1861,8 +2031,8 @@ static void auto_cycle_task(void* arg) {
                     
                     // Message already processed and cleared in event handler
                     // The blank retained message was published in the event handler
-                    // Give it a moment to complete before disconnecting
-                    delay(500);  // Allow time for blank retained message publish to complete
+                    // OPTIMIZED: reduced from 500ms to 200ms - publish should complete quickly
+                    delay(200);  // Allow time for blank retained message publish to complete
                 } else {
                     Serial.println("No retained messages");
                 }
@@ -1870,6 +2040,7 @@ static void auto_cycle_task(void* arg) {
                 // Disconnect from MQTT immediately after checking for messages
                 // This prevents connection issues during long-running commands (like display updates)
                 mqttDisconnect();
+                // OPTIMIZED: reduced from 500ms to 200ms - MQTT cleanup should be quick
                 delay(200);
                     
                 // Now process the command (if any) after MQTT is fully disconnected
@@ -1881,8 +2052,11 @@ static void auto_cycle_task(void* arg) {
                 }
             }
             
-            // Keep WiFi connected - will be disconnected before deep sleep
-            Serial.println("WiFi staying connected");
+            // Disconnect WiFi immediately after MQTT check to save power
+            // No need to keep it connected - we'll reconnect on next cycle if needed
+            Serial.println("Disconnecting WiFi to save power...");
+            WiFi.disconnect();
+            delay(100);  // Brief delay for disconnect to complete
         } else {
             Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
         }
@@ -2053,6 +2227,7 @@ static void auto_cycle_task(void* arg) {
                 Serial.printf("WARNING: lastMediaIndex %lu out of bounds (max %zu), resetting to 0\n",
                              (unsigned long)lastMediaIndex, mediaCount);
                 lastMediaIndex = 0;
+                mediaIndexSaveToNVS();
             }
             
         for (int retry = 0; retry < maxRetries && !ok; retry++) {
@@ -2213,11 +2388,21 @@ static void auto_cycle_task(void* arg) {
     Serial.printf("Time/date placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
                   timeFontSize, dateFontSize, bestPos.score, attempts);
     
+    // Ensure we use the final block dimensions (recalculate to be safe)
+    timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+    timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+    dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+    dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
+    blockW = max(timeW, dateW);
+    blockH = timeH + gapBetween + dateH;
+    
     // Debug: show what area was checked for keep-out
     int16_t checkX = bestPos.x - blockW/2;
     int16_t checkY = bestPos.y - blockH/2;
-    Serial.printf("[DEBUG] Time/Date block checked: x=%d, y=%d, w=%d, h=%d (center=%d,%d)\n",
+    Serial.printf("[DEBUG] Time/Date block: x=%d, y=%d, w=%d, h=%d (center=%d,%d)\n",
                   checkX, checkY, blockW, blockH, bestPos.x, bestPos.y);
+    Serial.printf("[DEBUG] Time text: w=%d, h=%d (outline=%d)\n", timeW, timeH, timeOutline);
+    Serial.printf("[DEBUG] Date text: w=%d, h=%d (outline=%d)\n", dateW, dateH, dateOutline);
 
     // Calculate individual positions relative to the chosen block center
     int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
@@ -2237,8 +2422,48 @@ static void auto_cycle_task(void* arg) {
                                 ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
     
     // Add the time/date block as an exclusion zone so quote won't overlap
-    // Larger padding to create visual separation between elements
-    textPlacement.addExclusionZone(bestPos, 150);  // Increased from 50 to 150px
+    // CRITICAL: Calculate exclusion zone based on ACTUAL drawn bounds to ensure perfect coverage
+    // Time is drawn centered at (bestPos.x, timeY) with height timeH (includes outline)
+    // Date is drawn centered at (bestPos.x, dateY) with height dateH (includes outline)
+    int16_t timeTop = timeY - timeH/2;
+    int16_t timeBottom = timeY + timeH/2;
+    int16_t dateTop = dateY - dateH/2;
+    int16_t dateBottom = dateY + dateH/2;
+    
+    // Calculate actual bounds of the entire drawn block
+    int16_t actualTop = timeTop;
+    int16_t actualBottom = dateBottom;
+    int16_t actualDrawnHeight = actualBottom - actualTop;
+    int16_t actualDrawnCenterY = (actualTop + actualBottom) / 2;
+    
+    // For width, use the maximum extent (both text elements are centered at bestPos.x)
+    int16_t actualTimeWidth = ttf.getTextWidth(timeBuf, timeFontSize);
+    int16_t actualDateWidth = ttf.getTextWidth(dateBuf, dateFontSize);
+    int16_t maxTextWidth = max(actualTimeWidth, actualDateWidth);
+    int16_t actualDrawnWidth = maxTextWidth + (timeOutline * 2);  // Outline on both sides
+    
+    // Use actual drawn bounds for exclusion zone - MAXIMALIST rectangular keep-out area
+    // Add extra margin to ensure we capture the full extent of the text
+    int16_t safeBlockW = actualDrawnWidth + 40;  // Extra margin for maximalist bounds
+    int16_t safeBlockH = actualDrawnHeight + 40;  // Extra margin for maximalist bounds
+    
+    // Calculate padding needed to ensure minimum 250px distance from quote
+    // Padding = 250px (minimum distance) + estimated quote half-height (max ~300px) = 550px
+    // This ensures any quote placed will be at least 250px away from time/date block
+    const int16_t minDistanceFromTimeDate = 250;
+    const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate for quote block half-height
+    const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
+    
+    // Create exclusion zone centered at the actual drawn center with maximalist padding
+    TextPlacementRegion timeExclusion = {bestPos.x, actualDrawnCenterY, safeBlockW, safeBlockH, 0.0f};
+    bool zoneAdded = textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
+    Serial.printf("[DEBUG] Time block actual bounds: top=%d, bottom=%d, centerY=%d, height=%d\n",
+                  actualTop, actualBottom, actualDrawnCenterY, actualDrawnHeight);
+    Serial.printf("[DEBUG] Added time exclusion zone: center=(%d,%d), size=%dx%d, padding=150, success=%d\n",
+                  bestPos.x, actualDrawnCenterY, safeBlockW, safeBlockH, zoneAdded);
+    Serial.printf("[DEBUG] Exclusion zone bounds: left=%d, right=%d, top=%d, bottom=%d\n",
+                  bestPos.x - safeBlockW/2 - 150, bestPos.x + safeBlockW/2 + 150,
+                  actualDrawnCenterY - safeBlockH/2 - 150, actualDrawnCenterY + safeBlockH/2 + 150);
 
     // ================================================================
     // QUOTE - Intelligently positioned with automatic line wrapping
@@ -2329,13 +2554,52 @@ static void auto_cycle_task(void* arg) {
     Serial.printf("  Quote: \"%s\"\n", quoteLayout.wrappedQuote);
     Serial.printf("  Author: %s\n", selectedQuote.author);
     
+    // Verify minimum 250px distance from time/date block
+    int16_t dx = quoteLayout.position.x - bestPos.x;
+    int16_t dy = quoteLayout.position.y - actualDrawnCenterY;
+    int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
+    int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
+    int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
+    int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
+    
+    Serial.printf("[DEBUG] Quote-to-time/date distance check: distance=%d, required=%d (min 250px + half-diagonals)\n",
+                  distance, minRequiredDistance);
+    
+    if (distance < minRequiredDistance) {
+        Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
+        // Calculate direction vector from time/date to quote
+        float dirX = (float)dx / (distance > 0 ? distance : 1);
+        float dirY = (float)dy / (distance > 0 ? distance : 1);
+        
+        // Move quote further away to meet minimum distance
+        int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
+        int16_t newY = actualDrawnCenterY + (int16_t)(dirY * minRequiredDistance);
+        
+        // Clamp to display bounds
+        int displayW = display.width();
+        int displayH = display.height();
+        int keepout = 100;
+        int newX_int = (int)newX;
+        int newY_int = (int)newY;
+        newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
+        newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
+        newX = (int16_t)newX_int;
+        newY = (int16_t)newY_int;
+        
+        quoteLayout.position.x = newX;
+        quoteLayout.position.y = newY;
+        
+        Serial.printf("  Adjusted quote position to (%d,%d) to maintain minimum distance\n", newX, newY);
+    }
+    
     // Draw the quote with author using the helper function
     textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
                             quoteFontSize, authorFontSize,
                             EL133UF1_WHITE, EL133UF1_BLACK, 2);
     
-    // Add quote as exclusion zone for any future text elements (e.g., battery %)
-    textPlacement.addExclusionZone(quoteLayout.position, 50);
+    // Add quote as MAXIMALIST exclusion zone for any future text elements
+    // Use large padding to create maximalist rectangular keep-out area
+    textPlacement.addExclusionZone(quoteLayout.position, 200);
 
     // Refresh display first (e-ink refresh takes 20-30 seconds)
     Serial.println("Updating display (e-ink refresh)...");
@@ -2701,6 +2965,16 @@ void checkAndNotifyOTAUpdate() {
         Serial.printf("Project: %s, Version: %s\n", current_app_info.project_name, current_app_info.version);
         Serial.println("========================================\n");
         
+#if SDMMC_ENABLED
+        // Rotate log file when firmware changes (archive old, create new)
+        logRotate();
+        logPrintf("=== Firmware changed ===\n");
+        logPrintf("Old: %s\n", storedBuildId.c_str());
+        logPrintf("New: %s\n", currentBuildId.c_str());
+        logPrintf("Project: %s, Version: %s\n", current_app_info.project_name, current_app_info.version);
+        logFlush();
+#endif
+        
         // Update stored build ID
         if (!otaPrefs.begin("ota", false)) {  // Read-write
             Serial.println("WARNING: Cannot open NVS for writing");
@@ -2727,8 +3001,8 @@ void checkAndNotifyOTAUpdate() {
             return;
         }
         
-        // Wait for connection to be established
-        delay(1000);
+        // Wait for connection to be established - OPTIMIZED: reduced from 1000ms to 500ms
+        delay(500);
         
         // Build success message (URL-encoded form format)
         const char* hardcodedNumber = "+447816969344";
@@ -2749,7 +3023,7 @@ void checkAndNotifyOTAUpdate() {
             int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicPublish, formResponse.c_str(), formResponse.length(), 1, 0);
             if (msg_id > 0) {
                 Serial.printf("Published OTA success notification to %s (msg_id: %d)\n", mqttTopicPublish, msg_id);
-                delay(500);  // Give it a moment to send
+                delay(200);  // OPTIMIZED: reduced from 500ms to 200ms - give it a moment to send
             } else {
                 Serial.println("ERROR: Failed to publish OTA success notification");
             }
@@ -2759,7 +3033,7 @@ void checkAndNotifyOTAUpdate() {
         
         // Disconnect after publishing
         mqttDisconnect();
-        delay(200);
+        delay(100);  // OPTIMIZED: reduced from 200ms to 100ms
     } else {
         Serial.printf("Firmware unchanged: %s\n", currentBuildId.c_str());
     }
@@ -2900,6 +3174,10 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
     
     if (command == "!ping") {
         return handlePingCommand(originalMessage);
+    }
+    
+    if (command == "!ip") {
+        return handleIpCommand(originalMessage);
     }
     
     if (command == "!next") {
@@ -3124,6 +3402,10 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
             delay(100);
         }
         return true;
+    }
+    
+    if (command == "!manage") {
+        return handleManageCommand();
     }
     
     // Add more commands here as needed:
@@ -3551,8 +3833,12 @@ static bool startSdBufferedOTA() {
             uint32_t receivedCrcLike = 0;
             
             Serial.println("Receiving firmware and writing to SD card...");
-            while (totalReceived < (size_t)contentLength && client.connected()) {
+            while (totalReceived < (size_t)contentLength && (client.connected() || client.available())) {
                 if (!client.available()) {
+                    // If client disconnected and no data available, we're done
+                    if (!client.connected()) {
+                        break;
+                    }
                     delay(10);
                     continue;
                 }
@@ -3822,6 +4108,361 @@ static bool startSdBufferedOTA() {
 #endif // WIFI_ENABLED
 }
 
+// Helper functions for management web interface
+#if WIFI_ENABLED && SDMMC_ENABLED
+static String readSDFile(const char* path) {
+    String content = "";
+    // Use FatFs directly for reading (consistent with loadQuotesFromSD)
+    FIL file;
+    FRESULT res = f_open(&file, path, FA_READ);
+    if (res == FR_OK) {
+        char buffer[256];
+        UINT bytesRead;
+        while (f_read(&file, buffer, sizeof(buffer) - 1, &bytesRead) == FR_OK && bytesRead > 0) {
+            buffer[bytesRead] = '\0';
+            content += String(buffer);
+            if (bytesRead < sizeof(buffer) - 1) break; // EOF
+        }
+        f_close(&file);
+    } else {
+        Serial.printf("ERROR: Failed to open file for reading: %s (error %d)\n", path, res);
+    }
+    return content;
+}
+
+static bool writeSDFile(const char* path, const String& content) {
+    // Use FatFs directly for writing (consistent with SD card operations)
+    FIL file;
+    FRESULT res = f_open(&file, path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open file for writing: %s (error %d)\n", path, res);
+        return false;
+    }
+    
+    UINT bytesWritten;
+    res = f_write(&file, content.c_str(), content.length(), &bytesWritten);
+    f_close(&file);
+    
+    if (res != FR_OK || bytesWritten != content.length()) {
+        Serial.printf("ERROR: Failed to write all data to %s (wrote %u/%zu, error %d)\n", 
+                     path, bytesWritten, content.length(), res);
+        return false;
+    }
+    
+    Serial.printf("Successfully wrote %u bytes to %s\n", bytesWritten, path);
+    return true;
+}
+
+static String listImageFiles() {
+    String json = "[";
+    bool first = true;
+    
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, "0:/");
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
+            // Check if it's a file (not directory) and has image extension
+            if (!(fno.fattrib & AM_DIR)) {
+                String filename = String(fno.fname);
+                filename.toLowerCase();
+                if (filename.endsWith(".png") || filename.endsWith(".bmp") || 
+                    filename.endsWith(".jpg") || filename.endsWith(".jpeg")) {
+                    if (!first) json += ",";
+                    json += "\"" + String(fno.fname) + "\"";
+                    first = false;
+                }
+            }
+        }
+        f_closedir(&dir);
+    }
+    
+    json += "]";
+    return json;
+}
+
+static String listAudioFiles() {
+    String json = "[";
+    bool first = true;
+    
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, "0:/");
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
+            // Check if it's a file (not directory) and has audio extension
+            if (!(fno.fattrib & AM_DIR)) {
+                String filename = String(fno.fname);
+                filename.toLowerCase();
+                if (filename.endsWith(".wav") || filename.endsWith(".mp3")) {
+                    if (!first) json += ",";
+                    json += "\"" + String(fno.fname) + "\"";
+                    first = false;
+                }
+            }
+        }
+        f_closedir(&dir);
+    }
+    
+    json += "]";
+    return json;
+}
+
+static String listAllFiles() {
+    String json = "[";
+    bool first = true;
+    
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, "0:/");
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
+            // Only list files (not directories)
+            if (!(fno.fattrib & AM_DIR)) {
+                if (!first) json += ",";
+                json += "{\"name\":\"";
+                json += String(fno.fname);
+                json += "\",\"size\":";
+                json += String(fno.fsize);
+                
+                // Extract date/time from FatFs format
+                // fdate: bits 0-4 = day (1-31), bits 5-8 = month (1-12), bits 9-15 = year from 1980
+                // ftime: bits 0-4 = second/2 (0-29), bits 5-10 = minute (0-59), bits 11-15 = hour (0-23)
+                uint16_t year = 1980 + ((fno.fdate >> 9) & 0x7F);
+                uint8_t month = (fno.fdate >> 5) & 0x0F;
+                uint8_t day = fno.fdate & 0x1F;
+                uint8_t hour = (fno.ftime >> 11) & 0x1F;
+                uint8_t minute = (fno.ftime >> 5) & 0x3F;
+                uint8_t second = (fno.ftime & 0x1F) * 2;
+                
+                // Convert to timestamp (milliseconds since epoch)
+                // Using a simple calculation (approximate, doesn't account for leap years perfectly)
+                uint32_t daysSinceEpoch = 0;
+                for (uint16_t y = 1970; y < year; y++) {
+                    daysSinceEpoch += ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) ? 366 : 365;
+                }
+                uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) daysInMonth[1] = 29;
+                for (uint8_t m = 1; m < month; m++) {
+                    daysSinceEpoch += daysInMonth[m - 1];
+                }
+                daysSinceEpoch += (day - 1);
+                
+                uint64_t timestamp = (uint64_t)daysSinceEpoch * 86400000ULL;
+                timestamp += (uint64_t)hour * 3600000ULL;
+                timestamp += (uint64_t)minute * 60000ULL;
+                timestamp += (uint64_t)second * 1000ULL;
+                
+                json += ",\"modified\":";
+                json += String(timestamp);
+                json += "}";
+                first = false;
+            }
+        }
+        f_closedir(&dir);
+    }
+    
+    json += "]";
+    return json;
+}
+
+static bool deleteSDFile(const char* filename) {
+    String path = "0:/";
+    path += filename;
+    FRESULT res = f_unlink(path.c_str());
+    if (res == FR_OK) {
+        Serial.printf("Successfully deleted file: %s\n", path.c_str());
+        return true;
+    } else {
+        Serial.printf("ERROR: Failed to delete file %s (error %d)\n", path.c_str(), res);
+        return false;
+    }
+}
+
+static String getDeviceSettingsJSON() {
+    String json = "{";
+    json += "\"volume\":" + String(g_audio_volume_pct) + ",";
+    json += "\"sleepInterval\":" + String(g_sleep_interval_minutes);
+    json += "}";
+    return json;
+}
+
+static bool updateDeviceSettings(const String& json) {
+    // Simple JSON parsing for volume and sleepInterval
+    int volumeStart = json.indexOf("\"volume\":");
+    int sleepStart = json.indexOf("\"sleepInterval\":");
+    
+    if (volumeStart >= 0) {
+        int colonPos = json.indexOf(':', volumeStart);
+        int valueEnd = json.indexOf(',', colonPos);
+        if (valueEnd < 0) valueEnd = json.indexOf('}', colonPos);
+        if (valueEnd > colonPos) {
+            String volumeStr = json.substring(colonPos + 1, valueEnd);
+            volumeStr.trim();
+            int volume = volumeStr.toInt();
+            if (volume >= 0 && volume <= 100) {
+                g_audio_volume_pct = volume;
+                volumeSaveToNVS();
+                if (g_codec_ready) {
+                    (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
+                }
+                Serial.printf("Volume updated to %d%%\n", volume);
+            }
+        }
+    }
+    
+    if (sleepStart >= 0) {
+        int colonPos = json.indexOf(':', sleepStart);
+        int valueEnd = json.indexOf(',', colonPos);
+        if (valueEnd < 0) valueEnd = json.indexOf('}', colonPos);
+        if (valueEnd > colonPos) {
+            String sleepStr = json.substring(colonPos + 1, valueEnd);
+            sleepStr.trim();
+            int interval = sleepStr.toInt();
+            // Validate: must be a factor of 60
+            if (interval > 0 && interval <= 60 && (60 % interval == 0)) {
+                g_sleep_interval_minutes = interval;
+                sleepDurationSaveToNVS();
+                Serial.printf("Sleep interval updated to %d minutes\n", interval);
+            }
+        }
+    }
+    
+    return true;
+}
+
+static String generateManagementHTML() {
+    String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+    html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+    html += "<title>Device Management</title>";
+    html += "<style>";
+    html += "body{font-family:Arial,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5;}";
+    html += "h1{color:#333;border-bottom:2px solid #4CAF50;padding-bottom:10px;}";
+    html += ".section{background:white;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}";
+    html += "h2{color:#4CAF50;margin-top:0;}";
+    html += "textarea{width:100%;min-height:200px;font-family:monospace;padding:10px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}";
+    html += "input[type='number']{width:100px;padding:8px;border:1px solid #ddd;border-radius:4px;}";
+    html += "select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}";
+    html += "button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;}";
+    html += "button:hover{background:#45a049;}";
+    html += "button.delete{background:#f44336;padding:5px 10px;font-size:12px;}";
+    html += "button.delete:hover{background:#d32f2f;}";
+    html += ".status{color:#4CAF50;margin:10px 0;font-weight:bold;}";
+    html += ".error{color:#f44336;}";
+    html += "label{display:block;margin:10px 0 5px 0;font-weight:bold;}";
+    html += ".form-group{margin:15px 0;}";
+    html += "td{padding:5px;}";
+    html += "</style></head><body>";
+    html += "<h1>Device Configuration Management</h1>";
+    
+    // Quotes section
+    html += "<div class='section'><h2>Quotes Configuration (quotes.txt)</h2>";
+    html += "<p>Format: Quote text on one or more lines, followed by ~Author on the next line. Separate quotes with blank lines.</p>";
+    html += "<textarea id='quotesContent' placeholder='Loading quotes.txt...'></textarea><br>";
+    html += "<button onclick='loadQuotes()'>Load from Device</button>";
+    html += "<button onclick='saveQuotes()'>Save to Device</button>";
+    html += "<div id='quotesStatus'></div></div>";
+    
+    // Media section with dropdowns
+    html += "<div class='section'><h2>Media Mappings (media.txt)</h2>";
+    html += "<p>Select image and audio file combinations. Leave audio empty for no audio. Check the 'Next' box to set which item will be displayed next. Click 'Show' to display the image and play audio on the panel.</p>";
+    html += "<table id='mediaTable' style='width:100%;border-collapse:collapse;margin:10px 0;'>";
+    html += "<thead><tr style='background:#f0f0f0;'><th style='padding:10px;text-align:left;width:30%;'>Image File</th><th style='padding:10px;text-align:left;width:30%;'>Audio File</th><th style='padding:10px;text-align:center;width:10%;'>Next</th><th style='padding:10px;text-align:center;width:15%;'>Actions</th><th style='padding:10px;width:15%;'></th></tr></thead>";
+    html += "<tbody id='mediaRows'></tbody>";
+    html += "</table>";
+    html += "<button onclick='addMediaRow()'>Add New Row</button>";
+    html += "<button onclick='loadMedia()'>Load from Device</button>";
+    html += "<button onclick='saveMedia()'>Save to Device</button>";
+    html += "<div id='mediaStatus'></div></div>";
+    
+    // Device settings section
+    html += "<div class='section'><h2>Device Settings</h2>";
+    html += "<div class='form-group'>";
+    html += "<label>Volume (0-100%):</label>";
+    html += "<input type='number' id='volume' min='0' max='100' value='50'>";
+    html += "</div>";
+    html += "<div class='form-group'>";
+    html += "<label>Sleep Interval (minutes, must be factor of 60):</label>";
+    html += "<input type='number' id='sleepInterval' min='1' max='60' value='1'>";
+    html += "</div>";
+    html += "<button onclick='loadSettings()'>Load from Device</button>";
+    html += "<button onclick='saveSettings()'>Save to Device</button>";
+    html += "<div id='settingsStatus'></div></div>";
+    
+    // File management section
+    html += "<div class='section'><h2>File Management</h2>";
+    html += "<p>Upload, download, and delete files on the SD card.</p>";
+    html += "<div style='margin:10px 0;'><input type='file' id='fileUpload' style='display:none;' onchange='handleFileSelect(event)'><button onclick='document.getElementById(\"fileUpload\").click()'>Upload File</button>";
+    html += "<button onclick='refreshFileList()'>Refresh File List</button></div>";
+    html += "<div id='fileList' style='margin:10px 0;'>Loading files...</div>";
+    html += "<div id='fileStatus'></div></div>";
+    
+    // Log viewing section
+    html += "<div class='section'><h2>System Log</h2>";
+    html += "<p>View the current system log file (read-only).</p>";
+    html += "<button onclick='loadLog()'>Load Current Log</button>";
+    html += "<button onclick='loadLogArchiveList()'>Load Previous Log</button>";
+    html += "<div id='logArchiveList' style='margin-top:10px;'></div>";
+    html += "<div id='logContent' style='margin:10px 0;max-height:600px;overflow-y:auto;background:#f9f9f9;padding:10px;border:1px solid #ddd;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;'></div>";
+    html += "<div id='logStatus'></div></div>";
+    
+    // Close server button
+    html += "<div class='section'><h2>Server Control</h2>";
+    html += "<p>Close the management interface and return to normal operation.</p>";
+    html += "<button onclick='closeServer()' style='background:#f44336;'>Close Management Interface</button>";
+    html += "<div id='closeStatus'></div></div>";
+    
+    // JavaScript
+    html += "<script>";
+    html += "function loadQuotes(){fetch('/api/quotes').then(r=>r.text()).then(t=>{document.getElementById('quotesContent').value=t;showStatus('quotesStatus','Loaded successfully',false);}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}";
+    html += "function saveQuotes(){const content=document.getElementById('quotesContent').value;fetch('/api/quotes',{method:'POST',body:content}).then(r=>r.json()).then(d=>{showStatus('quotesStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadQuotes();}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}";
+    html += "let imageFiles=[];let audioFiles=[];let filesLoaded=0;";
+    html += "function checkAndLoadMedia(){if(filesLoaded>=2){loadMedia();}else if(filesLoaded===1){showStatus('mediaStatus','Warning: Only partial file list loaded',true);}}";
+    html += "function loadFileLists(){filesLoaded=0;fetch('/api/images').then(r=>r.json()).then(f=>{imageFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading images: '+e,true);filesLoaded++;checkAndLoadMedia();});fetch('/api/audio').then(r=>r.json()).then(f=>{audioFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading audio: '+e,true);filesLoaded++;checkAndLoadMedia();});}";
+    html += "let showInProgress=false;function createMediaRow(image='',audio='',isNext=false){const row=document.createElement('tr');row.dataset.index=document.getElementById('mediaRows').children.length;const imgCell=document.createElement('td');const imgSelect=document.createElement('select');imgSelect.className='imageSelect';imgSelect.innerHTML='<option value=\"\">-- Select Image --</option>';imageFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===image);imgSelect.appendChild(opt);});imgCell.appendChild(imgSelect);const audCell=document.createElement('td');const audSelect=document.createElement('select');audSelect.className='audioSelect';audSelect.innerHTML='<option value=\"\">(none)</option>';audioFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===audio);audSelect.appendChild(opt);});audCell.appendChild(audSelect);const nextCell=document.createElement('td');nextCell.style.textAlign='center';const nextCheck=document.createElement('input');nextCheck.type='checkbox';nextCheck.className='nextCheckbox';nextCheck.checked=isNext;nextCheck.onchange=function(){document.querySelectorAll('.nextCheckbox').forEach(cb=>{if(cb!==nextCheck)cb.checked=false;});};nextCell.appendChild(nextCheck);const actionCell=document.createElement('td');actionCell.style.textAlign='center';const showBtn=document.createElement('button');showBtn.className='showBtn';showBtn.textContent='Show';showBtn.style.margin='2px';showBtn.style.padding='4px 8px';showBtn.style.fontSize='12px';showBtn.disabled=showInProgress;showBtn.onclick=function(){if(showInProgress){alert('Another show operation is in progress. Please wait.');return;}const idx=parseInt(row.dataset.index);showMediaItem(idx);};actionCell.appendChild(showBtn);const delCell=document.createElement('td');const delBtn=document.createElement('button');delBtn.className='delete';delBtn.textContent='Delete';delBtn.onclick=function(){row.remove();updateRowIndices();};delCell.appendChild(delBtn);row.appendChild(imgCell);row.appendChild(audCell);row.appendChild(nextCell);row.appendChild(actionCell);row.appendChild(delCell);return row;}";
+    html += "function showMediaItem(index){if(showInProgress){return;}showInProgress=true;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=true);showStatus('mediaStatus','Displaying image and playing audio (this will take 20-30 seconds)...',false);fetch('/api/media/show?index='+index,{method:'POST'}).then(r=>r.json()).then(d=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);if(d.success){showStatus('mediaStatus','Display updated successfully. Next item: '+(d.nextIndex+1),false);loadMedia();}else{showStatus('mediaStatus','Error: '+d.error,true);}}).catch(e=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);showStatus('mediaStatus','Error: '+e,true);});}";
+    html += "function updateRowIndices(){const rows=document.querySelectorAll('#mediaRows tr');rows.forEach((row,idx)=>{row.dataset.index=idx;});}";
+    html += "function addMediaRow(){const tbody=document.getElementById('mediaRows');tbody.appendChild(createMediaRow());}";
+    html += "function loadMedia(){Promise.all([fetch('/api/media').then(r=>r.text()),fetch('/api/media/index').then(r=>r.json())]).then(([content,indexData])=>{const tbody=document.getElementById('mediaRows');tbody.innerHTML='';const lastDisplayedIndex=indexData.index||0;const lines=content.split('\\n');const mediaCount=lines.filter(l=>{l=l.trim();return l.length>0&&!l.startsWith('#');}).length;const nextIndex=(lastDisplayedIndex+1)%mediaCount;let lineIdx=0;lines.forEach((line,idx)=>{line=line.trim();if(line.length===0||line.startsWith('#'))return;const comma=line.indexOf(',');const isNext=(lineIdx===nextIndex);if(comma>0){const img=line.substring(0,comma).trim();const aud=line.substring(comma+1).trim();tbody.appendChild(createMediaRow(img,aud,isNext));}else if(line.length>0){tbody.appendChild(createMediaRow(line,'',isNext));}lineIdx++;});updateRowIndices();if(tbody.children.length===0)addMediaRow();showStatus('mediaStatus','Loaded successfully',false);}).catch(e=>{showStatus('mediaStatus','Error: '+e,true);});}";
+    html += "function saveMedia(){const rows=document.querySelectorAll('#mediaRows tr');let content='';let nextIndex=-1;rows.forEach((row,idx)=>{const img=row.querySelector('.imageSelect').value;const aud=row.querySelector('.audioSelect').value;const isNext=row.querySelector('.nextCheckbox').checked;if(isNext)nextIndex=idx;if(img.length>0){content+=img;if(aud.length>0)content+=','+aud;content+='\\n';}});const saveData={content:content,nextIndex:nextIndex>=0?nextIndex:null};fetch('/api/media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)}).then(r=>r.json()).then(d=>{showStatus('mediaStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadMedia();}).catch(e=>showStatus('mediaStatus','Error: '+e,true));}";
+    html += "function loadSettings(){fetch('/api/settings').then(r=>r.json()).then(d=>{document.getElementById('volume').value=d.volume;document.getElementById('sleepInterval').value=d.sleepInterval;showStatus('settingsStatus','Loaded successfully',false);}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
+    html += "function saveSettings(){const json=JSON.stringify({volume:parseInt(document.getElementById('volume').value),sleepInterval:parseInt(document.getElementById('sleepInterval').value)});fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:json}).then(r=>r.json()).then(d=>{showStatus('settingsStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadSettings();}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
+    html += "let fileListData=[];let fileListSortCol='name';let fileListSortDir=1;";
+    html += "function formatDate(timestamp){if(!timestamp||timestamp===0)return'N/A';const d=new Date(timestamp);return d.toLocaleString();}";
+    html += "function sortFileList(col){if(fileListSortCol===col){fileListSortDir*=-1;}else{fileListSortCol=col;fileListSortDir=1;}renderFileList();}";
+    html += "function escapeHtml(str){const div=document.createElement('div');div.textContent=str;return div.innerHTML;}";
+    html += "function escapeJs(str){return str.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\").replace(/\"/g,'\\\\\"').replace(/\\n/g,'\\\\n').replace(/\\r/g,'\\\\r');}";
+    html += "function renderFileList(){const list=document.getElementById('fileList');if(fileListData.length===0){list.innerHTML='<p>No files found on SD card.</p>';return;}const sorted=fileListData.slice().sort((a,b)=>{let valA,valB;if(fileListSortCol==='name'){valA=a.name.toLowerCase();valB=b.name.toLowerCase();}else if(fileListSortCol==='size'){valA=a.size;valB=b.size;}else if(fileListSortCol==='modified'){valA=a.modified||0;valB=b.modified||0;}return valA<valB?-1*fileListSortDir:valA>valB?1*fileListSortDir:0;});let html='<table style=\"width:100%;border-collapse:collapse;\"><thead><tr style=\"background:#f0f0f0;\">';html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('name')\">Filename ${fileListSortCol==='name'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:right;cursor:pointer;\" onclick=\"sortFileList('size')\">Size ${fileListSortCol==='size'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('modified')\">Last Modified ${fileListSortCol==='modified'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+='<th style=\"padding:8px;text-align:center;width:140px;\">Actions</th></tr></thead><tbody>';sorted.forEach(f=>{const size=f.size>=1024*1024?(f.size/(1024*1024)).toFixed(2)+' MB':f.size>=1024?(f.size/1024).toFixed(2)+' KB':f.size+' B';const modified=formatDate(f.modified);const nameEscaped=escapeJs(f.name);const nameHtml=escapeHtml(f.name);html+=`<tr><td style=\"padding:8px;\">${nameHtml}</td><td style=\"padding:8px;text-align:right;\">${size}</td><td style=\"padding:8px;\">${modified}</td><td style=\"padding:8px;text-align:center;\"><button onclick=\"downloadFile('${nameEscaped}')\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Download</button><button onclick=\"deleteFile('${nameEscaped}')\" class=\"delete\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Delete</button></td></tr>`;});html+='</tbody></table>';list.innerHTML=html;}";
+    html += "function refreshFileList(){fetch('/api/files').then(r=>r.json()).then(files=>{fileListData=files;fileListSortCol='name';fileListSortDir=1;renderFileList();showStatus('fileStatus','File list refreshed',false);}).catch(e=>{showStatus('fileStatus','Error loading files: '+e,true);});}";
+    html += "function downloadFile(filename){window.location.href='/api/files/'+encodeURIComponent(filename);showStatus('fileStatus','Downloading '+filename,false);}";
+    html += "function deleteFile(filename){if(confirm('Delete '+filename+'?')){fetch('/api/files/'+encodeURIComponent(filename),{method:'DELETE'}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Deleted successfully':'Error: '+d.error,d.success?false:true);if(d.success)refreshFileList();}).catch(e=>showStatus('fileStatus','Error: '+e,true));}}";
+    html += "function handleFileSelect(event){const file=event.target.files[0];if(!file)return;showStatus('fileStatus','Reading '+file.name+'...',false);const reader=new FileReader();reader.onload=function(e){const base64Data=e.target.result;const base64Content=base64Data.substring(base64Data.indexOf(',')+1);const payload=JSON.stringify({filename:file.name,data:base64Content});showStatus('fileStatus','Uploading '+file.name+'...',false);fetch('/api/files/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:payload}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Uploaded successfully ('+d.size+' bytes)':'Error: '+d.error,d.success?false:true);if(d.success){refreshFileList();document.getElementById('fileUpload').value='';}}).catch(e=>showStatus('fileStatus','Error: '+e,true));};reader.onerror=function(e){showStatus('fileStatus','Error reading file',true);};reader.readAsDataURL(file);}";
+    html += "function loadLog(){logFlush();fetch('/api/log').then(r=>r.text()).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus','Log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading log: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}";
+    html += "function loadLogArchiveList(){fetch('/api/log/list').then(r=>r.json()).then(files=>{const listDiv=document.getElementById('logArchiveList');if(files.length===0){listDiv.innerHTML='<p style=\"color:#999;\">No archived log files found. Log rotation has not occurred yet.</p>';return;}let html='<p><strong>Recent archived logs (most recent first):</strong></p><div style=\"display:flex;flex-direction:column;gap:5px;\">';files.forEach((file,idx)=>{const filenameEscaped=file.filename.replace(/\"/g,'&quot;').replace(/'/g,'&#39;');html+='<button onclick=\"loadLogArchive(\\''+filenameEscaped+'\\')\" style=\"text-align:left;padding:8px;\">'+file.filename+' ('+formatFileSize(file.size)+')</button>';});html+='</div>';listDiv.innerHTML=html;showStatus('logStatus','Found '+files.length+' archived log file(s)',false);}).catch(e=>{showStatus('logStatus','Error loading archive list: '+e,true);document.getElementById('logArchiveList').innerHTML='<p style=\"color:red;\">Error: '+e+'</p>';});}";
+    html += "function loadLogArchive(filename){const url=filename?'/api/log/archive?file='+encodeURIComponent(filename):'/api/log/archive';fetch(url).then(r=>{if(!r.ok){return r.text().then(text=>{throw new Error(text);});}return r.text();}).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus',filename?'Archive log loaded: '+filename:'Archive log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading archive: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}";
+    html += "function formatFileSize(bytes){if(bytes<1024)return bytes+' B';if(bytes<1024*1024)return (bytes/1024).toFixed(1)+' KB';return (bytes/(1024*1024)).toFixed(1)+' MB';}";
+    html += "function logFlush(){fetch('/api/log/flush',{method:'POST'});}";
+    html += "function closeServer(){if(confirm('Close management interface and return to normal operation?')){fetch('/api/close',{method:'POST'}).then(r=>r.json()).then(d=>{showStatus('closeStatus','Management interface closed. You can close this page.',false);setTimeout(()=>{window.location.href='about:blank';},2000);}).catch(e=>showStatus('closeStatus','Error: '+e,true));}}";
+    html += "function showStatus(id,msg,isError){const el=document.getElementById(id);el.textContent=msg;el.className=isError?'error status':'status';}";
+    html += "window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFileList();};";
+    html += "</script></body></html>";
+    
+    return html;
+}
+#endif // WIFI_ENABLED && SDMMC_ENABLED
+
 /**
  * Handle !clear command - clear the e-ink display
  */
@@ -3851,6 +4492,1292 @@ static bool handleClearCommand() {
     Serial.println("Display cleared and updated");
     
     return true;  // Command handled successfully
+}
+
+/**
+ * Handle !manage command - launch blocking web interface for configuration
+ */
+// Task function to run show media operation in a separate task with larger stack
+static void show_media_task(void* parameter) {
+    ShowMediaTaskData* data = (ShowMediaTaskData*)parameter;
+    
+    Serial.printf("Show media task started for index %d\n", data->index);
+    
+    bool success = false;
+    size_t nextIndex = 0;
+    
+    // Ensure display is initialized
+    bool displayOk = true;
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            displayOk = false;
+        } else {
+            Serial.println("Display initialized");
+        }
+    }
+    
+    if (displayOk) {
+#if SDMMC_ENABLED
+        // Mount SD card if needed
+        if (!sdCardMounted && sd_card == nullptr) {
+            Serial.println("Mounting SD card...");
+            if (!sdInitDirect(false)) {
+                Serial.println("ERROR: Failed to mount SD card!");
+                displayOk = false;
+            }
+        }
+        
+        // Load configuration files from SD card if needed
+        if (displayOk) {
+            if (!g_quotes_loaded) {
+                loadQuotesFromSD();
+            }
+            if (!g_media_mappings_loaded) {
+                loadMediaMappingsFromSD();
+            }
+            
+            // Check if we have media mappings
+            if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+                Serial.println("ERROR: No media.txt mappings found");
+                displayOk = false;
+            } else {
+                // Validate index is within bounds
+                size_t mediaCount = g_media_mappings.size();
+                if (data->index >= (int)mediaCount) {
+                    Serial.printf("ERROR: Index %d is out of bounds. Valid range: 0 to %zu\n", 
+                                  data->index, mediaCount - 1);
+                    displayOk = false;
+                } else {
+                    // Set the index so that pngDrawFromMediaMappings will show this item
+                    lastMediaIndex = (data->index - 1 + mediaCount) % mediaCount;
+                    
+                    // Draw the image
+                    uint32_t sd_ms = 0, dec_ms = 0;
+                    bool ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+                    if (!ok) {
+                        Serial.println("ERROR: Failed to load image from media.txt");
+                        displayOk = false;
+                    } else {
+                        // Verify we're at the correct index
+                        if (lastMediaIndex != (size_t)data->index) {
+                            Serial.printf("WARNING: Expected index %d but got %lu - correcting\n", 
+                                          data->index, (unsigned long)lastMediaIndex);
+                            lastMediaIndex = data->index;
+                        }
+                        
+                        Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", 
+                                     (unsigned long)sd_ms, (unsigned long)dec_ms);
+                        
+                        // Get current time for overlay
+                        time_t now = time(nullptr);
+                        struct tm tm_utc;
+                        gmtime_r(&now, &tm_utc);
+                        
+                        char timeBuf[16];
+                        char dateBuf[48];
+                        bool timeValid = (now > 1577836800);
+                        if (timeValid) {
+                            strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
+                            
+                            char dayName[12], monthName[12];
+                            strftime(dayName, sizeof(dayName), "%A", &tm_utc);
+                            strftime(monthName, sizeof(monthName), "%B", &tm_utc);
+                            
+                            int day = tm_utc.tm_mday;
+                            int year = tm_utc.tm_year + 1900;
+                            
+                            const char* suffix;
+                            if (day >= 11 && day <= 13) {
+                                suffix = "th";
+                            } else {
+                                switch (day % 10) {
+                                    case 1: suffix = "st"; break;
+                                    case 2: suffix = "nd"; break;
+                                    case 3: suffix = "rd"; break;
+                                    default: suffix = "th"; break;
+                                }
+                            }
+                            
+                            snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
+                                     dayName, day, suffix, monthName, year);
+                        } else {
+                            snprintf(timeBuf, sizeof(timeBuf), "--:--");
+                            snprintf(dateBuf, sizeof(dateBuf), "time not set");
+                        }
+                        
+                        // Set keepout margins and clear exclusion zones
+                        textPlacement.setKeepout(100);
+                        textPlacement.clearExclusionZones();
+                        
+                        // Draw time/date overlay
+                        float timeFontSize = 160.0f;
+                        float dateFontSize = 48.0f;
+                        const int16_t gapBetween = 20;
+                        const int16_t timeOutline = 3;
+                        const int16_t dateOutline = 2;
+                        
+                        int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
+                        int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
+                        int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
+                        int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
+                        
+                        int16_t blockW = max(timeW, dateW);
+                        int16_t blockH = timeH + gapBetween + dateH;
+                        
+                        TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
+                            &display, blockW, blockH,
+                            EL133UF1_WHITE, EL133UF1_BLACK);
+                        
+                        int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
+                        int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
+                        
+                        ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
+                                                    EL133UF1_WHITE, EL133UF1_BLACK,
+                                                    ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
+                        ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
+                                                    EL133UF1_WHITE, EL133UF1_BLACK,
+                                                    ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
+                        
+                        // Create MAXIMALIST exclusion zone for time/date block
+                        // Calculate padding to ensure minimum 250px distance from quote
+                        const int16_t minDistanceFromTimeDate = 250;
+                        const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate
+                        const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
+                        
+                        // Use maximalist bounds (add extra margin)
+                        int16_t safeBlockW = blockW + 40;
+                        int16_t safeBlockH = blockH + 40;
+                        TextPlacementRegion timeExclusion = {bestPos.x, bestPos.y, safeBlockW, safeBlockH, 0.0f};
+                        textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
+                        
+                        // Draw quote overlay
+                        using Quote = TextPlacementAnalyzer::Quote;
+                        Quote selectedQuote;
+                        
+                        if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
+                            int randomIndex = random(g_loaded_quotes.size());
+                            selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
+                            selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
+                        } else {
+                            static const Quote fallbackQuotes[] = {
+                                {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
+                                {"The only way to do great work is to love what you do", "Steve Jobs"},
+                                {"In the middle of difficulty lies opportunity", "Albert Einstein"},
+                                {"Be yourself; everyone else is already taken", "Oscar Wilde"},
+                            };
+                            static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
+                            selectedQuote = fallbackQuotes[random(numQuotes)];
+                        }
+                        
+                        float quoteFontSize = 96.0f;
+                        float authorFontSize = 64.0f;
+                        
+                        TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
+                            &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
+                            EL133UF1_WHITE, EL133UF1_BLACK,
+                            3, 3);
+                        
+                        // Verify minimum 250px distance from time/date block
+                        int16_t dx = quoteLayout.position.x - bestPos.x;
+                        int16_t dy = quoteLayout.position.y - bestPos.y;
+                        int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
+                        int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
+                        int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
+                        int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
+                        
+                        if (distance < minRequiredDistance) {
+                            Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
+                            float dirX = (float)dx / (distance > 0 ? distance : 1);
+                            float dirY = (float)dy / (distance > 0 ? distance : 1);
+                            int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
+                            int16_t newY = bestPos.y + (int16_t)(dirY * minRequiredDistance);
+                            int displayW = display.width();
+                            int displayH = display.height();
+                            int keepout = 100;
+                            int newX_int = (int)newX;
+                            int newY_int = (int)newY;
+                            newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
+                            newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
+                            quoteLayout.position.x = (int16_t)newX_int;
+                            quoteLayout.position.y = (int16_t)newY_int;
+                        }
+                        
+                        textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
+                                                quoteFontSize, authorFontSize,
+                                                EL133UF1_WHITE, EL133UF1_BLACK, 2);
+                        
+                        // Add quote as MAXIMALIST exclusion zone
+                        textPlacement.addExclusionZone(quoteLayout.position, 200);
+                        
+                        // Update display
+                        Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+                        display.update();
+                        Serial.println("Display updated");
+                        
+                        // Play audio file for this image
+                        String audioFile = getAudioForImage(g_lastImagePath);
+                        if (audioFile.length() > 0) {
+                            Serial.printf("Playing audio: %s\n", audioFile.c_str());
+                            strncpy(lastAudioFile, audioFile.c_str(), sizeof(lastAudioFile) - 1);
+                            lastAudioFile[sizeof(lastAudioFile) - 1] = '\0';
+                            playWavFile(audioFile);
+                        } else {
+                            Serial.println("No audio file mapped for this image, playing beep.wav");
+                            strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
+                            playWavFile("beep.wav");
+                        }
+                        audio_stop();
+                        
+                        // Calculate next index (the one after the displayed one, wrapping)
+                        nextIndex = (lastMediaIndex + 1) % mediaCount;
+                        // Set lastMediaIndex to nextIndex-1 so that next call will show nextIndex
+                        lastMediaIndex = (nextIndex - 1 + mediaCount) % mediaCount;
+                        mediaIndexSaveToNVS();
+                        
+                        Serial.printf("Show operation completed - next item will be index %zu\n", nextIndex);
+                        success = true;
+                    }
+                }
+            }
+        }
+#else
+        Serial.println("ERROR: SD card support not enabled");
+        displayOk = false;
+#endif
+    }
+    
+    // Store results
+    *data->success = success;
+    *data->nextIndex = nextIndex;
+    
+    // Signal completion
+    xSemaphoreGive(data->completionSem);
+    
+    // Delete this task
+    vTaskDelete(nullptr);
+}
+
+static bool handleManageCommand() {
+#if !WIFI_ENABLED
+    Serial.println("ERROR: WiFi not enabled - cannot start management interface");
+    return false;
+#elif !SDMMC_ENABLED
+    Serial.println("ERROR: SD card support not enabled - cannot manage config files");
+    return false;
+#else
+    Serial.println("Processing !manage command...");
+    
+    // Ensure WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected - attempting to connect...");
+        if (!wifiConnectPersistent(5, 10000, false)) {
+            Serial.println("ERROR: Failed to connect to WiFi");
+            return false;
+        }
+    }
+    
+    // Ensure SD card is mounted
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted - attempting to mount...");
+        if (!sdInitDirect()) {
+            Serial.println("ERROR: Failed to mount SD card");
+            return false;
+        }
+    }
+    
+    // Start HTTP server on port 80
+    WiFiServer server(80);
+    server.begin();
+    delay(100);
+    
+    Serial.println("\n========================================");
+    Serial.println("MANAGEMENT INTERFACE STARTED");
+    Serial.println("========================================");
+    Serial.printf("Device IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.println("Access management interface at: http://" + WiFi.localIP().toString());
+    Serial.println("(Server will run until timeout or explicit close via web interface)");
+    Serial.println("========================================\n");
+    
+    uint32_t startTime = millis();
+    const uint32_t timeoutMs = 600000;  // 10 minute timeout
+    bool serverActive = true;
+    
+    while (millis() - startTime < timeoutMs && serverActive) {
+        WiFiClient client = server.available();
+        
+        if (client && client.connected()) {
+            Serial.println("Client connected to management interface");
+            Serial.printf("Client IP: %s\n", client.remoteIP().toString().c_str());
+            
+            // Read HTTP request
+            String request = client.readStringUntil('\n');
+            request.trim();
+            Serial.printf("HTTP Request: %s\n", request.c_str());
+            
+            // Read remaining headers
+            int contentLength = 0;
+            bool expectContinue = false;
+            String contentType = "";  // Store Content-Type for multipart uploads
+            while (client.available() || client.connected()) {
+                if (!client.available()) {
+                    delay(10);
+                    continue;
+                }
+                
+                String header = client.readStringUntil('\n');
+                header.trim();
+                if (header.length() == 0) break;  // End of headers
+                
+                String lowerHeader = header;
+                lowerHeader.toLowerCase();
+                if (lowerHeader.startsWith("content-length:")) {
+                    String lenStr = header.substring(header.indexOf(':') + 1);
+                    lenStr.trim();
+                    contentLength = lenStr.toInt();
+                } else if (lowerHeader.startsWith("content-type:")) {
+                    contentType = header;  // Store for multipart uploads
+                } else if (lowerHeader.startsWith("expect:") && lowerHeader.indexOf("100-continue") >= 0) {
+                    expectContinue = true;
+                }
+            }
+            
+            // Handle Expect: 100-continue for large uploads
+            if (expectContinue) {
+                client.println("HTTP/1.1 100 Continue");
+                client.println();
+                client.flush();
+                Serial.println("Sent 100 Continue response for large upload");
+            }
+            
+            // Handle different endpoints
+            // Check for root path (must be "GET /" and not an API path)
+            // Request format is typically "GET / HTTP/1.1" or "GET / "
+            bool isRootPath = (request.startsWith("GET / ") || 
+                              request.startsWith("GET / HTTP") ||
+                              (request.startsWith("GET /") && request.indexOf("/api") < 0));
+            
+            Serial.printf("Route check: request='%s', isRootPath=%d\n", request.c_str(), isRootPath);
+            
+            if (isRootPath) {
+                // Serve main HTML page
+                Serial.println("Generating HTML page...");
+                String html = generateManagementHTML();
+                Serial.printf("HTML generated: %d bytes\n", html.length());
+                
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: text/html");
+                client.print("Content-Length: ");
+                client.println(html.length());
+                client.println("Connection: close");
+                client.println();
+                
+                Serial.println("Sending HTML to client...");
+                client.print(html);
+                client.flush();
+                Serial.println("HTML page sent to client");
+                
+            } else if (request.indexOf("GET /api/quotes") >= 0) {
+                // Read quotes.txt
+                String content = readSDFile("0:/quotes.txt");
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: text/plain");
+                client.print("Content-Length: ");
+                client.println(content.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(content);
+                
+            } else if (request.indexOf("GET /api/media/index") >= 0) {
+                // Get current media index
+                String json = "{\"index\":";
+                json += String((unsigned long)lastMediaIndex);
+                json += "}";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(json.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(json);
+                
+            } else if (request.indexOf("POST /api/media/show") >= 0) {
+                // Handle show request - display image and play audio
+                // Extract index from query parameter
+                int queryStart = request.indexOf("?index=");
+                int index = -1;
+                if (queryStart >= 0) {
+                    int indexStart = queryStart + 7;
+                    int indexEnd = request.indexOf(" ", indexStart);
+                    if (indexEnd < 0) indexEnd = request.indexOf(" HTTP", indexStart);
+                    if (indexEnd > indexStart) {
+                        String indexStr = request.substring(indexStart, indexEnd);
+                        index = indexStr.toInt();
+                    }
+                }
+                
+                // Check if another show operation is in progress
+                if (showOperationInProgress) {
+                    String response = "{\"success\":false,\"error\":\"Another show operation is already in progress\"}";
+                    client.println("HTTP/1.1 409 Conflict");
+                    client.println("Content-Type: application/json");
+                    client.print("Content-Length: ");
+                    client.println(response.length());
+                    client.println("Connection: close");
+                    client.println();
+                    client.print(response);
+                    client.flush();
+                } else if (index < 0) {
+                    String response = "{\"success\":false,\"error\":\"Invalid or missing index parameter\"}";
+                    client.println("HTTP/1.1 400 Bad Request");
+                    client.println("Content-Type: application/json");
+                    client.print("Content-Length: ");
+                    client.println(response.length());
+                    client.println("Connection: close");
+                    client.println();
+                    client.print(response);
+                    client.flush();
+                } else {
+                    // Set lock
+                    showOperationInProgress = true;
+                    
+                    Serial.printf("Show request for media index %d\n", index);
+                    
+                    // Create semaphore for task completion
+                    SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+                    if (!completionSem) {
+                        showOperationInProgress = false;
+                        String response = "{\"success\":false,\"error\":\"Failed to create semaphore\"}";
+                        client.println("HTTP/1.1 500 Internal Server Error");
+                        client.println("Content-Type: application/json");
+                        client.print("Content-Length: ");
+                        client.println(response.length());
+                        client.println("Connection: close");
+                        client.println();
+                        client.print(response);
+                        client.flush();
+                    } else {
+                        // Prepare task data
+                        bool taskSuccess = false;
+                        size_t taskNextIndex = 0;
+                        ShowMediaTaskData taskData;
+                        taskData.index = index;
+                        taskData.success = &taskSuccess;
+                        taskData.nextIndex = &taskNextIndex;
+                        taskData.completionSem = completionSem;
+                        
+                        // Create task with large stack (16KB like OTA)
+                        TaskHandle_t showTaskHandle = nullptr;
+                        xTaskCreatePinnedToCore(show_media_task, "show_media", 16384, &taskData, 5, &showTaskHandle, 0);
+                        
+                        if (!showTaskHandle) {
+                            vSemaphoreDelete(completionSem);
+                            showOperationInProgress = false;
+                            String response = "{\"success\":false,\"error\":\"Failed to create task\"}";
+                            client.println("HTTP/1.1 500 Internal Server Error");
+                            client.println("Content-Type: application/json");
+                            client.print("Content-Length: ");
+                            client.println(response.length());
+                            client.println("Connection: close");
+                            client.println();
+                            client.print(response);
+                            client.flush();
+                        } else {
+                            // Wait for task to complete (with timeout - 5 minutes)
+                            const TickType_t timeout = pdMS_TO_TICKS(300000);
+                            if (xSemaphoreTake(completionSem, timeout) == pdTRUE) {
+                                // Task completed
+                                showOperationInProgress = false;
+                                
+                                String response;
+                                if (taskSuccess) {
+                                    response = "{\"success\":true,\"nextIndex\":";
+                                    response += String((unsigned long)taskNextIndex);
+                                    response += "}";
+                                } else {
+                                    response = "{\"success\":false,\"error\":\"Failed to display image\"}";
+                                }
+                                
+                                client.println("HTTP/1.1 200 OK");
+                                client.println("Content-Type: application/json");
+                                client.print("Content-Length: ");
+                                client.println(response.length());
+                                client.println("Connection: close");
+                                client.println();
+                                client.print(response);
+                                client.flush();
+                            } else {
+                                // Timeout
+                                Serial.println("ERROR: Show media task timeout");
+                                showOperationInProgress = false;
+                                String response = "{\"success\":false,\"error\":\"Operation timeout\"}";
+                                client.println("HTTP/1.1 408 Request Timeout");
+                                client.println("Content-Type: application/json");
+                                client.print("Content-Length: ");
+                                client.println(response.length());
+                                client.println("Connection: close");
+                                client.println();
+                                client.print(response);
+                                client.flush();
+                            }
+                            
+                            vSemaphoreDelete(completionSem);
+                        }
+                    }
+                }
+                
+            } else if (request.indexOf("GET /api/media") >= 0) {
+                // Read media.txt
+                String content = readSDFile("0:/media.txt");
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: text/plain");
+                client.print("Content-Length: ");
+                client.println(content.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(content);
+                
+            } else if (request.indexOf("GET /api/settings") >= 0) {
+                // Read device settings
+                String json = getDeviceSettingsJSON();
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(json.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(json);
+                
+            } else if (request.indexOf("GET /api/images") >= 0) {
+                // List image files
+                String json = listImageFiles();
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(json.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(json);
+                
+            } else if (request.indexOf("GET /api/audio") >= 0) {
+                // List audio files
+                String json = listAudioFiles();
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(json.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(json);
+                
+            } else if (request.indexOf("POST /api/quotes") >= 0) {
+                // Write quotes.txt
+                String body = "";
+                if (contentLength > 0) {
+                    char* buffer = (char*)malloc(contentLength + 1);
+                    if (buffer) {
+                        size_t readBytes = client.readBytes(buffer, contentLength);
+                        buffer[readBytes] = '\0';
+                        body = String(buffer);
+                        free(buffer);
+                    }
+                }
+                
+                bool success = writeSDFile("0:/quotes.txt", body);
+                // Reload quotes after writing
+                if (success) {
+                    loadQuotesFromSD();
+                }
+                
+                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(response.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(response);
+                
+            } else if (request.indexOf("POST /api/media") >= 0) {
+                // Write media.txt and optionally update next index
+                String body = "";
+                if (contentLength > 0) {
+                    char* buffer = (char*)malloc(contentLength + 1);
+                    if (buffer) {
+                        size_t readBytes = client.readBytes(buffer, contentLength);
+                        buffer[readBytes] = '\0';
+                        body = String(buffer);
+                        free(buffer);
+                    }
+                }
+                
+                // Check if it's JSON format (with nextIndex)
+                bool isJSON = body.startsWith("{");
+                String mediaContent = "";
+                int nextIndex = -1;
+                
+                if (isJSON) {
+                    // Parse JSON: {"content":"...", "nextIndex":N}
+                    int contentStart = body.indexOf("\"content\":");
+                    if (contentStart >= 0) {
+                        int quoteStart = body.indexOf("\"", contentStart + 10);
+                        int quoteEnd = body.indexOf("\"", quoteStart + 1);
+                        if (quoteEnd > quoteStart) {
+                            // Extract content (may have escaped quotes)
+                            String temp = body.substring(quoteStart + 1, quoteEnd);
+                            // Handle escaped content - look for actual end
+                            mediaContent = temp;
+                            // Try to find the full content including escaped quotes
+                            int fullContentStart = body.indexOf("\"content\":\"") + 11;
+                            int fullContentEnd = body.indexOf("\",\"nextIndex\"");
+                            if (fullContentEnd < 0) fullContentEnd = body.indexOf("\"}", fullContentStart);
+                            if (fullContentEnd > fullContentStart) {
+                                mediaContent = body.substring(fullContentStart, fullContentEnd);
+                                // Unescape
+                                mediaContent.replace("\\n", "\n");
+                                mediaContent.replace("\\\"", "\"");
+                            }
+                        }
+                    }
+                    
+                    int indexStart = body.indexOf("\"nextIndex\":");
+                    if (indexStart >= 0) {
+                        int colonPos = body.indexOf(':', indexStart);
+                        int valueEnd = body.indexOf(',', colonPos);
+                        if (valueEnd < 0) valueEnd = body.indexOf('}', colonPos);
+                        if (valueEnd > colonPos) {
+                            String indexStr = body.substring(colonPos + 1, valueEnd);
+                            indexStr.trim();
+                            if (indexStr != "null") {
+                                nextIndex = indexStr.toInt();
+                            }
+                        }
+                    }
+                } else {
+                    // Plain text format (backward compatibility)
+                    mediaContent = body;
+                }
+                
+                bool success = writeSDFile("0:/media.txt", mediaContent);
+                
+                // Update next index if provided
+                // If user selects index N as "next", we need to set lastMediaIndex to (N-1) mod count
+                // so that when pngDrawFromMediaMappings increments it, it becomes N
+                if (success && nextIndex >= 0) {
+                    size_t mediaCount = g_media_mappings.size();
+                    if (mediaCount > 0) {
+                        // Set lastMediaIndex so that next display will show nextIndex
+                        lastMediaIndex = (nextIndex - 1 + mediaCount) % mediaCount;
+                        mediaIndexSaveToNVS();
+                        Serial.printf("Updated next media index: will display index %d next (lastMediaIndex=%lu)\n", 
+                                     nextIndex, (unsigned long)lastMediaIndex);
+                    }
+                }
+                
+                // Reload media mappings after writing
+                if (success) {
+                    loadMediaMappingsFromSD();
+                }
+                
+                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(response.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(response);
+                
+            } else if (request.indexOf("POST /api/settings") >= 0) {
+                // Write device settings
+                String body = "";
+                if (contentLength > 0) {
+                    char* buffer = (char*)malloc(contentLength + 1);
+                    if (buffer) {
+                        size_t readBytes = client.readBytes(buffer, contentLength);
+                        buffer[readBytes] = '\0';
+                        body = String(buffer);
+                        free(buffer);
+                    }
+                }
+                
+                bool success = updateDeviceSettings(body);
+                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to update settings\"}";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(response.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(response);
+                
+            } else if (request.indexOf("GET /api/files") >= 0 && request.indexOf("/api/files/") < 0) {
+                // List all files
+                String json = listAllFiles();
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(json.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(json);
+                
+            } else if (request.indexOf("GET /api/files/") >= 0) {
+                // Download a file
+                int pathStart = request.indexOf("/api/files/") + 11;
+                int pathEnd = request.indexOf(" ", pathStart);
+                if (pathEnd < 0) pathEnd = request.length();
+                String filename = request.substring(pathStart, pathEnd);
+                filename.trim();
+                
+                // URL decode filename (basic)
+                filename.replace("%20", " ");
+                filename.replace("%2F", "/");
+                
+                String filepath = "0:/";
+                filepath += filename;
+                
+                FIL file;
+                FRESULT res = f_open(&file, filepath.c_str(), FA_READ);
+                if (res == FR_OK) {
+                    // Get file size
+                    FSIZE_t fileSize = f_size(&file);
+                    
+                    client.println("HTTP/1.1 200 OK");
+                    client.println("Content-Type: application/octet-stream");
+                    client.print("Content-Disposition: attachment; filename=\"");
+                    client.print(filename);
+                    client.println("\"");
+                    client.print("Content-Length: ");
+                    client.println((unsigned long)fileSize);
+                    client.println("Connection: close");
+                    client.println();
+                    
+                    // Stream file content
+                    char buffer[512];
+                    UINT bytesRead;
+                    while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
+                        client.write((uint8_t*)buffer, bytesRead);
+                        if (bytesRead < sizeof(buffer)) break; // EOF
+                    }
+                    f_close(&file);
+                    Serial.printf("File downloaded: %s (%lu bytes)\n", filename.c_str(), (unsigned long)fileSize);
+                } else {
+                    client.println("HTTP/1.1 404 Not Found");
+                    client.println("Connection: close");
+                    client.println();
+                    Serial.printf("File not found: %s (error %d)\n", filepath.c_str(), res);
+                }
+                
+            } else if (request.indexOf("POST /api/files/upload") >= 0) {
+                // Handle file upload (base64-encoded JSON)
+                // This is a clean, reliable approach that avoids complex multipart parsing
+                
+                const uint32_t uploadTimeout = 300000;  // 5 minute timeout
+                uint32_t uploadStartTime = millis();
+                
+                // Read JSON payload in chunks to avoid watchdog timeout
+                String jsonPayload = "";
+                jsonPayload.reserve(contentLength > 0 ? contentLength + 100 : 8192);  // Pre-allocate if we know size
+                uint32_t lastDataTime = millis();
+                uint32_t lastYieldTime = millis();
+                
+                // Use Content-Length if available to know when we're done
+                bool useContentLength = (contentLength > 0);
+                size_t targetLength = useContentLength ? contentLength : 0;
+                
+                // Read in chunks for better performance
+                const size_t CHUNK_SIZE = 512;
+                char chunkBuffer[CHUNK_SIZE];
+                
+                while (client.available() || client.connected()) {
+                    // Yield periodically to prevent watchdog timeout (every 100ms)
+                    if (millis() - lastYieldTime > 100) {
+                        yield();  // Let other tasks run
+                        lastYieldTime = millis();
+                    }
+                    
+                    if (!client.available()) {
+                        delay(10);
+                        // Timeout if no data for too long
+                        if (millis() - lastDataTime > 10000) {
+                            Serial.println("ERROR: Timeout reading JSON payload");
+                            break;
+                        }
+                        // If we have content length and reached it, we're done
+                        if (useContentLength && jsonPayload.length() >= targetLength) {
+                            break;
+                        }
+                        // If client disconnected and no more data, we're done
+                        if (!client.connected() && !client.available()) {
+                            break;
+                        }
+                        continue;
+                    }
+                    
+                    lastDataTime = millis();
+                    
+                    // Read in chunks instead of character-by-character
+                    size_t available = client.available();
+                    size_t toRead = min(CHUNK_SIZE, available);
+                    if (useContentLength && jsonPayload.length() + toRead > targetLength) {
+                        toRead = targetLength - jsonPayload.length();
+                    }
+                    
+                    if (toRead > 0) {
+                        size_t readBytes = client.readBytes(chunkBuffer, toRead);
+                        if (readBytes > 0) {
+                            // Append chunk to string using String constructor
+                            jsonPayload += String(chunkBuffer, readBytes);
+                        }
+                    }
+                    
+                    // Safety limit - prevent memory exhaustion
+                    if (jsonPayload.length() > 10 * 1024 * 1024) {  // 10MB limit
+                        Serial.println("ERROR: JSON payload too large");
+                        break;
+                    }
+                    
+                    // If we've read the expected amount, we're done
+                    if (useContentLength && jsonPayload.length() >= targetLength) {
+                        break;
+                    }
+                }
+                
+                // Parse JSON to extract filename and base64 data
+                // Expected format: {"filename":"example.txt","data":"base64data..."}
+                String filename = "";
+                String base64Data = "";
+                
+                // Simple JSON parsing (no need for full JSON library for this simple case)
+                int filenamePos = jsonPayload.indexOf("\"filename\"");
+                if (filenamePos >= 0) {
+                    int colonPos = jsonPayload.indexOf(":", filenamePos);
+                    int quoteStart = jsonPayload.indexOf("\"", colonPos);
+                    if (quoteStart >= 0) {
+                        int quoteEnd = jsonPayload.indexOf("\"", quoteStart + 1);
+                        if (quoteEnd > quoteStart) {
+                            filename = jsonPayload.substring(quoteStart + 1, quoteEnd);
+                        }
+                    }
+                }
+                
+                int dataPos = jsonPayload.indexOf("\"data\"");
+                if (dataPos >= 0) {
+                    int colonPos = jsonPayload.indexOf(":", dataPos);
+                    int quoteStart = jsonPayload.indexOf("\"", colonPos);
+                    if (quoteStart >= 0) {
+                        // Find the closing quote - base64 data is the last value, so find last quote
+                        // But be careful: find the quote that closes this value
+                        int quoteEnd = quoteStart + 1;
+                        // Search forward for the closing quote (skip escaped quotes)
+                        while (quoteEnd < (int)jsonPayload.length()) {
+                            if (jsonPayload.charAt(quoteEnd) == '"') {
+                                // Check if it's escaped
+                                if (quoteEnd == 0 || jsonPayload.charAt(quoteEnd - 1) != '\\') {
+                                    break;
+                                }
+                            }
+                            quoteEnd++;
+                        }
+                        if (quoteEnd > quoteStart && quoteEnd < (int)jsonPayload.length()) {
+                            base64Data = jsonPayload.substring(quoteStart + 1, quoteEnd);
+                        } else {
+                            // Fallback: if we can't find proper closing, use last quote
+                            quoteEnd = jsonPayload.lastIndexOf("\"");
+                            if (quoteEnd > quoteStart) {
+                                base64Data = jsonPayload.substring(quoteStart + 1, quoteEnd);
+                            }
+                        }
+                    }
+                }
+                
+                // Validate we got both filename and data
+                if (filename.length() == 0 || base64Data.length() == 0) {
+                    String response = "{\"success\":false,\"error\":\"Invalid JSON: missing filename or data\"}";
+                    client.println("HTTP/1.1 400 Bad Request");
+                    client.println("Content-Type: application/json");
+                    client.print("Content-Length: ");
+                    client.println(response.length());
+                    client.println("Connection: close");
+                    client.println();
+                    client.print(response);
+                    client.flush();
+                } else {
+                    // Decode base64 and write to file
+                    Serial.printf("Uploading file: %s (base64 length: %d)\n", filename.c_str(), base64Data.length());
+                    
+                    // Calculate decoded size (base64 is ~4/3 of original, add padding)
+                    size_t base64Len = base64Data.length();
+                    size_t decodedMaxSize = (base64Len * 3) / 4 + 4;
+                    
+                    // Allocate buffer for decoded data
+                    uint8_t* decodedBuffer = (uint8_t*)malloc(decodedMaxSize);
+                    if (!decodedBuffer) {
+                        String response = "{\"success\":false,\"error\":\"Failed to allocate decode buffer\"}";
+                        client.println("HTTP/1.1 500 Internal Server Error");
+                        client.println("Content-Type: application/json");
+                        client.print("Content-Length: ");
+                        client.println(response.length());
+                        client.println("Connection: close");
+                        client.println();
+                        client.print(response);
+                        client.flush();
+                    } else {
+                        // Base64 decode
+                        static const char b64_table[] = {
+                            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+                            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+                            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
+                            52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+                            64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+                            15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
+                            64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+                            41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64
+                        };
+                        
+                        size_t decodedLen = 0;
+                        uint32_t accumulator = 0;
+                        int bits = 0;
+                        uint32_t lastDecodeYield = millis();
+                        
+                        for (size_t i = 0; i < base64Len; i++) {
+                            // Yield periodically during decode to prevent watchdog timeout
+                            if (millis() - lastDecodeYield > 100) {
+                                yield();
+                                lastDecodeYield = millis();
+                            }
+                            
+                            char c = base64Data.charAt(i);
+                            
+                            // Skip whitespace and padding
+                            if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+                            if (c == '=') continue;
+                            
+                            // Invalid character check
+                            if (c < 0 || c >= 128) continue;
+                            uint8_t val = b64_table[(uint8_t)c];
+                            if (val == 64) continue;  // Invalid character
+                            
+                            accumulator = (accumulator << 6) | val;
+                            bits += 6;
+                            
+                            if (bits >= 8) {
+                                bits -= 8;
+                                decodedBuffer[decodedLen++] = (uint8_t)((accumulator >> bits) & 0xFF);
+                            }
+                        }
+                        
+                        Serial.printf("Decoded %zu bytes from base64\n", decodedLen);
+                        
+                        // Open file for writing
+                        String filepath = "0:/";
+                        filepath += filename;
+                        FIL file;
+                        FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+                        
+                        if (res != FR_OK) {
+                            free(decodedBuffer);
+                            String response = "{\"success\":false,\"error\":\"Failed to create file\"}";
+                            client.println("HTTP/1.1 500 Internal Server Error");
+                            client.println("Content-Type: application/json");
+                            client.print("Content-Length: ");
+                            client.println(response.length());
+                            client.println("Connection: close");
+                            client.println();
+                            client.print(response);
+                            client.flush();
+                        } else {
+                            // Write decoded data to file
+                            UINT bytesWritten = 0;
+                            FRESULT writeRes = f_write(&file, decodedBuffer, decodedLen, &bytesWritten);
+                            
+                            f_close(&file);
+                            free(decodedBuffer);
+                            
+                            if (writeRes != FR_OK || bytesWritten != decodedLen) {
+                                Serial.printf("ERROR: File write failed: res=%d, wrote=%u/%zu\n", 
+                                             writeRes, bytesWritten, decodedLen);
+                                String response = "{\"success\":false,\"error\":\"File write failed\"}";
+                                client.println("HTTP/1.1 500 Internal Server Error");
+                                client.println("Content-Type: application/json");
+                                client.print("Content-Length: ");
+                                client.println(response.length());
+                                client.println("Connection: close");
+                                client.println();
+                                client.print(response);
+                                client.flush();
+                            } else {
+                                Serial.printf("File upload complete: %s (%u bytes written)\n", 
+                                            filename.c_str(), bytesWritten);
+                                
+                                // Send success response
+                                String response = "{\"success\":true,\"filename\":\"";
+                                response += filename;
+                                response += "\",\"size\":";
+                                response += String(bytesWritten);
+                                response += "}";
+                                
+                                client.println("HTTP/1.1 200 OK");
+                                client.println("Content-Type: application/json");
+                                client.print("Content-Length: ");
+                                client.println(response.length());
+                                client.println("Connection: close");
+                                client.println();
+                                client.print(response);
+                                client.flush();
+                            }
+                        }
+                    }
+                }
+                
+            } else if (request.indexOf("DELETE /api/files/") >= 0) {
+                // Delete a file
+                int pathStart = request.indexOf("/api/files/") + 11;
+                int pathEnd = request.indexOf(" ", pathStart);
+                if (pathEnd < 0) pathEnd = request.length();
+                String filename = request.substring(pathStart, pathEnd);
+                filename.trim();
+                
+                // URL decode filename (basic)
+                filename.replace("%20", " ");
+                filename.replace("%2F", "/");
+                
+                bool success = deleteSDFile(filename.c_str());
+                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to delete file\"}";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(response.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(response);
+                
+            } else if (request.indexOf("GET /api/log") >= 0 && request.indexOf("/api/log/") < 0) {
+                // Get current log file
+                logFlush();  // Ensure latest data is written
+                String content = readSDFile(LOG_FILE);
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: text/plain");
+                client.print("Content-Length: ");
+                client.println(content.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(content);
+                
+            } else if (request.indexOf("GET /api/log/list") >= 0) {
+                // List recent log files (most recent 5)
+                String json = "[";
+                bool first = true;
+                
+                // Structure to hold log file info for sorting
+                struct LogFileInfo {
+                    String filename;
+                    uint32_t mtime;  // Modification time (seconds since 1980-01-01)
+                    uint32_t size;   // File size
+                };
+                std::vector<LogFileInfo> logFiles;
+                
+                FF_DIR dir;
+                FILINFO fno;
+                FRESULT res = f_opendir(&dir, LOG_DIR);
+                
+                if (res == FR_OK) {
+                    while (true) {
+                        res = f_readdir(&dir, &fno);
+                        if (res != FR_OK || fno.fname[0] == 0) break;
+                        
+                        // Check if it's a file (not directory) and matches log pattern
+                        if (!(fno.fattrib & AM_DIR)) {
+                            String filename = String(fno.fname);
+                            // Match log_*.txt files (but not log.txt itself)
+                            if (filename.startsWith("log_") && filename.endsWith(".txt")) {
+                                LogFileInfo info;
+                                info.filename = filename;
+                                info.size = (uint32_t)fno.fsize;
+                                // Extract modification time (fno.fdate and fno.ftime)
+                                // FatFs stores date/time as: date=(year-1980)*512 + month*32 + day, time=hour*2048 + min*32 + sec/2
+                                uint16_t date = fno.fdate;
+                                uint16_t time = fno.ftime;
+                                // Convert to seconds since 1980-01-01 (simplified)
+                                uint32_t year = 1980 + ((date >> 9) & 0x7F);
+                                uint32_t month = (date >> 5) & 0x0F;
+                                uint32_t day = date & 0x1F;
+                                uint32_t hour = (time >> 11) & 0x1F;
+                                uint32_t min = (time >> 5) & 0x3F;
+                                uint32_t sec = (time & 0x1F) * 2;
+                                // Approximate seconds since 1980 (not exact, but good enough for sorting)
+                                info.mtime = (year - 1980) * 365 * 24 * 3600 + month * 30 * 24 * 3600 + day * 24 * 3600 + hour * 3600 + min * 60 + sec;
+                                logFiles.push_back(info);
+                            }
+                        }
+                    }
+                    f_closedir(&dir);
+                    
+                    // Sort by modification time (newest first) - simple bubble sort since we only have a few files
+                    for (size_t i = 0; i < logFiles.size(); i++) {
+                        for (size_t j = i + 1; j < logFiles.size(); j++) {
+                            if (logFiles[i].mtime < logFiles[j].mtime) {
+                                LogFileInfo temp = logFiles[i];
+                                logFiles[i] = logFiles[j];
+                                logFiles[j] = temp;
+                            }
+                        }
+                    }
+                    
+                    // Return top 5 most recent
+                    int count = 0;
+                    for (const auto& info : logFiles) {
+                        if (count >= 5) break;
+                        if (!first) json += ",";
+                        json += "{\"filename\":\"";
+                        json += info.filename;
+                        json += "\",\"size\":";
+                        json += String(info.size);
+                        json += "}";
+                        first = false;
+                        count++;
+                    }
+                }
+                
+                json += "]";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(json.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(json);
+                
+            } else if (request.indexOf("GET /api/log/archive") >= 0) {
+                // Get archived log file - check for ?file= parameter
+                String filename = "";
+                int fileParamStart = request.indexOf("?file=");
+                if (fileParamStart >= 0) {
+                    int fileParamEnd = request.indexOf(" ", fileParamStart);
+                    if (fileParamEnd < 0) fileParamEnd = request.indexOf(" HTTP", fileParamStart);
+                    if (fileParamEnd > fileParamStart) {
+                        filename = request.substring(fileParamStart + 6, fileParamEnd);
+                        // URL decode basic
+                        filename.replace("%20", " ");
+                    }
+                }
+                
+                // If no filename specified, try the default archive
+                if (filename.length() == 0) {
+                    FILINFO fno;
+                    FRESULT statRes = f_stat(LOG_ARCHIVE, &fno);
+                    if (statRes == FR_OK) {
+                        filename = String(LOG_ARCHIVE);
+                        // Extract just the filename part
+                        int lastSlash = filename.lastIndexOf('/');
+                        if (lastSlash >= 0) {
+                            filename = filename.substring(lastSlash + 1);
+                        }
+                    }
+                }
+                
+                if (filename.length() == 0) {
+                    String errorMsg = "No archived log file found. Log rotation has not occurred yet.";
+                    client.println("HTTP/1.1 404 Not Found");
+                    client.println("Content-Type: text/plain");
+                    client.print("Content-Length: ");
+                    client.println(errorMsg.length());
+                    client.println("Connection: close");
+                    client.println();
+                    client.print(errorMsg);
+                } else {
+                    // Build full path
+                    String filepath = String(LOG_DIR) + "/" + filename;
+                    // Security: ensure filename doesn't contain path traversal
+                    if (filename.indexOf("..") >= 0 || filename.indexOf("/") >= 0) {
+                        String errorMsg = "Invalid filename";
+                        client.println("HTTP/1.1 400 Bad Request");
+                        client.println("Content-Type: text/plain");
+                        client.print("Content-Length: ");
+                        client.println(errorMsg.length());
+                        client.println("Connection: close");
+                        client.println();
+                        client.print(errorMsg);
+                    } else {
+                        String content = readSDFile(filepath.c_str());
+                        if (content.length() == 0) {
+                            String errorMsg = "File not found or empty";
+                            client.println("HTTP/1.1 404 Not Found");
+                            client.println("Content-Type: text/plain");
+                            client.print("Content-Length: ");
+                            client.println(errorMsg.length());
+                            client.println("Connection: close");
+                            client.println();
+                            client.print(errorMsg);
+                        } else {
+                            client.println("HTTP/1.1 200 OK");
+                            client.println("Content-Type: text/plain");
+                            client.print("Content-Length: ");
+                            client.println(content.length());
+                            client.println("Connection: close");
+                            client.println();
+                            client.print(content);
+                        }
+                    }
+                }
+                
+            } else if (request.indexOf("POST /api/log/flush") >= 0) {
+                // Flush log file
+                logFlush();
+                String response = "{\"success\":true}";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(response.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(response);
+                
+            } else if (request.indexOf("POST /api/close") >= 0 || request.indexOf("GET /api/close") >= 0) {
+                // Close server endpoint - allows user to explicitly close the interface
+                Serial.println("Close request received - shutting down management interface");
+                String response = "{\"success\":true,\"message\":\"Management interface closing\"}";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: application/json");
+                client.print("Content-Length: ");
+                client.println(response.length());
+                client.println("Connection: close");
+                client.println();
+                client.print(response);
+                client.flush();
+                delay(100);
+                serverActive = false;  // Exit server loop
+                
+            } else {
+                Serial.printf("Unknown request: %s\n", request.c_str());
+                client.println("HTTP/1.1 404 Not Found");
+                client.println("Connection: close");
+                client.println();
+            }
+            
+            // Wait a bit to ensure response is sent before closing
+            delay(100);
+            client.flush();
+            client.stop();
+            Serial.println("Client disconnected");
+            // Keep server active to handle multiple requests (browser makes multiple connections)
+        }
+        
+        delay(10);
+    }
+    
+    if (millis() - startTime >= timeoutMs) {
+        Serial.println("Management interface timeout");
+    } else {
+        Serial.println("Management interface closed");
+    }
+    
+    server.stop();
+    return true;
+#endif // WIFI_ENABLED && SDMMC_ENABLED
 }
 
 /**
@@ -3893,6 +5820,88 @@ static bool handlePingCommand(const String& originalMessage) {
             delay(500);
         } else {
             Serial.println("ERROR: Failed to publish ping response");
+        }
+    } else {
+        Serial.println("ERROR: MQTT client not available or publish topic not set");
+    }
+    
+    // Disconnect after publishing
+    mqttDisconnect();
+    delay(200);
+    
+    return true;  // Command handled successfully
+}
+
+/**
+ * Handle !ip command - publish current IP address to MQTT with sender number
+ */
+static bool handleIpCommand(const String& originalMessage) {
+    Serial.println("Processing !ip command...");
+    
+    // Check if WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("ERROR: WiFi not connected - cannot get IP address");
+        
+        // Still try to send error message via MQTT if possible
+        String senderNumber = extractFromFieldFromMessage(originalMessage);
+        if (senderNumber.length() > 0) {
+            if (mqttConnect()) {
+                delay(1000);
+                String formResponse = "To=";
+                formResponse += senderNumber;
+                formResponse += "&From=+447401492609";
+                formResponse += "&Body=WiFi+not+connected";
+                
+                if (mqttClient != nullptr && strlen(mqttTopicPublish) > 0) {
+                    esp_mqtt_client_publish(mqttClient, mqttTopicPublish, formResponse.c_str(), formResponse.length(), 1, 0);
+                    delay(500);
+                }
+                mqttDisconnect();
+            }
+        }
+        return false;
+    }
+    
+    // Get current IP address
+    IPAddress ip = WiFi.localIP();
+    String ipString = ip.toString();
+    Serial.printf("Current IP address: %s\n", ipString.c_str());
+    
+    // Extract sender number from original message
+    String senderNumber = extractFromFieldFromMessage(originalMessage);
+    if (senderNumber.length() == 0) {
+        Serial.println("WARNING: Could not extract sender number from message, using empty number");
+    } else {
+        Serial.printf("Extracted sender number: %s\n", senderNumber.c_str());
+    }
+    
+    // Reconnect to MQTT to publish response
+    // (We disconnected after checking for messages, so need to reconnect)
+    if (!mqttConnect()) {
+        Serial.println("ERROR: Failed to connect to MQTT for IP response");
+        return false;
+    }
+    
+    // Wait for connection to be established
+    delay(1000);
+    
+    // Build URL-encoded form response: "To=+447816969344&From=+447401492609&Body=192.168.1.100"
+    // From is the device's number (hardcoded), To is the sender we're replying to
+    String formResponse = "To=";
+    formResponse += senderNumber;
+    formResponse += "&From=+447401492609";
+    formResponse += "&Body=";
+    formResponse += ipString;
+    
+    // Publish IP response
+    if (mqttClient != nullptr && strlen(mqttTopicPublish) > 0) {
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicPublish, formResponse.c_str(), formResponse.length(), 1, 0);
+        if (msg_id > 0) {
+            Serial.printf("Published IP address to %s (msg_id: %d): %s\n", mqttTopicPublish, msg_id, formResponse.c_str());
+            // Give it a moment to send
+            delay(500);
+        } else {
+            Serial.println("ERROR: Failed to publish IP response");
         }
     } else {
         Serial.println("ERROR: MQTT client not available or publish topic not set");
@@ -3965,6 +5974,9 @@ static bool handleNextCommand() {
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
     
+    // Save updated index to NVS
+    mediaIndexSaveToNVS();
+    
     // Get current time for overlay
     time_t now = time(nullptr);
     struct tm tm_utc;
@@ -4036,7 +6048,17 @@ static bool handleNextCommand() {
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
     
-    textPlacement.addExclusionZone(bestPos, 150);
+    // Create MAXIMALIST exclusion zone for time/date block
+    // Calculate padding to ensure minimum 250px distance from quote
+    const int16_t minDistanceFromTimeDate = 250;
+    const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate
+    const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
+    
+    // Use maximalist bounds (add extra margin)
+    int16_t safeBlockW = blockW + 40;
+    int16_t safeBlockH = blockH + 40;
+    TextPlacementRegion timeExclusion = {bestPos.x, bestPos.y, safeBlockW, safeBlockH, 0.0f};
+    textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
     
     // Draw quote overlay
     using Quote = TextPlacementAnalyzer::Quote;
@@ -4065,9 +6087,37 @@ static bool handleNextCommand() {
         EL133UF1_WHITE, EL133UF1_BLACK,
         3, 3);
     
+    // Verify minimum 250px distance from time/date block
+    int16_t dx = quoteLayout.position.x - bestPos.x;
+    int16_t dy = quoteLayout.position.y - bestPos.y;
+    int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
+    int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
+    int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
+    int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
+    
+    if (distance < minRequiredDistance) {
+        Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
+        float dirX = (float)dx / (distance > 0 ? distance : 1);
+        float dirY = (float)dy / (distance > 0 ? distance : 1);
+        int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
+        int16_t newY = bestPos.y + (int16_t)(dirY * minRequiredDistance);
+        int displayW = display.width();
+        int displayH = display.height();
+        int keepout = 100;
+        int newX_int = (int)newX;
+        int newY_int = (int)newY;
+        newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
+        newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
+        quoteLayout.position.x = (int16_t)newX_int;
+        quoteLayout.position.y = (int16_t)newY_int;
+    }
+    
     textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
                             quoteFontSize, authorFontSize,
                             EL133UF1_WHITE, EL133UF1_BLACK, 2);
+    
+    // Add quote as MAXIMALIST exclusion zone
+    textPlacement.addExclusionZone(quoteLayout.position, 200);
     
     // Update display
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
@@ -4189,6 +6239,9 @@ static bool handleGoCommand(const String& parameter) {
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
     
+    // Save updated index to NVS
+    mediaIndexSaveToNVS();
+    
     // Get current time for overlay
     time_t now = time(nullptr);
     struct tm tm_utc;
@@ -4260,7 +6313,17 @@ static bool handleGoCommand(const String& parameter) {
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
     
-    textPlacement.addExclusionZone(bestPos, 150);
+    // Create MAXIMALIST exclusion zone for time/date block
+    // Calculate padding to ensure minimum 250px distance from quote
+    const int16_t minDistanceFromTimeDate = 250;
+    const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate
+    const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
+    
+    // Use maximalist bounds (add extra margin)
+    int16_t safeBlockW = blockW + 40;
+    int16_t safeBlockH = blockH + 40;
+    TextPlacementRegion timeExclusion = {bestPos.x, bestPos.y, safeBlockW, safeBlockH, 0.0f};
+    textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
     
     // Draw quote overlay
     using Quote = TextPlacementAnalyzer::Quote;
@@ -4289,9 +6352,37 @@ static bool handleGoCommand(const String& parameter) {
         EL133UF1_WHITE, EL133UF1_BLACK,
         3, 3);
     
+    // Verify minimum 250px distance from time/date block
+    int16_t dx = quoteLayout.position.x - bestPos.x;
+    int16_t dy = quoteLayout.position.y - bestPos.y;
+    int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
+    int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
+    int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
+    int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
+    
+    if (distance < minRequiredDistance) {
+        Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
+        float dirX = (float)dx / (distance > 0 ? distance : 1);
+        float dirY = (float)dy / (distance > 0 ? distance : 1);
+        int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
+        int16_t newY = bestPos.y + (int16_t)(dirY * minRequiredDistance);
+        int displayW = display.width();
+        int displayH = display.height();
+        int keepout = 100;
+        int newX_int = (int)newX;
+        int newY_int = (int)newY;
+        newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
+        newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
+        quoteLayout.position.x = (int16_t)newX_int;
+        quoteLayout.position.y = (int16_t)newY_int;
+    }
+    
     textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
                             quoteFontSize, authorFontSize,
                             EL133UF1_WHITE, EL133UF1_BLACK, 2);
+    
+    // Add quote as MAXIMALIST exclusion zone
+    textPlacement.addExclusionZone(quoteLayout.position, 200);
     
     // Update display
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
@@ -4917,6 +7008,39 @@ void volumeSaveToNVS() {
     Serial.printf("Saved volume to NVS: %d%%\n", g_audio_volume_pct);
 }
 
+/**
+ * Load media index from NVS (persistent storage)
+ * Called on startup to restore the last media index
+ */
+void mediaIndexLoadFromNVS() {
+    if (!mediaPrefs.begin("media", true)) {  // Read-only
+        Serial.println("WARNING: Failed to open NVS for media index - using default (0)");
+        lastMediaIndex = 0;
+        return;
+    }
+    
+    uint32_t savedIndex = mediaPrefs.getUInt("index", 0);
+    mediaPrefs.end();
+    
+    lastMediaIndex = savedIndex;
+    Serial.printf("Loaded media index from NVS: %lu\n", (unsigned long)lastMediaIndex);
+}
+
+/**
+ * Save media index to NVS (persistent storage)
+ * Called whenever the media index changes
+ */
+void mediaIndexSaveToNVS() {
+    if (!mediaPrefs.begin("media", false)) {  // Read-write
+        Serial.println("WARNING: Failed to open NVS for saving media index");
+        return;
+    }
+    
+    mediaPrefs.putUInt("index", lastMediaIndex);
+    mediaPrefs.end();
+    
+    Serial.printf("Saved media index to NVS: %lu\n", (unsigned long)lastMediaIndex);
+}
 
 /**
  * Load sleep duration interval from NVS (persistent storage)
@@ -5511,11 +7635,16 @@ void mqttDisconnect() {
         delay(100);
         // Stop the client (this should prevent auto-reconnect)
         esp_mqtt_client_stop(mqttClient);
-        delay(300);  // Give it more time to clean up and stop reconnection attempts
+        delay(500);  // Give it more time to clean up and stop reconnection attempts
+        // Allow FreeRTOS to process task cleanup
+        vTaskDelay(pdMS_TO_TICKS(100));
         // Destroy the client
         esp_mqtt_client_destroy(mqttClient);
         mqttClient = nullptr;
         mqttConnected = false;
+        // Additional delay to ensure all background tasks and queues are cleaned up
+        delay(500);
+        vTaskDelay(pdMS_TO_TICKS(100));
         Serial.println("MQTT disconnected and cleaned up");
     }
 }
@@ -6156,10 +8285,146 @@ void sdUnmountDirect() {
         return;
     }
     
+    // Close log file before unmounting
+    logClose();
+    
     esp_vfs_fat_sdcard_unmount("/sdcard", sd_card);
     sd_card = nullptr;
     sdCardMounted = false;
     Serial.println("SD card unmounted");
+}
+
+// ============================================================================
+// Logging System - writes to both Serial and SD card
+// ============================================================================
+
+bool logInit() {
+    // Ensure SD card is mounted
+    if (!sdCardMounted && sd_card == nullptr) {
+        if (!sdInitDirect(false)) {
+            return false;  // SD mount failed
+        }
+    }
+    
+    // Close existing log file if open
+    if (logFileOpen) {
+        f_close(&logFile);
+        logFileOpen = false;
+    }
+    
+    // Create .logs directory if it doesn't exist
+    FILINFO fno;
+    FRESULT dirRes = f_stat(LOG_DIR, &fno);
+    if (dirRes != FR_OK) {
+        Serial.printf("Creating log directory: %s\n", LOG_DIR);
+        dirRes = f_mkdir(LOG_DIR);
+        if (dirRes != FR_OK && dirRes != FR_EXIST) {
+            Serial.printf("WARNING: Failed to create log directory %s: %d\n", LOG_DIR, dirRes);
+        }
+    }
+    
+    // Open log file in append mode
+    FRESULT res = f_open(&logFile, LOG_FILE, FA_WRITE | FA_OPEN_APPEND);
+    if (res != FR_OK) {
+        // Try creating new file
+        res = f_open(&logFile, LOG_FILE, FA_WRITE | FA_CREATE_ALWAYS);
+        if (res != FR_OK) {
+            Serial.printf("ERROR: Cannot open log file: %d\n", res);
+            return false;
+        }
+    }
+    
+    logFileOpen = true;
+    return true;
+}
+
+void logRotate() {
+    // Close current log file
+    if (logFileOpen) {
+        f_close(&logFile);
+        logFileOpen = false;
+    }
+    
+    // Delete old archive if it exists (using previously stored archive name)
+    f_unlink(LOG_ARCHIVE);
+    
+    // Generate timestamp-based archive filename using current RTC time
+    time_t now = time(nullptr);
+    if (now > 1577836800) {  // Valid time (after 2020-01-01)
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        snprintf(LOG_ARCHIVE, sizeof(LOG_ARCHIVE), "0:/.logs/log_%04d%02d%02d_%02d%02d%02d.txt",
+                tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+    } else {
+        // Fallback to default name if time is invalid
+        strncpy(LOG_ARCHIVE, "0:/.logs/log_prev.txt", sizeof(LOG_ARCHIVE) - 1);
+        LOG_ARCHIVE[sizeof(LOG_ARCHIVE) - 1] = '\0';
+    }
+    
+    // Rename current log to timestamped archive
+    f_rename(LOG_FILE, LOG_ARCHIVE);
+    
+    // Create new log file
+    logInit();
+    
+    Serial.printf("Log rotated: old log archived to %s\n", LOG_ARCHIVE);
+}
+
+void logPrint(const char* str) {
+    // Always print to real Serial (not LogSerialInstance to avoid double-write to file)
+    RealSerial->print(str);
+    
+    // Write to log file if open
+    if (logFileOpen) {
+        UINT bw;
+        f_write(&logFile, str, strlen(str), &bw);
+        // Don't flush on every write for performance - caller can call logFlush() when needed
+    }
+}
+
+void logPrintf(const char* format, ...) {
+    char buffer[512];
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    
+    if (len > 0 && len < (int)sizeof(buffer)) {
+        logPrint(buffer);
+    } else {
+        // Buffer too small - write directly to real Serial using vprintf
+        va_start(args, format);
+        // Print to real Serial using vprintf (formatted output)
+        char largeBuffer[1024];
+        int largeLen = vsnprintf(largeBuffer, sizeof(largeBuffer), format, args);
+        if (largeLen > 0 && largeLen < (int)sizeof(largeBuffer)) {
+            RealSerial->print(largeBuffer);
+        } else {
+            // Still too large - truncate
+            RealSerial->print(buffer);  // At least print the truncated version
+        }
+        va_end(args);
+    }
+}
+
+void logFlush() {
+    if (logFileOpen) {
+        f_sync(&logFile);
+    }
+}
+
+void logClose() {
+    if (logFileOpen) {
+        // Flush any pending writes
+        logFlush();
+        // Additional sync to ensure all writes are complete
+        f_sync(&logFile);
+        delay(100);  // Allow file system to complete any pending operations
+        f_close(&logFile);
+        logFileOpen = false;
+        delay(100);  // Allow file system cleanup and background tasks to complete
+    }
 }
 
 bool sdInit(bool mode1bit) {
@@ -7027,10 +9292,12 @@ bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms)
         Serial.printf("WARNING: lastMediaIndex %lu is out of bounds (max %zu), resetting to 0\n",
                      (unsigned long)lastMediaIndex, mediaCount);
         lastMediaIndex = 0;
+        mediaIndexSaveToNVS();
     }
     
     // Increment and wrap around
     lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
+    mediaIndexSaveToNVS();
     const MediaMapping& mapping = g_media_mappings[lastMediaIndex];
     
     Serial.printf("Image %lu of %zu from media.txt: %s\n", 
@@ -7387,6 +9654,27 @@ void setup() {
     // Normal boot path - initialize everything
     Serial.begin(115200);
 
+#if SDMMC_ENABLED
+    // Mount SD card as early as possible for logging
+    // SD card is now always mounted - it's required for logging and all operations
+    if (!sdCardMounted && sd_card == nullptr) {
+        if (sdInitDirect(false)) {
+            // Initialize logging system
+            logInit();
+            logPrintf("\n=== Boot: %lu ms ===\n", (unsigned long)millis());
+            logPrintf("SD card mounted successfully\n");
+        } else {
+            Serial.println("WARNING: SD card mount failed - logging to SD disabled");
+            // Continue anyway - some operations may fail but device can still function
+        }
+    } else if (sdCardMounted) {
+        // SD already mounted, just initialize logging
+        logInit();
+        logPrintf("\n=== Boot: %lu ms ===\n", (unsigned long)millis());
+        logPrintf("SD card already mounted\n");
+    }
+#endif
+
     // Load volume setting from NVS early (before any audio initialization)
     volumeLoadFromNVS();
     
@@ -7395,6 +9683,9 @@ void setup() {
     
     // Load sleep duration interval from NVS
     sleepDurationLoadFromNVS();
+    
+    // Load media index from NVS
+    mediaIndexLoadFromNVS();
 
     // Bring up PA enable early (matches known-good ESP-IDF example behavior)
     pinMode(PIN_CODEC_PA_EN, OUTPUT);
@@ -7415,10 +9706,10 @@ void setup() {
         
         // Check for 'o' key to start OTA server (debug shortcut)
         // Give a short window to press 'o' before continuing
-        Serial.println("Press 'o' within 2 seconds to start OTA server, or wait to continue...");
+        Serial.println("Press 'o' within 0.5 seconds to start OTA server, or wait to continue...");
         uint32_t otaCheckStart = millis();
         bool otaRequested = false;
-        while (millis() - otaCheckStart < 2000) {
+        while (millis() - otaCheckStart < 500) {
             if (Serial.available()) {
                 char ch = (char)Serial.read();
                 if (ch == 'o' || ch == 'O') {
@@ -7456,10 +9747,10 @@ void setup() {
         
         // Check for 'o' key to start OTA server (debug shortcut)
         // Give a short window to press 'o' before continuing
-        Serial.println("Press 'o' within 2 seconds to start OTA server, or wait to continue...");
+        Serial.println("Press 'o' within 0.5 seconds to start OTA server, or wait to continue...");
         uint32_t otaCheckStart = millis();
         bool otaRequested = false;
-        while (millis() - otaCheckStart < 2000) {
+        while (millis() - otaCheckStart < 500) {
             if (Serial.available()) {
                 char ch = (char)Serial.read();
                 if (ch == 'o' || ch == 'O') {

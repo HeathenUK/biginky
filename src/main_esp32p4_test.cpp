@@ -35,6 +35,9 @@
 #include <vector>
 #include "driver/gpio.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
+#include "esp_chip_info.h"
+#include "esp_flash.h"
 #include "platform_hal.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
@@ -204,6 +207,11 @@
 #define PIN_CODEC_PA_EN 53   // PA_Ctrl (active high)
 #endif
 
+// GPIO54 - C6_ENABLE pin (LOW during deep sleep, HIGH when awake)
+#ifndef C6_ENABLE
+#define C6_ENABLE  54   // GPIO54 for C6 companion chip enable control
+#endif
+
 #define PIN_USER_LED 7
 
 // ============================================================================
@@ -268,9 +276,12 @@ static Preferences numbersPrefs;  // NVS preferences for allowed phone numbers
 static Preferences sleepPrefs;  // NVS preferences for sleep duration setting
 static Preferences otaPrefs;  // NVS preferences for OTA version tracking
 static Preferences mediaPrefs;  // NVS preferences for media index storage
+static Preferences hourSchedulePrefs;  // NVS preferences for hour schedule
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 static uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60)
+// Hour schedule: 24 boolean flags (one per hour, 0-23). If true, wake during that hour; if false, sleep through entire hour
+static bool g_hour_schedule[24];  // Default: all hours enabled (will be initialized in hourScheduleLoadFromNVS)
 
 static TwoWire g_codec_wire0(0);
 static TwoWire g_codec_wire1(1);
@@ -286,6 +297,7 @@ static constexpr uint32_t kCycleSerialEscapeMs = 2000; // cold boot escape to in
 RTC_DATA_ATTR uint32_t g_cycle_count = 0;
 static TaskHandle_t g_auto_cycle_task = nullptr;
 static bool g_config_mode_needed = false;  // Flag to indicate config mode is needed
+static bool g_is_cold_boot = false;  // Flag to indicate this is a cold boot (not deep sleep wake)
 
 // Forward declarations (defined later in file under SDMMC_ENABLED)
 #if SDMMC_ENABLED
@@ -756,7 +768,31 @@ static void sleepNowSeconds(uint32_t seconds) {
     // This gives any remaining FreeRTOS tasks one more chance to complete
     vTaskDelay(pdMS_TO_TICKS(100));
     
+    // Pull C6_ENABLE (GPIO54) LOW before entering deep sleep
+    // This pin will remain LOW during deep sleep and be pulled HIGH on wake
+    Serial.println("Pulling C6_ENABLE (GPIO54) LOW before deep sleep...");
+    pinMode(C6_ENABLE, OUTPUT);
+    digitalWrite(C6_ENABLE, LOW);
+    delay(10);  // Brief delay to ensure pin state is set before sleep
+    
+    // Configure pad hold for C6_ENABLE to maintain LOW state during deep sleep
+    Serial.println("Configuring pad hold for C6_ENABLE to maintain LOW during deep sleep...");
+    gpio_hold_en((gpio_num_t)C6_ENABLE);
+    Serial.println("C6_ENABLE pad hold enabled - will remain LOW during deep sleep");
+    Serial.flush();
+    
     esp_deep_sleep_start();
+}
+
+/**
+ * Check if a specific hour (0-23) is enabled for waking
+ * This function is defined here (before sleepUntilNextMinuteOrFallback) so it can be used there
+ */
+bool isHourEnabled(int hour) {
+    if (hour < 0 || hour >= 24) {
+        return true;  // Invalid hour, default to enabled
+    }
+    return g_hour_schedule[hour];
 }
 
 static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSleepSeconds) {
@@ -798,42 +834,89 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
     
     // Calculate seconds until next aligned minute mark
     uint32_t sleep_s;
+    int wake_hour = tm_utc.tm_hour;
+    uint32_t wake_min = 0;
+    
     if (next_slot < 60) {
         // Next slot is in the same hour
         sleep_s = (next_slot - min) * 60 - sec;
+        wake_min = next_slot;
+        // wake_hour stays the same
     } else {
         // Next slot wraps to next hour (which is always :00)
         sleep_s = (60 - min) * 60 - sec;
+        wake_min = 0;
+        wake_hour = (tm_utc.tm_hour + 1) % 24;
     }
     
-    // Avoid very short sleeps (USB/serial jitter)
-    if (sleep_s < 5 && sleep_s > 0) {
-        sleep_s += interval_minutes * 60;
-        Serial.printf("Sleep duration too short (%lu), adding %lu seconds\n", 
-                     (unsigned long)(sleep_s - interval_minutes * 60), 
-                     (unsigned long)(interval_minutes * 60));
-    }
-    
-    // Sanity clamp - if calculation is way off, use fallback
-    if (sleep_s > interval_minutes * 60 + 60) {
-        Serial.printf("Sleep calculation too large (%lu), using fallback\n", (unsigned long)sleep_s);
-        sleep_s = fallback_seconds;
+    // Check if the wake hour is enabled - if not, skip to next enabled hour
+    if (!isHourEnabled(wake_hour)) {
+        Serial.printf("Wake hour %02d is DISABLED - skipping to next enabled hour\n", wake_hour);
+        
+        // Find next enabled hour
+        int nextEnabledHour = -1;
+        for (int i = 1; i <= 24; i++) {
+            int checkHour = (wake_hour + i) % 24;
+            if (isHourEnabled(checkHour)) {
+                nextEnabledHour = checkHour;
+                break;
+            }
+        }
+        
+        if (nextEnabledHour < 0) {
+            // All hours disabled (shouldn't happen, but handle gracefully)
+            Serial.println("WARNING: All hours disabled - sleeping for 1 hour");
+            sleepNowSeconds(3600);
+            return;
+        }
+        
+        // Recalculate sleep duration from current time to next enabled hour at :00
+        // Calculate seconds remaining in current hour
+        uint32_t secondsRemainingInHour = (60 - min) * 60 - sec;
+        
+        // Calculate hours until next enabled hour
+        int hoursToAdd = 0;
+        int currentHour = tm_utc.tm_hour;
+        if (nextEnabledHour > currentHour) {
+            hoursToAdd = nextEnabledHour - currentHour;
+        } else {
+            // Wraps around midnight
+            hoursToAdd = (24 - currentHour) + nextEnabledHour;
+        }
+        
+        // Total sleep: seconds remaining in current hour + full hours until next enabled hour
+        sleep_s = secondsRemainingInHour + (hoursToAdd - 1) * 3600;
+        wake_hour = nextEnabledHour;
+        wake_min = 0;
+        
+        // Skip sanity check for long sleeps when skipping disabled hours (this is expected)
+        // Just verify it's reasonable (less than 24 hours)
+        if (sleep_s > 24 * 3600) {
+            Serial.printf("WARNING: Sleep calculation exceeds 24 hours (%lu), clamping to 24 hours\n", (unsigned long)sleep_s);
+            sleep_s = 24 * 3600;
+        }
+    } else {
+        // Normal minute-by-minute sleep - apply sanity check
+        // Avoid very short sleeps (USB/serial jitter)
+        if (sleep_s < 5 && sleep_s > 0) {
+            sleep_s += interval_minutes * 60;
+            Serial.printf("Sleep duration too short (%lu), adding %lu seconds\n", 
+                         (unsigned long)(sleep_s - interval_minutes * 60), 
+                         (unsigned long)(interval_minutes * 60));
+        }
+        
+        // Sanity clamp - if calculation is way off, use fallback
+        // This check only applies to normal minute-by-minute sleep, not hour-skipping
+        if (sleep_s > interval_minutes * 60 + 60) {
+            Serial.printf("Sleep calculation too large (%lu), using fallback\n", (unsigned long)sleep_s);
+            sleep_s = fallback_seconds;
+        }
     }
 
-    // Calculate wake time for logging (always at :XX:00, never :XX:YY with YY != 0)
-    // Use ceiling division to account for partial minutes: (sleep_s + 59) / 60
-    uint32_t minutes_to_add = (sleep_s + 59) / 60;  // Ceiling division
-    uint32_t total_minutes = min + minutes_to_add;
-    uint32_t wake_min = total_minutes % 60;
-    uint32_t wake_hour = tm_utc.tm_hour + (total_minutes / 60);
-    if (wake_hour >= 24) {
-        wake_hour = wake_hour % 24;
-    }
-
-    Serial.printf("Current time: %02d:%02d:%02d, sleep interval: %lu min, sleeping %lu seconds (wake at %02lu:%02lu:00)\n",
+    Serial.printf("Current time: %02d:%02d:%02d, sleep interval: %lu min, sleeping %lu seconds (wake at %02d:%02lu:00)\n",
                   tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, 
                   (unsigned long)interval_minutes, (unsigned long)sleep_s,
-                  (unsigned long)wake_hour, (unsigned long)wake_min);
+                  wake_hour, (unsigned long)wake_min);
     sleepNowSeconds(sleep_s);
     // Never returns
 }
@@ -1909,6 +1992,9 @@ void sleepDurationSaveToNVS();  // Save sleep duration to NVS
 void volumeSaveToNVS();    // Save volume to NVS (called when volume changes)
 void mediaIndexLoadFromNVS();  // Load media index from NVS (called on startup)
 void mediaIndexSaveToNVS();  // Save media index to NVS
+void hourScheduleLoadFromNVS();  // Load hour schedule from NVS (called on startup)
+void hourScheduleSaveToNVS();  // Save hour schedule to NVS
+bool isHourEnabled(int hour);  // Check if a specific hour (0-23) is enabled for waking (defined after hourScheduleLoadFromNVS)
 bool isNumberAllowed(const String& number);  // Check if number is in allowed list
 bool addAllowedNumber(const String& number);  // Add number to allowed list in NVS
 bool removeAllowedNumber(const String& number);  // Remove number from allowed list in NVS
@@ -1975,13 +2061,82 @@ static void auto_cycle_task(void* arg) {
     struct tm tm_utc;
     gmtime_r(&now, &tm_utc);
     bool isTopOfHour = (tm_utc.tm_min == 0);
+    int currentHour = tm_utc.tm_hour;
     
-    Serial.printf("Current time: %02d:%02d:%02d (isTopOfHour: %s)\n", 
+    Serial.printf("Current time: %02d:%02d:%02d (isTopOfHour: %s, hour enabled: %s)\n", 
                   tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
-                  isTopOfHour ? "YES" : "NO");
+                  isTopOfHour ? "YES" : "NO",
+                  isHourEnabled(currentHour) ? "YES" : "NO");
+    
+    // COLD BOOT: Always do WiFi->NTP->MQTT check on first boot (not deep sleep wake)
+    // This ensures we can receive !manage commands to change the hour schedule
+    if (g_is_cold_boot) {
+        Serial.println("=== COLD BOOT: Always doing MQTT check (ignoring hour schedule) ===");
+        g_is_cold_boot = false;  // Clear flag after first use
+        
+        // Ensure WiFi is connected and time is synced
+        if (!time_ok) {
+            Serial.println("Time invalid on cold boot - syncing NTP...");
+            time_ok = ensureTimeValid(60000);
+            if (!time_ok) {
+                Serial.println("WARNING: NTP sync failed on cold boot, but continuing...");
+            }
+            now = time(nullptr);
+            if (now > 1577836800) {
+                gmtime_r(&now, &tm_utc);
+                isTopOfHour = (tm_utc.tm_min == 0);
+                currentHour = tm_utc.tm_hour;
+            }
+        }
+        
+        // Force MQTT check regardless of hour schedule or top-of-hour status
+        // This gives us a window to receive !manage commands
+        goto force_mqtt_check;
+    }
+    
+    // Check if current hour is enabled - if not, sleep until next enabled hour
+    if (!isHourEnabled(currentHour)) {
+        Serial.printf("Hour %02d is DISABLED - sleeping until next enabled hour\n", currentHour);
+        
+        // Find next enabled hour
+        int nextEnabledHour = -1;
+        for (int i = 1; i <= 24; i++) {
+            int checkHour = (currentHour + i) % 24;
+            if (isHourEnabled(checkHour)) {
+                nextEnabledHour = checkHour;
+                break;
+            }
+        }
+        
+        if (nextEnabledHour < 0) {
+            // All hours disabled (shouldn't happen, but handle gracefully)
+            Serial.println("WARNING: All hours disabled - sleeping for 1 hour");
+            sleepNowSeconds(3600);
+            return;
+        }
+        
+        // Calculate seconds until next enabled hour
+        int hoursToAdd = 0;
+        if (nextEnabledHour > currentHour) {
+            hoursToAdd = nextEnabledHour - currentHour;
+        } else {
+            // Wraps around midnight
+            hoursToAdd = (24 - currentHour) + nextEnabledHour;
+        }
+        
+        // Calculate sleep duration: seconds remaining in current hour + full hours until next enabled hour
+        uint32_t secondsRemainingInHour = (60 - tm_utc.tm_min) * 60 - tm_utc.tm_sec;
+        uint32_t sleepSeconds = secondsRemainingInHour + (hoursToAdd - 1) * 3600;
+        
+        Serial.printf("Sleeping %lu seconds until hour %02d:00 (next enabled hour)\n", 
+                     (unsigned long)sleepSeconds, nextEnabledHour);
+        sleepNowSeconds(sleepSeconds);
+        return;  // Never returns
+    }
     
     // If NOT top of hour, do MQTT check instead of display update
     if (!isTopOfHour && time_ok) {
+        force_mqtt_check:
         Serial.println("=== MQTT Check Cycle (not top of hour) ===");
         
 #if WIFI_ENABLED
@@ -2040,8 +2195,8 @@ static void auto_cycle_task(void* arg) {
                 // Disconnect from MQTT immediately after checking for messages
                 // This prevents connection issues during long-running commands (like display updates)
                 mqttDisconnect();
-                // OPTIMIZED: reduced from 500ms to 200ms - MQTT cleanup should be quick
-                delay(200);
+                // OPTIMIZED: reduced from 200ms to 100ms - mqttDisconnect() already has internal delays
+                delay(100);
                     
                 // Now process the command (if any) after MQTT is fully disconnected
                 if (commandToProcess.length() > 0) {
@@ -2856,9 +3011,10 @@ bool mqttConnect() {
     }
     
     // Wait for connection to establish (TLS can take a few seconds)
+    // OPTIMIZED: Reduced polling delay from 200ms to 50ms for faster connection detection in happy path
     uint32_t start = millis();
     while (!mqttConnected && (millis() - start < 10000)) {
-        delay(200);
+        delay(50);  // Check more frequently for faster happy path
     }
     
     return mqttConnected;
@@ -2883,7 +3039,7 @@ bool mqttCheckMessages(uint32_t timeoutMs) {
             return false;
         }
         
-        delay(50);
+        delay(25);  // OPTIMIZED: Reduced from 50ms to 25ms for faster message detection in happy path
     }
     
     return false;  // No messages received
@@ -4294,15 +4450,21 @@ static bool deleteSDFile(const char* filename) {
 static String getDeviceSettingsJSON() {
     String json = "{";
     json += "\"volume\":" + String(g_audio_volume_pct) + ",";
-    json += "\"sleepInterval\":" + String(g_sleep_interval_minutes);
+    json += "\"sleepInterval\":" + String(g_sleep_interval_minutes) + ",";
+    json += "\"hourSchedule\":\"";
+    for (int i = 0; i < 24; i++) {
+        json += (g_hour_schedule[i] ? "1" : "0");
+    }
+    json += "\"";
     json += "}";
     return json;
 }
 
 static bool updateDeviceSettings(const String& json) {
-    // Simple JSON parsing for volume and sleepInterval
+    // Simple JSON parsing for volume, sleepInterval, and hourSchedule
     int volumeStart = json.indexOf("\"volume\":");
     int sleepStart = json.indexOf("\"sleepInterval\":");
+    int hourScheduleStart = json.indexOf("\"hourSchedule\":");
     
     if (volumeStart >= 0) {
         int colonPos = json.indexOf(':', volumeStart);
@@ -4336,6 +4498,22 @@ static bool updateDeviceSettings(const String& json) {
                 g_sleep_interval_minutes = interval;
                 sleepDurationSaveToNVS();
                 Serial.printf("Sleep interval updated to %d minutes\n", interval);
+            }
+        }
+    }
+    
+    if (hourScheduleStart >= 0) {
+        int quoteStart = json.indexOf('"', hourScheduleStart + 14);  // Find opening quote after "hourSchedule":
+        int quoteEnd = json.indexOf('"', quoteStart + 1);  // Find closing quote
+        if (quoteStart >= 0 && quoteEnd > quoteStart) {
+            String scheduleStr = json.substring(quoteStart + 1, quoteEnd);
+            if (scheduleStr.length() == 24) {
+                // Parse the schedule string
+                for (int i = 0; i < 24; i++) {
+                    g_hour_schedule[i] = (scheduleStr.charAt(i) == '1');
+                }
+                hourScheduleSaveToNVS();
+                Serial.println("Hour schedule updated");
             }
         }
     }
@@ -4397,6 +4575,22 @@ static String generateManagementHTML() {
     html += "<label>Sleep Interval (minutes, must be factor of 60):</label>";
     html += "<input type='number' id='sleepInterval' min='1' max='60' value='1'>";
     html += "</div>";
+    html += "<div class='form-group'>";
+    html += "<label>Hour Schedule (check hours when device should wake):</label>";
+    html += "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;padding:10px;background:#f9f9f9;border-radius:4px;'>";
+    for (int i = 0; i < 24; i++) {
+        html += "<label style='display:flex;align-items:center;gap:5px;cursor:pointer;'><input type='checkbox' class='hourCheckbox' data-hour='";
+        html += i;
+        html += "' style='cursor:pointer;'>";
+        html += String(i < 10 ? "0" : "") + String(i) + ":00";
+        html += "</label>";
+    }
+    html += "</div>";
+    html += "<div style='margin-top:10px;'><button onclick='selectAllHours()'>Select All</button>";
+    html += "<button onclick='deselectAllHours()'>Deselect All</button>";
+    html += "<button onclick='selectNightHours()'>Select Night (6am-11pm)</button>";
+    html += "<button onclick='selectDayHours()'>Select Day (11pm-6am)</button></div>";
+    html += "</div>";
     html += "<button onclick='loadSettings()'>Load from Device</button>";
     html += "<button onclick='saveSettings()'>Save to Device</button>";
     html += "<div id='settingsStatus'></div></div>";
@@ -4437,8 +4631,12 @@ static String generateManagementHTML() {
     html += "function addMediaRow(){const tbody=document.getElementById('mediaRows');tbody.appendChild(createMediaRow());}";
     html += "function loadMedia(){Promise.all([fetch('/api/media').then(r=>r.text()),fetch('/api/media/index').then(r=>r.json())]).then(([content,indexData])=>{const tbody=document.getElementById('mediaRows');tbody.innerHTML='';const lastDisplayedIndex=indexData.index||0;const lines=content.split('\\n');const mediaCount=lines.filter(l=>{l=l.trim();return l.length>0&&!l.startsWith('#');}).length;const nextIndex=(lastDisplayedIndex+1)%mediaCount;let lineIdx=0;lines.forEach((line,idx)=>{line=line.trim();if(line.length===0||line.startsWith('#'))return;const comma=line.indexOf(',');const isNext=(lineIdx===nextIndex);if(comma>0){const img=line.substring(0,comma).trim();const aud=line.substring(comma+1).trim();tbody.appendChild(createMediaRow(img,aud,isNext));}else if(line.length>0){tbody.appendChild(createMediaRow(line,'',isNext));}lineIdx++;});updateRowIndices();if(tbody.children.length===0)addMediaRow();showStatus('mediaStatus','Loaded successfully',false);}).catch(e=>{showStatus('mediaStatus','Error: '+e,true);});}";
     html += "function saveMedia(){const rows=document.querySelectorAll('#mediaRows tr');let content='';let nextIndex=-1;rows.forEach((row,idx)=>{const img=row.querySelector('.imageSelect').value;const aud=row.querySelector('.audioSelect').value;const isNext=row.querySelector('.nextCheckbox').checked;if(isNext)nextIndex=idx;if(img.length>0){content+=img;if(aud.length>0)content+=','+aud;content+='\\n';}});const saveData={content:content,nextIndex:nextIndex>=0?nextIndex:null};fetch('/api/media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)}).then(r=>r.json()).then(d=>{showStatus('mediaStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadMedia();}).catch(e=>showStatus('mediaStatus','Error: '+e,true));}";
-    html += "function loadSettings(){fetch('/api/settings').then(r=>r.json()).then(d=>{document.getElementById('volume').value=d.volume;document.getElementById('sleepInterval').value=d.sleepInterval;showStatus('settingsStatus','Loaded successfully',false);}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
-    html += "function saveSettings(){const json=JSON.stringify({volume:parseInt(document.getElementById('volume').value),sleepInterval:parseInt(document.getElementById('sleepInterval').value)});fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:json}).then(r=>r.json()).then(d=>{showStatus('settingsStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadSettings();}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
+    html += "function loadSettings(){fetch('/api/settings').then(r=>r.json()).then(d=>{document.getElementById('volume').value=d.volume;document.getElementById('sleepInterval').value=d.sleepInterval;if(d.hourSchedule){const schedule=d.hourSchedule;document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=schedule[hour]==='1'||schedule[hour]===true;});}showStatus('settingsStatus','Loaded successfully',false);}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
+    html += "function saveSettings(){const hourSchedule=[];document.querySelectorAll('.hourCheckbox').forEach(cb=>{hourSchedule.push(cb.checked?'1':'0');});const json=JSON.stringify({volume:parseInt(document.getElementById('volume').value),sleepInterval:parseInt(document.getElementById('sleepInterval').value),hourSchedule:hourSchedule.join('')});fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:json}).then(r=>r.json()).then(d=>{showStatus('settingsStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadSettings();}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
+    html += "function selectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=true);}";
+    html += "function deselectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=false);}";
+    html += "function selectNightHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=6&&hour<23);});}";
+    html += "function selectDayHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=23||hour<6);});}";
     html += "let fileListData=[];let fileListSortCol='name';let fileListSortDir=1;";
     html += "function formatDate(timestamp){if(!timestamp||timestamp===0)return'N/A';const d=new Date(timestamp);return d.toLocaleString();}";
     html += "function sortFileList(col){if(fileListSortCol===col){fileListSortDir*=-1;}else{fileListSortCol=col;fileListSortDir=1;}renderFileList();}";
@@ -7082,6 +7280,64 @@ void sleepDurationSaveToNVS() {
 }
 
 /**
+ * Load hour schedule from NVS (persistent storage)
+ * Hour schedule: 24 boolean flags (one per hour, 0-23)
+ * If true, wake during that hour; if false, sleep through entire hour
+ */
+void hourScheduleLoadFromNVS() {
+    // Initialize all hours to enabled by default
+    for (int i = 0; i < 24; i++) {
+        g_hour_schedule[i] = true;
+    }
+    
+    if (!hourSchedulePrefs.begin("hours", true)) {  // Read-only
+        Serial.println("WARNING: Failed to open NVS for hour schedule - using default (all hours enabled)");
+        return;
+    }
+    
+    // Load hour schedule as a 24-byte string (each byte is '1' or '0')
+    String scheduleStr = hourSchedulePrefs.getString("schedule", "");
+    hourSchedulePrefs.end();
+    
+    if (scheduleStr.length() == 24) {
+        // Parse the schedule string
+        for (int i = 0; i < 24; i++) {
+            g_hour_schedule[i] = (scheduleStr.charAt(i) == '1');
+        }
+        Serial.println("Loaded hour schedule from NVS:");
+        for (int i = 0; i < 24; i++) {
+            Serial.printf("  Hour %02d: %s\n", i, g_hour_schedule[i] ? "ENABLED" : "DISABLED");
+        }
+    } else {
+        Serial.println("No hour schedule in NVS - using default (all hours enabled)");
+    }
+}
+
+/**
+ * Save hour schedule to NVS (persistent storage)
+ */
+void hourScheduleSaveToNVS() {
+    if (!hourSchedulePrefs.begin("hours", false)) {  // Read-write
+        Serial.println("WARNING: Failed to open NVS for saving hour schedule");
+        return;
+    }
+    
+    // Save hour schedule as a 24-byte string (each byte is '1' or '0')
+    String scheduleStr = "";
+    for (int i = 0; i < 24; i++) {
+        scheduleStr += (g_hour_schedule[i] ? '1' : '0');
+    }
+    
+    hourSchedulePrefs.putString("schedule", scheduleStr);
+    hourSchedulePrefs.end();
+    
+    Serial.println("Saved hour schedule to NVS:");
+    for (int i = 0; i < 24; i++) {
+        Serial.printf("  Hour %02d: %s\n", i, g_hour_schedule[i] ? "ENABLED" : "DISABLED");
+    }
+}
+
+/**
  * Handle !sleep_interval command - set sleep interval between MQTT wake-ups
  * Format: !sleep_interval <minutes>
  * Example: !sleep_interval 2 (wake every 2 minutes)
@@ -7632,19 +7888,19 @@ void mqttDisconnect() {
         Serial.println("Disconnecting from MQTT...");
         // Unregister event handler first to prevent events during shutdown
         esp_mqtt_client_unregister_event(mqttClient, MQTT_EVENT_ANY, mqttEventHandler);
-        delay(100);
+        delay(50);  // OPTIMIZED: reduced from 100ms to 50ms
         // Stop the client (this should prevent auto-reconnect)
         esp_mqtt_client_stop(mqttClient);
-        delay(500);  // Give it more time to clean up and stop reconnection attempts
+        delay(200);  // OPTIMIZED: reduced from 500ms to 200ms - cleanup should be quick in happy path
         // Allow FreeRTOS to process task cleanup
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));  // OPTIMIZED: reduced from 100ms to 50ms
         // Destroy the client
         esp_mqtt_client_destroy(mqttClient);
         mqttClient = nullptr;
         mqttConnected = false;
         // Additional delay to ensure all background tasks and queues are cleaned up
-        delay(500);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        delay(200);  // OPTIMIZED: reduced from 500ms to 200ms
+        vTaskDelay(pdMS_TO_TICKS(50));  // OPTIMIZED: reduced from 100ms to 50ms
         Serial.println("MQTT disconnected and cleaned up");
     }
 }
@@ -9622,7 +9878,14 @@ void drawTTFTest() {
 // ============================================================================
 
 void setup() {
-    // Check wake cause IMMEDIATELY (before any initialization)
+    // IMMEDIATELY pull C6_ENABLE (GPIO54) HIGH on wake-up (it was LOW during deep sleep)
+    // This MUST be the very first thing - even before Serial.begin() or any other initialization
+    // First disable pad hold to allow pin state changes
+    gpio_hold_dis((gpio_num_t)C6_ENABLE);
+    pinMode(C6_ENABLE, OUTPUT);
+    digitalWrite(C6_ENABLE, HIGH);
+    
+    // Check wake cause IMMEDIATELY (before any other initialization)
     esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
     // ESP32-P4 uses ext1 for GPIO wake (not ext0 or gpio_wakeup)
     // Check for both GPIO and EXT1 wake causes for compatibility
@@ -9653,6 +9916,24 @@ void setup() {
     
     // Normal boot path - initialize everything
     Serial.begin(115200);
+    
+    // Print chip information at boot
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+    Serial.println("\n=== Chip Information ===");
+    Serial.printf("  Model: ESP32-P4\n");
+    Serial.printf("  Cores: %d\n", chip_info.cores);
+    Serial.printf("  Revision: r%d.%d\n", chip_info.revision / 100, chip_info.revision % 100);
+    Serial.printf("  Features: %s%s%s%s\n",
+                  (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "Embedded-Flash " : "",
+                  (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi " : "",
+                  (chip_info.features & CHIP_FEATURE_BT) ? "BT " : "",
+                  (chip_info.features & CHIP_FEATURE_BLE) ? "BLE " : "");
+    uint32_t flash_size = 0;
+    esp_flash_get_size(NULL, &flash_size);
+    Serial.printf("  Flash: %dMB %s\n", flash_size / (1024 * 1024),
+                  (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
+    Serial.println("=======================\n");
 
 #if SDMMC_ENABLED
     // Mount SD card as early as possible for logging
@@ -9684,6 +9965,9 @@ void setup() {
     // Load sleep duration interval from NVS
     sleepDurationLoadFromNVS();
     
+    // Load hour schedule from NVS
+    hourScheduleLoadFromNVS();
+    
     // Load media index from NVS
     mediaIndexLoadFromNVS();
 
@@ -9692,10 +9976,14 @@ void setup() {
     digitalWrite(PIN_CODEC_PA_EN, HIGH);
 
     pinMode(PIN_USER_LED, OUTPUT);
-    digitalWrite(PIN_USER_LED, LOW);    
+    digitalWrite(PIN_USER_LED, LOW);
+    
+    // C6_ENABLE was already set HIGH at the very start of setup() - no need to do it again here
+    Serial.println("C6_ENABLE already set HIGH at boot start - will remain HIGH during normal operation");
     
     // Check if we woke from deep sleep (non-switch-D wake)
     bool wokeFromSleep = (wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED);
+    g_is_cold_boot = !wokeFromSleep;  // Set global flag for auto_cycle_task to use
     
     if (wokeFromSleep) {
         // Quick boot after deep sleep - skip serial wait

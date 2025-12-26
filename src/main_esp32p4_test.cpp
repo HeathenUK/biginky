@@ -51,6 +51,7 @@
 // DS3231 external RTC removed - using ESP32 internal RTC + NTP
 #include <time.h>
 #include <sys/time.h>
+#include <stdio.h>
 
 // ESP8266Audio for robust WAV and MP3 parsing and playback
 #include "AudioOutputI2S.h"
@@ -75,6 +76,14 @@
 #include "mqtt_client.h"
 #include "esp_crt_bundle.h"
 #include <string.h>
+// OTA update support - custom implementation with SD card buffering
+#include <WebServer.h>
+#include <WiFiServer.h>
+#include <WiFiClient.h>
+// Keep ESP-IDF OTA includes for OTA operations
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
+#include "esp_partition.h"
 #endif
 
 // SD Card support via SDMMC
@@ -246,6 +255,7 @@ static int g_audio_volume_pct = 50;  // UI percent (0..100), mapped into codec r
 static Preferences volumePrefs;  // NVS preferences for volume storage
 static Preferences numbersPrefs;  // NVS preferences for allowed phone numbers
 static Preferences sleepPrefs;  // NVS preferences for sleep duration setting
+static Preferences otaPrefs;  // NVS preferences for OTA version tracking
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 static uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60)
@@ -645,7 +655,7 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
         Serial.printf("Sleep calculation too large (%lu), using fallback\n", (unsigned long)sleep_s);
         sleep_s = fallback_seconds;
     }
-    
+
     // Calculate wake time for logging (always at :XX:00, never :XX:YY with YY != 0)
     // Use ceiling division to account for partial minutes: (sleep_s + 59) / 60
     uint32_t minutes_to_add = (sleep_s + 59) / 60;  // Ceiling division
@@ -832,7 +842,32 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
             configTime(0, 0, "pool.ntp.org", "time.google.com");
         } else {
             Serial.println("WiFi disconnected during NTP sync, will retry WiFi connection");
-            break;  // Break out to retry WiFi connection
+            // Try to reconnect WiFi before continuing with NTP retries
+            WiFi.disconnect();
+            delay(1000);
+            WiFi.begin(ssid.c_str(), psk.c_str());
+            
+            uint32_t reconnectStart = millis();
+            uint32_t reconnectTimeout = 20000;  // 20 seconds to reconnect
+            while (WiFi.status() != WL_CONNECTED && (millis() - reconnectStart < reconnectTimeout)) {
+                delay(500);
+                Serial.print(".");
+                
+                // Check overall timeout
+                if ((millis() - overallStart) > timeout_ms) {
+                    Serial.println("\nOverall timeout exceeded during WiFi reconnection.");
+                    return false;
+                }
+            }
+            Serial.println();
+            
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.println("WiFi reconnected, reconfiguring NTP...");
+                configTime(0, 0, "pool.ntp.org", "time.google.com");
+            } else {
+                Serial.println("WiFi reconnection failed, will retry in next loop iteration");
+                // Continue to next retry - will try to reconnect WiFi again
+            }
         }
     }
     
@@ -842,7 +877,7 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
         Serial.println("NTP sync failed after all retries, but WiFi is connected.");
         Serial.println("Will try a few more times (respecting timeout)...");
         
-        uint32_t overallStart = millis();
+        uint32_t additionalStart = millis();
         int additionalRetries = 3;  // Limit additional retries
         
         for (int extraRetry = 0; extraRetry < additionalRetries; extraRetry++) {
@@ -879,7 +914,57 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
         }
     }
 
-    Serial.println("NTP sync failed; WiFi connection lost.");
+    // If WiFi disconnected and we couldn't reconnect, try one more time
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi disconnected; attempting final reconnection...");
+        WiFi.disconnect();
+        delay(1000);
+        WiFi.begin(ssid.c_str(), psk.c_str());
+        
+        uint32_t finalReconnectStart = millis();
+        uint32_t finalReconnectTimeout = 15000;  // 15 seconds for final attempt
+        while (WiFi.status() != WL_CONNECTED && (millis() - finalReconnectStart < finalReconnectTimeout)) {
+            delay(500);
+            Serial.print(".");
+            
+            // Check overall timeout
+            if ((millis() - overallStart) > timeout_ms) {
+                Serial.println("\nOverall timeout exceeded during final WiFi reconnection.");
+                Serial.println("NTP sync failed; WiFi connection lost.");
+        return false;
+    }
+        }
+        Serial.println();
+
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("WiFi reconnected on final attempt, trying NTP sync one more time...");
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+            delay(2000);
+            
+            uint32_t finalNtpStart = millis();
+            uint32_t finalNtpTimeout = 20000;  // 20 seconds for final NTP attempt
+            while ((millis() - finalNtpStart) < finalNtpTimeout) {
+                // Check overall timeout
+                if ((millis() - overallStart) > timeout_ms) {
+                    Serial.println("Overall timeout exceeded during final NTP sync.");
+                    return false;
+                }
+                
+        now = time(nullptr);
+        if (now > 1577836800) {
+            struct tm tm_utc;
+            gmtime_r(&now, &tm_utc);
+            char buf[32];
+            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+            Serial.printf("NTP sync OK: %s\n", buf);
+            return true;
+        }
+                delay(500);
+            }
+        }
+    }
+
+    Serial.println("NTP sync failed after all attempts.");
     // Keep WiFi connected if it still is - will be disconnected before deep sleep
     return false;
 }
@@ -1646,8 +1731,11 @@ static bool handleNewNumberCommand(const String& parameter);
 static bool handleDelNumberCommand(const String& parameter);
 static bool handleListNumbersCommand(const String& originalMessage = "");
 static bool handleShowCommand(const String& parameter);
-static bool handleSleepDurationCommand(const String& parameter);
+static bool handleSleepIntervalCommand(const String& parameter);
 static bool handleOAICommand(const String& parameter);
+static bool startSdBufferedOTA();  // Start SD-buffered OTA web server
+static void ota_server_task(void* arg);  // Task wrapper for OTA server
+void checkAndNotifyOTAUpdate();  // Check for firmware change and notify via MQTT
 void volumeLoadFromNVS();  // Load volume from NVS (called on startup)
 void sleepDurationLoadFromNVS();  // Load sleep duration from NVS (called on startup)
 void sleepDurationSaveToNVS();  // Save sleep duration to NVS
@@ -1680,15 +1768,35 @@ static void auto_cycle_task(void* arg) {
         Serial.println("Time invalid, attempting NTP sync (with timeout)...");
         time_ok = ensureTimeValid(60000);  // 60 second max timeout
         if (!time_ok) {
-            Serial.println("\n========================================");
-            Serial.println("CRITICAL: Time sync failed - WiFi credentials required!");
-            Serial.println("========================================");
-            Serial.println("Configuration mode needed - exiting task to allow main loop to handle it.");
-            Serial.println("The main loop will enter configuration mode.");
-            // Set flag and exit task - let main loop handle config mode
-            g_config_mode_needed = true;
-            vTaskDelete(NULL);  // Delete this task - main loop will handle config
-            return;  // Should never reach here, but satisfy compiler
+            // Check if we have WiFi credentials - if we do, this is a network issue, not a config issue
+            Preferences p;
+            bool hasCredentials = false;
+            if (p.begin("wifi", true)) {
+                String ssid = p.getString("ssid", "");
+                p.end();
+                hasCredentials = (ssid.length() > 0);
+            }
+            
+            if (hasCredentials) {
+                Serial.println("\n========================================");
+                Serial.println("WARNING: Time sync failed, but WiFi credentials are configured.");
+                Serial.println("This may be a temporary network issue.");
+                Serial.println("Continuing with invalid time - will retry on next cycle.");
+                Serial.println("========================================");
+                // Don't enter config mode - we have credentials, just network issues
+                // Continue with invalid time and retry next cycle
+                time_ok = false;  // Keep time_ok as false, but don't enter config mode
+            } else {
+                Serial.println("\n========================================");
+                Serial.println("CRITICAL: Time sync failed - WiFi credentials required!");
+                Serial.println("========================================");
+                Serial.println("Configuration mode needed - exiting task to allow main loop to handle it.");
+                Serial.println("The main loop will enter configuration mode.");
+                // Set flag and exit task - let main loop handle config mode
+                g_config_mode_needed = true;
+                vTaskDelete(NULL);  // Delete this task - main loop will handle config
+                return;  // Should never reach here, but satisfy compiler
+            }
         }
         // Re-check time after sync attempt
         now = time(nullptr);
@@ -1724,6 +1832,12 @@ static void auto_cycle_task(void* arg) {
         
         // Connect to WiFi - REQUIRED for MQTT, so be persistent
         if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
+            // WiFi connected - check for OTA update notification first
+            // This is safe to call multiple times - it only sends notification once per firmware change
+            Serial.println("\n=== Checking for OTA firmware update ===");
+            checkAndNotifyOTAUpdate();
+            Serial.println("=== OTA check complete ===\n");
+            
             // WiFi connected - proceed with MQTT
             // Connect to MQTT and check for retained messages
             if (mqttConnect()) {
@@ -1891,24 +2005,24 @@ static void auto_cycle_task(void* arg) {
     // Load images from SD card
 #if SDMMC_ENABLED
     if (!ok) {
-        // Mount SD card first if not already mounted
-        if (!sdCardMounted && sd_card == nullptr) {
-            if (!sdInitDirect(false)) {
-                Serial.println("Failed to mount SD card!");
-                Serial.println("SDMMC disabled; cannot load config or images. Sleeping.");
-                if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
-                sleepNowSeconds(kCycleSleepSeconds);
-            }
+    // Mount SD card first if not already mounted
+    if (!sdCardMounted && sd_card == nullptr) {
+        if (!sdInitDirect(false)) {
+            Serial.println("Failed to mount SD card!");
+            Serial.println("SDMMC disabled; cannot load config or images. Sleeping.");
+            if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+            sleepNowSeconds(kCycleSleepSeconds);
         }
-        
-        // Load configuration files from SD card (only once)
-        if (!g_quotes_loaded) {
-            loadQuotesFromSD();
-        }
+    }
+    
+    // Load configuration files from SD card (only once)
+    if (!g_quotes_loaded) {
+        loadQuotesFromSD();
+    }
         
         // ALWAYS try to load media.txt - retry if it fails
         bool mediaLoadAttempted = false;
-        if (!g_media_mappings_loaded) {
+    if (!g_media_mappings_loaded) {
             Serial.println("Loading media.txt...");
             int mappingsLoaded = loadMediaMappingsFromSD();
             mediaLoadAttempted = true;
@@ -1925,13 +2039,13 @@ static void auto_cycle_task(void* arg) {
         }
         
         // Now load the PNG - STRICTLY prefer media.txt mappings
-        int maxRetries = 5;  // Try up to 5 different images if one fails
-        
+    int maxRetries = 5;  // Try up to 5 different images if one fails
+    
         // If we have media.txt mappings (either just loaded or previously loaded), use ONLY those
         // Never fall back to random unless media.txt was NEVER successfully loaded
-        if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-            Serial.println("Using images from media.txt (cycling through mapped images only)");
-            usingMediaMappings = true;
+    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+        Serial.println("Using images from media.txt (cycling through mapped images only)");
+        usingMediaMappings = true;
             
             // Ensure index is in bounds before starting retries
             size_t mediaCount = g_media_mappings.size();
@@ -1941,11 +2055,11 @@ static void auto_cycle_task(void* arg) {
                 lastMediaIndex = 0;
             }
             
-            for (int retry = 0; retry < maxRetries && !ok; retry++) {
-                ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
-                if (!ok && retry < maxRetries - 1) {
-                    Serial.printf("PNG load failed, trying next image from media.txt (attempt %d/%d)...\n", 
-                                 retry + 1, maxRetries);
+        for (int retry = 0; retry < maxRetries && !ok; retry++) {
+            ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+            if (!ok && retry < maxRetries - 1) {
+                Serial.printf("PNG load failed, trying next image from media.txt (attempt %d/%d)...\n", 
+                             retry + 1, maxRetries);
                     // pngDrawFromMediaMappings already increments lastMediaIndex internally,
                     // so just call it again - no need to manually increment
                 }
@@ -1960,24 +2074,24 @@ static void auto_cycle_task(void* arg) {
             Serial.println("ERROR: media.txt was previously loaded but is now unavailable");
             Serial.println("Will retry on next wake - NOT falling back to random images");
             ok = false;  // Explicitly mark as failed
-        } else {
+    } else {
             // Fallback: scan all PNG files on SD card (ONLY if media.txt was NEVER successfully loaded)
-            Serial.println("No media.txt mappings found, scanning all PNG files on SD card");
-            usingMediaMappings = false;
-            for (int retry = 0; retry < maxRetries && !ok; retry++) {
-                ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
-                if (!ok && retry < maxRetries - 1) {
-                    Serial.printf("PNG load failed, trying next image (attempt %d/%d)...\n", 
-                                 retry + 1, maxRetries);
-                    // Advance to next image by incrementing the index
-                    lastImageIndex++;
+        Serial.println("No media.txt mappings found, scanning all PNG files on SD card");
+        usingMediaMappings = false;
+        for (int retry = 0; retry < maxRetries && !ok; retry++) {
+            ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
+            if (!ok && retry < maxRetries - 1) {
+                Serial.printf("PNG load failed, trying next image (attempt %d/%d)...\n", 
+                             retry + 1, maxRetries);
+                // Advance to next image by incrementing the index
+                lastImageIndex++;
                 }
             }
         }
     }
 #else
     if (!ok) {
-        Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");
+    Serial.println("SDMMC disabled; cannot load PNG. Sleeping.");
     }
 #endif
     
@@ -2516,6 +2630,142 @@ String mqttGetLastMessage() {
     return lastMqttMessage;
 }
 
+/**
+ * Check if firmware has changed after boot and notify user via MQTT
+ * Compares compile date/time of current firmware with stored value in NVS
+ * If different, sends success notification confirming new firmware successfully booted
+ */
+void checkAndNotifyOTAUpdate() {
+#if WIFI_ENABLED
+    // Get current running partition's app description
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (running == nullptr) {
+        Serial.println("WARNING: Cannot get running partition for OTA check");
+        return;
+    }
+    
+    esp_app_desc_t current_app_info;
+    esp_err_t err = esp_ota_get_partition_description(running, &current_app_info);
+    if (err != ESP_OK) {
+        Serial.printf("WARNING: Cannot read app description: %s\n", esp_err_to_name(err));
+        return;
+    }
+    
+    // Create unique identifier from compile date + time + version + first 8 chars of SHA256
+    // Include SHA256 to ensure uniqueness even if compile time is identical
+    char sha256_str[17] = {0};
+    for (int i = 0; i < 8; i++) {
+        sprintf(sha256_str + i*2, "%02x", current_app_info.app_elf_sha256[i]);
+    }
+    String currentBuildId = String(current_app_info.date) + " " + String(current_app_info.time) + " v" + String(current_app_info.version) + " sha:" + String(sha256_str);
+    
+    // Read stored build ID from NVS
+    // Try read-write mode first (will create namespace if it doesn't exist)
+    bool nvsOpened = otaPrefs.begin("ota", false);
+    if (!nvsOpened) {
+        Serial.println("WARNING: Cannot open NVS for OTA version check");
+        return;
+    }
+    
+    String storedBuildId = otaPrefs.getString("build_id", "");
+    
+    // Debug output
+    Serial.printf("Current build ID: '%s'\n", currentBuildId.c_str());
+    Serial.printf("Stored build ID:  '%s'\n", storedBuildId.c_str());
+    
+    // Compare build IDs
+    if (storedBuildId.length() == 0) {
+        // First boot or NVS was cleared - store current build ID but don't notify
+        Serial.println("First boot detected (no stored build ID) - storing current firmware info");
+        Serial.printf("Current firmware: %s %s (build: %s)\n", 
+                     current_app_info.project_name, current_app_info.version, currentBuildId.c_str());
+        otaPrefs.putString("build_id", currentBuildId);
+        otaPrefs.end();
+        return;
+    }
+    
+    // Debug output to see what we're comparing
+    Serial.printf("Current build ID: '%s'\n", currentBuildId.c_str());
+    Serial.printf("Stored build ID:  '%s'\n", storedBuildId.c_str());
+    Serial.printf("Build IDs match: %s\n", (currentBuildId == storedBuildId) ? "YES" : "NO");
+    
+    otaPrefs.end();
+    
+    if (currentBuildId != storedBuildId) {
+        // Firmware changed! New firmware successfully booted - notify user
+        Serial.println("\n========================================");
+        Serial.println("NEW FIRMWARE SUCCESSFULLY BOOTED!");
+        Serial.println("========================================");
+        Serial.printf("Old firmware: %s\n", storedBuildId.c_str());
+        Serial.printf("New firmware: %s\n", currentBuildId.c_str());
+        Serial.printf("Project: %s, Version: %s\n", current_app_info.project_name, current_app_info.version);
+        Serial.println("========================================\n");
+        
+        // Update stored build ID
+        if (!otaPrefs.begin("ota", false)) {  // Read-write
+            Serial.println("WARNING: Cannot open NVS for writing");
+            return;
+        }
+        otaPrefs.putString("build_id", currentBuildId);
+        
+        // Check if OTA was triggered via MQTT (only send notification in that case)
+        bool mqttTriggered = otaPrefs.getBool("mqtt_triggered", false);
+        otaPrefs.putBool("mqtt_triggered", false);  // Clear the flag
+        otaPrefs.end();
+        
+        // Only send notification if OTA was triggered via MQTT (!ota command)
+        if (!mqttTriggered) {
+            Serial.println("OTA was triggered via 'o' key (debug) - skipping MQTT notification");
+            return;
+        }
+        
+        Serial.println("OTA was triggered via MQTT - sending notification...");
+        
+        // Connect to MQTT to send success notification
+        if (!mqttConnect()) {
+            Serial.println("WARNING: Cannot connect to MQTT for OTA success notification");
+            return;
+        }
+        
+        // Wait for connection to be established
+        delay(1000);
+        
+        // Build success message (URL-encoded form format)
+        const char* hardcodedNumber = "+447816969344";
+        String formResponse = "To=";
+        formResponse += hardcodedNumber;
+        formResponse += "&From=+447401492609";
+        formResponse += "&Body=OTA+update+successful%21+Firmware+";
+        formResponse += current_app_info.version;
+        formResponse += "+%28";
+        // URL-encode the build date/time
+        String encodedBuild = currentBuildId;
+        encodedBuild.replace(" ", "+");
+        formResponse += encodedBuild;
+        formResponse += "%29+is+now+running.";
+        
+        // Publish notification
+        if (mqttClient != nullptr && strlen(mqttTopicPublish) > 0) {
+            int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicPublish, formResponse.c_str(), formResponse.length(), 1, 0);
+            if (msg_id > 0) {
+                Serial.printf("Published OTA success notification to %s (msg_id: %d)\n", mqttTopicPublish, msg_id);
+                delay(500);  // Give it a moment to send
+            } else {
+                Serial.println("ERROR: Failed to publish OTA success notification");
+            }
+        } else {
+            Serial.println("ERROR: MQTT client not available for OTA notification");
+        }
+        
+        // Disconnect after publishing
+        mqttDisconnect();
+        delay(200);
+    } else {
+        Serial.printf("Firmware unchanged: %s\n", currentBuildId.c_str());
+    }
+#endif // WIFI_ENABLED
+}
+
 // ============================================================================
 // MQTT Command Handling
 // ============================================================================
@@ -2843,14 +3093,37 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
         return handleShowCommand(param);
     }
     
-    if (command.startsWith("!sleep_duration")) {
+    if (command.startsWith("!sleep_interval")) {
         String param = extractCommandParameter(command);
-        return handleSleepDurationCommand(param);
+        return handleSleepIntervalCommand(param);
     }
     
     if (command.startsWith("!oai")) {
         String prompt = extractTextParameter("!oai");
         return handleOAICommand(prompt);
+    }
+    
+    if (command == "!ota") {
+        // OTA command only works from hardcoded number
+        if (senderNumber != "+447816969344") {
+            Serial.println("ERROR: !ota command only allowed from hardcoded number - command rejected");
+            return false;
+        }
+        // Mark that OTA was triggered via MQTT (so we send notification on next boot)
+        Preferences otaPrefs;
+        if (otaPrefs.begin("ota", false)) {
+            otaPrefs.putBool("mqtt_triggered", true);
+            otaPrefs.end();
+            Serial.println("OTA triggered via MQTT - notification will be sent after update");
+        }
+        // Create task with sufficient stack to avoid stack protection fault
+        TaskHandle_t otaTaskHandle = nullptr;
+        xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
+        // Wait for task to complete (it will delete itself)
+        while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
+            delay(100);
+        }
+        return true;
     }
     
     // Add more commands here as needed:
@@ -3047,6 +3320,504 @@ static bool handleOAICommand(const String& parameter) {
     }
 #else
     Serial.println("ERROR: WiFi not enabled - cannot generate AI images");
+    return false;
+#endif // WIFI_ENABLED
+}
+
+/**
+ * Custom OTA update with SD card buffering
+ * Strategy: Save firmware to SD card first, then flash from SD card
+ * This avoids flash write issues during network transfer (ESP-IDF issue #4120)
+ */
+// Task wrapper for OTA server (prevents stack overflow)
+static void ota_server_task(void* arg) {
+    startSdBufferedOTA();
+    vTaskDelete(nullptr);  // Delete this task when done
+}
+
+static bool startSdBufferedOTA() {
+    // OTA server with SD card buffering - v4 (fixed OTA check timing)
+    Serial.println("Starting OTA server with SD card buffering...");
+    
+#if WIFI_ENABLED
+    // Ensure WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected - connecting now...");
+        if (!wifiLoadCredentials()) {
+            Serial.println("ERROR: Failed to load WiFi credentials");
+            return false;
+        }
+        
+        if (!wifiConnectPersistent(10, 30000, true)) {
+            Serial.println("ERROR: Failed to connect to WiFi");
+            return false;
+        }
+    }
+    
+    // Verify WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("ERROR: WiFi not connected, cannot start OTA server");
+        return false;
+    }
+    
+    // Ensure SD card is mounted
+#if SDMMC_ENABLED
+    // Check if SD card is already mounted (either via ESP-IDF direct or Arduino wrapper)
+    bool cardReady = false;
+    if (sd_card != nullptr) {
+        // ESP-IDF direct mount is active
+        Serial.println("SD card already mounted (ESP-IDF direct)");
+        cardReady = true;
+    } else if (SD_MMC.cardType() != CARD_NONE) {
+        // Arduino SD_MMC wrapper is active
+        Serial.println("SD card already mounted (Arduino SD_MMC)");
+        cardReady = true;
+    }
+    
+    // If not ready, mount it
+    if (!cardReady) {
+        Serial.println("Mounting SD card for OTA buffering...");
+        if (!sdInitDirect(false)) {
+            Serial.println("ERROR: Failed to mount SD card - OTA requires SD card");
+            return false;
+        }
+        // After sdInitDirect, check which method was used
+        if (sd_card != nullptr) {
+            Serial.println("SD card mounted via ESP-IDF direct method");
+            Serial.println("Using stdio file operations (fopen/fwrite/fread) - no SD_MMC wrapper needed");
+            cardReady = true;
+        } else if (SD_MMC.cardType() != CARD_NONE) {
+            Serial.println("SD card mounted via Arduino SD_MMC wrapper");
+            cardReady = true;
+        }
+    }
+    
+    // Final verification - check if filesystem is accessible
+    if (!cardReady) {
+        Serial.println("ERROR: SD card not ready after mount attempt");
+        return false;
+    }
+    
+    // Print card info
+    if (sd_card != nullptr) {
+        Serial.printf("SD card ready (ESP-IDF direct, size: %llu MB)\n", 
+                      ((uint64_t)sd_card->csd.capacity * sd_card->csd.sector_size) / (1024 * 1024));
+    } else if (SD_MMC.cardType() != CARD_NONE) {
+        Serial.printf("SD card ready (Arduino wrapper, type: %d, size: %llu MB)\n", 
+                      SD_MMC.cardType(), SD_MMC.cardSize() / (1024 * 1024));
+    }
+#else
+    Serial.println("ERROR: SD card support not enabled - OTA requires SD card");
+    return false;
+#endif
+    
+    // Get OTA partition info
+    const esp_partition_t* running_partition = esp_ota_get_running_partition();
+    const esp_partition_t* update_partition = esp_ota_get_next_update_partition(nullptr);
+    if (update_partition == nullptr) {
+        Serial.println("ERROR: No OTA partition found. Check partition table.");
+        return false;
+    }
+    
+    // Debug: Show which partitions we're using
+    if (running_partition != nullptr) {
+        Serial.printf("Currently running from: %s (offset: 0x%08x, size: 0x%08x)\n",
+                      running_partition->label, running_partition->address, running_partition->size);
+    }
+    Serial.printf("Will write to: %s (offset: 0x%08x, size: 0x%08x)\n",
+                  update_partition->label, update_partition->address, update_partition->size);
+    
+    // Verify we're not writing to the running partition
+    if (running_partition != nullptr && running_partition->address == update_partition->address) {
+        Serial.println("ERROR: Update partition is the same as running partition!");
+        return false;
+    }
+    
+    // Start HTTP server on port 80
+    WiFiServer server(80);
+    server.begin();
+    delay(100);
+    
+    Serial.println("\n========================================");
+    Serial.println("OTA SERVER STARTED");
+    Serial.println("========================================");
+    Serial.printf("Device IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.println("Access OTA at: http://" + WiFi.localIP().toString() + "/update");
+    Serial.println("Strategy: Save to SD card, then flash from SD");
+    Serial.println("(Server will block until update completes or timeout)");
+    Serial.println("========================================\n");
+    
+    uint32_t startTime = millis();
+    const uint32_t timeoutMs = 600000;  // 10 minute timeout
+    bool uploadComplete = false;
+    String sdFilePath = "/ota_firmware.bin";
+    
+    // Wait for client connection
+    WiFiClient client;
+    while (millis() - startTime < timeoutMs && !uploadComplete) {
+        client = server.available();
+        
+        if (client && client.connected()) {
+            Serial.println("Client connected!");
+            Serial.printf("Client IP: %s\n", client.remoteIP().toString().c_str());
+            
+            // Read HTTP request
+            String request = client.readStringUntil('\n');
+            request.trim();
+            Serial.printf("HTTP Request: %s\n", request.c_str());
+            
+            if (request.indexOf("POST /update") < 0 && request.indexOf("POST /") < 0) {
+                Serial.println("Not an OTA POST request");
+                client.println("HTTP/1.1 404 Not Found");
+                client.println("Connection: close");
+                client.println();
+                client.stop();
+                continue;
+            }
+            
+            // Read headers to find Content-Length and checksums
+            int contentLength = 0;
+            uint32_t expectedSimpleSum = 0;
+            uint32_t expectedCrcLike = 0;
+            bool hasChecksums = false;
+            
+            while (client.available()) {
+                String header = client.readStringUntil('\n');
+                header.trim();
+                if (header.length() == 0) break;
+                
+                String lowerHeader = header;
+                lowerHeader.toLowerCase();
+                
+                if (lowerHeader.startsWith("content-length:")) {
+                    String lenStr = header.substring(header.indexOf(':') + 1);
+                    lenStr.trim();
+                    contentLength = lenStr.toInt();
+                    Serial.printf("Content-Length: %d bytes (%.2f MB)\n", 
+                                 contentLength, contentLength / (1024.0 * 1024.0));
+                } else if (lowerHeader.startsWith("x-checksum-simple:")) {
+                    String valStr = header.substring(header.indexOf(':') + 1);
+                    valStr.trim();
+                    expectedSimpleSum = (uint32_t)strtoul(valStr.c_str(), nullptr, 0);
+                    hasChecksums = true;
+                    Serial.printf("Expected simple sum: 0x%08x\n", expectedSimpleSum);
+                } else if (lowerHeader.startsWith("x-checksum-crc:")) {
+                    String valStr = header.substring(header.indexOf(':') + 1);
+                    valStr.trim();
+                    expectedCrcLike = (uint32_t)strtoul(valStr.c_str(), nullptr, 0);
+                    hasChecksums = true;
+                    Serial.printf("Expected CRC-like: 0x%08x\n", expectedCrcLike);
+                }
+            }
+            
+            if (contentLength <= 0) {
+                Serial.println("ERROR: Invalid or missing Content-Length");
+                client.println("HTTP/1.1 400 Bad Request");
+                client.println("Connection: close");
+                client.println();
+                client.stop();
+                continue;
+            }
+            
+            // Send HTTP 200 OK response (before reading body)
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            delay(50);
+            
+            // Step 1: Save firmware to SD card
+            Serial.println("\nStep 1: Saving firmware to SD card...");
+#if SDMMC_ENABLED
+            // Always use standard C file operations (stdio) since sdInitDirect() mounts via ESP-IDF VFS
+            // The filesystem is mounted at /sdcard, so we can use fopen/fwrite/fread
+            String fullPath = "/sdcard" + sdFilePath;
+            FILE* sdFile = fopen(fullPath.c_str(), "wb");
+            if (!sdFile) {
+                Serial.printf("ERROR: Failed to open SD card file for writing: %s\n", fullPath.c_str());
+                client.stop();
+                continue;
+            }
+            Serial.printf("Opened file for writing: %s\n", fullPath.c_str());
+            
+            const size_t BUFFER_SIZE = 8192;
+            uint8_t buffer[BUFFER_SIZE];
+            size_t totalReceived = 0;
+            uint32_t lastProgress = 0;
+            bool magicVerified = false;
+            
+            // Checksum calculation (matching Python script)
+            uint32_t receivedSimpleSum = 0;
+            uint32_t receivedCrcLike = 0;
+            
+            Serial.println("Receiving firmware and writing to SD card...");
+            while (totalReceived < (size_t)contentLength && client.connected()) {
+                if (!client.available()) {
+                    delay(10);
+                    continue;
+                }
+                
+                size_t toRead = min((size_t)BUFFER_SIZE, (size_t)(contentLength - totalReceived));
+                size_t available = client.available();
+                if (toRead > available) {
+                    toRead = available;
+                }
+                
+                size_t readBytes = client.readBytes(buffer, toRead);
+                if (readBytes == 0) {
+                    delay(10);
+                    continue;
+                }
+                
+                // Verify magic byte on first chunk
+                if (!magicVerified && totalReceived == 0 && readBytes >= 1) {
+                    if (buffer[0] != 0xE9) {
+                        Serial.printf("ERROR: Invalid firmware magic byte: 0x%02x\n", buffer[0]);
+                        fclose(sdFile);
+                        String fullPath = "/sdcard" + sdFilePath;
+                        remove(fullPath.c_str());
+                        client.stop();
+                        break;
+                    }
+                    Serial.println("Firmware magic byte verified (0xE9)");
+                    magicVerified = true;
+                }
+                
+                // Calculate checksums as we receive data (matching Python script algorithm)
+                for (size_t i = 0; i < readBytes; i++) {
+                    uint8_t byte = buffer[i];
+                    // Simple sum checksum
+                    receivedSimpleSum = (receivedSimpleSum + byte) & 0xFFFFFFFF;
+                    // CRC-like checksum
+                    receivedCrcLike = ((receivedCrcLike << 1) ^ byte) & 0xFFFFFFFF;
+                    if (receivedCrcLike & 0x80000000) {
+                        receivedCrcLike = (receivedCrcLike ^ 0x04C11DB7) & 0xFFFFFFFF;
+                    }
+                }
+                
+                // Write to SD card
+                size_t written = fwrite(buffer, 1, readBytes, sdFile);
+                if (written != readBytes) {
+                    Serial.printf("ERROR: SD write failed: wrote %zu/%zu bytes\n", written, readBytes);
+                    fclose(sdFile);
+                    String fullPath = "/sdcard" + sdFilePath;
+                    remove(fullPath.c_str());
+                    client.stop();
+                    break;
+                }
+                
+                totalReceived += readBytes;
+                
+                // Progress reporting
+                if (totalReceived - lastProgress >= 102400) {
+                    float percent = (totalReceived * 100.0f) / contentLength;
+                    Serial.printf("Progress: %zu/%d bytes (%.1f%%)\n", totalReceived, contentLength, percent);
+                    lastProgress = totalReceived;
+                }
+            }
+            
+            // Close file
+            fclose(sdFile);
+            client.stop();
+            
+            if (totalReceived != (size_t)contentLength) {
+                Serial.printf("ERROR: Incomplete download: %zu/%d bytes\n", totalReceived, contentLength);
+                String fullPath = "/sdcard" + sdFilePath;
+                remove(fullPath.c_str());
+                continue;
+            }
+            
+            Serial.printf("Firmware saved to SD card: %zu bytes\n", totalReceived);
+            
+            // Verify checksums match
+            Serial.println("\nVerifying checksums...");
+            Serial.printf("Received simple sum: 0x%08x (%u)\n", receivedSimpleSum, receivedSimpleSum);
+            Serial.printf("Received CRC-like:   0x%08x\n", receivedCrcLike);
+            
+            if (hasChecksums) {
+                Serial.printf("Expected simple sum: 0x%08x (%u)\n", expectedSimpleSum, expectedSimpleSum);
+                Serial.printf("Expected CRC-like:   0x%08x\n", expectedCrcLike);
+                
+                if (receivedSimpleSum != expectedSimpleSum) {
+                    Serial.printf("ERROR: Simple sum mismatch! Received 0x%08x, expected 0x%08x\n", 
+                                 receivedSimpleSum, expectedSimpleSum);
+                    String fullPath = "/sdcard" + sdFilePath;
+                    remove(fullPath.c_str());
+                    continue;
+                }
+                
+                if (receivedCrcLike != expectedCrcLike) {
+                    Serial.printf("ERROR: CRC-like checksum mismatch! Received 0x%08x, expected 0x%08x\n", 
+                                 receivedCrcLike, expectedCrcLike);
+                    String fullPath = "/sdcard" + sdFilePath;
+                    remove(fullPath.c_str());
+                    continue;
+                }
+                
+                Serial.println("Checksums match! Data integrity verified.");
+            } else {
+                Serial.println("WARNING: No checksums provided by client - skipping verification");
+            }
+            
+            // Step 2: Read from SD card and write to OTA partition
+            Serial.println("\nStep 2: Flashing firmware from SD card to OTA partition...");
+            
+            // Begin OTA update
+            esp_ota_handle_t ota_handle = 0;
+            esp_err_t err = esp_ota_begin(update_partition, 0, &ota_handle);
+            if (err != ESP_OK) {
+                Serial.printf("ERROR: esp_ota_begin failed: %s (0x%x)\n", esp_err_to_name(err), err);
+                remove(fullPath.c_str());
+                continue;
+            }
+            
+            // Open SD file for reading (reuse fullPath from earlier)
+            FILE* readFile = fopen(fullPath.c_str(), "rb");
+            if (!readFile) {
+                Serial.printf("ERROR: Failed to open SD card file for reading: %s\n", fullPath.c_str());
+                esp_ota_abort(ota_handle);
+                remove(fullPath.c_str());
+                continue;
+            }
+            
+            size_t totalWritten = 0;
+            lastProgress = 0;
+            
+            while (true) {
+                size_t toRead = min((size_t)BUFFER_SIZE, (size_t)(contentLength - totalWritten));
+                size_t readBytes = fread(buffer, 1, toRead, readFile);
+                if (readBytes == 0) break;
+                
+                // Write to OTA partition
+                err = esp_ota_write(ota_handle, buffer, readBytes);
+                if (err != ESP_OK) {
+                    Serial.printf("ERROR: esp_ota_write failed at offset %zu: %s (0x%x)\n", 
+                                 totalWritten, esp_err_to_name(err), err);
+                    fclose(readFile);
+                    String fullPath = "/sdcard" + sdFilePath;
+                    remove(fullPath.c_str());
+                    esp_ota_abort(ota_handle);
+                    break;
+                }
+                
+                totalWritten += readBytes;
+                
+                // Progress reporting
+                if (totalWritten - lastProgress >= 102400) {
+                    float percent = (totalWritten * 100.0f) / contentLength;
+                    Serial.printf("Flash progress: %zu/%d bytes (%.1f%%)\n", totalWritten, contentLength, percent);
+                    lastProgress = totalWritten;
+                    
+                    // Periodic flash synchronization during write (every 100KB)
+                    // Small delay to allow flash controller to process writes
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                }
+            }
+            
+            // Close read file
+            fclose(readFile);
+            
+            if (totalWritten != (size_t)contentLength) {
+                Serial.printf("ERROR: Incomplete flash: %zu/%d bytes\n", totalWritten, contentLength);
+                esp_ota_abort(ota_handle);
+                String fullPath = "/sdcard" + sdFilePath;
+                remove(fullPath.c_str());
+                continue;
+            }
+            
+            Serial.printf("Firmware flashed: %zu bytes\n", totalWritten);
+            
+            // Step 3: Synchronize flash and validate
+            Serial.println("\nStep 3: Synchronizing flash and validating...");
+            
+            // Critical: Force flash cache to flush before validation
+            // Read from the partition to ensure cache coherency
+            Serial.println("Flushing flash cache...");
+            const esp_partition_t* running = esp_ota_get_running_partition();
+            const esp_partition_t* update = esp_ota_get_next_update_partition(nullptr);
+            
+            // Read a few bytes from the update partition to force cache flush
+            if (update != nullptr) {
+                uint8_t dummy[16];
+                esp_partition_read(update, 0, dummy, sizeof(dummy));
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_partition_read(update, update->size - 16, dummy, sizeof(dummy));
+            }
+            
+            // Additional delay to ensure all writes are committed
+            Serial.println("Waiting for flash writes to complete...");
+            vTaskDelay(pdMS_TO_TICKS(5000));  // 5 second delay for flash to complete
+            
+            // Read from partition again to force cache coherency
+            if (update != nullptr) {
+                uint8_t dummy[32];
+                esp_partition_read(update, 0, dummy, sizeof(dummy));
+                vTaskDelay(pdMS_TO_TICKS(2000));  // 2 more seconds
+            }
+            
+            // Finalize OTA update
+            err = esp_ota_end(ota_handle);
+            if (err != ESP_OK) {
+                if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
+                    Serial.println("ERROR: Firmware validation failed - checksum mismatch");
+                } else {
+                    Serial.printf("ERROR: esp_ota_end failed: %s (0x%x)\n", esp_err_to_name(err), err);
+                }
+                String fullPath = "/sdcard" + sdFilePath;
+                remove(fullPath.c_str());
+                continue;
+            }
+            
+            // Set boot partition (this tells bootloader to boot from the new partition on next reboot)
+            Serial.printf("Setting boot partition to: %s (offset: 0x%08x)\n",
+                         update_partition->label, update_partition->address);
+            err = esp_ota_set_boot_partition(update_partition);
+            if (err != ESP_OK) {
+                Serial.printf("ERROR: esp_ota_set_boot_partition failed: %s (0x%x)\n", esp_err_to_name(err), err);
+                String fullPath = "/sdcard" + sdFilePath;
+                remove(fullPath.c_str());
+                continue;
+            }
+            
+            // Verify boot partition was set correctly
+            const esp_partition_t* boot_partition = esp_ota_get_boot_partition();
+            if (boot_partition != nullptr) {
+                Serial.printf("Boot partition set to: %s (offset: 0x%08x)\n",
+                             boot_partition->label, boot_partition->address);
+                if (boot_partition->address != update_partition->address) {
+                    Serial.println("WARNING: Boot partition address doesn't match update partition!");
+                }
+            } else {
+                Serial.println("WARNING: Could not verify boot partition after setting");
+            }
+            
+            // Clean up SD file (reuse fullPath from earlier)
+            remove(fullPath.c_str());
+            Serial.println("OTA update complete - rebooting...");
+            Serial.flush();
+            delay(1000);
+            ESP.restart();
+            
+            uploadComplete = true;
+#else
+            Serial.println("ERROR: SD card support not enabled - cannot buffer");
+            client.stop();
+            continue;
+#endif
+        }
+        
+        delay(50);
+    }
+    
+    server.stop();
+    
+    if (!uploadComplete) {
+        Serial.println("OTA server timeout - continuing with normal boot");
+    }
+    
+    return uploadComplete;
+#else
+    Serial.println("ERROR: WiFi not enabled - cannot perform OTA update");
     return false;
 #endif // WIFI_ENABLED
 }
@@ -4187,19 +4958,19 @@ void sleepDurationSaveToNVS() {
 }
 
 /**
- * Handle !sleep_duration command - set sleep interval between MQTT wake-ups
- * Format: !sleep_duration <minutes>
- * Example: !sleep_duration 2 (wake every 2 minutes)
- *          !sleep_duration 4 (wake every 4 minutes)
+ * Handle !sleep_interval command - set sleep interval between MQTT wake-ups
+ * Format: !sleep_interval <minutes>
+ * Example: !sleep_interval 2 (wake every 2 minutes)
+ *          !sleep_interval 4 (wake every 4 minutes)
  * Must be a factor of 60: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60
  * Default is 1 (wake every minute)
  */
-static bool handleSleepDurationCommand(const String& parameter) {
-    Serial.println("Processing !sleep_duration command...");
+static bool handleSleepIntervalCommand(const String& parameter) {
+    Serial.println("Processing !sleep_interval command...");
     
     if (parameter.length() == 0) {
         Serial.printf("Current sleep interval: %d minutes\n", g_sleep_interval_minutes);
-        Serial.println("Usage: !sleep_duration <minutes>");
+        Serial.println("Usage: !sleep_interval <minutes>");
         Serial.println("Valid values (must be factors of 60): 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
         return false;
     }
@@ -4276,8 +5047,11 @@ bool isNumberAllowed(const String& number) {
     }
     
     // Load and check NVS numbers
-    if (!numbersPrefs.begin("numbers", true)) {  // Read-only
-        Serial.println("WARNING: Failed to open NVS for numbers - only hardcoded number allowed");
+    // Try read-write mode first (creates namespace if it doesn't exist), then check
+    // If namespace doesn't exist, it's fine - just means no numbers stored yet
+    if (!numbersPrefs.begin("numbers", false)) {  // Read-write (creates if needed)
+        // Only print error if it's a real failure (not just namespace doesn't exist)
+        // For now, just return false silently - namespace doesn't exist means no numbers stored
         return false;
     }
     
@@ -4304,19 +5078,39 @@ bool isNumberAllowed(const String& number) {
  * Add a phone number to the allowed list in NVS
  */
 bool addAllowedNumber(const String& number) {
-    // First check if it already exists
-    if (isNumberAllowed(number)) {
-        Serial.printf("Number %s is already in the allowed list\n", number.c_str());
-        return true;  // Already exists, consider it success
+    // Check hardcoded number first
+    if (number == "+447816969344") {
+        Serial.println("This number is already hardcoded as allowed - no need to add it");
+        return true;
     }
     
-    if (!numbersPrefs.begin("numbers", false)) {  // Read-write
+    // Open namespace for writing (creates if it doesn't exist)
+    // Note: Preferences library may log an error when creating namespace for first time - this is harmless
+    if (!numbersPrefs.begin("numbers", false)) {  // Read-write (creates if needed)
         Serial.println("ERROR: Failed to open NVS for saving numbers");
         return false;
     }
     
-    // Get current count
+    // Check if number already exists by scanning stored numbers
     int count = numbersPrefs.getInt("count", 0);
+    bool found = false;
+    
+    for (int i = 0; i < count && i < 100; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "num%d", i);
+        String storedNumber = numbersPrefs.getString(key, "");
+        
+        if (storedNumber == number) {
+            found = true;
+            break;
+        }
+    }
+    
+    if (found) {
+        Serial.printf("Number %s is already in the allowed list\n", number.c_str());
+        numbersPrefs.end();
+        return true;  // Already exists, consider it success
+    }
     
     // Check limit (max 100 numbers)
     if (count >= 100) {
@@ -4344,7 +5138,7 @@ bool addAllowedNumber(const String& number) {
  * Load allowed numbers from NVS (called on startup for verification/debugging)
  */
 void numbersLoadFromNVS() {
-    if (!numbersPrefs.begin("numbers", true)) {  // Read-only
+    if (!numbersPrefs.begin("numbers", false)) {  // Read-write (creates if needed, but we're just reading)
         Serial.println("No allowed numbers list in NVS (only hardcoded number will be allowed)");
         return;
     }
@@ -4844,7 +5638,7 @@ void enterConfigMode() {
         Serial.println("Verifying credentials were saved...");
         
         // Verify they were saved
-        wifiPrefs.begin("wifi", true);  // Read-only
+    wifiPrefs.begin("wifi", true);  // Read-only
         String savedSSID = wifiPrefs.getString("ssid", "");
         wifiPrefs.end();
         
@@ -6618,6 +7412,38 @@ void setup() {
         delay(500);  // Increased delay to let ESP-Hosted module stabilize after deep sleep
         Serial.println("\n=== Woke from deep sleep ===");
         Serial.printf("Boot count: %u, Wake cause: %d\n", sleepBootCount, wakeCause);
+        
+        // Check for 'o' key to start OTA server (debug shortcut)
+        // Give a short window to press 'o' before continuing
+        Serial.println("Press 'o' within 2 seconds to start OTA server, or wait to continue...");
+        uint32_t otaCheckStart = millis();
+        bool otaRequested = false;
+        while (millis() - otaCheckStart < 2000) {
+            if (Serial.available()) {
+                char ch = (char)Serial.read();
+                if (ch == 'o' || ch == 'O') {
+                    otaRequested = true;
+                    break;
+                }
+                // Drain any other characters
+                while (Serial.available()) {
+                    (void)Serial.read();
+                }
+            }
+            delay(10);
+        }
+        
+        if (otaRequested) {
+            Serial.println("\n>>> 'o' key pressed - starting OTA server <<<");
+            // Create task with sufficient stack to avoid stack protection fault
+            TaskHandle_t otaTaskHandle = nullptr;
+            xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
+            // Wait for task to complete (it will delete itself)
+            while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
+                delay(100);
+            }
+            // If we reach here, OTA timed out or failed - continue with normal boot
+        }
     } else {
         // Cold boot - wait for serial
         uint32_t start = millis();
@@ -6627,6 +7453,38 @@ void setup() {
         Serial.println("\n\n========================================");
         Serial.println("EL133UF1 ESP32-P4 Port Test");
         Serial.println("========================================\n");
+        
+        // Check for 'o' key to start OTA server (debug shortcut)
+        // Give a short window to press 'o' before continuing
+        Serial.println("Press 'o' within 2 seconds to start OTA server, or wait to continue...");
+        uint32_t otaCheckStart = millis();
+        bool otaRequested = false;
+        while (millis() - otaCheckStart < 2000) {
+            if (Serial.available()) {
+                char ch = (char)Serial.read();
+                if (ch == 'o' || ch == 'O') {
+                    otaRequested = true;
+                    break;
+                }
+                // Drain any other characters
+                while (Serial.available()) {
+                    (void)Serial.read();
+                }
+            }
+            delay(10);
+        }
+        
+        if (otaRequested) {
+            Serial.println("\n>>> 'o' key pressed - starting OTA server <<<");
+            // Create task with sufficient stack to avoid stack protection fault
+            TaskHandle_t otaTaskHandle = nullptr;
+            xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
+            // Wait for task to complete (it will delete itself)
+            while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
+                delay(100);
+            }
+            // If we reach here, OTA timed out or failed - continue with normal boot
+        }
     }
     
     // Print platform info
@@ -6685,12 +7543,24 @@ void setup() {
             while (Serial.available()) {
                 (void)Serial.read();
             }
-            Serial.printf("\nAuto-cycle starts in %lu ms (press '!' to cancel)...\n", (unsigned long)kCycleSerialEscapeMs);
+            Serial.printf("\nAuto-cycle starts in %lu ms (press '!' to cancel, 'o' for OTA)...\n", (unsigned long)kCycleSerialEscapeMs);
             uint32_t startWait = millis();
             while (millis() - startWait < kCycleSerialEscapeMs) {
                 if (Serial.available()) {
                     char ch = (char)Serial.read();
                     if (ch == '!') {
+                        shouldRun = false;
+                        break;
+                    } else if (ch == 'o' || ch == 'O') {
+                        // Debug: Connect WiFi and start OTA server
+                        Serial.println("\n>>> 'o' key pressed - starting OTA server <<<");
+                        // Create task with sufficient stack to avoid stack protection fault
+                        TaskHandle_t otaTaskHandle = nullptr;
+                        xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
+                        // Wait for task to complete (it will delete itself)
+                        while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
+                            delay(100);
+                        }
                         shouldRun = false;
                         break;
                     }
@@ -6801,6 +7671,12 @@ void setup() {
                 Serial.println(" OK!");
                 Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
                 
+                // Check for OTA update and notify if new firmware booted
+                // Do this after WiFi is connected so MQTT can work
+                Serial.println("\n=== Checking for OTA firmware update ===");
+                checkAndNotifyOTAUpdate();
+                Serial.println("=== OTA check complete ===\n");
+                
                 // Auto NTP sync
                 Serial.println("Syncing time with NTP...");
                 configTime(0, 0, "pool.ntp.org", "time.google.com");
@@ -6821,378 +7697,17 @@ void setup() {
                     Serial.printf("Time set: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
                                   timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
                                   timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-                } else {
-                    Serial.println(" FAILED!");
                 }
-            } else {
-                Serial.println(" FAILED!");
-                Serial.println("Could not connect to WiFi");
             }
-        } else {
-            Serial.println("\nNo WiFi credentials saved.");
-            Serial.println(">>> Use 'W' to set WiFi credentials, then 'n' to sync time <<<");
-        }
         }
     }
-    
-    // If time is valid, show WiFi status
-    if (timeValid) {
-        Serial.println("\n--- WiFi Status ---");
-        Serial.printf("MAC: %s\n", WiFi.macAddress().c_str());
-        if (strlen(wifiSSID) > 0) {
-            Serial.printf("Saved network: %s (use 'w' to connect)\n", wifiSSID);
-        } else {
-            Serial.println("No saved credentials (use 'W' to set)");
-        }
     }
-#else
-    if (!timeValid) {
-        Serial.println("\nWiFi disabled - use 's' to set time manually");
-    }
-#endif
-
-    Serial.println("\nCommands:");
-    Serial.println("  Display: 'c'=color bars, 't'=TTF, 'p'=pattern");
-    Serial.println("  Audio:   'A'=start 440Hz tone (logs codec regs), 'a'=stop, '+'/'-'=volume, 'K'=I2C scan");
-    Serial.println("  Time:    'r'=show time, 's'=set time, 'n'=NTP sync (after WiFi)");
-    Serial.println("  System:  'i'=info");
-#if WIFI_ENABLED
-    Serial.println("  WiFi:    'w'=connect, 'W'=set creds, 'q'=scan, 'd'=disconnect, 'x'=status");
-    Serial.println("  MQTT:    'J'=set config, 'K'=status, 'H'=connect, 'j'=disconnect");
-#endif
-#if SDMMC_ENABLED
-    Serial.println("  SD:      'M'/'m'=mount 4/1-bit, 'L'=list, 'I'=info, 'B'=rand BMP, 'G'=rand PNG");
-#endif
-    Serial.println();
-
-    Serial.println("\n========================================");
-    Serial.println("Ready! Enter command...");
-    Serial.println("========================================\n");
-}
-
-// ============================================================================
-// Deep Sleep Functions (using ESP32 internal timer)
-// ============================================================================
-// Uses official ESP-IDF APIs:
-// - esp_sleep_enable_timer_wakeup() for timer-based wake
-// - esp_deep_sleep_start() to enter deep sleep
-
-#include "esp_sleep.h"
-
-// sleepBootCount is declared globally above
-
-void sleepStatus() {
-    Serial.println("\n=== Deep Sleep Status ===");
-    Serial.printf("Boot count (RTC memory): %u\n", sleepBootCount);
-    
-    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-    Serial.print("Last wake cause: ");
-    switch (cause) {
-        case ESP_SLEEP_WAKEUP_UNDEFINED: Serial.println("Power on / reset"); break;
-        case ESP_SLEEP_WAKEUP_TIMER:     Serial.println("Timer"); break;
-        case ESP_SLEEP_WAKEUP_EXT0:      Serial.println("EXT0 GPIO"); break;
-        case ESP_SLEEP_WAKEUP_EXT1:      Serial.println("EXT1 GPIO"); break;
-        case ESP_SLEEP_WAKEUP_GPIO:      Serial.println("GPIO"); break;
-        default: Serial.printf("Other (%d)\n", cause); break;
-    }
-    Serial.println("==========================\n");
-}
-
-void sleepTest(uint32_t seconds) {
-    Serial.printf("\n=== Deep Sleep Test (%d seconds) ===\n", seconds);
-    Serial.println("Using ESP32 internal timer for wake");
-    Serial.println("\nPress any key within 3 seconds to cancel...");
-    
-    // Give user a chance to cancel
-    uint32_t start = millis();
-    while (millis() - start < 3000) {
-        if (Serial.available()) {
-            Serial.read();
-            Serial.println("Cancelled!");
-            return;
-        }
-        delay(100);
-    }
-    
-    // Configure timer wake (microseconds)
-    uint64_t sleep_us = (uint64_t)seconds * 1000000ULL;
-    esp_err_t err = esp_sleep_enable_timer_wakeup(sleep_us);
-    if (err != ESP_OK) {
-        Serial.printf("ERROR: Failed to configure timer: %s\n", esp_err_to_name(err));
-        return;
-    }
-    
-    sleepBootCount++;
-    Serial.printf("Boot count will be: %u\n", sleepBootCount);
-    Serial.println("\nEntering deep sleep NOW...");
-    Serial.flush();
-    delay(100);
-    
-    esp_deep_sleep_start();
-    
-    // Never reached
+#endif // WIFI_ENABLED
 }
 
 void loop() {
-    // Check if config mode is needed (set by auto_cycle_task when credentials missing)
-    if (g_config_mode_needed) {
-        g_config_mode_needed = false;  // Clear flag
-        Serial.println("\n>>> Entering configuration mode (requested by auto-cycle task) <<<");
-        enterConfigMode();
-        // After config mode, credentials should be set - task will retry on next cycle
-        Serial.println("Configuration complete. Auto-cycle will retry on next wake.");
-        return;  // Don't process other commands this loop iteration
-    }
-    
-    if (Serial.available()) {
-        char c = Serial.read();
-        
-        if (c == 'c' || c == 'C') {
-            Serial.println("\n--- Color Bars Test ---");
-            display.clear(EL133UF1_WHITE);
-            drawColorBars();
-            Serial.println("Updating display...");
-            display.update();
-            Serial.println("Done!");
-        }
-        else if (c == 't' || c == 'T') {
-            Serial.println("\n--- TTF Test ---");
-            drawTTFTest();
-            Serial.println("Updating display...");
-            display.update();
-            Serial.println("Done!");
-        }
-        else if (c == 'p' || c == 'P') {
-            Serial.println("\n--- Test Pattern ---");
-            drawTestPattern();
-            Serial.println("Updating display...");
-            display.update();
-            Serial.println("Done!");
-        }
-        else if (c == 'i' || c == 'I') {
-            Serial.println("\n--- Platform Info ---");
-            hal_print_info();
-        }
-        else if (c == 'A') {
-            Serial.println("\n--- Audio Tone Start ---");
-            Serial.printf("Codec I2C: SDA=%d SCL=%d addr=0x%02X\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, PIN_CODEC_I2C_ADDR);
-            Serial.printf("I2S pins: MCLK=%d BCLK=%d LRCK=%d DOUT=%d DIN=%d PA_EN=%d\n",
-                          PIN_CODEC_MCLK, PIN_CODEC_BCLK, PIN_CODEC_LRCK, PIN_CODEC_DOUT, PIN_CODEC_DIN, PIN_CODEC_PA_EN);
-            audio_start(true);
-        }
-        else if (c == 'K') {
-            Serial.println("\n--- I2C Scan (codec pins) ---");
-            Serial.printf("Using SDA=%d SCL=%d, scanning I2C0...\n", PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL);
-            g_codec_wire0.end();
-            delay(5);
-            if (g_codec_wire0.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000)) {
-                i2c_scan(g_codec_wire0);
-            } else {
-                Serial.println("I2C0 begin failed");
-            }
-            Serial.println("Scanning I2C1...");
-            g_codec_wire1.end();
-            delay(5);
-            if (g_codec_wire1.begin(PIN_CODEC_I2C_SDA, PIN_CODEC_I2C_SCL, 400000)) {
-                i2c_scan(g_codec_wire1);
-            } else {
-                Serial.println("I2C1 begin failed");
-            }
-        }
-        else if (c == 'a') {
-            Serial.println("\n--- Audio Tone Stop ---");
-            audio_stop();
-        }
-        else if (c == '+' || c == '=') {
-            g_audio_volume_pct += 5;
-            if (g_audio_volume_pct > 100) g_audio_volume_pct = 100;
-            Serial.printf("Audio volume (UI): %d%% (mapped %d..%d)\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
-            (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
-        }
-        else if (c == '-') {
-            g_audio_volume_pct -= 5;
-            if (g_audio_volume_pct < 0) g_audio_volume_pct = 0;
-            Serial.printf("Audio volume (UI): %d%% (mapped %d..%d)\n", g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
-            (void)g_codec.setDacVolumePercentMapped(g_audio_volume_pct, kCodecVolumeMinPct, kCodecVolumeMaxPct);
-        }
-        else if (c == 'r' || c == 'R') {
-            Serial.println("\n--- Internal RTC Status ---");
-            
-            time_t now = time(nullptr);
-            Serial.printf("Unix timestamp: %lu\n", (unsigned long)now);
-            
-            struct tm* timeinfo = gmtime(&now);
-            Serial.printf("UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
-                          timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
-                          timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-            
-            // Check if time is valid
-            if (now > 1577836800) {  // After Jan 1, 2020
-                Serial.println("Time appears valid");
-            } else {
-                Serial.println("Time not set - use 'n' to sync with NTP after WiFi connect");
-            }
-            
-            Serial.printf("Deep sleep boot count: %u\n", sleepBootCount);
-        }
-        else if (c == 's' || c == 'S') {
-            // Set internal RTC time from serial input
-            Serial.println("\n--- Set Internal RTC Time ---");
-            Serial.println("Enter Unix timestamp (seconds since 1970):");
-            Serial.println("Example: 1733673600 = 2024-12-08 12:00:00 UTC");
-            
-            // Wait for input
-            while (!Serial.available()) delay(10);
-            delay(100);  // Wait for full input
-            
-            String input = Serial.readStringUntil('\n');
-            input.trim();
-            unsigned long timestamp = input.toInt();
-            
-            if (timestamp > 0) {
-                Serial.printf("Setting time to: %lu\n", timestamp);
-                
-                // Set internal RTC using settimeofday
-                struct timeval tv = { .tv_sec = (time_t)timestamp, .tv_usec = 0 };
-                settimeofday(&tv, nullptr);
-                delay(100);
-                
-                // Verify
-                time_t now = time(nullptr);
-                Serial.printf("RTC now reads: %lu\n", (unsigned long)now);
-                struct tm* timeinfo = gmtime(&now);
-                Serial.printf("  UTC: %04d-%02d-%02d %02d:%02d:%02d\n",
-                              timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
-                              timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-            } else {
-                Serial.println("Invalid timestamp");
-            }
-        }
-#if WIFI_ENABLED
-        else if (c == 'q' || c == 'Q') {
-            wifiScan();
-        }
-        else if (c == 'w') {
-            wifiConnect();
-        }
-        else if (c == 'W') {
-            wifiSetCredentials();
-        }
-        else if (c == 'd') {
-            wifiDisconnect();
-        }
-        else if (c == 'x' || c == 'X') {
-            wifiStatus();
-        }
-        else if (c == 'n' || c == 'N') {
-            wifiNtpSync();
-        }
-        else if (c == 'j' || c == 'J') {
-            mqttSetConfig();
-        }
-        else if (c == 'k' || c == 'K') {
-            mqttStatus();
-        }
-        else if (c == 'h' || c == 'H') {
-            if (WiFi.status() != WL_CONNECTED) {
-                Serial.println("WiFi not connected! Connect first with 'w'");
-            } else {
-                mqttConnect();
-            }
-        }
-        else if (c == 'h' && c != 'H') {
-            // 'h' lowercase is disconnect (H uppercase is connect)
-            mqttDisconnect();
-        }
-#endif
-#if SDMMC_ENABLED
-        else if (c == 'M') {
-            sdInitDirect(false);  // 4-bit mode via ESP-IDF with internal pull-ups
-        }
-        else if (c == 'm') {
-            sdInitDirect(true);   // 1-bit mode via ESP-IDF with internal pull-ups
-        }
-        else if (c == 'A') {
-            sdInit(false);  // 4-bit mode via Arduino wrapper (for comparison)
-        }
-        else if (c == 'a') {
-            sdInit(true);   // 1-bit mode via Arduino wrapper (for comparison)
-        }
-        else if (c == 'L') {
-            sdList("/");
-        }
-        else if (c == 'I') {
-            sdInfo();
-        }
-        else if (c == 'T') {
-            if (!sdCardMounted) {
-                Serial.println("Mounting SD card first (4-bit mode via ESP-IDF)...");
-                sdInitDirect(false);
-            }
-            if (sdCardMounted) {
-                sdReadTest();
-            }
-        }
-        else if (c == 'U') {
-            if (sd_card != nullptr) {
-                sdUnmountDirect();  // Unmount ESP-IDF direct mount
-            } else {
-                sdUnmount();  // Unmount Arduino mount
-            }
-        }
-        else if (c == 'D') {
-            sdDiagnostics();
-        }
-        else if (c == 'B') {
-            // Load and display a random BMP from SD card
-            bmpLoadRandom("/");
-        }
-        else if (c == 'b') {
-            // List BMP files on SD card
-            bmpListFiles("/");
-        }
-        else if (c == 'G') {
-            // Load and display a random PNG from SD card
-            pngLoadRandom("/");
-        }
-        else if (c == 'g') {
-            // List PNG files on SD card
-            pngListFiles("/");
-        }
-        else if (c == 'P') {
-            sdPowerCycle();  // Power cycle the SD card
-        }
-        else if (c == 'O') {
-            sdPowerOn();
-        }
-        else if (c == 'o') {
-            sdPowerOff();
-        }
-        else if (c == 'V') {
-            Serial.println("\n=== LDO Status ===");
-            esp_ldo_dump(stdout);
-            Serial.println("==================\n");
-        }
-#endif
-        // Sleep commands (always available)
-        else if (c == 'z') {
-            sleepStatus();
-        }
-        else if (c == '1') {
-            sleepTest(10);   // Sleep for 10 seconds
-        }
-        else if (c == '2') {
-            sleepTest(30);   // Sleep for 30 seconds
-        }
-        else if (c == '3') {
-            sleepTest(60);   // Sleep for 1 minute
-        }
-        else if (c == '5') {
-            sleepTest(300);  // Sleep for 5 minutes
-        }
-    }
-    
-    delay(100);
+    // Main loop - handled by FreeRTOS tasks
+    // OTA server runs in a dedicated task with sufficient stack
 }
 
-#endif // ESP32 || ARDUINO_ARCH_ESP32
+#endif // defined(ESP32) || defined(ARDUINO_ARCH_ESP32)

@@ -1,10 +1,16 @@
 # ESP32-P4 Partition Table (32MB Flash)
 # Name,   Type, SubType, Offset,    Size,       Flags
-# nvs      - 24KB for non-volatile storage
+# nvs      - 24KB for non-volatile storage (kept at original position)
 # phy_init - 4KB for PHY calibration
-# factory  - ~30MB for application
-# storage  - 2MB reserved for future use (config cache, OTA staging, etc.)
+# ota_0    - First OTA app partition (4MB, firmware < 2MB so plenty of room)
+# ota_1    - Second OTA app partition (4MB)
+# otadata  - OTA data partition (8KB, must be below 16MB)
+# storage  - Remaining space, can extend past 16MB boundary (~23.9MB total)
+# All critical partitions (nvs, phy_init, ota_0, ota_1, otadata) kept below 16MB
+# Only storage is allowed to cross the 16MB boundary
 nvs,      data, nvs,     0x9000,    0x6000,
 phy_init, data, phy,     0xf000,    0x1000,
-factory,  app,  factory, 0x10000,   0x1DF0000,
-storage,  data, fat,     0x1E00000, 0x200000,
+ota_0,    app,  ota_0,   0x10000,   0x400000,
+ota_1,    app,  ota_1,   0x410000,  0x400000,
+otadata,  data, ota,     0x810000,  0x2000,
+storage,  data, fat,     0x812000,  0x17EE000,

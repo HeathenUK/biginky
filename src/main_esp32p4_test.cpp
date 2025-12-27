@@ -2960,7 +2960,8 @@ static void auto_cycle_task(void* arg) {
 #define MQTT_CLIENT_ID "esp32p4_device"              // Client ID
 #define MQTT_USERNAME "e2XkCCjnqSpUIxeSKB7WR7z7BWa8B6YAqYQaSKYQd0CBavgu0qeV6c2GQ6Af4i8w"                 // MQTT username
 #define MQTT_PASSWORD ""                 // MQTT password
-#define MQTT_TOPIC_SUBSCRIBE "devices/twilio_sms_bridge/cmd"       // Topic to subscribe to
+#define MQTT_TOPIC_SUBSCRIBE "devices/twilio_sms_bridge/cmd"       // Topic to subscribe to (SMS/WiFi UI)
+#define MQTT_TOPIC_WEBUI "devices/web-ui/cmd"                       // Topic to subscribe to (GitHub Pages web UI)
 #define MQTT_TOPIC_PUBLISH "devices/twilio_sms_bridge/outbox"            // Topic to publish to
 
 // MQTT runtime state
@@ -2970,6 +2971,7 @@ static char mqttClientId[64] = MQTT_CLIENT_ID;
 static char mqttUsername[128] = MQTT_USERNAME;  // Increased for flespi.io tokens
 static char mqttPassword[64] = MQTT_PASSWORD;
 static char mqttTopicSubscribe[128] = MQTT_TOPIC_SUBSCRIBE;
+static char mqttTopicWebUI[128] = MQTT_TOPIC_WEBUI;
 static char mqttTopicPublish[128] = MQTT_TOPIC_PUBLISH;
 static esp_mqtt_client_handle_t mqttClient = nullptr;
 static bool mqttMessageReceived = false;
@@ -2985,11 +2987,16 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
         case MQTT_EVENT_CONNECTED:
             mqttConnected = true;
             
-            // Subscribe to topic if configured
+            // Subscribe to both topics if configured
             if (strlen(mqttTopicSubscribe) > 0) {
                 // Subscribe with QoS 1 to ensure message delivery
                 int msg_id = esp_mqtt_client_subscribe(client, mqttTopicSubscribe, 1);
-                // Wait briefly for subscription confirmation and any retained messages
+                Serial.printf("Subscribed to %s (msg_id: %d)\n", mqttTopicSubscribe, msg_id);
+            }
+            if (strlen(mqttTopicWebUI) > 0) {
+                // Subscribe to web UI topic with QoS 1
+                int msg_id = esp_mqtt_client_subscribe(client, mqttTopicWebUI, 1);
+                Serial.printf("Subscribed to %s (msg_id: %d)\n", mqttTopicWebUI, msg_id);
             }
             break;
             
@@ -3007,6 +3014,15 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             break;
             
         case MQTT_EVENT_DATA: {
+            // Extract topic
+            char topic[event->topic_len + 1];
+            if (event->topic_len > 0) {
+                memcpy(topic, event->topic, event->topic_len);
+                topic[event->topic_len] = '\0';
+            } else {
+                topic[0] = '\0';
+            }
+            
             // Extract message payload
             char message[event->data_len + 1];
             if (event->data_len > 0) {
@@ -3021,13 +3037,13 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 // Check if it's a JSON command from web interface (starts with '{')
                 if (message[0] == '{') {
                     String jsonMessage = String(message);
-                    Serial.printf("Received retained JSON message (web interface): %s\n", jsonMessage.c_str());
+                    Serial.printf("Received retained JSON message (web interface) on topic %s: %s\n", topic, jsonMessage.c_str());
                     if (handleWebInterfaceCommand(jsonMessage)) {
-                        // Command processed successfully - clear the retained message
-                        if (strlen(mqttTopicSubscribe) > 0 && client != nullptr) {
-                            int msg_id = esp_mqtt_client_publish(client, mqttTopicSubscribe, "", 0, 1, 1);
+                        // Command processed successfully - clear the retained message on the same topic
+                        if (strlen(topic) > 0 && client != nullptr) {
+                            int msg_id = esp_mqtt_client_publish(client, topic, "", 0, 1, 1);
                             if (msg_id > 0) {
-                                Serial.printf("Published blank retained message to clear (msg_id: %d)\n", msg_id);
+                                Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topic, msg_id);
                             }
                         }
                     }
@@ -3036,11 +3052,11 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     lastMqttMessage = String(message);
                     mqttMessageReceived = true;
                     
-                    // Clear the retained message by publishing an empty message with retain flag
-                    if (strlen(mqttTopicSubscribe) > 0 && client != nullptr) {
-                        int msg_id = esp_mqtt_client_publish(client, mqttTopicSubscribe, "", 0, 1, 1);
+                    // Clear the retained message by publishing an empty message with retain flag on the same topic
+                    if (strlen(topic) > 0 && client != nullptr) {
+                        int msg_id = esp_mqtt_client_publish(client, topic, "", 0, 1, 1);
                         if (msg_id > 0) {
-                            Serial.printf("Published blank retained message to clear (msg_id: %d)\n", msg_id);
+                            Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topic, msg_id);
                         }
                     }
                 }
@@ -3085,6 +3101,7 @@ void mqttLoadConfig() {
     strncpy(mqttUsername, MQTT_USERNAME, sizeof(mqttUsername) - 1);
     strncpy(mqttPassword, MQTT_PASSWORD, sizeof(mqttPassword) - 1);
     strncpy(mqttTopicSubscribe, MQTT_TOPIC_SUBSCRIBE, sizeof(mqttTopicSubscribe) - 1);
+    strncpy(mqttTopicWebUI, MQTT_TOPIC_WEBUI, sizeof(mqttTopicWebUI) - 1);
     strncpy(mqttTopicPublish, MQTT_TOPIC_PUBLISH, sizeof(mqttTopicPublish) - 1);
     Serial.printf("MQTT config (hardcoded): broker=%s, port=%d, client_id=%s\n", 
                   mqttBroker, mqttPort, mqttClientId);

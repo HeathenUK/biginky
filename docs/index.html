@@ -28,7 +28,18 @@ button:disabled{background:#666;cursor:not-allowed;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
 canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;}
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+<script src="https://raw.githubusercontent.com/eclipse/paho.mqtt.javascript/master/src/paho-mqtt.js"></script>
+<script>
+// Verify Paho library loaded
+window.addEventListener('load', function() {
+    if (typeof Paho === 'undefined' || typeof Paho.MQTT === 'undefined') {
+        console.error('Paho MQTT library failed to load');
+        document.getElementById('connectionStatusMsg').innerHTML = '<div class="error">Error: Could not load MQTT library. Please check your internet connection or try refreshing the page.</div>';
+    } else {
+        console.log('Paho MQTT library loaded successfully');
+    }
+});
+</script>
 </head>
 <body>
 <h1>BigInky Remote Control</h1>

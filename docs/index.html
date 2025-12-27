@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BigInky Remote Control</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#1a1a1a;color:#e0e0e0;}
+h1{color:#e0e0e0;border-bottom:2px solid #4CAF50;padding-bottom:10px;}
+.section{background:#2a2a2a;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.3);}
+h2{color:#4CAF50;margin-top:0;}
+label{display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;}
+textarea{width:100%;min-height:100px;font-family:monospace;padding:10px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
+select{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
+input[type="text"]{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
+button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;}
+button:hover{background:#45a049;}
+button:disabled{background:#666;cursor:not-allowed;}
+.status{color:#4CAF50;margin:10px 0;font-weight:bold;}
+.error{color:#f44336;}
+.info{color:#2196F3;margin:10px 0;padding:10px;background:#1a1a1a;border-radius:4px;border-left:3px solid #2196F3;}
+.connection-status{display:inline-block;padding:5px 10px;border-radius:4px;font-weight:bold;margin-left:10px;}
+.connected{background:#4CAF50;color:white;}
+.disconnected{background:#f44336;color:white;}
+.connecting{background:#ff9800;color:white;}
+.flex-row{display:flex;flex-wrap:wrap;gap:15px;align-items:flex-end;margin-top:15px;}
+.flex-item{flex:1;min-width:150px;}
+button.flex-shrink{flex-shrink:0;margin-top:0;}
+canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+</head>
+<body>
+<h1>BigInky Remote Control</h1>
+<div class="section">
+<h2>Connection</h2>
+<div class="info">
+<p><strong>Broker:</strong> mqtt.flespi.io (WebSocket)</p>
+<p><strong>Topic:</strong> devices/twilio_sms_bridge/cmd</p>
+<p>Enter your Flespi.io token below to connect and send commands to your device.</p>
+</div>
+<label>Flespi.io Token:</label>
+<input type="text" id="mqttToken" placeholder="Paste your Flespi.io token here" style="font-family:monospace;font-size:12px;">
+<button onclick="connectMQTT()" id="connectBtn">Connect</button>
+<button onclick="disconnectMQTT()" id="disconnectBtn" disabled>Disconnect</button>
+<span id="connectionStatus" class="connection-status disconnected">Disconnected</span>
+<div id="connectionStatusMsg"></div>
+</div>
+<div class="section">
+<h2>Text Display</h2>
+<p>Enter text to display on the panel. Select text colour, background colour, and outline colour.</p>
+<label>Text:</label>
+<textarea id="textInput" placeholder="Enter text to display..."></textarea>
+<div class="flex-row">
+<div class="flex-item">
+<label>Text Colour:</label>
+<select id="textColor">
+<option value="black" selected>Black</option>
+<option value="yellow">Yellow</option>
+<option value="red">Red</option>
+<option value="blue">Blue</option>
+<option value="green">Green</option>
+<option value="multi">Multi (Random Colours)</option>
+<option value="white">White</option>
+</select>
+</div>
+<div class="flex-item">
+<label>Background Colour:</label>
+<select id="textBackgroundColor">
+<option value="black">Black</option>
+<option value="yellow">Yellow</option>
+<option value="red">Red</option>
+<option value="blue">Blue</option>
+<option value="green">Green</option>
+<option value="white" selected>White</option>
+</select>
+</div>
+<div class="flex-item">
+<label>Outline Colour:</label>
+<select id="textOutlineColor">
+<option value="black" selected>Black</option>
+<option value="yellow">Yellow</option>
+<option value="red">Red</option>
+<option value="blue">Blue</option>
+<option value="green">Green</option>
+<option value="white">White</option>
+</select>
+</div>
+<button onclick="sendTextDisplay()" class="flex-shrink" id="textDisplayBtn" disabled>Display Text</button>
+</div>
+<div id="textStatus"></div>
+</div>
+<div class="section">
+<h2>Drawing Canvas</h2>
+<p>Draw on the canvas (800x600) and display it on the panel (1600x1200). The drawing will be scaled 2x and centered.</p>
+<label>Colour:</label>
+<select id="drawColor" style="width:150px;margin:10px 0;">
+<option value="0" selected>Black</option>
+<option value="2">Yellow</option>
+<option value="3">Red</option>
+<option value="5">Blue</option>
+<option value="6">Green</option>
+<option value="1">White</option>
+</select>
+<button onclick="clearCanvas()">Clear Canvas</button>
+<button onclick="sendCanvasToDisplay()" id="canvasDisplayBtn" disabled>Display on Panel</button>
+<canvas id="drawCanvas" width="800" height="600"></canvas>
+<div id="canvasStatus"></div>
+</div>
+<div class="section">
+<h2>Other Commands</h2>
+<button onclick="sendCommand('clear')" id="clearBtn" disabled>Clear Display</button>
+<button onclick="sendCommand('next')" id="nextBtn" disabled>Next Media Item</button>
+<div id="commandStatus"></div>
+</div>
+<div class="section">
+<h2>Command Log</h2>
+<div id="commandLog" style="max-height:300px;overflow-y:auto;background:#1a1a1a;padding:10px;border:1px solid #444;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#e0e0e0;"></div>
+</div>
+<script>
+const MQTT_BROKER = 'mqtt.flespi.io';
+const MQTT_PORT = 443;
+const MQTT_TOPIC = 'devices/twilio_sms_bridge/cmd';
+let mqttClient = null;
+let isConnected = false;
+
+function updateConnectionStatus(status, message) {
+    const statusEl = document.getElementById('connectionStatus');
+    const msgEl = document.getElementById('connectionStatusMsg');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    
+    statusEl.className = 'connection-status ' + status;
+    statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    
+    if (message) {
+        msgEl.innerHTML = '<div class="' + (status === 'connected' ? 'status' : 'error') + '">' + message + '</div>';
+    } else {
+        msgEl.innerHTML = '';
+    }
+    
+    connectBtn.disabled = (status === 'connected' || status === 'connecting');
+    disconnectBtn.disabled = (status === 'disconnected');
+    
+    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn'];
+    buttons.forEach(id => {
+        document.getElementById(id).disabled = (status !== 'connected');
+    });
+}
+
+function logCommand(action, data) {
+    const logEl = document.getElementById('commandLog');
+    const timestamp = new Date().toLocaleTimeString();
+    const logEntry = `[${timestamp}] ${action}: ${JSON.stringify(data)}
+`;
+    logEl.textContent = logEntry + logEl.textContent;
+    const lines = logEl.textContent.split('
+');
+    if (lines.length > 50) {
+        logEl.textContent = lines.slice(0, 50).join('
+');
+    }
+}
+
+function connectMQTT() {
+    const token = document.getElementById('mqttToken').value.trim();
+    if (!token) {
+        updateConnectionStatus('disconnected', 'Please enter a Flespi.io token');
+        return;
+    }
+    
+    if (mqttClient && isConnected) {
+        return;
+    }
+    
+    updateConnectionStatus('connecting', 'Connecting to MQTT broker...');
+    
+    const clientId = 'biginky_web_' + Math.random().toString(16).substr(2, 8);
+    mqttClient = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, '/', clientId);
+    
+    mqttClient.onConnectionLost = function(responseObject) {
+        isConnected = false;
+        updateConnectionStatus('disconnected', 'Connection lost: ' + (responseObject.errorMessage || 'Unknown error'));
+        logCommand('DISCONNECTED', { reason: responseObject.errorMessage });
+    };
+    
+    mqttClient.onMessageArrived = function(message) {
+        logCommand('MESSAGE_RECEIVED', { topic: message.destinationName, payload: message.payloadString });
+    };
+    
+    const connectOptions = {
+        userName: token,
+        password: '',
+        useSSL: true,
+        onSuccess: function() {
+            isConnected = true;
+            updateConnectionStatus('connected', 'Connected successfully!');
+            logCommand('CONNECTED', { broker: MQTT_BROKER, topic: MQTT_TOPIC });
+        },
+        onFailure: function(error) {
+            isConnected = false;
+            updateConnectionStatus('disconnected', 'Connection failed: ' + (error.errorMessage || 'Unknown error'));
+            logCommand('CONNECTION_FAILED', { error: error.errorMessage });
+            mqttClient = null;
+        },
+        timeout: 10,
+        keepAliveInterval: 60
+    };
+    
+    mqttClient.connect(connectOptions);
+}
+
+function disconnectMQTT() {
+    if (mqttClient && isConnected) {
+        mqttClient.disconnect();
+        mqttClient = null;
+        isConnected = false;
+        updateConnectionStatus('disconnected', 'Disconnected');
+        logCommand('DISCONNECTED', { reason: 'User requested' });
+    }
+}
+
+function publishMessage(payload) {
+    if (!mqttClient || !isConnected) {
+        showStatus('commandStatus', 'Not connected to MQTT broker', true);
+        return false;
+    }
+    
+    try {
+        const message = new Paho.MQTT.Message(JSON.stringify(payload));
+        message.destinationName = MQTT_TOPIC;
+        message.qos = 1;
+        mqttClient.send(message);
+        logCommand('PUBLISH', payload);
+        return true;
+    } catch (error) {
+        showStatus('commandStatus', 'Failed to send message: ' + error, true);
+        return false;
+    }
+}
+
+function sendTextDisplay() {
+    const text = document.getElementById('textInput').value.trim();
+    if (text.length === 0) {
+        showStatus('textStatus', 'Please enter some text', true);
+        return;
+    }
+    
+    const color = document.getElementById('textColor').value;
+    const bgColor = document.getElementById('textBackgroundColor').value;
+    const outlineColor = document.getElementById('textOutlineColor').value;
+    
+    showStatus('textStatus', 'Sending text display command...', false);
+    
+    const payload = {
+        command: 'text_display',
+        text: text,
+        color: color,
+        backgroundColour: bgColor,
+        outlineColour: outlineColor
+    };
+    
+    if (publishMessage(payload)) {
+        showStatus('textStatus', 'Text display command sent successfully!', false);
+    } else {
+        showStatus('textStatus', 'Failed to send command', true);
+    }
+}
+
+function sendCanvasToDisplay() {
+    const canvas = document.getElementById('drawCanvas');
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(0, 0, 800, 600);
+    const data = imageData.data;
+    
+    const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+    const einkColorValues = [0,1,2,3,5,6];
+    
+    function findClosestColorIdx(r, g, b) {
+        let minDist = Infinity;
+        let closestIdx = 0;
+        for (let i = 0; i < einkColors.length; i++) {
+            const ec = einkColors[i];
+            const dist = Math.pow(r-ec[0],2) + Math.pow(g-ec[1],2) + Math.pow(b-ec[2],2);
+            if (dist < minDist) {
+                minDist = dist;
+                closestIdx = i;
+            }
+        }
+        return closestIdx;
+    }
+    
+    const pixelData = [];
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i+1];
+        const b = data[i+2];
+        const arrayIdx = findClosestColorIdx(r, g, b);
+        const einkColorValue = einkColorValues[arrayIdx];
+        pixelData.push(einkColorValue);
+    }
+    
+    const pixelBytes = new Uint8Array(pixelData);
+    const base64Data = btoa(String.fromCharCode.apply(null, pixelBytes));
+    
+    showStatus('canvasStatus', 'Sending canvas data...', false);
+    
+    const payload = {
+        command: 'canvas_display',
+        pixelData: base64Data,
+        width: 800,
+        height: 600
+    };
+    
+    if (publishMessage(payload)) {
+        showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+    } else {
+        showStatus('canvasStatus', 'Failed to send command', true);
+    }
+}
+
+function sendCommand(cmd) {
+    const payload = { command: cmd };
+    
+    if (publishMessage(payload)) {
+        showStatus('commandStatus', cmd + ' command sent successfully!', false);
+    } else {
+        showStatus('commandStatus', 'Failed to send command', true);
+    }
+}
+
+function showStatus(id, msg, isError) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = isError ? 'error status' : 'status';
+}
+
+let canvas = document.getElementById('drawCanvas');
+let ctx = canvas.getContext('2d');
+let isDrawing = false;
+let lastX = 0;
+let lastY = 0;
+
+const colorMap = {0:'#000000',1:'#FFFFFF',2:'#FFFF00',3:'#FF0000',5:'#0000FF',6:'#00FF00'};
+
+function getDrawColor() {
+    const val = parseInt(document.getElementById('drawColor').value);
+    return colorMap[val] || '#000000';
+}
+
+function startDraw(e) {
+    isDrawing = true;
+    const rect = canvas.getBoundingClientRect();
+    lastX = e.clientX ? e.clientX - rect.left : e.touches[0].clientX - rect.left;
+    lastY = e.clientY ? e.clientY - rect.top : e.touches[0].clientY - rect.top;
+}
+
+function draw(e) {
+    if (!isDrawing) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX ? e.clientX - rect.left : e.touches[0].clientX - rect.left;
+    const y = e.clientY ? e.clientY - rect.top : e.touches[0].clientY - rect.top;
+    ctx.strokeStyle = getDrawColor();
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    lastX = x;
+    lastY = y;
+}
+
+function stopDraw() {
+    isDrawing = false;
+}
+
+function clearCanvas() {
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, 800, 600);
+    showStatus('canvasStatus', 'Canvas cleared', false);
+}
+
+canvas.addEventListener('mousedown', startDraw);
+canvas.addEventListener('mousemove', draw);
+canvas.addEventListener('mouseup', stopDraw);
+canvas.addEventListener('mouseleave', stopDraw);
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDraw(e); });
+canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); });
+canvas.addEventListener('touchend', (e) => { e.preventDefault(); stopDraw(); });
+
+clearCanvas();
+</script>
+</body>
+</html>

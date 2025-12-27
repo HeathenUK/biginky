@@ -3224,9 +3224,14 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                          strcmp(topic, mqttTopicWebUI) == 0 ? 1 : 0);
             const char* message = (const char*)mqttMessageBuffer;
             
+            // Determine which topic to use for clearing (prefer stored, fallback to current event)
+            const char* topicToClear = (strlen(mqttMessageTopic) > 0) ? mqttMessageTopic : topic;
+            bool shouldClearRetained = false;
+            
             // Process retained messages (use stored retain flag from first chunk)
             // Note: ESP-IDF provides topic and retain on all chunks, but we store from first chunk for safety
             if (mqttMessageRetain && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr) {
+                shouldClearRetained = true;  // Mark for clearing after processing
                 Serial.printf("Processing retained message: topic='%s', size=%d\n", mqttMessageTopic, mqttMessageBufferUsed);
                 // Check if it's from web UI topic - these are JSON commands with "command" field
                 // Also check the current event topic as fallback (in case stored topic is wrong)

@@ -199,7 +199,43 @@ function updateConnectionStatus(status, message) {
 function logCommand(action, data) {
     const logEl = document.getElementById('commandLog');
     const timestamp = new Date().toLocaleTimeString();
-    const logEntry = `[${timestamp}] ${action}: ${JSON.stringify(data)}\n`;
+    let logEntry = `[${timestamp}] ${action}: `;
+    
+    // Summarize commands instead of dumping full payload (especially for large canvas commands)
+    if (action === 'PUBLISH' && data && data.command) {
+        const command = data.command;
+        let summary = `command="${command}"`;
+        
+        if (command === 'canvas_display') {
+            const size = data.pixelData ? data.pixelData.length : 0;
+            summary += `, width=${data.width || '?'}, height=${data.height || '?'}, pixelData=${(size / 1024).toFixed(1)}KB`;
+        } else if (command === 'text_display') {
+            const text = data.text || '';
+            const preview = text.length > 50 ? text.substring(0, 50) + '...' : text;
+            summary += `, text="${preview}"`;
+        } else {
+            // For other commands, show a brief summary
+            summary += ` (${Object.keys(data).length} fields)`;
+        }
+        
+        logEntry += summary;
+    } else {
+        // For non-PUBLISH actions, show a brief summary
+        if (data && typeof data === 'object') {
+            const keys = Object.keys(data);
+            if (keys.length <= 3) {
+                // Small objects - show them
+                logEntry += JSON.stringify(data);
+            } else {
+                // Large objects - just show keys
+                logEntry += `{${keys.join(', ')}}`;
+            }
+        } else {
+            logEntry += data;
+        }
+    }
+    
+    logEntry += '\n';
     logEl.textContent = logEntry + logEl.textContent;
     const lines = logEl.textContent.split('\n');
     if (lines.length > 50) {

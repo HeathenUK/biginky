@@ -3119,6 +3119,14 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
         case MQTT_EVENT_DISCONNECTED:
             Serial.println("MQTT disconnected");
             mqttConnected = false;
+            // Free message buffer on disconnect to prevent memory leaks
+            if (mqttMessageBuffer != nullptr) {
+                free(mqttMessageBuffer);
+                mqttMessageBuffer = nullptr;
+                mqttMessageBufferSize = 0;
+                mqttMessageBufferTotalLen = 0;
+                mqttMessageBufferUsed = 0;
+            }
             break;
             
         case MQTT_EVENT_DATA: {

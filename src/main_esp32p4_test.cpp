@@ -3136,8 +3136,8 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             
             // Process retained messages
             if (event->retain && event->data_len > 0) {
-                // Check if it's a JSON command from web interface (starts with '{')
-                if (message[0] == '{') {
+                // Check if it's from web UI topic - these are JSON commands with "command" field
+                if (strcmp(topic, mqttTopicWebUI) == 0 && message[0] == '{') {
                     String jsonMessage = String(message);
                     Serial.printf("Received retained JSON message (web interface) on topic %s: %s\n", topic, jsonMessage.c_str());
                     if (handleWebInterfaceCommand(jsonMessage)) {
@@ -3149,8 +3149,9 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                             }
                         }
                     }
-                } else {
-                    // SMS bridge command (text format)
+                }
+                // Check if it's from SMS bridge topic - these can be text or JSON (with "text" field, not "command")
+                else if (strcmp(topic, mqttTopicSubscribe) == 0) {
                     lastMqttMessage = String(message);
                     mqttMessageReceived = true;
                     
@@ -3164,10 +3165,10 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 }
             }
             // Process non-retained JSON messages (for web interface commands - immediate delivery)
-            else if (!event->retain && event->data_len > 0 && message[0] == '{') {
-                // Check if it's a JSON command from web interface
+            else if (!event->retain && event->data_len > 0 && message[0] == '{' && strcmp(topic, mqttTopicWebUI) == 0) {
+                // Check if it's a JSON command from web interface (must be on web UI topic)
                 String jsonMessage = String(message);
-                Serial.printf("Received non-retained JSON message: %s\n", jsonMessage.c_str());
+                Serial.printf("Received non-retained JSON message from web UI: %s\n", jsonMessage.c_str());
                 handleWebInterfaceCommand(jsonMessage);
             }
             break;

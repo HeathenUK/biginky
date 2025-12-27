@@ -3016,20 +3016,36 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 message[0] = '\0';
             }
             
-            // Process retained messages (for SMS bridge commands)
+            // Process retained messages
             if (event->retain && event->data_len > 0) {
-                lastMqttMessage = String(message);
-                mqttMessageReceived = true;
-                
-                // Clear the retained message by publishing an empty message with retain flag
-                if (strlen(mqttTopicSubscribe) > 0 && client != nullptr) {
-                    int msg_id = esp_mqtt_client_publish(client, mqttTopicSubscribe, "", 0, 1, 1);
-                    if (msg_id > 0) {
-                        Serial.printf("Published blank retained message to clear (msg_id: %d)\n", msg_id);
+                // Check if it's a JSON command from web interface (starts with '{')
+                if (message[0] == '{') {
+                    String jsonMessage = String(message);
+                    Serial.printf("Received retained JSON message (web interface): %s\n", jsonMessage.c_str());
+                    if (handleWebInterfaceCommand(jsonMessage)) {
+                        // Command processed successfully - clear the retained message
+                        if (strlen(mqttTopicSubscribe) > 0 && client != nullptr) {
+                            int msg_id = esp_mqtt_client_publish(client, mqttTopicSubscribe, "", 0, 1, 1);
+                            if (msg_id > 0) {
+                                Serial.printf("Published blank retained message to clear (msg_id: %d)\n", msg_id);
+                            }
+                        }
+                    }
+                } else {
+                    // SMS bridge command (text format)
+                    lastMqttMessage = String(message);
+                    mqttMessageReceived = true;
+                    
+                    // Clear the retained message by publishing an empty message with retain flag
+                    if (strlen(mqttTopicSubscribe) > 0 && client != nullptr) {
+                        int msg_id = esp_mqtt_client_publish(client, mqttTopicSubscribe, "", 0, 1, 1);
+                        if (msg_id > 0) {
+                            Serial.printf("Published blank retained message to clear (msg_id: %d)\n", msg_id);
+                        }
                     }
                 }
             }
-            // Process non-retained JSON messages (for web interface commands)
+            // Process non-retained JSON messages (for web interface commands - immediate delivery)
             else if (!event->retain && event->data_len > 0 && message[0] == '{') {
                 // Check if it's a JSON command from web interface
                 String jsonMessage = String(message);

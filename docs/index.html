@@ -28,15 +28,25 @@ button:disabled{background:#666;cursor:not-allowed;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
 canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;}
 </style>
-<script src="https://raw.githubusercontent.com/eclipse/paho.mqtt.javascript/master/src/paho-mqtt.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js"></script>
 <script>
 // Verify Paho library loaded
 window.addEventListener('load', function() {
     if (typeof Paho === 'undefined' || typeof Paho.MQTT === 'undefined') {
-        console.error('Paho MQTT library failed to load');
-        document.getElementById('connectionStatusMsg').innerHTML = '<div class="error">Error: Could not load MQTT library. Please check your internet connection or try refreshing the page.</div>';
+        console.error('Paho MQTT library failed to load from jsDelivr, trying fallback...');
+        // Fallback: try unpkg
+        const script = document.createElement('script');
+        script.src = 'https://unpkg.com/paho-mqtt@1.1.0/paho-mqtt.js';
+        script.onload = function() {
+            console.log('Paho MQTT library loaded from fallback (unpkg)');
+        };
+        script.onerror = function() {
+            console.error('Failed to load Paho MQTT from all sources');
+            document.getElementById('connectionStatusMsg').innerHTML = '<div class="error">Error: Could not load MQTT library. Please check your internet connection or try refreshing the page.</div>';
+        };
+        document.head.appendChild(script);
     } else {
-        console.log('Paho MQTT library loaded successfully');
+        console.log('Paho MQTT library loaded successfully from jsDelivr');
     }
 });
 </script>

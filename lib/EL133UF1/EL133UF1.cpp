@@ -11,6 +11,12 @@
 #include "esp_heap_caps.h"
 #endif
 
+// Forward declaration for thumbnail publishing (defined in main application)
+// This allows the library to automatically publish thumbnails after display updates
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+extern void publishMQTTThumbnailIfConnected();
+#endif
+
 // Image processing HAL (PPA acceleration on ESP32-P4)
 #if EL133UF1_USE_ARGB8888
 #include "image_hal.h"
@@ -1384,6 +1390,12 @@ void EL133UF1::update(bool skipInit) {
 
     Serial.printf("  TOTAL:            %4lu ms (%.1f sec)\n", 
                   millis() - totalStart, (millis() - totalStart) / 1000.0);
+    
+    // Publish thumbnail after display update (if MQTT is connected)
+    // This is called automatically whenever the display is updated
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+    publishMQTTThumbnailIfConnected();
+#endif
 }
 
 void EL133UF1::updateAsync(bool skipInit) {

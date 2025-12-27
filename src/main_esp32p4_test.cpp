@@ -97,8 +97,8 @@
 // #define this to enable SSL at build (or switch to the 'ssl' build target in vscode)
 #ifdef PSY_ENABLE_SSL
   #include <PsychicHttpsServer.h>
+  #include "certificates.h"
 #endif
-#include "certificates.h"
 #include "web_assets.h"
 // Keep ESP-IDF OTA includes for OTA operations
 #include "esp_ota_ops.h"
@@ -262,6 +262,10 @@ RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
 uint32_t lastMediaIndex = 0;  // Track last displayed image from media.txt (stored in NVS)
 static bool showOperationInProgress = false;  // Lock to prevent concurrent show operations
+
+// MQTT state (declared early so functions can use them)
+static esp_mqtt_client_handle_t mqttClient = nullptr;
+static bool mqttConnected = false;
 // RTC drift compensation: store sleep duration and target wake time
 RTC_DATA_ATTR uint32_t lastSleepDurationSeconds = 0;  // How long we intended to sleep
 RTC_DATA_ATTR uint8_t targetWakeHour = 255;  // Target wake hour (255 = not set)
@@ -1988,6 +1992,7 @@ bool mqttCheckMessages(uint32_t timeoutMs);
 String mqttGetLastMessage();  // Get the last received message
 static void publishMQTTStatus();  // Publish device status to devices/web-ui/status
 static void publishMQTTThumbnail();  // Publish display thumbnail to devices/web-ui/thumb
+void publishMQTTThumbnailIfConnected();  // Called from EL133UF1 library after display updates
 
 // MQTT command handling
 static String extractCommandFromMessage(const String& msg);
@@ -2912,11 +2917,6 @@ static void auto_cycle_task(void* arg) {
     display.update();
     uint32_t refreshMs = millis() - refreshStart;
     Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
-    
-    // Publish thumbnail after display update
-    if (mqttConnected) {
-        publishMQTTThumbnail();
-    }
 
     // ================================================================
     // AUDIO - Play WAV file for this image (or fallback to beep)
@@ -2992,10 +2992,8 @@ static char mqttTopicWebUI[128] = MQTT_TOPIC_WEBUI;
 static char mqttTopicPublish[128] = MQTT_TOPIC_PUBLISH;
 static char mqttTopicStatus[128] = MQTT_TOPIC_STATUS;
 static char mqttTopicThumb[128] = MQTT_TOPIC_THUMB;
-static esp_mqtt_client_handle_t mqttClient = nullptr;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
-static bool mqttConnected = false;
 // Buffer for multi-chunk MQTT messages (heap-allocated for large messages)
 static uint8_t* mqttMessageBuffer = nullptr;
 static size_t mqttMessageBufferSize = 0;
@@ -3093,6 +3091,16 @@ static void publishMQTTStatus() {
         Serial.printf("Published status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     } else {
         Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+    }
+}
+
+/**
+ * Publish thumbnail if MQTT is connected (called from EL133UF1 library)
+ * This is a non-static wrapper so it can be called from the library
+ */
+void publishMQTTThumbnailIfConnected() {
+    if (mqttConnected) {
+        publishMQTTThumbnail();
     }
 }
 
@@ -4305,11 +4313,6 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         display.update();
         Serial.println("Display updated");
         
-        // Publish thumbnail after display update
-        if (mqttConnected) {
-            publishMQTTThumbnail();
-        }
-        
         return true;
     }
     
@@ -4584,11 +4587,6 @@ static bool handleOAICommand(const String& parameter) {
             uint32_t updateStart = millis();
             display.update();
             uint32_t updateMs = millis() - updateStart;
-            
-            // Publish thumbnail after display update
-            if (mqttConnected) {
-                publishMQTTThumbnail();
-            }
             
             Serial.printf("Display update completed in %lu ms (%.1f seconds)\n", 
                          (unsigned long)updateMs, updateMs / 1000.0f);
@@ -5698,11 +5696,6 @@ static bool handleClearCommand() {
     display.update();
     Serial.println("Display cleared and updated");
     
-    // Publish thumbnail after display update
-    if (mqttConnected) {
-        publishMQTTThumbnail();
-    }
-    
     return true;  // Command handled successfully
 }
 
@@ -5928,11 +5921,6 @@ static void show_media_task(void* parameter) {
                         Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
                         display.update();
                         Serial.println("Display updated");
-                        
-                        // Publish thumbnail after display update
-                        if (mqttConnected) {
-                            publishMQTTThumbnail();
-                        }
                         
                         // Play audio file for this image
                         String audioFile = getAudioForImage(g_lastImagePath);
@@ -7445,11 +7433,6 @@ static bool handleManageCommand() {
             display.update();
             Serial.println("Canvas display: Success!");
             *(data->success) = true;
-            
-            // Publish thumbnail after display update
-            if (mqttConnected) {
-                publishMQTTThumbnail();
-            }
             
             free(data->pixels);
             showOperationInProgress = false;

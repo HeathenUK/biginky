@@ -315,6 +315,7 @@ function publishMessage(payload) {
         const message = new Paho.Message(JSON.stringify(payload));
         message.destinationName = MQTT_TOPIC;
         message.qos = 1;
+        message.retained = true;  // Use retained messages so device receives them when it wakes up
         mqttClient.send(message);
         logCommand('PUBLISH', payload);
         return true;

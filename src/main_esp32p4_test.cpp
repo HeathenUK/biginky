@@ -1986,6 +1986,7 @@ void mqttStatus();
 bool mqttConnect();
 bool mqttCheckMessages(uint32_t timeoutMs);
 String mqttGetLastMessage();  // Get the last received message
+static void publishMQTTStatus();  // Publish device status to devices/web-ui/status
 
 // MQTT command handling
 static String extractCommandFromMessage(const String& msg);
@@ -2992,36 +2993,69 @@ static void publishMQTTStatus() {
     
     // Build JSON status object
     String statusJson = "{";
-    statusJson += "\"timestamp\":" + String(time(nullptr)) + ",";
+    time_t now = time(nullptr);
+    statusJson += "\"timestamp\":" + String(now) + ",";
     
-    // WiFi status
-#if WIFI_ENABLED
-    if (WiFi.status() == WL_CONNECTED) {
-        statusJson += "\"wifi\":{";
-        statusJson += "\"connected\":true,";
-        statusJson += "\"ssid\":\"" + WiFi.SSID() + "\",";
-        statusJson += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
-        statusJson += "},";
-    } else {
-        statusJson += "\"wifi\":{";
-        statusJson += "\"connected\":false";
+    // Current time (if valid)
+    if (now > 1577836800) {  // After 2020-01-01
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        char timeStr[32];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        statusJson += "\"current_time\":\"" + String(timeStr) + "\",";
+    }
+    
+    // Next media item from media.txt
+    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+        uint32_t nextIndex = (lastMediaIndex + 1) % g_media_mappings.size();
+        statusJson += "\"next_media\":{";
+        statusJson += "\"index\":" + String(nextIndex) + ",";
+        statusJson += "\"image\":\"" + g_media_mappings[nextIndex].imageName + "\"";
+        if (g_media_mappings[nextIndex].audioFile.length() > 0) {
+            statusJson += ",\"audio\":\"" + g_media_mappings[nextIndex].audioFile + "\"";
+        }
         statusJson += "},";
     }
-#else
-    statusJson += "\"wifi\":{";
-    statusJson += "\"connected\":false,";
-    statusJson += "\"enabled\":false";
-    statusJson += "},";
-#endif
     
-    // MQTT status
-    statusJson += "\"mqtt\":{";
-    statusJson += "\"connected\":" + String(mqttConnected ? "true" : "false");
-    if (mqttConnected) {
-        statusJson += ",\"broker\":\"" + String(mqttBroker) + "\"";
-        statusJson += ",\"port\":" + String(mqttPort);
+    // Next wake time (if we can calculate it)
+    if (now > 1577836800) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        uint32_t sec = (uint32_t)tm_utc.tm_sec;
+        uint32_t min = (uint32_t)tm_utc.tm_min;
+        uint32_t interval_minutes = g_sleep_interval_minutes;
+        if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+            interval_minutes = 1;
+        }
+        
+        // Calculate next wake time
+        uint32_t current_slot = (min / interval_minutes) * interval_minutes;
+        uint32_t next_slot = current_slot + interval_minutes;
+        uint32_t sleep_s;
+        if (next_slot < 60) {
+            sleep_s = (next_slot - min) * 60 - sec;
+        } else {
+            sleep_s = (60 - min) * 60 - sec;
+        }
+        if (sleep_s == 0) sleep_s = interval_minutes * 60;
+        if (sleep_s < 5 && sleep_s > 0) sleep_s += interval_minutes * 60;
+        
+        uint32_t minutes_to_add = (sleep_s + 59) / 60;  // Ceiling division
+        uint32_t total_minutes = min + minutes_to_add;
+        uint32_t wake_min = total_minutes % 60;
+        uint32_t wake_hour = tm_utc.tm_hour + (total_minutes / 60);
+        if (wake_hour >= 24) {
+            wake_hour = wake_hour % 24;
+        }
+        
+        char wakeTimeStr[16];
+        snprintf(wakeTimeStr, sizeof(wakeTimeStr), "%02d:%02d", wake_hour, wake_min);
+        statusJson += "\"next_wake\":\"" + String(wakeTimeStr) + "\",";
+        statusJson += "\"sleep_interval_minutes\":" + String(interval_minutes) + ",";
     }
-    statusJson += "}";
+    
+    // Connection status (without sensitive details)
+    statusJson += "\"connected\":true";  // If we're publishing, we're connected
     
     statusJson += "}";
     

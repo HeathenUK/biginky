@@ -81,9 +81,25 @@
 #include "esp_crt_bundle.h"
 #include <string.h>
 // OTA update support - custom implementation with SD card buffering
-#include <WebServer.h>
 #include <WiFiServer.h>
 #include <WiFiClient.h>
+// Increase max request body size for canvas uploads (800x600 PNG can be ~100KB)
+// PsychicHttp default is 16KB, we need at least 128KB
+// Increase max request body size for large file uploads
+// ESP32-P4 has PSRAM, so we can handle larger requests
+// Using 512KB as a reasonable limit (can handle most files in one request)
+// For larger files, we'll use chunked uploads
+#ifndef MAX_REQUEST_BODY_SIZE
+#define MAX_REQUEST_BODY_SIZE (1024 * 1024)  // 1MB (for canvas pixel data: 800x600 = 480KB raw, ~640KB base64)
+#endif
+#include <PsychicHttp.h>
+#include <PsychicStreamResponse.h>
+// #define this to enable SSL at build (or switch to the 'ssl' build target in vscode)
+#ifdef PSY_ENABLE_SSL
+  #include <PsychicHttpsServer.h>
+#endif
+#include "certificates.h"
+#include "web_assets.h"
 // Keep ESP-IDF OTA includes for OTA operations
 #include "esp_ota_ops.h"
 #include "esp_app_desc.h"
@@ -246,6 +262,10 @@ RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
 uint32_t lastMediaIndex = 0;  // Track last displayed image from media.txt (stored in NVS)
 static bool showOperationInProgress = false;  // Lock to prevent concurrent show operations
+// RTC drift compensation: store sleep duration and target wake time
+RTC_DATA_ATTR uint32_t lastSleepDurationSeconds = 0;  // How long we intended to sleep
+RTC_DATA_ATTR uint8_t targetWakeHour = 255;  // Target wake hour (255 = not set)
+RTC_DATA_ATTR uint8_t targetWakeMinute = 255;  // Target wake minute (255 = not set)
 
 // Structure for passing data to show media task
 struct ShowMediaTaskData {
@@ -917,6 +937,12 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
                   tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, 
                   (unsigned long)interval_minutes, (unsigned long)sleep_s,
                   wake_hour, (unsigned long)wake_min);
+    
+    // Store sleep duration and target wake time in RTC memory for drift compensation
+    lastSleepDurationSeconds = sleep_s;
+    targetWakeHour = (uint8_t)wake_hour;
+    targetWakeMinute = (uint8_t)wake_min;
+    
     sleepNowSeconds(sleep_s);
     // Never returns
 }
@@ -1972,8 +1998,9 @@ static bool handleIpCommand(const String& originalMessage);
 static bool handleNextCommand();
 static bool handleGoCommand(const String& parameter);
 static bool handleTextCommand(const String& parameter);
-static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor);
-static bool handleMultiTextCommand(const String& parameter);
+static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = EL133UF1_WHITE);
+static bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = EL133UF1_WHITE);
+static bool handleMultiFadeTextCommand(const String& parameter, uint8_t bgColor = EL133UF1_WHITE);
 static bool handleGetCommand(const String& parameter);
 static bool handleVolumeCommand(const String& parameter);
 static bool handleNewNumberCommand(const String& parameter);
@@ -2011,11 +2038,20 @@ static void auto_cycle_task(void* arg) {
     // Increment NTP sync counter
     ntpSyncCounter++;
     
+    // RTC drift compensation: If we slept for > 45 minutes, sync NTP before checking time
+    // This ensures accurate time after long sleeps where RTC may have drifted
+    bool needsNtpSync = false;
+    if (lastSleepDurationSeconds > 45 * 60) {  // > 45 minutes
+        Serial.printf("Long sleep detected (%lu seconds, %.1f minutes) - will sync NTP to compensate for RTC drift\n",
+                     (unsigned long)lastSleepDurationSeconds, lastSleepDurationSeconds / 60.0f);
+        needsNtpSync = true;
+    }
+    
     // Check if time is valid (with timeout to prevent infinite loops)
     // Use a shorter timeout initially to avoid blocking too long
     bool time_ok = false;
     time_t now = time(nullptr);
-    if (now > 1577836800) {  // Quick check first
+    if (now > 1577836800 && !needsNtpSync) {  // Quick check first, but force sync if needed
         time_ok = true;
     } else {
         // Only try NTP sync if we have WiFi credentials
@@ -2062,6 +2098,63 @@ static void auto_cycle_task(void* arg) {
     gmtime_r(&now, &tm_utc);
     bool isTopOfHour = (tm_utc.tm_min == 0);
     int currentHour = tm_utc.tm_hour;
+    
+    // RTC drift compensation: Check if we woke early and need to sleep more
+    // Only check if we have a target wake time set and slept for > 45 minutes
+    if (targetWakeHour != 255 && targetWakeMinute != 255 && lastSleepDurationSeconds > 45 * 60 && time_ok) {
+        int currentMinute = tm_utc.tm_min;
+        int currentSecond = tm_utc.tm_sec;
+        
+        // Calculate if we're early (before target wake time)
+        bool wokeEarly = false;
+        int secondsUntilTarget = 0;
+        
+        // Calculate time difference, handling potential midnight wrap-around
+        // For long sleeps (>45 min), wrap-around is unlikely but we handle it
+        int hoursDiff = targetWakeHour - currentHour;
+        int minutesDiff = targetWakeMinute - currentMinute;
+        
+        // Handle midnight wrap-around (e.g., 23:xx -> 00:xx)
+        if (hoursDiff < 0) {
+            hoursDiff += 24;
+        }
+        if (hoursDiff == 0 && minutesDiff < 0) {
+            // Same hour but target minute already passed - we're late, not early
+            wokeEarly = false;
+        } else if (hoursDiff == 0 && minutesDiff == 0 && currentSecond < 30) {
+            // We're at the target minute but less than 30 seconds in - consider this on time
+            // (allow some tolerance for NTP sync delay)
+            wokeEarly = false;
+        } else if (hoursDiff == 0 && minutesDiff > 0 && minutesDiff <= 2) {
+            // We're within 2 minutes of target - likely on time (RTC drift within tolerance)
+            wokeEarly = false;
+        } else if (hoursDiff > 0 || (hoursDiff == 0 && minutesDiff > 0)) {
+            // We're before the target time
+            secondsUntilTarget = hoursDiff * 3600 + minutesDiff * 60 - currentSecond;
+            wokeEarly = true;
+        }
+        
+        if (wokeEarly && secondsUntilTarget > 10) {  // Only sleep more if > 10 seconds early
+            Serial.printf("Woke early: Current time %02d:%02d:%02d, target %02d:%02d:00 (slept %lu seconds)\n",
+                         currentHour, currentMinute, currentSecond, targetWakeHour, targetWakeMinute,
+                         (unsigned long)lastSleepDurationSeconds);
+            Serial.printf("Sleeping additional %d seconds to reach target wake time...\n", secondsUntilTarget);
+            
+            // Clear target wake time (we'll set it again when we sleep)
+            targetWakeHour = 255;
+            targetWakeMinute = 255;
+            
+            // Sleep for the remaining time
+            sleepNowSeconds(secondsUntilTarget);
+            return;  // Never returns
+        } else if (wokeEarly) {
+            Serial.printf("Woke slightly early (%d seconds) - within tolerance, continuing\n", secondsUntilTarget);
+        }
+        
+        // Clear target wake time after checking (we've handled it)
+        targetWakeHour = 255;
+        targetWakeMinute = 255;
+    }
     
     Serial.printf("Current time: %02d:%02d:%02d (isTopOfHour: %s, hour enabled: %s)\n", 
                   tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
@@ -2130,6 +2223,12 @@ static void auto_cycle_task(void* arg) {
         
         Serial.printf("Sleeping %lu seconds until hour %02d:00 (next enabled hour)\n", 
                      (unsigned long)sleepSeconds, nextEnabledHour);
+        
+        // Store sleep duration and target wake time in RTC memory for drift compensation
+        lastSleepDurationSeconds = sleepSeconds;
+        targetWakeHour = (uint8_t)nextEnabledHour;
+        targetWakeMinute = 0;
+        
         sleepNowSeconds(sleepSeconds);
         return;  // Never returns
     }
@@ -2234,7 +2333,14 @@ static void auto_cycle_task(void* arg) {
     Serial.println("=== Display Update Cycle (top of hour) ===");
     
     // Initialize display now that we know we need it (saves time/power on non-hourly wakes)
+    // After deep sleep, SPI needs to be reinitialized
     Serial.println("Initializing display...");
+    
+    // Reinitialize SPI (peripherals reset after deep sleep)
+    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+    
+    // Always do full initialization (begin() includes reset and init sequence)
+    // This ensures clean state for every display update
     if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
         Serial.println("ERROR: Display initialization failed!");
         // On error, sleep and try again next cycle
@@ -2242,6 +2348,15 @@ static void auto_cycle_task(void* arg) {
         return;
     }
     Serial.println("Display initialized");
+    
+    // Reinitialize PNG/TTF loaders after display init (they need display reference)
+    pngLoader.begin(&display);
+    ttf.begin(&display);
+    bmpLoader.begin(&display);
+    
+    // Clear the display buffer before drawing new content
+    Serial.println("Clearing display buffer...");
+    display.clear(EL133UF1_WHITE);
     
 #if WIFI_ENABLED
     // Resync NTP every 5 wake cycles to keep time accurate
@@ -2757,6 +2872,30 @@ static void auto_cycle_task(void* arg) {
     textPlacement.addExclusionZone(quoteLayout.position, 200);
 
     // Refresh display first (e-ink refresh takes 20-30 seconds)
+    // Ensure reset + init happen before update
+    // Only call begin() if display is not already initialized (prevents heap corruption from double-free)
+    Serial.println("Re-initializing display (reset + init) before update...");
+    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+    
+    // Check if display is already initialized - if so, just reconnect (safer than calling begin() again)
+    if (display.getBuffer() == nullptr) {
+        // Display not initialized - do full begin()
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed before update!");
+            return;
+        }
+    } else {
+        // Display already initialized - use reconnect() to reinitialize SPI/GPIO without freeing buffer
+        // This prevents heap corruption from double-free of the buffer
+        Serial.println("Display already initialized - reconnecting SPI/GPIO...");
+        if (!display.reconnect()) {
+            Serial.println("ERROR: Display reconnection failed before update!");
+            return;
+        }
+        // Note: reconnect() doesn't do reset+init, but that's OK - update() will handle init if needed
+        // The display controller should still be in a valid state from previous use
+    }
+    
     Serial.println("Updating display (e-ink refresh)...");
     uint32_t refreshStart = millis();
     display.update();
@@ -4521,6 +4660,158 @@ static bool updateDeviceSettings(const String& json) {
     return true;
 }
 
+#if 0
+// OLD HTML GENERATION CODE - REMOVED (now using embedded WEB_HTML_CONTENT from web_assets.h)
+// Helper function to write HTML chunk to stream
+static void writeHTMLChunk(PsychicStreamResponse& stream, const char* str) {
+    size_t len = strlen(str);
+    stream.write((const uint8_t*)str, len);
+}
+
+// Generate and stream HTML management interface directly to response
+static void generateAndStreamManagementHTML(PsychicStreamResponse& stream) {
+    writeHTMLChunk(stream, "<!DOCTYPE html><html><head><meta charset='UTF-8'>");
+    writeHTMLChunk(stream, "<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
+    writeHTMLChunk(stream, "<title>Device Management</title>");
+    writeHTMLChunk(stream, "<style>");
+    writeHTMLChunk(stream, "body{font-family:Arial,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5;}");
+    writeHTMLChunk(stream, "h1{color:#333;border-bottom:2px solid #4CAF50;padding-bottom:10px;}");
+    writeHTMLChunk(stream, ".section{background:white;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}");
+    writeHTMLChunk(stream, "h2{color:#4CAF50;margin-top:0;}");
+    writeHTMLChunk(stream, "textarea{width:100%;min-height:200px;font-family:monospace;padding:10px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}");
+    writeHTMLChunk(stream, "input[type='number']{width:100px;padding:8px;border:1px solid #ddd;border-radius:4px;}");
+    writeHTMLChunk(stream, "select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}");
+    writeHTMLChunk(stream, "button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;}");
+    writeHTMLChunk(stream, "button:hover{background:#45a049;}");
+    writeHTMLChunk(stream, "button.delete{background:#f44336;padding:5px 10px;font-size:12px;}");
+    writeHTMLChunk(stream, "button.delete:hover{background:#d32f2f;}");
+    writeHTMLChunk(stream, ".status{color:#4CAF50;margin:10px 0;font-weight:bold;}");
+    writeHTMLChunk(stream, ".error{color:#f44336;}");
+    writeHTMLChunk(stream, "label{display:block;margin:10px 0 5px 0;font-weight:bold;}");
+    writeHTMLChunk(stream, ".form-group{margin:15px 0;}");
+    writeHTMLChunk(stream, "td{padding:5px;}");
+    writeHTMLChunk(stream, "</style></head><body>");
+    writeHTMLChunk(stream, "<h1>Device Configuration Management</h1>");
+    
+    // Quotes section
+    writeHTMLChunk(stream, "<div class='section'><h2>Quotes Configuration (quotes.txt)</h2>");
+    writeHTMLChunk(stream, "<p>Format: Quote text on one or more lines, followed by ~Author on the next line. Separate quotes with blank lines.</p>");
+    writeHTMLChunk(stream, "<textarea id='quotesContent' placeholder='Loading quotes.txt...'></textarea><br>");
+    writeHTMLChunk(stream, "<button onclick='loadQuotes()'>Load from Device</button>");
+    writeHTMLChunk(stream, "<button onclick='saveQuotes()'>Save to Device</button>");
+    writeHTMLChunk(stream, "<div id='quotesStatus'></div></div>");
+    
+    // Media section
+    writeHTMLChunk(stream, "<div class='section'><h2>Media Mappings (media.txt)</h2>");
+    writeHTMLChunk(stream, "<p>Select image and audio file combinations. Leave audio empty for no audio. Check the 'Next' box to set which item will be displayed next. Click 'Show' to display the image and play audio on the panel.</p>");
+    writeHTMLChunk(stream, "<table id='mediaTable' style='width:100%;border-collapse:collapse;margin:10px 0;'>");
+    writeHTMLChunk(stream, "<thead><tr style='background:#f0f0f0;'><th style='padding:10px;text-align:left;width:30%;'>Image File</th><th style='padding:10px;text-align:left;width:30%;'>Audio File</th><th style='padding:10px;text-align:center;width:10%;'>Next</th><th style='padding:10px;text-align:center;width:15%;'>Actions</th><th style='padding:10px;width:15%;'></th></tr></thead>");
+    writeHTMLChunk(stream, "<tbody id='mediaRows'></tbody>");
+    writeHTMLChunk(stream, "</table>");
+    writeHTMLChunk(stream, "<button onclick='addMediaRow()'>Add New Row</button>");
+    writeHTMLChunk(stream, "<button onclick='loadMedia()'>Load from Device</button>");
+    writeHTMLChunk(stream, "<button onclick='saveMedia()'>Save to Device</button>");
+    writeHTMLChunk(stream, "<div id='mediaStatus'></div></div>");
+    
+    // Device settings section
+    writeHTMLChunk(stream, "<div class='section'><h2>Device Settings</h2>");
+    writeHTMLChunk(stream, "<div class='form-group'>");
+    writeHTMLChunk(stream, "<label>Volume (0-100%):</label>");
+    writeHTMLChunk(stream, "<input type='number' id='volume' min='0' max='100' value='50'>");
+    writeHTMLChunk(stream, "</div>");
+    writeHTMLChunk(stream, "<div class='form-group'>");
+    writeHTMLChunk(stream, "<label>Sleep Interval (minutes, must be factor of 60):</label>");
+    writeHTMLChunk(stream, "<input type='number' id='sleepInterval' min='1' max='60' value='1'>");
+    writeHTMLChunk(stream, "</div>");
+    writeHTMLChunk(stream, "<div class='form-group'>");
+    writeHTMLChunk(stream, "<label>Hour Schedule (check hours when device should wake):</label>");
+    writeHTMLChunk(stream, "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;padding:10px;background:#f9f9f9;border-radius:4px;'>");
+    for (int i = 0; i < 24; i++) {
+        char hourHtml[200];
+        snprintf(hourHtml, sizeof(hourHtml), 
+            "<label style='display:flex;align-items:center;gap:5px;cursor:pointer;'><input type='checkbox' class='hourCheckbox' data-hour='%d' style='cursor:pointer;'>%02d:00</label>", 
+            i, i);
+        writeHTMLChunk(stream, hourHtml);
+    }
+    writeHTMLChunk(stream, "</div>");
+    writeHTMLChunk(stream, "<div style='margin-top:10px;'><button onclick='selectAllHours()'>Select All</button>");
+    writeHTMLChunk(stream, "<button onclick='deselectAllHours()'>Deselect All</button>");
+    writeHTMLChunk(stream, "<button onclick='selectNightHours()'>Select Night (6am-11pm)</button>");
+    writeHTMLChunk(stream, "<button onclick='selectDayHours()'>Select Day (11pm-6am)</button></div>");
+    writeHTMLChunk(stream, "</div>");
+    writeHTMLChunk(stream, "<button onclick='loadSettings()'>Load from Device</button>");
+    writeHTMLChunk(stream, "<button onclick='saveSettings()'>Save to Device</button>");
+    writeHTMLChunk(stream, "<div id='settingsStatus'></div></div>");
+    
+    // File management section
+    writeHTMLChunk(stream, "<div class='section'><h2>File Management</h2>");
+    writeHTMLChunk(stream, "<p>Upload, download, and delete files on the SD card.</p>");
+    writeHTMLChunk(stream, "<div style='margin:10px 0;'><input type='file' id='fileUpload' style='display:none;' onchange='handleFileSelect(event)'><button onclick='document.getElementById(\"fileUpload\").click()'>Upload File</button>");
+    writeHTMLChunk(stream, "<button onclick='refreshFileList()'>Refresh File List</button></div>");
+    writeHTMLChunk(stream, "<div id='fileList' style='margin:10px 0;'>Loading files...</div>");
+    writeHTMLChunk(stream, "<div id='fileStatus'></div></div>");
+    
+    // Log viewing section
+    writeHTMLChunk(stream, "<div class='section'><h2>System Log</h2>");
+    writeHTMLChunk(stream, "<p>View the current system log file (read-only).</p>");
+    writeHTMLChunk(stream, "<button onclick='loadLog()'>Load Current Log</button>");
+    writeHTMLChunk(stream, "<button onclick='loadLogArchiveList()'>Load Previous Log</button>");
+    writeHTMLChunk(stream, "<div id='logArchiveList' style='margin-top:10px;'></div>");
+    writeHTMLChunk(stream, "<div id='logContent' style='margin:10px 0;max-height:600px;overflow-y:auto;background:#f9f9f9;padding:10px;border:1px solid #ddd;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;'></div>");
+    writeHTMLChunk(stream, "<div id='logStatus'></div></div>");
+    
+    // Close server button
+    writeHTMLChunk(stream, "<div class='section'><h2>Server Control</h2>");
+    writeHTMLChunk(stream, "<p>Close the management interface and return to normal operation.</p>");
+    writeHTMLChunk(stream, "<button onclick='closeServer()' style='background:#f44336;'>Close Management Interface</button>");
+    writeHTMLChunk(stream, "<div id='closeStatus'></div></div>");
+    
+    // JavaScript - write in chunks to avoid large string
+    writeHTMLChunk(stream, "<script>");
+    // Load all the JavaScript functions - keeping them as chunks to minimize stack usage
+    writeHTMLChunk(stream, "function loadQuotes(){fetch('/api/quotes').then(r=>r.text()).then(t=>{document.getElementById('quotesContent').value=t;showStatus('quotesStatus','Loaded successfully',false);}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}");
+    writeHTMLChunk(stream, "function saveQuotes(){const content=document.getElementById('quotesContent').value;fetch('/api/quotes',{method:'POST',body:content}).then(r=>r.json()).then(d=>{showStatus('quotesStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadQuotes();}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}");
+    writeHTMLChunk(stream, "let imageFiles=[];let audioFiles=[];let filesLoaded=0;");
+    writeHTMLChunk(stream, "function checkAndLoadMedia(){if(filesLoaded>=2){loadMedia();}else if(filesLoaded===1){showStatus('mediaStatus','Warning: Only partial file list loaded',true);}}");
+    writeHTMLChunk(stream, "function loadFileLists(){filesLoaded=0;fetch('/api/images').then(r=>r.json()).then(f=>{imageFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading images: '+e,true);filesLoaded++;checkAndLoadMedia();});fetch('/api/audio').then(r=>r.json()).then(f=>{audioFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading audio: '+e,true);filesLoaded++;checkAndLoadMedia();});}");
+    // Continue with remaining JavaScript - this is a very long section, so we'll keep it as-is but stream it
+    // For brevity, I'll include the key parts and note that the full JS should be streamed
+    writeHTMLChunk(stream, "let showInProgress=false;function createMediaRow(image='',audio='',isNext=false){const row=document.createElement('tr');row.dataset.index=document.getElementById('mediaRows').children.length;const imgCell=document.createElement('td');const imgSelect=document.createElement('select');imgSelect.className='imageSelect';imgSelect.innerHTML='<option value=\"\">-- Select Image --</option>';imageFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===image);imgSelect.appendChild(opt);});imgCell.appendChild(imgSelect);const audCell=document.createElement('td');const audSelect=document.createElement('select');audSelect.className='audioSelect';audSelect.innerHTML='<option value=\"\">(none)</option>';audioFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===audio);audSelect.appendChild(opt);});audCell.appendChild(audSelect);const nextCell=document.createElement('td');nextCell.style.textAlign='center';const nextCheck=document.createElement('input');nextCheck.type='checkbox';nextCheck.className='nextCheckbox';nextCheck.checked=isNext;nextCheck.onchange=function(){document.querySelectorAll('.nextCheckbox').forEach(cb=>{if(cb!==nextCheck)cb.checked=false;});};nextCell.appendChild(nextCheck);const actionCell=document.createElement('td');actionCell.style.textAlign='center';const showBtn=document.createElement('button');showBtn.className='showBtn';showBtn.textContent='Show';showBtn.style.margin='2px';showBtn.style.padding='4px 8px';showBtn.style.fontSize='12px';showBtn.disabled=showInProgress;showBtn.onclick=function(){if(showInProgress){alert('Another show operation is in progress. Please wait.');return;}const idx=parseInt(row.dataset.index);showMediaItem(idx);};actionCell.appendChild(showBtn);const delCell=document.createElement('td');const delBtn=document.createElement('button');delBtn.className='delete';delBtn.textContent='Delete';delBtn.onclick=function(){row.remove();updateRowIndices();};delCell.appendChild(delBtn);row.appendChild(imgCell);row.appendChild(audCell);row.appendChild(nextCell);row.appendChild(actionCell);row.appendChild(delCell);return row;}");
+    writeHTMLChunk(stream, "function showMediaItem(index){if(showInProgress){return;}showInProgress=true;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=true);showStatus('mediaStatus','Displaying image and playing audio (this will take 20-30 seconds)...',false);fetch('/api/media/show?index='+index,{method:'POST'}).then(r=>r.json()).then(d=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);if(d.success){showStatus('mediaStatus','Display updated successfully. Next item: '+(d.nextIndex+1),false);loadMedia();}else{showStatus('mediaStatus','Error: '+d.error,true);}}).catch(e=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);showStatus('mediaStatus','Error: '+e,true);});}");
+    writeHTMLChunk(stream, "function updateRowIndices(){const rows=document.querySelectorAll('#mediaRows tr');rows.forEach((row,idx)=>{row.dataset.index=idx;});}");
+    writeHTMLChunk(stream, "function addMediaRow(){const tbody=document.getElementById('mediaRows');tbody.appendChild(createMediaRow());}");
+    writeHTMLChunk(stream, "function loadMedia(){Promise.all([fetch('/api/media').then(r=>r.text()),fetch('/api/media/index').then(r=>r.json())]).then(([content,indexData])=>{const tbody=document.getElementById('mediaRows');tbody.innerHTML='';const lastDisplayedIndex=indexData.index||0;const lines=content.split('\\n');const mediaCount=lines.filter(l=>{l=l.trim();return l.length>0&&!l.startsWith('#');}).length;const nextIndex=(lastDisplayedIndex+1)%mediaCount;let lineIdx=0;lines.forEach((line,idx)=>{line=line.trim();if(line.length===0||line.startsWith('#'))return;const comma=line.indexOf(',');const isNext=(lineIdx===nextIndex);if(comma>0){const img=line.substring(0,comma).trim();const aud=line.substring(comma+1).trim();tbody.appendChild(createMediaRow(img,aud,isNext));}else if(line.length>0){tbody.appendChild(createMediaRow(line,'',isNext));}lineIdx++;});updateRowIndices();if(tbody.children.length===0)addMediaRow();showStatus('mediaStatus','Loaded successfully',false);}).catch(e=>{showStatus('mediaStatus','Error: '+e,true);});}");
+    writeHTMLChunk(stream, "function saveMedia(){const rows=document.querySelectorAll('#mediaRows tr');let content='';let nextIndex=-1;rows.forEach((row,idx)=>{const img=row.querySelector('.imageSelect').value;const aud=row.querySelector('.audioSelect').value;const isNext=row.querySelector('.nextCheckbox').checked;if(isNext)nextIndex=idx;if(img.length>0){content+=img;if(aud.length>0)content+=','+aud;content+='\\n';}});const saveData={content:content,nextIndex:nextIndex>=0?nextIndex:null};fetch('/api/media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)}).then(r=>r.json()).then(d=>{showStatus('mediaStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadMedia();}).catch(e=>showStatus('mediaStatus','Error: '+e,true));}");
+    writeHTMLChunk(stream, "function loadSettings(){fetch('/api/settings').then(r=>r.json()).then(d=>{document.getElementById('volume').value=d.volume;document.getElementById('sleepInterval').value=d.sleepInterval;if(d.hourSchedule){const schedule=d.hourSchedule;document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=schedule[hour]==='1'||schedule[hour]===true;});}showStatus('settingsStatus','Loaded successfully',false);}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}");
+    writeHTMLChunk(stream, "function saveSettings(){const hourSchedule=[];document.querySelectorAll('.hourCheckbox').forEach(cb=>{hourSchedule.push(cb.checked?'1':'0');});const json=JSON.stringify({volume:parseInt(document.getElementById('volume').value),sleepInterval:parseInt(document.getElementById('sleepInterval').value),hourSchedule:hourSchedule.join('')});fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:json}).then(r=>r.json()).then(d=>{showStatus('settingsStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadSettings();}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}");
+    writeHTMLChunk(stream, "function selectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=true);}");
+    writeHTMLChunk(stream, "function deselectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=false);}");
+    writeHTMLChunk(stream, "function selectNightHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=6&&hour<23);});}");
+    writeHTMLChunk(stream, "function selectDayHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=23||hour<6);});}");
+    writeHTMLChunk(stream, "let fileListData=[];let fileListSortCol='name';let fileListSortDir=1;");
+    writeHTMLChunk(stream, "function formatDate(timestamp){if(!timestamp||timestamp===0)return'N/A';const d=new Date(timestamp);return d.toLocaleString();}");
+    writeHTMLChunk(stream, "function sortFileList(col){if(fileListSortCol===col){fileListSortDir*=-1;}else{fileListSortCol=col;fileListSortDir=1;}renderFileList();}");
+    writeHTMLChunk(stream, "function escapeHtml(str){const div=document.createElement('div');div.textContent=str;return div.innerHTML;}");
+    writeHTMLChunk(stream, "function escapeJs(str){return str.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\").replace(/\"/g,'\\\\\"').replace(/\\n/g,'\\\\n').replace(/\\r/g,'\\\\r');}");
+    writeHTMLChunk(stream, "function renderFileList(){const list=document.getElementById('fileList');if(fileListData.length===0){list.innerHTML='<p>No files found on SD card.</p>';return;}const sorted=fileListData.slice().sort((a,b)=>{let valA,valB;if(fileListSortCol==='name'){valA=a.name.toLowerCase();valB=b.name.toLowerCase();}else if(fileListSortCol==='size'){valA=a.size;valB=b.size;}else if(fileListSortCol==='modified'){valA=a.modified||0;valB=b.modified||0;}return valA<valB?-1*fileListSortDir:valA>valB?1*fileListSortDir:0;});let html='<table style=\"width:100%;border-collapse:collapse;\"><thead><tr style=\"background:#f0f0f0;\">';html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('name')\">Filename ${fileListSortCol==='name'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:right;cursor:pointer;\" onclick=\"sortFileList('size')\">Size ${fileListSortCol==='size'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('modified')\">Last Modified ${fileListSortCol==='modified'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+='<th style=\"padding:8px;text-align:center;width:140px;\">Actions</th></tr></thead><tbody>';sorted.forEach(f=>{const size=f.size>=1024*1024?(f.size/(1024*1024)).toFixed(2)+' MB':f.size>=1024?(f.size/1024).toFixed(2)+' KB':f.size+' B';const modified=formatDate(f.modified);const nameEscaped=escapeJs(f.name);const nameHtml=escapeHtml(f.name);html+=`<tr><td style=\"padding:8px;\">${nameHtml}</td><td style=\"padding:8px;text-align:right;\">${size}</td><td style=\"padding:8px;\">${modified}</td><td style=\"padding:8px;text-align:center;\"><button onclick=\"downloadFile('${nameEscaped}')\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Download</button><button onclick=\"deleteFile('${nameEscaped}')\" class=\"delete\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Delete</button></td></tr>`;});html+='</tbody></table>';list.innerHTML=html;}");
+    writeHTMLChunk(stream, "function refreshFileList(){fetch('/api/files').then(r=>r.json()).then(files=>{fileListData=files;fileListSortCol='name';fileListSortDir=1;renderFileList();showStatus('fileStatus','File list refreshed',false);}).catch(e=>{showStatus('fileStatus','Error loading files: '+e,true);});}");
+    writeHTMLChunk(stream, "function downloadFile(filename){window.location.href='/api/files/'+encodeURIComponent(filename);showStatus('fileStatus','Downloading '+filename,false);}");
+    writeHTMLChunk(stream, "function deleteFile(filename){if(confirm('Delete '+filename+'?')){fetch('/api/files/'+encodeURIComponent(filename),{method:'DELETE'}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Deleted successfully':'Error: '+d.error,d.success?false:true);if(d.success)refreshFileList();}).catch(e=>showStatus('fileStatus','Error: '+e,true));}}");
+    writeHTMLChunk(stream, "function handleFileSelect(event){const file=event.target.files[0];if(!file)return;showStatus('fileStatus','Reading '+file.name+'...',false);const reader=new FileReader();reader.onload=function(e){const base64Data=e.target.result;const base64Content=base64Data.substring(base64Data.indexOf(',')+1);const payload=JSON.stringify({filename:file.name,data:base64Content});showStatus('fileStatus','Uploading '+file.name+'...',false);fetch('/api/files/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:payload}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Uploaded successfully ('+d.size+' bytes)':'Error: '+d.error,d.success?false:true);if(d.success){refreshFileList();document.getElementById('fileUpload').value='';}}).catch(e=>showStatus('fileStatus','Error: '+e,true));};reader.onerror=function(e){showStatus('fileStatus','Error reading file',true);};reader.readAsDataURL(file);}");
+    writeHTMLChunk(stream, "function loadLog(){logFlush();fetch('/api/log').then(r=>r.text()).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus','Log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading log: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}");
+    writeHTMLChunk(stream, "function loadLogArchiveList(){fetch('/api/log/list').then(r=>r.json()).then(files=>{const listDiv=document.getElementById('logArchiveList');if(files.length===0){listDiv.innerHTML='<p style=\"color:#999;\">No archived log files found. Log rotation has not occurred yet.</p>';return;}let html='<p><strong>Recent archived logs (most recent first):</strong></p><div style=\"display:flex;flex-direction:column;gap:5px;\">';files.forEach((file,idx)=>{const filenameEscaped=file.filename.replace(/\"/g,'&quot;').replace(/'/g,'&#39;');html+='<button onclick=\"loadLogArchive(\\''+filenameEscaped+'\\')\" style=\"text-align:left;padding:8px;\">'+file.filename+' ('+formatFileSize(file.size)+')</button>';});html+='</div>';listDiv.innerHTML=html;showStatus('logStatus','Found '+files.length+' archived log file(s)',false);}).catch(e=>{showStatus('logStatus','Error loading archive list: '+e,true);document.getElementById('logArchiveList').innerHTML='<p style=\"color:red;\">Error: '+e+'</p>';});}");
+    writeHTMLChunk(stream, "function loadLogArchive(filename){const url=filename?'/api/log/archive?file='+encodeURIComponent(filename):'/api/log/archive';fetch(url).then(r=>{if(!r.ok){return r.text().then(text=>{throw new Error(text);});}return r.text();}).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus',filename?'Archive log loaded: '+filename:'Archive log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading archive: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}");
+    writeHTMLChunk(stream, "function formatFileSize(bytes){if(bytes<1024)return bytes+' B';if(bytes<1024*1024)return (bytes/1024).toFixed(1)+' KB';return (bytes/(1024*1024)).toFixed(1)+' MB';}");
+    writeHTMLChunk(stream, "function logFlush(){fetch('/api/log/flush',{method:'POST'});}");
+    writeHTMLChunk(stream, "function closeServer(){if(confirm('Close management interface and return to normal operation?')){fetch('/api/close',{method:'POST'}).then(r=>r.json()).then(d=>{showStatus('closeStatus','Management interface closed. You can close this page.',false);setTimeout(()=>{window.location.href='about:blank';},2000);}).catch(e=>showStatus('closeStatus','Error: '+e,true));}}");
+    writeHTMLChunk(stream, "function showStatus(id,msg,isError){const el=document.getElementById(id);el.textContent=msg;el.className=isError?'error status':'status';}");
+    writeHTMLChunk(stream, "window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFileList();};");
+    writeHTMLChunk(stream, "</script></body></html>");
+}
+#endif // OLD HTML GENERATION CODE
+
+#if 0
+// Legacy function kept for compatibility (but should use streaming version)
 static String generateManagementHTML() {
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
@@ -4659,6 +4950,7 @@ static String generateManagementHTML() {
     
     return html;
 }
+#endif // OLD HTML GENERATION CODE
 #endif // WIFI_ENABLED && SDMMC_ENABLED
 
 /**
@@ -4986,986 +5278,1651 @@ static bool handleManageCommand() {
         }
     }
     
-    // Start HTTP server on port 80
-    WiFiServer server(80);
+    // Create server - following example pattern exactly
+    #ifdef PSY_ENABLE_SSL
+    PsychicHttpsServer server(443);
+    // Set certificate and private key from certificates.h
+    server.setCertificate(server_cert, server_key);
+    Serial.println("HTTPS server configured with SSL certificate");
+    #ifdef CONFIG_ESP_HTTPS_SERVER_ENABLE
+    Serial.println("BUILD CHECK: PSY_ENABLE_SSL=1, CONFIG_ESP_HTTPS_SERVER_ENABLE=1");
+    #else
+    Serial.println("BUILD CHECK: PSY_ENABLE_SSL=1, CONFIG_ESP_HTTPS_SERVER_ENABLE=0 (WARNING!)");
+    #endif
+    #else
+    PsychicHttpServer server(80);
+    Serial.println("HTTP server (HTTPS not available - PSY_ENABLE_SSL not defined)");
+    Serial.println("BUILD CHECK: PSY_ENABLE_SSL is NOT defined");
+    #endif
+    
+    // Increase max request body size for file uploads (default is 16KB)
+    // ESP32-P4 has PSRAM, so we can handle larger requests
+    // 512KB allows most files to upload in one request
+    // For larger files (>512KB), use chunked uploads
+    server.maxRequestBodySize = MAX_REQUEST_BODY_SIZE;  // 1MB (for canvas pixel data: 800x600 = 480KB raw, ~640KB base64)
+    Serial.printf("HTTP server max request body size set to %lu bytes\n", server.maxRequestBodySize);
+    
+    // Increase HTTP server task stack size to handle large file uploads
+    // Default is 4608 bytes, increase to 32KB to prevent stack overflow
+    // This is set directly on the config before server starts
+    server.config.stack_size = 32 * 1024;  // 32KB stack
+    Serial.printf("HTTP server task stack size set to %lu bytes\n", server.config.stack_size);
+    
+    // Flag to control server shutdown
+    bool serverShouldClose = false;
+    
+    // Helper function to add CORS headers to API responses
+    auto addCorsHeaders = [](PsychicResponse *response) {
+        response->addHeader("Access-Control-Allow-Origin", "*");
+        response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        response->addHeader("Access-Control-Allow-Headers", "Content-Type");
+    };
+    
+    // Handle OPTIONS requests for CORS preflight
+    server.on("*", HTTP_OPTIONS, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        return response->send(200);
+    });
+    
+    // Set up all route handlers
+    // Root path - serve HTML management interface
+    // HTML is embedded from web/index.html at compile time (no stack issues)
+    server.on("/", HTTP_GET, [](PsychicRequest *request, PsychicResponse *response) {
+        Serial.println("GET / - Serving embedded HTML page...");
+        // HTML is embedded in flash memory, safe to send directly
+        return response->send(200, "text/html", WEB_HTML_CONTENT);
+    });
+    
+    // Handle favicon requests (browsers request this automatically)
+    // Return 204 No Content to prevent handshake errors
+    server.on("/favicon.ico", HTTP_GET, [](PsychicRequest *request, PsychicResponse *response) {
+        return response->send(204);  // No Content - browser will use default
+    });
+    
+    // Handle robots.txt (some browsers/crawlers request this)
+    server.on("/robots.txt", HTTP_GET, [](PsychicRequest *request, PsychicResponse *response) {
+        return response->send(200, "text/plain", "User-agent: *\nDisallow: /\n");
+    });
+    
+    // GET /api/quotes - Read quotes.txt as structured JSON
+    server.on("/api/quotes", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        // Load quotes from SD if not already loaded
+        if (!g_quotes_loaded) {
+            loadQuotesFromSD();
+        }
+        
+        // Build JSON array of quotes
+        String json = "[";
+        bool first = true;
+        for (size_t i = 0; i < g_loaded_quotes.size(); i++) {
+            if (!first) json += ",";
+            json += "{\"quote\":\"";
+            // Escape JSON string
+            String quote = g_loaded_quotes[i].text;
+            quote.replace("\\", "\\\\");
+            quote.replace("\"", "\\\"");
+            quote.replace("\n", "\\n");
+            quote.replace("\r", "\\r");
+            json += quote;
+            json += "\",\"author\":\"";
+            String author = g_loaded_quotes[i].author;
+            author.replace("\\", "\\\\");
+            author.replace("\"", "\\\"");
+            author.replace("\n", "\\n");
+            author.replace("\r", "\\r");
+            json += author;
+            json += "\"}";
+            first = false;
+        }
+        json += "]";
+        
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // GET /api/media/index - Get current media index
+    server.on("/api/media/index", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = "{\"index\":";
+        json += String((unsigned long)lastMediaIndex);
+        json += "}";
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // POST /api/text/display - Display text with specified color
+    server.on("/api/text/display", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        // Check if another show operation is in progress
+        if (showOperationInProgress) {
+            String resp = "{\"success\":false,\"error\":\"Another show operation is already in progress\"}";
+            return response->send(409, "application/json", resp.c_str());
+        }
+        
+        String jsonPayload = request->body();
+        
+        // Parse JSON to extract text, color, and background color
+        String textToDisplay = "";
+        String colorStr = "white";
+        String bgColorStr = "white";
+        
+        // Extract text
+        int textPos = jsonPayload.indexOf("\"text\"");
+        if (textPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', textPos);
+            int quoteStart = jsonPayload.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;  // Skip opening quote
+                int quoteEnd = quoteStart;
+                while (quoteEnd < (int)jsonPayload.length()) {
+                    if (jsonPayload.charAt(quoteEnd) == '"' && (quoteEnd == 0 || jsonPayload.charAt(quoteEnd - 1) != '\\')) {
+                        break;
+                    }
+                    quoteEnd++;
+                }
+                if (quoteEnd > quoteStart) {
+                    textToDisplay = jsonPayload.substring(quoteStart, quoteEnd);
+                    // Unescape JSON string
+                    textToDisplay.replace("\\n", "\n");
+                    textToDisplay.replace("\\r", "\r");
+                    textToDisplay.replace("\\t", "\t");
+                    textToDisplay.replace("\\\"", "\"");
+                    textToDisplay.replace("\\\\", "\\");
+                }
+            }
+        }
+        
+        // Extract color
+        int colorPos = jsonPayload.indexOf("\"color\"");
+        if (colorPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', colorPos);
+            int quoteStart = jsonPayload.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;
+                int quoteEnd = jsonPayload.indexOf('"', quoteStart);
+                if (quoteEnd > quoteStart) {
+                    colorStr = jsonPayload.substring(quoteStart, quoteEnd);
+                    colorStr.toLowerCase();
+                }
+            }
+        }
+        
+        // Extract background color
+        int bgColorPos = jsonPayload.indexOf("\"backgroundColor\"");
+        if (bgColorPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', bgColorPos);
+            int quoteStart = jsonPayload.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;
+                int quoteEnd = jsonPayload.indexOf('"', quoteStart);
+                if (quoteEnd > quoteStart) {
+                    bgColorStr = jsonPayload.substring(quoteStart, quoteEnd);
+                    bgColorStr.toLowerCase();
+                }
+            }
+        }
+        
+        if (textToDisplay.length() == 0) {
+            String resp = "{\"success\":false,\"error\":\"Invalid JSON: missing text\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        Serial.printf("Text display: text=\"%s\", color=%s, background=%s\n", textToDisplay.c_str(), colorStr.c_str(), bgColorStr.c_str());
+        
+        // Set lock
+        showOperationInProgress = true;
+        
+        // Prepare task data
+        struct {
+            String* text;
+            String* color;
+            String* bgColor;
+        } taskData;
+        
+        String textCopy = textToDisplay;
+        String colorCopy = colorStr;
+        String bgColorCopy = bgColorStr;
+        taskData.text = &textCopy;
+        taskData.color = &colorCopy;
+        taskData.bgColor = &bgColorCopy;
+        
+        // Create task to display text (runs in background)
+        xTaskCreate([](void* param) {
+            auto* data = (decltype(taskData)*)param;
+            
+            Serial.println("Text display: Starting display task...");
+            
+            // Initialize display if not already initialized
+            if (display.getBuffer() == nullptr) {
+                Serial.println("Text display: Display not initialized - initializing now...");
+                displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+                if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+                    Serial.println("Text display: ERROR - Display initialization failed!");
+                    showOperationInProgress = false;
+                    vTaskDelete(NULL);
+                    return;
+                }
+                Serial.println("Text display: Display initialized successfully");
+            }
+            
+            // Convert background color string to e-ink color value
+            uint8_t bgColor = EL133UF1_WHITE;
+            if (*(data->bgColor) == "black") {
+                bgColor = EL133UF1_BLACK;
+            } else if (*(data->bgColor) == "yellow") {
+                bgColor = EL133UF1_YELLOW;
+            } else if (*(data->bgColor) == "red") {
+                bgColor = EL133UF1_RED;
+            } else if (*(data->bgColor) == "blue") {
+                bgColor = EL133UF1_BLUE;
+            } else if (*(data->bgColor) == "green") {
+                bgColor = EL133UF1_GREEN;
+            } else {
+                // Default: white
+                bgColor = EL133UF1_WHITE;
+            }
+            
+            // Call appropriate text display function based on color
+            bool result = false;
+            if (*(data->color) == "multi") {
+                // For multi-colour, pass background colour to the function
+                result = handleMultiTextCommand(*(data->text), bgColor);
+            } else if (*(data->color) == "multi-fade") {
+                // For multi-fade, pass background colour to the function
+                result = handleMultiFadeTextCommand(*(data->text), bgColor);
+            } else {
+                uint8_t fillColor = EL133UF1_WHITE;
+                uint8_t outlineColor = EL133UF1_BLACK;
+                
+                if (*(data->color) == "yellow") {
+                    fillColor = EL133UF1_YELLOW;
+                } else if (*(data->color) == "red") {
+                    fillColor = EL133UF1_RED;
+                } else if (*(data->color) == "blue") {
+                    fillColor = EL133UF1_BLUE;
+                } else if (*(data->color) == "green") {
+                    fillColor = EL133UF1_GREEN;
+                } else if (*(data->color) == "black") {
+                    fillColor = EL133UF1_BLACK;
+                    outlineColor = EL133UF1_WHITE;
+                } else {
+                    // Default: white
+                    fillColor = EL133UF1_WHITE;
+                }
+                
+                result = handleTextCommandWithColor(*(data->text), fillColor, outlineColor, bgColor);
+            }
+            
+            Serial.printf("Text display: Operation %s\n", result ? "completed successfully" : "failed");
+            showOperationInProgress = false;
+            vTaskDelete(NULL);
+        }, "TextDisplayTask", 16384, &taskData, 5, NULL);
+        
+        // Send response immediately to avoid SSL timeout (display operation runs in background)
+        String resp = "{\"success\":true,\"message\":\"Display operation started\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // POST /api/media/show?index=N - Show media item
+    server.on("/api/media/show", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        // Extract index from query parameter
+        String indexStr = request->getParam("index") ? request->getParam("index")->value() : "";
+        int index = indexStr.length() > 0 ? indexStr.toInt() : -1;
+        
+        // Check if another show operation is in progress
+        if (showOperationInProgress) {
+            String resp = "{\"success\":false,\"error\":\"Another show operation is already in progress\"}";
+            return response->send(409, "application/json", resp.c_str());
+        }
+        
+        if (index < 0) {
+            String resp = "{\"success\":false,\"error\":\"Invalid or missing index parameter\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        // Set lock
+        showOperationInProgress = true;
+        Serial.printf("Show request for media index %d\n", index);
+        
+        // Create semaphore for task completion
+        SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+        if (!completionSem) {
+            showOperationInProgress = false;
+            String resp = "{\"success\":false,\"error\":\"Failed to create semaphore\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        
+        // Prepare task data
+        bool taskSuccess = false;
+        size_t taskNextIndex = 0;
+        ShowMediaTaskData taskData;
+        taskData.index = index;
+        taskData.success = &taskSuccess;
+        taskData.nextIndex = &taskNextIndex;
+        taskData.completionSem = completionSem;
+        
+        // Create task with large stack (16KB like OTA)
+        TaskHandle_t showTaskHandle = nullptr;
+        xTaskCreatePinnedToCore(show_media_task, "show_media", 16384, &taskData, 5, &showTaskHandle, 0);
+        
+        if (!showTaskHandle) {
+            vSemaphoreDelete(completionSem);
+            showOperationInProgress = false;
+            String resp = "{\"success\":false,\"error\":\"Failed to create task\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        
+        // Wait for task to complete (with timeout - 5 minutes)
+        const TickType_t timeout = pdMS_TO_TICKS(300000);
+        if (xSemaphoreTake(completionSem, timeout) == pdTRUE) {
+            // Task completed
+            showOperationInProgress = false;
+            
+            String resp;
+            if (taskSuccess) {
+                resp = "{\"success\":true,\"nextIndex\":";
+                resp += String((unsigned long)taskNextIndex);
+                resp += "}";
+            } else {
+                resp = "{\"success\":false,\"error\":\"Failed to display image\"}";
+            }
+            
+            vSemaphoreDelete(completionSem);
+            return response->send(200, "application/json", resp.c_str());
+        } else {
+            // Timeout
+            Serial.println("ERROR: Show media task timeout");
+            showOperationInProgress = false;
+            vSemaphoreDelete(completionSem);
+            String resp = "{\"success\":false,\"error\":\"Operation timeout\"}";
+            return response->send(408, "application/json", resp.c_str());
+        }
+    });
+    
+    // GET /api/media - Read media.txt
+    server.on("/api/media", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String content = readSDFile("0:/media.txt");
+        return response->send(200, "text/plain", content.c_str());
+    });
+    
+    // GET /api/settings - Read device settings
+    server.on("/api/settings", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = getDeviceSettingsJSON();
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // GET /api/images - List image files
+    server.on("/api/images", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = listImageFiles();
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // GET /api/audio - List audio files
+    server.on("/api/audio", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = listAudioFiles();
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // POST /api/quotes - Write quotes.txt (with format validation)
+    server.on("/api/quotes", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        String jsonPayload = request->body();
+        
+        // Parse JSON to extract content
+        String content = "";
+        int contentPos = jsonPayload.indexOf("\"content\"");
+        if (contentPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', contentPos);
+            int quoteStart = jsonPayload.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;  // Skip opening quote
+                int quoteEnd = quoteStart;
+                while (quoteEnd < (int)jsonPayload.length()) {
+                    if (jsonPayload.charAt(quoteEnd) == '"' && (quoteEnd == 0 || jsonPayload.charAt(quoteEnd - 1) != '\\')) {
+                        break;
+                    }
+                    quoteEnd++;
+                }
+                if (quoteEnd > quoteStart) {
+                    content = jsonPayload.substring(quoteStart, quoteEnd);
+                    // Unescape JSON string
+                    content.replace("\\n", "\n");
+                    content.replace("\\r", "\r");
+                    content.replace("\\t", "\t");
+                    content.replace("\\\"", "\"");
+                    content.replace("\\\\", "\\");
+                }
+            }
+        }
+        
+        // Validate format: each quote must have text followed by ~Author, separated by blank lines
+        // Parse and validate the content line by line
+        std::vector<String> lines;
+        int startPos = 0;
+        while (startPos < (int)content.length()) {
+            int endPos = content.indexOf('\n', startPos);
+            if (endPos < 0) endPos = content.length();
+            String line = content.substring(startPos, endPos);
+            line.trim();
+            lines.push_back(line);
+            startPos = endPos + 1;
+        }
+        
+        // Validate format
+        bool isValid = true;
+        String errorMsg = "";
+        bool expectingAuthor = false;
+        bool hasQuote = false;
+        
+        for (size_t i = 0; i < lines.size(); i++) {
+            String line = lines[i];
+            
+            if (line.length() == 0) {
+                // Blank line - if we were expecting an author, that's an error
+                if (expectingAuthor) {
+                    isValid = false;
+                    errorMsg = "Quote text followed by blank line (missing author)";
+                    break;
+                }
+                // Otherwise, blank line is a separator (OK)
+                expectingAuthor = false;
+                hasQuote = false;
+                continue;
+            }
+            
+            if (line.startsWith("~")) {
+                // Author line
+                if (!hasQuote) {
+                    isValid = false;
+                    errorMsg = "Author line (~) without preceding quote text";
+                    break;
+                }
+                if (!expectingAuthor) {
+                    isValid = false;
+                    errorMsg = "Author line (~) appears without quote text";
+                    break;
+                }
+                // Valid author line
+                expectingAuthor = false;
+                hasQuote = false;
+            } else {
+                // Quote text line
+                if (expectingAuthor) {
+                    // Multi-line quote - continue
+                    hasQuote = true;
+                } else {
+                    // New quote starting
+                    hasQuote = true;
+                    expectingAuthor = true;
+                }
+            }
+        }
+        
+        // Check if we ended expecting an author
+        if (expectingAuthor) {
+            isValid = false;
+            errorMsg = "Quote text at end of file without author";
+        }
+        
+        if (!isValid) {
+            String resp = "{\"success\":false,\"error\":\"Invalid format: " + errorMsg + "\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        // Format is valid, write to file
+        bool success = writeSDFile("0:/quotes.txt", content);
+        // Reload quotes after writing
+        if (success) {
+            loadQuotesFromSD();
+        }
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // POST /api/media - Write media.txt and optionally update next index
+    server.on("/api/media", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String body = request->body();
+        
+        // Check if it's JSON format (with nextIndex)
+        bool isJSON = body.startsWith("{");
+        String mediaContent = "";
+        int nextIndex = -1;
+        
+        if (isJSON) {
+            // Parse JSON: {"content":"...", "nextIndex":N}
+            int contentStart = body.indexOf("\"content\":");
+            if (contentStart >= 0) {
+                int fullContentStart = body.indexOf("\"content\":\"") + 11;
+                int fullContentEnd = body.indexOf("\",\"nextIndex\"");
+                if (fullContentEnd < 0) fullContentEnd = body.indexOf("\"}", fullContentStart);
+                if (fullContentEnd > fullContentStart) {
+                    mediaContent = body.substring(fullContentStart, fullContentEnd);
+                    // Unescape
+                    mediaContent.replace("\\n", "\n");
+                    mediaContent.replace("\\\"", "\"");
+                }
+            }
+            
+            int indexStart = body.indexOf("\"nextIndex\":");
+            if (indexStart >= 0) {
+                int colonPos = body.indexOf(':', indexStart);
+                int valueEnd = body.indexOf(',', colonPos);
+                if (valueEnd < 0) valueEnd = body.indexOf('}', colonPos);
+                if (valueEnd > colonPos) {
+                    String indexStr = body.substring(colonPos + 1, valueEnd);
+                    indexStr.trim();
+                    if (indexStr != "null") {
+                        nextIndex = indexStr.toInt();
+                    }
+                }
+            }
+        } else {
+            // Plain text format (backward compatibility)
+            mediaContent = body;
+        }
+        
+        bool success = writeSDFile("0:/media.txt", mediaContent);
+        
+        // Update next index if provided
+        if (success && nextIndex >= 0) {
+            size_t mediaCount = g_media_mappings.size();
+            if (mediaCount > 0) {
+                lastMediaIndex = (nextIndex - 1 + mediaCount) % mediaCount;
+                mediaIndexSaveToNVS();
+                Serial.printf("Updated next media index: will display index %d next (lastMediaIndex=%lu)\n", 
+                             nextIndex, (unsigned long)lastMediaIndex);
+            }
+        }
+        
+        // Reload media mappings after writing
+        if (success) {
+            loadMediaMappingsFromSD();
+        }
+        
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // POST /api/settings - Update device settings
+    server.on("/api/settings", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String body = request->body();
+        bool success = updateDeviceSettings(body);
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to update settings\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // GET /api/files - List all files
+    server.on("/api/files", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = listAllFiles();
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // GET /api/files/* - Download a file
+    server.on("/api/files/*", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        // Extract filename from URL path
+        String url = request->url();
+        int pathStart = url.indexOf("/api/files/") + 11;
+        String filename = url.substring(pathStart);
+        filename.trim();
+        
+        // URL decode filename (basic)
+        filename.replace("%20", " ");
+        filename.replace("%2F", "/");
+        
+        String filepath = "0:/";
+        filepath += filename;
+        
+        FIL file;
+        FRESULT res = f_open(&file, filepath.c_str(), FA_READ);
+        if (res == FR_OK) {
+            FSIZE_t fileSize = f_size(&file);
+            
+            // Add CORS headers before creating stream response
+            addCorsHeaders(response);
+            
+            // Create stream response for file download
+            // Constructor automatically sets Content-Disposition header for download
+            PsychicStreamResponse streamResp(response, "application/octet-stream", filename);
+            
+            if (streamResp.beginSend() == ESP_OK) {
+                // Stream file content
+                char buffer[512];
+                UINT bytesRead;
+                while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
+                    streamResp.write((uint8_t*)buffer, bytesRead);
+                    if (bytesRead < sizeof(buffer)) break; // EOF
+                }
+                streamResp.endSend();
+            }
+            f_close(&file);
+            Serial.printf("File downloaded: %s (%lu bytes)\n", filename.c_str(), (unsigned long)fileSize);
+            return ESP_OK;
+        } else {
+            addCorsHeaders(response);
+            Serial.printf("File not found: %s (error %d)\n", filepath.c_str(), res);
+            return response->send(404, "text/plain", "File not found");
+        }
+    });
+    
+    // POST /api/files/upload - File upload (base64-encoded JSON)
+    // Process in separate task with large stack to avoid stack overflow
+    server.on("/api/files/upload", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        // Get body using PsychicHttp's body() method (works in HTTP server task context)
+        // This creates a String on the stack, but we'll immediately copy to heap
+        String bodyStr = request->body();
+        if (bodyStr.length() == 0 || bodyStr.length() > 1024 * 1024) {  // Max 1MB
+            String resp = "{\"success\":false,\"error\":\"Invalid content length\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        // Copy body to heap buffer immediately to avoid stack issues
+        size_t bodyLen = bodyStr.length();
+        char* jsonBuffer = (char*)malloc(bodyLen + 1);
+        if (!jsonBuffer) {
+            String resp = "{\"success\":false,\"error\":\"Failed to allocate buffer\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        memcpy(jsonBuffer, bodyStr.c_str(), bodyLen);
+        jsonBuffer[bodyLen] = '\0';
+        // bodyStr goes out of scope here, freeing stack memory
+        
+        // Create semaphore for task completion
+        SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+        if (!completionSem) {
+            free(jsonBuffer);
+            String resp = "{\"success\":false,\"error\":\"Failed to create semaphore\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        
+        // Prepare task data
+        struct {
+            char* jsonData;
+            size_t jsonLen;
+            SemaphoreHandle_t sem;
+            bool* success;
+            String* resultJson;
+        } taskData;
+        
+        bool taskSuccess = false;
+        String resultJson = "";
+        taskData.jsonData = jsonBuffer;
+        taskData.jsonLen = bodyLen;
+        taskData.sem = completionSem;
+        taskData.success = &taskSuccess;
+        taskData.resultJson = &resultJson;
+        
+        // Create task with large stack (32KB) to process upload
+        xTaskCreate([](void* param) {
+            auto* data = (decltype(taskData)*)param;
+            
+            String jsonPayload = String(data->jsonData);
+            free(data->jsonData);  // Free immediately after creating String
+            
+            // Parse JSON to extract filename and base64 data
+            String filename = "";
+            String base64Data = "";
+            
+            int filenamePos = jsonPayload.indexOf("\"filename\"");
+            if (filenamePos >= 0) {
+                int colonPos = jsonPayload.indexOf(":", filenamePos);
+                int quoteStart = jsonPayload.indexOf("\"", colonPos);
+                if (quoteStart >= 0) {
+                    int quoteEnd = jsonPayload.indexOf("\"", quoteStart + 1);
+                    if (quoteEnd > quoteStart) {
+                        filename = jsonPayload.substring(quoteStart + 1, quoteEnd);
+                    }
+                }
+            }
+            
+            int dataPos = jsonPayload.indexOf("\"data\"");
+            if (dataPos >= 0) {
+                int colonPos = jsonPayload.indexOf(":", dataPos);
+                int quoteStart = jsonPayload.indexOf("\"", colonPos);
+                if (quoteStart >= 0) {
+                    int quoteEnd = quoteStart + 1;
+                    while (quoteEnd < (int)jsonPayload.length()) {
+                        if (jsonPayload.charAt(quoteEnd) == '"') {
+                            if (quoteEnd == 0 || jsonPayload.charAt(quoteEnd - 1) != '\\') {
+                                break;
+                            }
+                        }
+                        quoteEnd++;
+                    }
+                    if (quoteEnd > quoteStart && quoteEnd < (int)jsonPayload.length()) {
+                        base64Data = jsonPayload.substring(quoteStart + 1, quoteEnd);
+                    } else {
+                        quoteEnd = jsonPayload.lastIndexOf("\"");
+                        if (quoteEnd > quoteStart) {
+                            base64Data = jsonPayload.substring(quoteStart + 1, quoteEnd);
+                        }
+                    }
+                }
+            }
+            
+            // Validate we got both filename and data
+            if (filename.length() == 0 || base64Data.length() == 0) {
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Invalid JSON: missing filename or data\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Decode base64 and write to file
+            Serial.printf("Uploading file: %s (base64 length: %d)\n", filename.c_str(), base64Data.length());
+            
+            size_t base64Len = base64Data.length();
+            size_t decodedMaxSize = (base64Len * 3) / 4 + 4;
+            
+            uint8_t* decodedBuffer = (uint8_t*)malloc(decodedMaxSize);
+            if (!decodedBuffer) {
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to allocate decode buffer\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Base64 decode
+            static const char b64_table[] = {
+                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
+                52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+                64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+                15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
+                64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+                41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64
+            };
+            
+            size_t decodedLen = 0;
+            uint32_t accumulator = 0;
+            int bits = 0;
+            
+            for (size_t i = 0; i < base64Len; i++) {
+                char c = base64Data.charAt(i);
+                if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+                if (c == '=') continue;
+                if (c < 0 || c >= 128) continue;
+                uint8_t val = b64_table[(uint8_t)c];
+                if (val == 64) continue;
+                
+                accumulator = (accumulator << 6) | val;
+                bits += 6;
+                
+                if (bits >= 8) {
+                    bits -= 8;
+                    decodedBuffer[decodedLen++] = (uint8_t)((accumulator >> bits) & 0xFF);
+                }
+            }
+            
+            Serial.printf("Decoded %zu bytes from base64\n", decodedLen);
+            
+            // Open file for writing
+            String filepath = "0:/";
+            filepath += filename;
+            FIL file;
+            FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+            
+            if (res != FR_OK) {
+                free(decodedBuffer);
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create file\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Write decoded data to file
+            UINT bytesWritten = 0;
+            FRESULT writeRes = f_write(&file, decodedBuffer, decodedLen, &bytesWritten);
+            
+            f_close(&file);
+            free(decodedBuffer);
+            
+            if (writeRes != FR_OK || bytesWritten != decodedLen) {
+                Serial.printf("ERROR: File write failed: res=%d, wrote=%u/%zu\n", 
+                             writeRes, bytesWritten, decodedLen);
+                *(data->resultJson) = "{\"success\":false,\"error\":\"File write failed\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            Serial.printf("File upload complete: %s (%u bytes written)\n", 
+                         filename.c_str(), bytesWritten);
+            
+            *(data->resultJson) = "{\"success\":true,\"filename\":\"";
+            *(data->resultJson) += filename;
+            *(data->resultJson) += "\",\"size\":";
+            *(data->resultJson) += String(bytesWritten);
+            *(data->resultJson) += "}";
+            *(data->success) = true;
+            xSemaphoreGive(data->sem);
+            vTaskDelete(NULL);
+        }, "file_upload_task", 32 * 1024, &taskData, 5, NULL);  // 32KB stack
+        
+        // Wait for task to complete
+        if (xSemaphoreTake(completionSem, pdMS_TO_TICKS(60000)) == pdTRUE) {
+            vSemaphoreDelete(completionSem);
+            int statusCode = taskSuccess ? 200 : 400;
+            return response->send(statusCode, "application/json", resultJson.c_str());
+        } else {
+            vSemaphoreDelete(completionSem);
+            String resp = "{\"success\":false,\"error\":\"Upload timeout\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+    });
+    
+    // POST /api/files/upload/chunk - Chunked file upload for large files
+    // Format: {"filename":"name","chunkIndex":0,"totalChunks":5,"chunkData":"base64..."}
+    // Process in separate task with large stack to avoid stack overflow
+    server.on("/api/files/upload/chunk", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        // Get body using PsychicHttp's body() method (works in HTTP server task context)
+        // This creates a String on the stack, but we'll immediately copy to heap
+        String bodyStr = request->body();
+        if (bodyStr.length() == 0 || bodyStr.length() > 1024 * 1024) {  // Max 1MB
+            String resp = "{\"success\":false,\"error\":\"Invalid content length\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        // Copy body to heap buffer immediately to avoid stack issues
+        size_t bodyLen = bodyStr.length();
+        char* jsonBuffer = (char*)malloc(bodyLen + 1);
+        if (!jsonBuffer) {
+            String resp = "{\"success\":false,\"error\":\"Failed to allocate buffer\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        memcpy(jsonBuffer, bodyStr.c_str(), bodyLen);
+        jsonBuffer[bodyLen] = '\0';
+        // bodyStr goes out of scope here, freeing stack memory
+        
+        // Create semaphore for task completion
+        SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+        if (!completionSem) {
+            free(jsonBuffer);
+            String resp = "{\"success\":false,\"error\":\"Failed to create semaphore\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        
+        // Prepare task data
+        struct {
+            char* jsonData;
+            size_t jsonLen;
+            SemaphoreHandle_t sem;
+            bool* success;
+            String* resultJson;
+        } taskData;
+        
+        bool taskSuccess = false;
+        String resultJson = "";
+        taskData.jsonData = jsonBuffer;
+        taskData.jsonLen = bodyLen;
+        taskData.sem = completionSem;
+        taskData.success = &taskSuccess;
+        taskData.resultJson = &resultJson;
+        
+        // Create task with large stack (32KB) to process chunk upload
+        xTaskCreate([](void* param) {
+            auto* data = (decltype(taskData)*)param;
+            
+            String jsonPayload = String(data->jsonData);
+            free(data->jsonData);  // Free immediately after creating String
+            
+            // Parse JSON
+            String filename = "";
+            int chunkIndex = -1;
+            int totalChunks = -1;
+            String chunkData = "";
+            
+            // Extract filename
+            int filenamePos = jsonPayload.indexOf("\"filename\"");
+            if (filenamePos >= 0) {
+                int colonPos = jsonPayload.indexOf(":", filenamePos);
+                int quoteStart = jsonPayload.indexOf("\"", colonPos);
+                if (quoteStart >= 0) {
+                    int quoteEnd = jsonPayload.indexOf("\"", quoteStart + 1);
+                    if (quoteEnd > quoteStart) {
+                        filename = jsonPayload.substring(quoteStart + 1, quoteEnd);
+                    }
+                }
+            }
+            
+            // Extract chunkIndex
+            int chunkIdxPos = jsonPayload.indexOf("\"chunkIndex\"");
+            if (chunkIdxPos >= 0) {
+                int colonPos = jsonPayload.indexOf(":", chunkIdxPos);
+                int numStart = colonPos + 1;
+                while (numStart < (int)jsonPayload.length() && (jsonPayload.charAt(numStart) == ' ' || jsonPayload.charAt(numStart) == '\t')) numStart++;
+                int numEnd = numStart;
+                while (numEnd < (int)jsonPayload.length() && jsonPayload.charAt(numEnd) >= '0' && jsonPayload.charAt(numEnd) <= '9') numEnd++;
+                if (numEnd > numStart) {
+                    chunkIndex = jsonPayload.substring(numStart, numEnd).toInt();
+                }
+            }
+            
+            // Extract totalChunks
+            int totalChunksPos = jsonPayload.indexOf("\"totalChunks\"");
+            if (totalChunksPos >= 0) {
+                int colonPos = jsonPayload.indexOf(":", totalChunksPos);
+                int numStart = colonPos + 1;
+                while (numStart < (int)jsonPayload.length() && (jsonPayload.charAt(numStart) == ' ' || jsonPayload.charAt(numStart) == '\t')) numStart++;
+                int numEnd = numStart;
+                while (numEnd < (int)jsonPayload.length() && jsonPayload.charAt(numEnd) >= '0' && jsonPayload.charAt(numEnd) <= '9') numEnd++;
+                if (numEnd > numStart) {
+                    totalChunks = jsonPayload.substring(numStart, numEnd).toInt();
+                }
+            }
+            
+            // Extract chunkData
+            int dataPos = jsonPayload.indexOf("\"chunkData\"");
+            if (dataPos >= 0) {
+                int colonPos = jsonPayload.indexOf(":", dataPos);
+                int quoteStart = jsonPayload.indexOf("\"", colonPos);
+                if (quoteStart >= 0) {
+                    quoteStart++;
+                    int quoteEnd = quoteStart;
+                    while (quoteEnd < (int)jsonPayload.length()) {
+                        if (jsonPayload.charAt(quoteEnd) == '"' && (quoteEnd == 0 || jsonPayload.charAt(quoteEnd - 1) != '\\')) {
+                            break;
+                        }
+                        quoteEnd++;
+                    }
+                    if (quoteEnd > quoteStart) {
+                        chunkData = jsonPayload.substring(quoteStart, quoteEnd);
+                    }
+                }
+            }
+            
+            // Validate
+            if (filename.length() == 0 || chunkIndex < 0 || totalChunks < 1 || chunkData.length() == 0) {
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Invalid chunk data\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            Serial.printf("Chunk upload: %s chunk %d/%d (%d bytes base64)\n", 
+                         filename.c_str(), chunkIndex + 1, totalChunks, chunkData.length());
+            
+            // Create temp directory for chunks if it doesn't exist
+            String tempDir = "0:/_upload_chunks";
+            FILINFO fno;
+            FRESULT dirRes = f_stat(tempDir.c_str(), &fno);
+            if (dirRes != FR_OK) {
+                f_mkdir(tempDir.c_str());
+            }
+            
+            // Save chunk to temp file
+            String chunkFile = tempDir + "/" + filename + ".chunk" + String(chunkIndex);
+            FIL chunkFil;
+            FRESULT openRes = f_open(&chunkFil, chunkFile.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+            if (openRes != FR_OK) {
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create chunk file\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Decode base64 chunk
+            size_t base64Len = chunkData.length();
+            size_t decodedMaxSize = (base64Len * 3) / 4 + 4;
+            uint8_t* decodedBuffer = (uint8_t*)malloc(decodedMaxSize);
+            if (!decodedBuffer) {
+                f_close(&chunkFil);
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to allocate decode buffer\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Base64 decode
+            static const char b64_table[] = {
+                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+                64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
+                52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+                64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+                15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
+                64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+                41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64
+            };
+            
+            size_t decodedLen = 0;
+            uint32_t accumulator = 0;
+            int bits = 0;
+            
+            for (size_t i = 0; i < base64Len; i++) {
+                char c = chunkData.charAt(i);
+                if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+                if (c == '=') continue;
+                if (c < 0 || c >= 128) continue;
+                uint8_t val = b64_table[(uint8_t)c];
+                if (val == 64) continue;
+                
+                accumulator = (accumulator << 6) | val;
+                bits += 6;
+                
+                if (bits >= 8) {
+                    bits -= 8;
+                    decodedBuffer[decodedLen++] = (uint8_t)((accumulator >> bits) & 0xFF);
+                }
+            }
+            
+            // Write decoded chunk
+            UINT bytesWritten = 0;
+            FRESULT writeRes = f_write(&chunkFil, decodedBuffer, decodedLen, &bytesWritten);
+            f_close(&chunkFil);
+            free(decodedBuffer);
+            
+            if (writeRes != FR_OK || bytesWritten != decodedLen) {
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to write chunk\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Check if this is the last chunk - if so, reassemble file
+            if (chunkIndex == totalChunks - 1) {
+                Serial.printf("Last chunk received, reassembling file: %s\n", filename.c_str());
+                
+                // Open destination file
+                String filepath = "0:/" + filename;
+                FIL destFile;
+                FRESULT openRes = f_open(&destFile, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+                if (openRes != FR_OK) {
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create destination file\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                // Read and concatenate all chunks
+                uint8_t* buffer = (uint8_t*)malloc(8192);  // 8KB buffer
+                if (!buffer) {
+                    f_close(&destFile);
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to allocate buffer\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                size_t totalBytes = 0;
+                bool success = true;
+                
+                for (int i = 0; i < totalChunks; i++) {
+                    String chunkPath = tempDir + "/" + filename + ".chunk" + String(i);
+                    FIL chunkFile;
+                    FRESULT res = f_open(&chunkFile, chunkPath.c_str(), FA_READ);
+                    if (res != FR_OK) {
+                        Serial.printf("ERROR: Failed to open chunk %d: %d\n", i, res);
+                        success = false;
+                        break;
+                    }
+                    
+                    FSIZE_t chunkSize = f_size(&chunkFile);
+                    size_t remaining = (size_t)chunkSize;
+                    
+                    while (remaining > 0) {
+                        UINT toRead = (remaining > 8192) ? 8192 : remaining;
+                        UINT bytesRead = 0;
+                        res = f_read(&chunkFile, buffer, toRead, &bytesRead);
+                        if (res != FR_OK || bytesRead == 0) {
+                            success = false;
+                            break;
+                        }
+                        
+                        UINT bytesWritten = 0;
+                        res = f_write(&destFile, buffer, bytesRead, &bytesWritten);
+                        if (res != FR_OK || bytesWritten != bytesRead) {
+                            success = false;
+                            break;
+                        }
+                        
+                        totalBytes += bytesWritten;
+                        remaining -= bytesRead;
+                    }
+                    
+                    f_close(&chunkFile);
+                    
+                    // Delete chunk file
+                    f_unlink(chunkPath.c_str());
+                    
+                    if (!success) break;
+                }
+                
+                f_close(&destFile);
+                free(buffer);
+                
+                if (!success) {
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to reassemble file\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                Serial.printf("File reassembled: %s (%zu bytes)\n", filename.c_str(), totalBytes);
+                *(data->resultJson) = "{\"success\":true,\"filename\":\"";
+                *(data->resultJson) += filename;
+                *(data->resultJson) += "\",\"size\":";
+                *(data->resultJson) += String(totalBytes);
+                *(data->resultJson) += "}";
+                *(data->success) = true;
+            } else {
+                // Not the last chunk, just acknowledge
+                *(data->resultJson) = "{\"success\":true,\"chunk\":";
+                *(data->resultJson) += String(chunkIndex);
+                *(data->resultJson) += "}";
+                *(data->success) = true;
+            }
+            xSemaphoreGive(data->sem);
+            vTaskDelete(NULL);
+        }, "chunk_upload_task", 32 * 1024, &taskData, 5, NULL);  // 32KB stack
+        
+        // Wait for task to complete
+        if (xSemaphoreTake(completionSem, pdMS_TO_TICKS(60000)) == pdTRUE) {
+            vSemaphoreDelete(completionSem);
+            int statusCode = taskSuccess ? 200 : 400;
+            return response->send(statusCode, "application/json", resultJson.c_str());
+        } else {
+            vSemaphoreDelete(completionSem);
+            String resp = "{\"success\":false,\"error\":\"Upload timeout\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+    });
+    
+    // POST /api/canvas/display - Display canvas drawing (800x600 PNG, scaled to 1600x1200)
+    server.on("/api/canvas/display", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        // Check if another show operation is in progress
+        if (showOperationInProgress) {
+            String resp = "{\"success\":false,\"error\":\"Another show operation is already in progress\"}";
+            return response->send(409, "application/json", resp.c_str());
+        }
+        
+        String jsonPayload = request->body();
+        
+        // Parse JSON to extract pixel data (base64-encoded array of color indices 0-6)
+        String base64Data = "";
+        int width = 800;
+        int height = 600;
+        
+        // Extract pixelData
+        int pixelDataPos = jsonPayload.indexOf("\"pixelData\"");
+        if (pixelDataPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', pixelDataPos);
+            int quoteStart = jsonPayload.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;  // Skip opening quote
+                int quoteEnd = jsonPayload.indexOf('"', quoteStart);
+                if (quoteEnd > quoteStart) {
+                    base64Data = jsonPayload.substring(quoteStart, quoteEnd);
+                }
+            }
+        }
+        
+        // Extract width and height (optional, defaults to 800x600)
+        int widthPos = jsonPayload.indexOf("\"width\"");
+        if (widthPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', widthPos);
+            int numStart = colonPos + 1;
+            while (numStart < (int)jsonPayload.length() && (jsonPayload.charAt(numStart) == ' ' || jsonPayload.charAt(numStart) == '\t')) numStart++;
+            int numEnd = numStart;
+            while (numEnd < (int)jsonPayload.length() && jsonPayload.charAt(numEnd) >= '0' && jsonPayload.charAt(numEnd) <= '9') numEnd++;
+            if (numEnd > numStart) {
+                width = jsonPayload.substring(numStart, numEnd).toInt();
+            }
+        }
+        
+        int heightPos = jsonPayload.indexOf("\"height\"");
+        if (heightPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', heightPos);
+            int numStart = colonPos + 1;
+            while (numStart < (int)jsonPayload.length() && (jsonPayload.charAt(numStart) == ' ' || jsonPayload.charAt(numStart) == '\t')) numStart++;
+            int numEnd = numStart;
+            while (numEnd < (int)jsonPayload.length() && jsonPayload.charAt(numEnd) >= '0' && jsonPayload.charAt(numEnd) <= '9') numEnd++;
+            if (numEnd > numStart) {
+                height = jsonPayload.substring(numStart, numEnd).toInt();
+            }
+        }
+        
+        if (base64Data.length() == 0) {
+            String resp = "{\"success\":false,\"error\":\"Invalid JSON: missing pixelData\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        if (width <= 0 || height <= 0 || width > 1600 || height > 1200) {
+            String resp = "{\"success\":false,\"error\":\"Invalid dimensions\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        Serial.printf("Canvas display: received pixel data (%d chars, %dx%d)\n", base64Data.length(), width, height);
+        
+        // Decode base64 to get pixel color indices
+        size_t base64Len = base64Data.length();
+        size_t expectedPixels = width * height;
+        size_t decodedMaxSize = (base64Len * 3) / 4 + 4;
+        
+        uint8_t* pixelBuffer = (uint8_t*)malloc(decodedMaxSize);
+        if (!pixelBuffer) {
+            String resp = "{\"success\":false,\"error\":\"Failed to allocate pixel buffer\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        
+        // Base64 decode
+        static const char b64_table[] = {
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
+            52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+            64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+            15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
+            64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+            41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64
+        };
+        
+        size_t decodedLen = 0;
+        uint32_t accumulator = 0;
+        int bits = 0;
+        
+        for (size_t i = 0; i < base64Len; i++) {
+            char c = base64Data.charAt(i);
+            if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+            if (c == '=') continue;
+            if (c < 0 || c >= 128) continue;
+            uint8_t val = b64_table[(uint8_t)c];
+            if (val == 64) continue;
+            
+            accumulator = (accumulator << 6) | val;
+            bits += 6;
+            
+            if (bits >= 8) {
+                bits -= 8;
+                pixelBuffer[decodedLen++] = (uint8_t)((accumulator >> bits) & 0xFF);
+            }
+        }
+        
+        if (decodedLen != expectedPixels) {
+            free(pixelBuffer);
+            String resp = "{\"success\":false,\"error\":\"Pixel count mismatch\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        Serial.printf("Canvas display: decoded %zu pixels (%dx%d)\n", decodedLen, width, height);
+        
+        // Set lock
+        showOperationInProgress = true;
+        
+        // Create semaphore for task completion
+        SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+        if (!completionSem) {
+            showOperationInProgress = false;
+            free(pixelBuffer);
+            String resp = "{\"success\":false,\"error\":\"Failed to create semaphore\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+        
+        // Prepare task data
+        struct {
+            uint8_t* pixels;
+            int width;
+            int height;
+            SemaphoreHandle_t sem;
+            bool* success;
+        } taskData;
+        bool taskSuccess = false;
+        taskData.pixels = pixelBuffer;
+        taskData.width = width;
+        taskData.height = height;
+        taskData.sem = completionSem;
+        taskData.success = &taskSuccess;
+        
+        // Create task to display canvas (runs in background)
+        xTaskCreate([](void* param) {
+            auto* data = (decltype(taskData)*)param;
+            
+            Serial.println("Canvas display: Starting display task...");
+            
+            // Initialize display if not already initialized (safe to call begin() if buffer is null)
+            if (display.getBuffer() == nullptr) {
+                Serial.println("Canvas display: Display not initialized - initializing now...");
+                displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+                if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+                    Serial.println("Canvas display: ERROR - Display initialization failed!");
+                    *(data->success) = false;
+                    free(data->pixels);
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                Serial.println("Canvas display: Display initialized successfully");
+            } else {
+                Serial.println("Canvas display: Display already initialized, using existing buffer");
+            }
+            
+            // Clear display to white first
+            display.clear(EL133UF1_WHITE);
+            
+            // Calculate scale factor to fit on 1600x1200 display
+            // For 800x600 canvas, scale 2x to 1600x1200
+            int scaleX = EL133UF1_WIDTH / data->width;   // 1600 / 800 = 2
+            int scaleY = EL133UF1_HEIGHT / data->height; // 1200 / 600 = 2
+            
+            // Center the scaled image
+            int16_t offsetX = (EL133UF1_WIDTH - (data->width * scaleX)) / 2;
+            int16_t offsetY = (EL133UF1_HEIGHT - (data->height * scaleY)) / 2;
+            
+            Serial.printf("Canvas display: Drawing %dx%d pixels, scaling %dx to %dx%d at offset (%d, %d)\n",
+                         data->width, data->height, scaleX, scaleY,
+                         data->width * scaleX, data->height * scaleY, offsetX, offsetY);
+            
+            // Count non-white pixels for debugging
+            int nonWhiteCount = 0;
+            int colorCounts[7] = {0};
+            
+            // Draw pixels directly to display with scaling
+            // Each source pixel becomes a scaleX x scaleY block
+            for (int sy = 0; sy < data->height; sy++) {
+                for (int sx = 0; sx < data->width; sx++) {
+                    uint8_t color = data->pixels[sy * data->width + sx];
+                    // Ensure color is valid (0-6)
+                    if (color > 6) color = EL133UF1_WHITE;
+                    
+                    // Track color distribution
+                    if (color < 7) colorCounts[color]++;
+                    if (color != EL133UF1_WHITE) nonWhiteCount++;
+                    
+                    // Calculate destination position
+                    int16_t dx = offsetX + sx * scaleX;
+                    int16_t dy = offsetY + sy * scaleY;
+                    
+                    // Draw scaleX x scaleY block
+                    for (int py = 0; py < scaleY; py++) {
+                        for (int px = 0; px < scaleX; px++) {
+                            int16_t pxX = dx + px;
+                            int16_t pxY = dy + py;
+                            if (pxX >= 0 && pxX < EL133UF1_WIDTH && pxY >= 0 && pxY < EL133UF1_HEIGHT) {
+                                display.setPixel(pxX, pxY, color);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Serial.printf("Canvas display: Drew %d non-white pixels. Color distribution: ", nonWhiteCount);
+            for (int i = 0; i < 7; i++) {
+                if (colorCounts[i] > 0) {
+                    Serial.printf("color%d=%d ", i, colorCounts[i]);
+                }
+            }
+            Serial.println();
+            
+            // Update display
+            display.update();
+            Serial.println("Canvas display: Success!");
+            *(data->success) = true;
+            
+            free(data->pixels);
+            showOperationInProgress = false;
+            xSemaphoreGive(data->sem);
+            vTaskDelete(NULL);
+        }, "CanvasDisplayTask", 16384, &taskData, 5, NULL);
+        
+        // Wait for task to complete (with timeout)
+        if (xSemaphoreTake(completionSem, pdMS_TO_TICKS(60000)) == pdTRUE) {
+            vSemaphoreDelete(completionSem);
+            String resp = taskSuccess ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Display operation failed\"}";
+            return response->send(200, "application/json", resp.c_str());
+        } else {
+            vSemaphoreDelete(completionSem);
+            showOperationInProgress = false;
+            free(pixelBuffer);
+            String resp = "{\"success\":false,\"error\":\"Display operation timeout\"}";
+            return response->send(500, "application/json", resp.c_str());
+        }
+    });
+    
+    // DELETE /api/files/* - Delete a file
+    server.on("/api/files/*", HTTP_DELETE, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String url = request->url();
+        int pathStart = url.indexOf("/api/files/") + 11;
+        String filename = url.substring(pathStart);
+        filename.trim();
+        
+        // URL decode filename (basic)
+        filename.replace("%20", " ");
+        filename.replace("%2F", "/");
+        
+        bool success = deleteSDFile(filename.c_str());
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to delete file\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // GET /api/log - Get current log file
+    server.on("/api/log", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        logFlush();
+        String content = readSDFile(LOG_FILE);
+        return response->send(200, "text/plain", content.c_str());
+    });
+    
+    // GET /api/log/list - List recent log files
+    server.on("/api/log/list", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = "[";
+        bool first = true;
+        
+        struct LogFileInfo {
+            String filename;
+            uint32_t mtime;
+            uint32_t size;
+        };
+        std::vector<LogFileInfo> logFiles;
+        
+        FF_DIR dir;
+        FILINFO fno;
+        FRESULT res = f_opendir(&dir, LOG_DIR);
+        
+        if (res == FR_OK) {
+            while (true) {
+                res = f_readdir(&dir, &fno);
+                if (res != FR_OK || fno.fname[0] == 0) break;
+                
+                if (!(fno.fattrib & AM_DIR)) {
+                    String filename = String(fno.fname);
+                    if (filename.startsWith("log_") && filename.endsWith(".txt")) {
+                        LogFileInfo info;
+                        info.filename = filename;
+                        info.size = (uint32_t)fno.fsize;
+                        uint16_t date = fno.fdate;
+                        uint16_t time = fno.ftime;
+                        uint32_t year = 1980 + ((date >> 9) & 0x7F);
+                        uint32_t month = (date >> 5) & 0x0F;
+                        uint32_t day = date & 0x1F;
+                        uint32_t hour = (time >> 11) & 0x1F;
+                        uint32_t min = (time >> 5) & 0x3F;
+                        uint32_t sec = (time & 0x1F) * 2;
+                        info.mtime = (year - 1980) * 365 * 24 * 3600 + month * 30 * 24 * 3600 + day * 24 * 3600 + hour * 3600 + min * 60 + sec;
+                        logFiles.push_back(info);
+                    }
+                }
+            }
+            f_closedir(&dir);
+            
+            // Sort by modification time (newest first)
+            for (size_t i = 0; i < logFiles.size(); i++) {
+                for (size_t j = i + 1; j < logFiles.size(); j++) {
+                    if (logFiles[i].mtime < logFiles[j].mtime) {
+                        LogFileInfo temp = logFiles[i];
+                        logFiles[i] = logFiles[j];
+                        logFiles[j] = temp;
+                    }
+                }
+            }
+            
+            // Return top 5 most recent
+            int count = 0;
+            for (const auto& info : logFiles) {
+                if (count >= 5) break;
+                if (!first) json += ",";
+                json += "{\"filename\":\"";
+                json += info.filename;
+                json += "\",\"size\":";
+                json += String(info.size);
+                json += "}";
+                first = false;
+                count++;
+            }
+        }
+        
+        json += "]";
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // GET /api/log/archive?file=... - Get archived log file
+    server.on("/api/log/archive", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String filename = request->getParam("file") ? request->getParam("file")->value() : "";
+        
+        // If no filename specified, try the default archive
+        if (filename.length() == 0) {
+            FILINFO fno;
+            FRESULT statRes = f_stat(LOG_ARCHIVE, &fno);
+            if (statRes == FR_OK) {
+                filename = String(LOG_ARCHIVE);
+                int lastSlash = filename.lastIndexOf('/');
+                if (lastSlash >= 0) {
+                    filename = filename.substring(lastSlash + 1);
+                }
+            }
+        }
+        
+        if (filename.length() == 0) {
+            return response->send(404, "text/plain", "No archived log file found. Log rotation has not occurred yet.");
+        }
+        
+        // Security: ensure filename doesn't contain path traversal
+        if (filename.indexOf("..") >= 0 || filename.indexOf("/") >= 0) {
+            return response->send(400, "text/plain", "Invalid filename");
+        }
+        
+        // Build full path
+        String filepath = String(LOG_DIR) + "/" + filename;
+        String content = readSDFile(filepath.c_str());
+        if (content.length() == 0) {
+            return response->send(404, "text/plain", "File not found or empty");
+        }
+        
+        return response->send(200, "text/plain", content.c_str());
+    });
+    
+    // POST /api/log/flush - Flush log file
+    server.on("/api/log/flush", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        logFlush();
+        return response->send(200, "application/json", "{\"success\":true}");
+    });
+    
+    // POST/GET /api/close - Close server
+    server.on("/api/close", HTTP_ANY, [&serverShouldClose, addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        Serial.println("Close request received - shutting down management interface");
+        serverShouldClose = true;
+        return response->send(200, "application/json", "{\"success\":true,\"message\":\"Management interface closing\"}");
+    });
+    
+    // POST /api/activity - Update last activity time (called by JavaScript on user interaction)
+    // Declare lastActivityTime before the server loop so it can be shared
+    uint32_t lastActivityTime = millis();
+    server.on("/api/activity", HTTP_POST, [&lastActivityTime, addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        lastActivityTime = millis();
+        return response->send(200, "application/json", "{\"success\":true}");
+    });
+    
+    // POST /api/ota/start - Start OTA update mode
+    server.on("/api/ota/start", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        Serial.println("OTA start request received from web interface");
+        
+        // Start OTA server in a separate task (non-blocking)
+        TaskHandle_t otaTaskHandle = nullptr;
+        xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
+        
+        if (otaTaskHandle != nullptr) {
+            String ip = WiFi.localIP().toString();
+            String resp = "{\"success\":true,\"message\":\"OTA server starting\",\"ip\":\"";
+            resp += ip;
+            resp += "\",\"url\":\"http://";
+            resp += ip;
+            resp += "/update\"}";
+            return response->send(200, "application/json", resp.c_str());
+        } else {
+            return response->send(500, "application/json", "{\"success\":false,\"error\":\"Failed to start OTA server task\"}");
+        }
+    });
+    
+    // Start the server
     server.begin();
     delay(100);
     
     Serial.println("\n========================================");
-    Serial.println("MANAGEMENT INTERFACE STARTED");
+    Serial.println("MANAGEMENT INTERFACE STARTED (PsychicHttp)");
     Serial.println("========================================");
     Serial.printf("Device IP: %s\n", WiFi.localIP().toString().c_str());
+    #ifdef PSY_ENABLE_SSL
+    Serial.println("Access management interface at: https://" + WiFi.localIP().toString() + ":443");
+    #else
     Serial.println("Access management interface at: http://" + WiFi.localIP().toString());
-    Serial.println("(Server will run until timeout or explicit close via web interface)");
+    #endif
+    Serial.println("(Server will run until timeout (5 min inactivity) or explicit close via web interface)");
     Serial.println("========================================\n");
     
     uint32_t startTime = millis();
-    const uint32_t timeoutMs = 600000;  // 10 minute timeout
-    bool serverActive = true;
+    lastActivityTime = startTime;  // Initialize with start time (variable already declared above)
+    const uint32_t timeoutMs = 300000;  // 5 minute timeout (300 seconds)
     
-    while (millis() - startTime < timeoutMs && serverActive) {
-        WiFiClient client = server.available();
+    // Simple loop - PsychicHttp handles requests internally
+    // Check for timeout based on last activity, not just start time
+    while (!serverShouldClose) {
+        uint32_t now = millis();
+        uint32_t timeSinceActivity = now - lastActivityTime;
         
-        if (client && client.connected()) {
-            Serial.println("Client connected to management interface");
-            Serial.printf("Client IP: %s\n", client.remoteIP().toString().c_str());
-            
-            // Read HTTP request
-            String request = client.readStringUntil('\n');
-            request.trim();
-            Serial.printf("HTTP Request: %s\n", request.c_str());
-            
-            // Read remaining headers
-            int contentLength = 0;
-            bool expectContinue = false;
-            String contentType = "";  // Store Content-Type for multipart uploads
-            while (client.available() || client.connected()) {
-                if (!client.available()) {
-                    delay(10);
-                    continue;
-                }
-                
-                String header = client.readStringUntil('\n');
-                header.trim();
-                if (header.length() == 0) break;  // End of headers
-                
-                String lowerHeader = header;
-                lowerHeader.toLowerCase();
-                if (lowerHeader.startsWith("content-length:")) {
-                    String lenStr = header.substring(header.indexOf(':') + 1);
-                    lenStr.trim();
-                    contentLength = lenStr.toInt();
-                } else if (lowerHeader.startsWith("content-type:")) {
-                    contentType = header;  // Store for multipart uploads
-                } else if (lowerHeader.startsWith("expect:") && lowerHeader.indexOf("100-continue") >= 0) {
-                    expectContinue = true;
-                }
-            }
-            
-            // Handle Expect: 100-continue for large uploads
-            if (expectContinue) {
-                client.println("HTTP/1.1 100 Continue");
-                client.println();
-                client.flush();
-                Serial.println("Sent 100 Continue response for large upload");
-            }
-            
-            // Handle different endpoints
-            // Check for root path (must be "GET /" and not an API path)
-            // Request format is typically "GET / HTTP/1.1" or "GET / "
-            bool isRootPath = (request.startsWith("GET / ") || 
-                              request.startsWith("GET / HTTP") ||
-                              (request.startsWith("GET /") && request.indexOf("/api") < 0));
-            
-            Serial.printf("Route check: request='%s', isRootPath=%d\n", request.c_str(), isRootPath);
-            
-            if (isRootPath) {
-                // Serve main HTML page
-                Serial.println("Generating HTML page...");
-                String html = generateManagementHTML();
-                Serial.printf("HTML generated: %d bytes\n", html.length());
-                
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: text/html");
-                client.print("Content-Length: ");
-                client.println(html.length());
-                client.println("Connection: close");
-                client.println();
-                
-                Serial.println("Sending HTML to client...");
-                client.print(html);
-                client.flush();
-                Serial.println("HTML page sent to client");
-                
-            } else if (request.indexOf("GET /api/quotes") >= 0) {
-                // Read quotes.txt
-                String content = readSDFile("0:/quotes.txt");
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: text/plain");
-                client.print("Content-Length: ");
-                client.println(content.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(content);
-                
-            } else if (request.indexOf("GET /api/media/index") >= 0) {
-                // Get current media index
-                String json = "{\"index\":";
-                json += String((unsigned long)lastMediaIndex);
-                json += "}";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(json.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(json);
-                
-            } else if (request.indexOf("POST /api/media/show") >= 0) {
-                // Handle show request - display image and play audio
-                // Extract index from query parameter
-                int queryStart = request.indexOf("?index=");
-                int index = -1;
-                if (queryStart >= 0) {
-                    int indexStart = queryStart + 7;
-                    int indexEnd = request.indexOf(" ", indexStart);
-                    if (indexEnd < 0) indexEnd = request.indexOf(" HTTP", indexStart);
-                    if (indexEnd > indexStart) {
-                        String indexStr = request.substring(indexStart, indexEnd);
-                        index = indexStr.toInt();
-                    }
-                }
-                
-                // Check if another show operation is in progress
-                if (showOperationInProgress) {
-                    String response = "{\"success\":false,\"error\":\"Another show operation is already in progress\"}";
-                    client.println("HTTP/1.1 409 Conflict");
-                    client.println("Content-Type: application/json");
-                    client.print("Content-Length: ");
-                    client.println(response.length());
-                    client.println("Connection: close");
-                    client.println();
-                    client.print(response);
-                    client.flush();
-                } else if (index < 0) {
-                    String response = "{\"success\":false,\"error\":\"Invalid or missing index parameter\"}";
-                    client.println("HTTP/1.1 400 Bad Request");
-                    client.println("Content-Type: application/json");
-                    client.print("Content-Length: ");
-                    client.println(response.length());
-                    client.println("Connection: close");
-                    client.println();
-                    client.print(response);
-                    client.flush();
-                } else {
-                    // Set lock
-                    showOperationInProgress = true;
-                    
-                    Serial.printf("Show request for media index %d\n", index);
-                    
-                    // Create semaphore for task completion
-                    SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
-                    if (!completionSem) {
-                        showOperationInProgress = false;
-                        String response = "{\"success\":false,\"error\":\"Failed to create semaphore\"}";
-                        client.println("HTTP/1.1 500 Internal Server Error");
-                        client.println("Content-Type: application/json");
-                        client.print("Content-Length: ");
-                        client.println(response.length());
-                        client.println("Connection: close");
-                        client.println();
-                        client.print(response);
-                        client.flush();
-                    } else {
-                        // Prepare task data
-                        bool taskSuccess = false;
-                        size_t taskNextIndex = 0;
-                        ShowMediaTaskData taskData;
-                        taskData.index = index;
-                        taskData.success = &taskSuccess;
-                        taskData.nextIndex = &taskNextIndex;
-                        taskData.completionSem = completionSem;
-                        
-                        // Create task with large stack (16KB like OTA)
-                        TaskHandle_t showTaskHandle = nullptr;
-                        xTaskCreatePinnedToCore(show_media_task, "show_media", 16384, &taskData, 5, &showTaskHandle, 0);
-                        
-                        if (!showTaskHandle) {
-                            vSemaphoreDelete(completionSem);
-                            showOperationInProgress = false;
-                            String response = "{\"success\":false,\"error\":\"Failed to create task\"}";
-                            client.println("HTTP/1.1 500 Internal Server Error");
-                            client.println("Content-Type: application/json");
-                            client.print("Content-Length: ");
-                            client.println(response.length());
-                            client.println("Connection: close");
-                            client.println();
-                            client.print(response);
-                            client.flush();
-                        } else {
-                            // Wait for task to complete (with timeout - 5 minutes)
-                            const TickType_t timeout = pdMS_TO_TICKS(300000);
-                            if (xSemaphoreTake(completionSem, timeout) == pdTRUE) {
-                                // Task completed
-                                showOperationInProgress = false;
-                                
-                                String response;
-                                if (taskSuccess) {
-                                    response = "{\"success\":true,\"nextIndex\":";
-                                    response += String((unsigned long)taskNextIndex);
-                                    response += "}";
-                                } else {
-                                    response = "{\"success\":false,\"error\":\"Failed to display image\"}";
-                                }
-                                
-                                client.println("HTTP/1.1 200 OK");
-                                client.println("Content-Type: application/json");
-                                client.print("Content-Length: ");
-                                client.println(response.length());
-                                client.println("Connection: close");
-                                client.println();
-                                client.print(response);
-                                client.flush();
-                            } else {
-                                // Timeout
-                                Serial.println("ERROR: Show media task timeout");
-                                showOperationInProgress = false;
-                                String response = "{\"success\":false,\"error\":\"Operation timeout\"}";
-                                client.println("HTTP/1.1 408 Request Timeout");
-                                client.println("Content-Type: application/json");
-                                client.print("Content-Length: ");
-                                client.println(response.length());
-                                client.println("Connection: close");
-                                client.println();
-                                client.print(response);
-                                client.flush();
-                            }
-                            
-                            vSemaphoreDelete(completionSem);
-                        }
-                    }
-                }
-                
-            } else if (request.indexOf("GET /api/media") >= 0) {
-                // Read media.txt
-                String content = readSDFile("0:/media.txt");
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: text/plain");
-                client.print("Content-Length: ");
-                client.println(content.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(content);
-                
-            } else if (request.indexOf("GET /api/settings") >= 0) {
-                // Read device settings
-                String json = getDeviceSettingsJSON();
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(json.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(json);
-                
-            } else if (request.indexOf("GET /api/images") >= 0) {
-                // List image files
-                String json = listImageFiles();
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(json.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(json);
-                
-            } else if (request.indexOf("GET /api/audio") >= 0) {
-                // List audio files
-                String json = listAudioFiles();
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(json.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(json);
-                
-            } else if (request.indexOf("POST /api/quotes") >= 0) {
-                // Write quotes.txt
-                String body = "";
-                if (contentLength > 0) {
-                    char* buffer = (char*)malloc(contentLength + 1);
-                    if (buffer) {
-                        size_t readBytes = client.readBytes(buffer, contentLength);
-                        buffer[readBytes] = '\0';
-                        body = String(buffer);
-                        free(buffer);
-                    }
-                }
-                
-                bool success = writeSDFile("0:/quotes.txt", body);
-                // Reload quotes after writing
-                if (success) {
-                    loadQuotesFromSD();
-                }
-                
-                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(response.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(response);
-                
-            } else if (request.indexOf("POST /api/media") >= 0) {
-                // Write media.txt and optionally update next index
-                String body = "";
-                if (contentLength > 0) {
-                    char* buffer = (char*)malloc(contentLength + 1);
-                    if (buffer) {
-                        size_t readBytes = client.readBytes(buffer, contentLength);
-                        buffer[readBytes] = '\0';
-                        body = String(buffer);
-                        free(buffer);
-                    }
-                }
-                
-                // Check if it's JSON format (with nextIndex)
-                bool isJSON = body.startsWith("{");
-                String mediaContent = "";
-                int nextIndex = -1;
-                
-                if (isJSON) {
-                    // Parse JSON: {"content":"...", "nextIndex":N}
-                    int contentStart = body.indexOf("\"content\":");
-                    if (contentStart >= 0) {
-                        int quoteStart = body.indexOf("\"", contentStart + 10);
-                        int quoteEnd = body.indexOf("\"", quoteStart + 1);
-                        if (quoteEnd > quoteStart) {
-                            // Extract content (may have escaped quotes)
-                            String temp = body.substring(quoteStart + 1, quoteEnd);
-                            // Handle escaped content - look for actual end
-                            mediaContent = temp;
-                            // Try to find the full content including escaped quotes
-                            int fullContentStart = body.indexOf("\"content\":\"") + 11;
-                            int fullContentEnd = body.indexOf("\",\"nextIndex\"");
-                            if (fullContentEnd < 0) fullContentEnd = body.indexOf("\"}", fullContentStart);
-                            if (fullContentEnd > fullContentStart) {
-                                mediaContent = body.substring(fullContentStart, fullContentEnd);
-                                // Unescape
-                                mediaContent.replace("\\n", "\n");
-                                mediaContent.replace("\\\"", "\"");
-                            }
-                        }
-                    }
-                    
-                    int indexStart = body.indexOf("\"nextIndex\":");
-                    if (indexStart >= 0) {
-                        int colonPos = body.indexOf(':', indexStart);
-                        int valueEnd = body.indexOf(',', colonPos);
-                        if (valueEnd < 0) valueEnd = body.indexOf('}', colonPos);
-                        if (valueEnd > colonPos) {
-                            String indexStr = body.substring(colonPos + 1, valueEnd);
-                            indexStr.trim();
-                            if (indexStr != "null") {
-                                nextIndex = indexStr.toInt();
-                            }
-                        }
-                    }
-                } else {
-                    // Plain text format (backward compatibility)
-                    mediaContent = body;
-                }
-                
-                bool success = writeSDFile("0:/media.txt", mediaContent);
-                
-                // Update next index if provided
-                // If user selects index N as "next", we need to set lastMediaIndex to (N-1) mod count
-                // so that when pngDrawFromMediaMappings increments it, it becomes N
-                if (success && nextIndex >= 0) {
-                    size_t mediaCount = g_media_mappings.size();
-                    if (mediaCount > 0) {
-                        // Set lastMediaIndex so that next display will show nextIndex
-                        lastMediaIndex = (nextIndex - 1 + mediaCount) % mediaCount;
-                        mediaIndexSaveToNVS();
-                        Serial.printf("Updated next media index: will display index %d next (lastMediaIndex=%lu)\n", 
-                                     nextIndex, (unsigned long)lastMediaIndex);
-                    }
-                }
-                
-                // Reload media mappings after writing
-                if (success) {
-                    loadMediaMappingsFromSD();
-                }
-                
-                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(response.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(response);
-                
-            } else if (request.indexOf("POST /api/settings") >= 0) {
-                // Write device settings
-                String body = "";
-                if (contentLength > 0) {
-                    char* buffer = (char*)malloc(contentLength + 1);
-                    if (buffer) {
-                        size_t readBytes = client.readBytes(buffer, contentLength);
-                        buffer[readBytes] = '\0';
-                        body = String(buffer);
-                        free(buffer);
-                    }
-                }
-                
-                bool success = updateDeviceSettings(body);
-                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to update settings\"}";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(response.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(response);
-                
-            } else if (request.indexOf("GET /api/files") >= 0 && request.indexOf("/api/files/") < 0) {
-                // List all files
-                String json = listAllFiles();
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(json.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(json);
-                
-            } else if (request.indexOf("GET /api/files/") >= 0) {
-                // Download a file
-                int pathStart = request.indexOf("/api/files/") + 11;
-                int pathEnd = request.indexOf(" ", pathStart);
-                if (pathEnd < 0) pathEnd = request.length();
-                String filename = request.substring(pathStart, pathEnd);
-                filename.trim();
-                
-                // URL decode filename (basic)
-                filename.replace("%20", " ");
-                filename.replace("%2F", "/");
-                
-                String filepath = "0:/";
-                filepath += filename;
-                
-                FIL file;
-                FRESULT res = f_open(&file, filepath.c_str(), FA_READ);
-                if (res == FR_OK) {
-                    // Get file size
-                    FSIZE_t fileSize = f_size(&file);
-                    
-                    client.println("HTTP/1.1 200 OK");
-                    client.println("Content-Type: application/octet-stream");
-                    client.print("Content-Disposition: attachment; filename=\"");
-                    client.print(filename);
-                    client.println("\"");
-                    client.print("Content-Length: ");
-                    client.println((unsigned long)fileSize);
-                    client.println("Connection: close");
-                    client.println();
-                    
-                    // Stream file content
-                    char buffer[512];
-                    UINT bytesRead;
-                    while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
-                        client.write((uint8_t*)buffer, bytesRead);
-                        if (bytesRead < sizeof(buffer)) break; // EOF
-                    }
-                    f_close(&file);
-                    Serial.printf("File downloaded: %s (%lu bytes)\n", filename.c_str(), (unsigned long)fileSize);
-                } else {
-                    client.println("HTTP/1.1 404 Not Found");
-                    client.println("Connection: close");
-                    client.println();
-                    Serial.printf("File not found: %s (error %d)\n", filepath.c_str(), res);
-                }
-                
-            } else if (request.indexOf("POST /api/files/upload") >= 0) {
-                // Handle file upload (base64-encoded JSON)
-                // This is a clean, reliable approach that avoids complex multipart parsing
-                
-                const uint32_t uploadTimeout = 300000;  // 5 minute timeout
-                uint32_t uploadStartTime = millis();
-                
-                // Read JSON payload in chunks to avoid watchdog timeout
-                String jsonPayload = "";
-                jsonPayload.reserve(contentLength > 0 ? contentLength + 100 : 8192);  // Pre-allocate if we know size
-                uint32_t lastDataTime = millis();
-                uint32_t lastYieldTime = millis();
-                
-                // Use Content-Length if available to know when we're done
-                bool useContentLength = (contentLength > 0);
-                size_t targetLength = useContentLength ? contentLength : 0;
-                
-                // Read in chunks for better performance
-                const size_t CHUNK_SIZE = 512;
-                char chunkBuffer[CHUNK_SIZE];
-                
-                while (client.available() || client.connected()) {
-                    // Yield periodically to prevent watchdog timeout (every 100ms)
-                    if (millis() - lastYieldTime > 100) {
-                        yield();  // Let other tasks run
-                        lastYieldTime = millis();
-                    }
-                    
-                    if (!client.available()) {
-                        delay(10);
-                        // Timeout if no data for too long
-                        if (millis() - lastDataTime > 10000) {
-                            Serial.println("ERROR: Timeout reading JSON payload");
-                            break;
-                        }
-                        // If we have content length and reached it, we're done
-                        if (useContentLength && jsonPayload.length() >= targetLength) {
-                            break;
-                        }
-                        // If client disconnected and no more data, we're done
-                        if (!client.connected() && !client.available()) {
-                            break;
-                        }
-                        continue;
-                    }
-                    
-                    lastDataTime = millis();
-                    
-                    // Read in chunks instead of character-by-character
-                    size_t available = client.available();
-                    size_t toRead = min(CHUNK_SIZE, available);
-                    if (useContentLength && jsonPayload.length() + toRead > targetLength) {
-                        toRead = targetLength - jsonPayload.length();
-                    }
-                    
-                    if (toRead > 0) {
-                        size_t readBytes = client.readBytes(chunkBuffer, toRead);
-                        if (readBytes > 0) {
-                            // Append chunk to string using String constructor
-                            jsonPayload += String(chunkBuffer, readBytes);
-                        }
-                    }
-                    
-                    // Safety limit - prevent memory exhaustion
-                    if (jsonPayload.length() > 10 * 1024 * 1024) {  // 10MB limit
-                        Serial.println("ERROR: JSON payload too large");
-                        break;
-                    }
-                    
-                    // If we've read the expected amount, we're done
-                    if (useContentLength && jsonPayload.length() >= targetLength) {
-                        break;
-                    }
-                }
-                
-                // Parse JSON to extract filename and base64 data
-                // Expected format: {"filename":"example.txt","data":"base64data..."}
-                String filename = "";
-                String base64Data = "";
-                
-                // Simple JSON parsing (no need for full JSON library for this simple case)
-                int filenamePos = jsonPayload.indexOf("\"filename\"");
-                if (filenamePos >= 0) {
-                    int colonPos = jsonPayload.indexOf(":", filenamePos);
-                    int quoteStart = jsonPayload.indexOf("\"", colonPos);
-                    if (quoteStart >= 0) {
-                        int quoteEnd = jsonPayload.indexOf("\"", quoteStart + 1);
-                        if (quoteEnd > quoteStart) {
-                            filename = jsonPayload.substring(quoteStart + 1, quoteEnd);
-                        }
-                    }
-                }
-                
-                int dataPos = jsonPayload.indexOf("\"data\"");
-                if (dataPos >= 0) {
-                    int colonPos = jsonPayload.indexOf(":", dataPos);
-                    int quoteStart = jsonPayload.indexOf("\"", colonPos);
-                    if (quoteStart >= 0) {
-                        // Find the closing quote - base64 data is the last value, so find last quote
-                        // But be careful: find the quote that closes this value
-                        int quoteEnd = quoteStart + 1;
-                        // Search forward for the closing quote (skip escaped quotes)
-                        while (quoteEnd < (int)jsonPayload.length()) {
-                            if (jsonPayload.charAt(quoteEnd) == '"') {
-                                // Check if it's escaped
-                                if (quoteEnd == 0 || jsonPayload.charAt(quoteEnd - 1) != '\\') {
-                                    break;
-                                }
-                            }
-                            quoteEnd++;
-                        }
-                        if (quoteEnd > quoteStart && quoteEnd < (int)jsonPayload.length()) {
-                            base64Data = jsonPayload.substring(quoteStart + 1, quoteEnd);
-                        } else {
-                            // Fallback: if we can't find proper closing, use last quote
-                            quoteEnd = jsonPayload.lastIndexOf("\"");
-                            if (quoteEnd > quoteStart) {
-                                base64Data = jsonPayload.substring(quoteStart + 1, quoteEnd);
-                            }
-                        }
-                    }
-                }
-                
-                // Validate we got both filename and data
-                if (filename.length() == 0 || base64Data.length() == 0) {
-                    String response = "{\"success\":false,\"error\":\"Invalid JSON: missing filename or data\"}";
-                    client.println("HTTP/1.1 400 Bad Request");
-                    client.println("Content-Type: application/json");
-                    client.print("Content-Length: ");
-                    client.println(response.length());
-                    client.println("Connection: close");
-                    client.println();
-                    client.print(response);
-                    client.flush();
-                } else {
-                    // Decode base64 and write to file
-                    Serial.printf("Uploading file: %s (base64 length: %d)\n", filename.c_str(), base64Data.length());
-                    
-                    // Calculate decoded size (base64 is ~4/3 of original, add padding)
-                    size_t base64Len = base64Data.length();
-                    size_t decodedMaxSize = (base64Len * 3) / 4 + 4;
-                    
-                    // Allocate buffer for decoded data
-                    uint8_t* decodedBuffer = (uint8_t*)malloc(decodedMaxSize);
-                    if (!decodedBuffer) {
-                        String response = "{\"success\":false,\"error\":\"Failed to allocate decode buffer\"}";
-                        client.println("HTTP/1.1 500 Internal Server Error");
-                        client.println("Content-Type: application/json");
-                        client.print("Content-Length: ");
-                        client.println(response.length());
-                        client.println("Connection: close");
-                        client.println();
-                        client.print(response);
-                        client.flush();
-                    } else {
-                        // Base64 decode
-                        static const char b64_table[] = {
-                            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-                            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-                            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
-                            52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
-                            64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
-                            15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
-                            64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-                            41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64
-                        };
-                        
-                        size_t decodedLen = 0;
-                        uint32_t accumulator = 0;
-                        int bits = 0;
-                        uint32_t lastDecodeYield = millis();
-                        
-                        for (size_t i = 0; i < base64Len; i++) {
-                            // Yield periodically during decode to prevent watchdog timeout
-                            if (millis() - lastDecodeYield > 100) {
-                                yield();
-                                lastDecodeYield = millis();
-                            }
-                            
-                            char c = base64Data.charAt(i);
-                            
-                            // Skip whitespace and padding
-                            if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
-                            if (c == '=') continue;
-                            
-                            // Invalid character check
-                            if (c < 0 || c >= 128) continue;
-                            uint8_t val = b64_table[(uint8_t)c];
-                            if (val == 64) continue;  // Invalid character
-                            
-                            accumulator = (accumulator << 6) | val;
-                            bits += 6;
-                            
-                            if (bits >= 8) {
-                                bits -= 8;
-                                decodedBuffer[decodedLen++] = (uint8_t)((accumulator >> bits) & 0xFF);
-                            }
-                        }
-                        
-                        Serial.printf("Decoded %zu bytes from base64\n", decodedLen);
-                        
-                        // Open file for writing
-                        String filepath = "0:/";
-                        filepath += filename;
-                        FIL file;
-                        FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
-                        
-                        if (res != FR_OK) {
-                            free(decodedBuffer);
-                            String response = "{\"success\":false,\"error\":\"Failed to create file\"}";
-                            client.println("HTTP/1.1 500 Internal Server Error");
-                            client.println("Content-Type: application/json");
-                            client.print("Content-Length: ");
-                            client.println(response.length());
-                            client.println("Connection: close");
-                            client.println();
-                            client.print(response);
-                            client.flush();
-                        } else {
-                            // Write decoded data to file
-                            UINT bytesWritten = 0;
-                            FRESULT writeRes = f_write(&file, decodedBuffer, decodedLen, &bytesWritten);
-                            
-                            f_close(&file);
-                            free(decodedBuffer);
-                            
-                            if (writeRes != FR_OK || bytesWritten != decodedLen) {
-                                Serial.printf("ERROR: File write failed: res=%d, wrote=%u/%zu\n", 
-                                             writeRes, bytesWritten, decodedLen);
-                                String response = "{\"success\":false,\"error\":\"File write failed\"}";
-                                client.println("HTTP/1.1 500 Internal Server Error");
-                                client.println("Content-Type: application/json");
-                                client.print("Content-Length: ");
-                                client.println(response.length());
-                                client.println("Connection: close");
-                                client.println();
-                                client.print(response);
-                                client.flush();
-                            } else {
-                                Serial.printf("File upload complete: %s (%u bytes written)\n", 
-                                            filename.c_str(), bytesWritten);
-                                
-                                // Send success response
-                                String response = "{\"success\":true,\"filename\":\"";
-                                response += filename;
-                                response += "\",\"size\":";
-                                response += String(bytesWritten);
-                                response += "}";
-                                
-                                client.println("HTTP/1.1 200 OK");
-                                client.println("Content-Type: application/json");
-                                client.print("Content-Length: ");
-                                client.println(response.length());
-                                client.println("Connection: close");
-                                client.println();
-                                client.print(response);
-                                client.flush();
-                            }
-                        }
-                    }
-                }
-                
-            } else if (request.indexOf("DELETE /api/files/") >= 0) {
-                // Delete a file
-                int pathStart = request.indexOf("/api/files/") + 11;
-                int pathEnd = request.indexOf(" ", pathStart);
-                if (pathEnd < 0) pathEnd = request.length();
-                String filename = request.substring(pathStart, pathEnd);
-                filename.trim();
-                
-                // URL decode filename (basic)
-                filename.replace("%20", " ");
-                filename.replace("%2F", "/");
-                
-                bool success = deleteSDFile(filename.c_str());
-                String response = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to delete file\"}";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(response.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(response);
-                
-            } else if (request.indexOf("GET /api/log") >= 0 && request.indexOf("/api/log/") < 0) {
-                // Get current log file
-                logFlush();  // Ensure latest data is written
-                String content = readSDFile(LOG_FILE);
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: text/plain");
-                client.print("Content-Length: ");
-                client.println(content.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(content);
-                
-            } else if (request.indexOf("GET /api/log/list") >= 0) {
-                // List recent log files (most recent 5)
-                String json = "[";
-                bool first = true;
-                
-                // Structure to hold log file info for sorting
-                struct LogFileInfo {
-                    String filename;
-                    uint32_t mtime;  // Modification time (seconds since 1980-01-01)
-                    uint32_t size;   // File size
-                };
-                std::vector<LogFileInfo> logFiles;
-                
-                FF_DIR dir;
-                FILINFO fno;
-                FRESULT res = f_opendir(&dir, LOG_DIR);
-                
-                if (res == FR_OK) {
-                    while (true) {
-                        res = f_readdir(&dir, &fno);
-                        if (res != FR_OK || fno.fname[0] == 0) break;
-                        
-                        // Check if it's a file (not directory) and matches log pattern
-                        if (!(fno.fattrib & AM_DIR)) {
-                            String filename = String(fno.fname);
-                            // Match log_*.txt files (but not log.txt itself)
-                            if (filename.startsWith("log_") && filename.endsWith(".txt")) {
-                                LogFileInfo info;
-                                info.filename = filename;
-                                info.size = (uint32_t)fno.fsize;
-                                // Extract modification time (fno.fdate and fno.ftime)
-                                // FatFs stores date/time as: date=(year-1980)*512 + month*32 + day, time=hour*2048 + min*32 + sec/2
-                                uint16_t date = fno.fdate;
-                                uint16_t time = fno.ftime;
-                                // Convert to seconds since 1980-01-01 (simplified)
-                                uint32_t year = 1980 + ((date >> 9) & 0x7F);
-                                uint32_t month = (date >> 5) & 0x0F;
-                                uint32_t day = date & 0x1F;
-                                uint32_t hour = (time >> 11) & 0x1F;
-                                uint32_t min = (time >> 5) & 0x3F;
-                                uint32_t sec = (time & 0x1F) * 2;
-                                // Approximate seconds since 1980 (not exact, but good enough for sorting)
-                                info.mtime = (year - 1980) * 365 * 24 * 3600 + month * 30 * 24 * 3600 + day * 24 * 3600 + hour * 3600 + min * 60 + sec;
-                                logFiles.push_back(info);
-                            }
-                        }
-                    }
-                    f_closedir(&dir);
-                    
-                    // Sort by modification time (newest first) - simple bubble sort since we only have a few files
-                    for (size_t i = 0; i < logFiles.size(); i++) {
-                        for (size_t j = i + 1; j < logFiles.size(); j++) {
-                            if (logFiles[i].mtime < logFiles[j].mtime) {
-                                LogFileInfo temp = logFiles[i];
-                                logFiles[i] = logFiles[j];
-                                logFiles[j] = temp;
-                            }
-                        }
-                    }
-                    
-                    // Return top 5 most recent
-                    int count = 0;
-                    for (const auto& info : logFiles) {
-                        if (count >= 5) break;
-                        if (!first) json += ",";
-                        json += "{\"filename\":\"";
-                        json += info.filename;
-                        json += "\",\"size\":";
-                        json += String(info.size);
-                        json += "}";
-                        first = false;
-                        count++;
-                    }
-                }
-                
-                json += "]";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(json.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(json);
-                
-            } else if (request.indexOf("GET /api/log/archive") >= 0) {
-                // Get archived log file - check for ?file= parameter
-                String filename = "";
-                int fileParamStart = request.indexOf("?file=");
-                if (fileParamStart >= 0) {
-                    int fileParamEnd = request.indexOf(" ", fileParamStart);
-                    if (fileParamEnd < 0) fileParamEnd = request.indexOf(" HTTP", fileParamStart);
-                    if (fileParamEnd > fileParamStart) {
-                        filename = request.substring(fileParamStart + 6, fileParamEnd);
-                        // URL decode basic
-                        filename.replace("%20", " ");
-                    }
-                }
-                
-                // If no filename specified, try the default archive
-                if (filename.length() == 0) {
-                    FILINFO fno;
-                    FRESULT statRes = f_stat(LOG_ARCHIVE, &fno);
-                    if (statRes == FR_OK) {
-                        filename = String(LOG_ARCHIVE);
-                        // Extract just the filename part
-                        int lastSlash = filename.lastIndexOf('/');
-                        if (lastSlash >= 0) {
-                            filename = filename.substring(lastSlash + 1);
-                        }
-                    }
-                }
-                
-                if (filename.length() == 0) {
-                    String errorMsg = "No archived log file found. Log rotation has not occurred yet.";
-                    client.println("HTTP/1.1 404 Not Found");
-                    client.println("Content-Type: text/plain");
-                    client.print("Content-Length: ");
-                    client.println(errorMsg.length());
-                    client.println("Connection: close");
-                    client.println();
-                    client.print(errorMsg);
-                } else {
-                    // Build full path
-                    String filepath = String(LOG_DIR) + "/" + filename;
-                    // Security: ensure filename doesn't contain path traversal
-                    if (filename.indexOf("..") >= 0 || filename.indexOf("/") >= 0) {
-                        String errorMsg = "Invalid filename";
-                        client.println("HTTP/1.1 400 Bad Request");
-                        client.println("Content-Type: text/plain");
-                        client.print("Content-Length: ");
-                        client.println(errorMsg.length());
-                        client.println("Connection: close");
-                        client.println();
-                        client.print(errorMsg);
-                    } else {
-                        String content = readSDFile(filepath.c_str());
-                        if (content.length() == 0) {
-                            String errorMsg = "File not found or empty";
-                            client.println("HTTP/1.1 404 Not Found");
-                            client.println("Content-Type: text/plain");
-                            client.print("Content-Length: ");
-                            client.println(errorMsg.length());
-                            client.println("Connection: close");
-                            client.println();
-                            client.print(errorMsg);
-                        } else {
-                            client.println("HTTP/1.1 200 OK");
-                            client.println("Content-Type: text/plain");
-                            client.print("Content-Length: ");
-                            client.println(content.length());
-                            client.println("Connection: close");
-                            client.println();
-                            client.print(content);
-                        }
-                    }
-                }
-                
-            } else if (request.indexOf("POST /api/log/flush") >= 0) {
-                // Flush log file
-                logFlush();
-                String response = "{\"success\":true}";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(response.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(response);
-                
-            } else if (request.indexOf("POST /api/close") >= 0 || request.indexOf("GET /api/close") >= 0) {
-                // Close server endpoint - allows user to explicitly close the interface
-                Serial.println("Close request received - shutting down management interface");
-                String response = "{\"success\":true,\"message\":\"Management interface closing\"}";
-                client.println("HTTP/1.1 200 OK");
-                client.println("Content-Type: application/json");
-                client.print("Content-Length: ");
-                client.println(response.length());
-                client.println("Connection: close");
-                client.println();
-                client.print(response);
-                client.flush();
-                delay(100);
-                serverActive = false;  // Exit server loop
-                
-            } else {
-                Serial.printf("Unknown request: %s\n", request.c_str());
-                client.println("HTTP/1.1 404 Not Found");
-                client.println("Connection: close");
-                client.println();
-            }
-            
-            // Wait a bit to ensure response is sent before closing
-            delay(100);
-            client.flush();
-            client.stop();
-            Serial.println("Client disconnected");
-            // Keep server active to handle multiple requests (browser makes multiple connections)
+        // Timeout after 5 minutes of inactivity
+        if (timeSinceActivity >= timeoutMs) {
+            Serial.println("Management interface timeout (5 minutes of inactivity)");
+            break;
         }
         
-        delay(10);
+        delay(100);  // Yield to other tasks
     }
+    
+    // Stop the server
+    server.stop();
     
     if (millis() - startTime >= timeoutMs) {
         Serial.println("Management interface timeout");
@@ -5973,10 +6930,11 @@ static bool handleManageCommand() {
         Serial.println("Management interface closed");
     }
     
-    server.stop();
     return true;
 #endif // WIFI_ENABLED && SDMMC_ENABLED
 }
+
+// OLD CODE REMOVED - All endpoints now handled by PsychicHttp routes above
 
 /**
  * Handle !ping command - publish a ping response to MQTT with sender number
@@ -6624,7 +7582,7 @@ static bool handleTextCommand(const String& parameter) {
  * Handle text command with specified fill and outline colors
  * Supports multi-line wrapping for optimal space usage
  */
-static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor) {
+static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor) {
     Serial.println("Processing text command with color...");
     
     // Check if parameter was provided
@@ -6647,9 +7605,9 @@ static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColo
         Serial.println("Display initialized");
     }
     
-    // Clear the display buffer to white
+    // Clear the display buffer with specified background color
     Serial.println("Clearing display buffer...");
-    display.clear(EL133UF1_WHITE);
+    display.clear(bgColor);
     
     // Get display dimensions
     int16_t displayWidth = display.width();
@@ -6774,7 +7732,7 @@ static bool handleTextCommandWithColor(const String& parameter, uint8_t fillColo
  * Each character gets a random color from available palette
  * Supports multi-line wrapping like !text
  */
-static bool handleMultiTextCommand(const String& parameter) {
+static bool handleMultiTextCommand(const String& parameter, uint8_t bgColor) {
     Serial.println("Processing !multi_text command...");
     
     // Check if parameter was provided
@@ -6783,7 +7741,7 @@ static bool handleMultiTextCommand(const String& parameter) {
         return false;
     }
     
-    Serial.printf("Text to display (multi-color): \"%s\"\n", parameter.c_str());
+    Serial.printf("Text to display (multi-colour): \"%s\"\n", parameter.c_str());
     
     // Ensure display is initialized
     if (display.getBuffer() == nullptr) {
@@ -6797,9 +7755,9 @@ static bool handleMultiTextCommand(const String& parameter) {
         Serial.println("Display initialized");
     }
     
-    // Clear the display buffer to white
-    Serial.println("Clearing display buffer...");
-    display.clear(EL133UF1_WHITE);
+    // Clear the display buffer with specified background colour
+    Serial.printf("Clearing display buffer to colour %d...\n", bgColor);
+    display.clear(bgColor);
     
     // Get display dimensions
     int16_t displayWidth = display.width();
@@ -6811,8 +7769,8 @@ static bool handleMultiTextCommand(const String& parameter) {
     const int16_t availableWidth = displayWidth - (margin * 2);
     const int16_t availableHeight = displayHeight - (margin * 2);
     
-    // Available colors for randomization (excludes BLACK - it uses white outline which looks inconsistent with other colors)
-    // All included colors use black outline for visual consistency
+    // Available colours for randomization (excludes BLACK - it uses white outline which looks inconsistent with other colours)
+    // All included colours use black outline for visual consistency
     const uint8_t colors[] = {EL133UF1_WHITE, EL133UF1_YELLOW, EL133UF1_RED, EL133UF1_BLUE, EL133UF1_GREEN};
     const int numColors = sizeof(colors) / sizeof(colors[0]);
     
@@ -6876,8 +7834,8 @@ static bool handleMultiTextCommand(const String& parameter) {
     int16_t totalTextHeight = (lineHeight * numLines) + (lineGap * (numLines - 1));
     int16_t startY = margin + (availableHeight - totalTextHeight) / 2 + (lineHeight / 2);
     
-    // Draw each line, character by character with random colors
-    Serial.println("Drawing multi-color text (character by character, line by line)...");
+    // Draw each line, character by character with random colours
+    Serial.println("Drawing multi-colour text (character by character, line by line)...");
     
     // Make a mutable copy for line splitting
     char wrappedCopy[512];
@@ -6897,9 +7855,10 @@ static bool handleMultiTextCommand(const String& parameter) {
         int16_t lineStartX = centerX - (lineWidth / 2);
         int16_t lineY = startY + lineIdx * (lineHeight + lineGap);
         
-        // Draw each character in this line with random color
+        // Draw each character in this line with random colour
         int16_t currentX = lineStartX;
         int lineLen = strlen(line);
+        uint8_t lastColor = 255; // Track last colour to avoid consecutive duplicates
         
         for (int i = 0; i < lineLen; i++) {
             char ch[2] = {line[i], '\0'};
@@ -6911,8 +7870,13 @@ static bool handleMultiTextCommand(const String& parameter) {
                 continue;
             }
             
-            // Random color for this character (all colors use black outline for consistency)
-            uint8_t fillColor = colors[random(numColors)];
+            // Random colour for this character (all colours use black outline for consistency)
+            // Ensure consecutive characters never have the same colour
+            uint8_t fillColor;
+            do {
+                fillColor = colors[random(numColors)];
+            } while (fillColor == lastColor && numColors > 1);
+            lastColor = fillColor;
             uint8_t outlineColor = EL133UF1_BLACK;
             
             // Get width of this character
@@ -6941,6 +7905,253 @@ static bool handleMultiTextCommand(const String& parameter) {
     Serial.println("Display updated");
     
     Serial.println("!multi_text command completed successfully");
+    return true;
+}
+
+/**
+ * Handle multi-fade text command - displays text with smooth gradient fades between colours using dithering
+ */
+static bool handleMultiFadeTextCommand(const String& parameter, uint8_t bgColor) {
+    Serial.println("Processing !multi_fade_text command...");
+    
+    // Check if parameter was provided
+    if (parameter.length() == 0) {
+        Serial.println("ERROR: !multi_fade_text command requires text parameter");
+        return false;
+    }
+    
+    Serial.printf("Text to display (multi-fade): \"%s\"\n", parameter.c_str());
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+    // Clear the display buffer with specified background colour
+    Serial.printf("Clearing display buffer to colour %d...\n", bgColor);
+    display.clear(bgColor);
+    
+    // Get display dimensions
+    int16_t displayWidth = display.width();
+    int16_t displayHeight = display.height();
+    
+    // Margin requirements: at least 50 pixels on all sides
+    const int16_t margin = 50;
+    const int16_t outlineWidth = 3;
+    const int16_t availableWidth = displayWidth - (margin * 2);
+    const int16_t availableHeight = displayHeight - (margin * 2);
+    
+    // Create colour map for dithering
+    static Spectra6ColorMap colorMap;
+    colorMap.setMode(COLOR_MAP_DITHER);
+    colorMap.resetDither();
+    
+    // Define good colour pairs for gradients (RGB values for e-ink colours)
+    // Format: {startColor, endColor, startR, startG, startB, endR, endG, endB}
+    struct ColorPair {
+        uint8_t startColor;
+        uint8_t endColor;
+        uint8_t startR, startG, startB;
+        uint8_t endR, endG, endB;
+    };
+    
+    // RGB values for e-ink colours (using default palette values from EL133UF1_Color.cpp)
+    // These are realistic e-ink colour values (less saturated than pure RGB)
+    const uint8_t yellowR = 245, yellowG = 210, yellowB = 50;   // Warm yellow
+    const uint8_t redR = 190, redG = 60, redB = 55;            // Brick/tomato red
+    const uint8_t blueR = 45, blueG = 75, blueB = 160;        // Deep navy blue
+    const uint8_t greenR = 55, greenG = 140, greenB = 85;     // Teal/forest green
+    const uint8_t whiteR = 245, whiteG = 245, whiteB = 235;   // Slightly warm off-white
+    
+    // Define colour pairs for smooth gradients
+    const ColorPair colorPairs[] = {
+        {EL133UF1_YELLOW, EL133UF1_RED, yellowR, yellowG, yellowB, redR, redG, redB},
+        {EL133UF1_RED, EL133UF1_BLUE, redR, redG, redB, blueR, blueG, blueB},
+        {EL133UF1_BLUE, EL133UF1_GREEN, blueR, blueG, blueB, greenR, greenG, greenB},
+        {EL133UF1_GREEN, EL133UF1_YELLOW, greenR, greenG, greenB, yellowR, yellowG, yellowB},
+        {EL133UF1_WHITE, EL133UF1_YELLOW, whiteR, whiteG, whiteB, yellowR, yellowG, yellowB}
+    };
+    const int numPairs = sizeof(colorPairs) / sizeof(colorPairs[0]);
+    
+    // Find optimal font size with text wrapping (same logic as handleTextCommandWithColor)
+    const float minFontSize = 20.0f;
+    const float maxFontSize = 400.0f;
+    float bestFontSize = minFontSize;
+    int bestNumLines = 0;
+    char wrappedText[512] = {0};
+    int16_t wrappedWidth = 0;
+    int16_t lineHeight = 0;
+    const int16_t lineGap = 5;
+    
+    // Binary search for optimal font size that fits with wrapping
+    float low = minFontSize;
+    float high = maxFontSize;
+    
+    Serial.println("Finding optimal font size with text wrapping...");
+    
+    while (high - low > 1.0f) {
+        float fontSize = (low + high) / 2.0f;
+        
+        // Wrap text at this font size
+        int numLines = 0;
+        int16_t maxLineWidth = textPlacement.wrapText(&ttf, parameter.c_str(), fontSize, 
+                                                       availableWidth, wrappedText, sizeof(wrappedText),
+                                                       &numLines);
+        
+        if (numLines == 0) {
+            high = fontSize;
+            continue;
+        }
+        
+        // Calculate total height needed
+        int16_t textHeight = ttf.getTextHeight(fontSize);
+        int16_t totalHeight = (textHeight * numLines) + (lineGap * (numLines - 1)) + (outlineWidth * 2);
+        
+        // Check if it fits
+        if (maxLineWidth <= availableWidth && totalHeight <= availableHeight) {
+            bestFontSize = fontSize;
+            bestNumLines = numLines;
+            wrappedWidth = maxLineWidth;
+            lineHeight = textHeight;
+            low = fontSize;
+        } else {
+            high = fontSize;
+        }
+    }
+    
+    // Final wrap at the best size
+    int numLines = 0;
+    wrappedWidth = textPlacement.wrapText(&ttf, parameter.c_str(), bestFontSize,
+                                          availableWidth, wrappedText, sizeof(wrappedText),
+                                          &numLines);
+    lineHeight = ttf.getTextHeight(bestFontSize);
+    
+    Serial.printf("Optimal font size: %.1f, %d lines\n", bestFontSize, numLines);
+    
+    // Calculate centered position
+    int16_t centerX = displayWidth / 2;
+    int16_t totalTextHeight = (lineHeight * numLines) + (lineGap * (numLines - 1));
+    int16_t startY = margin + (availableHeight - totalTextHeight) / 2 + (lineHeight / 2);
+    
+    // Count total characters (excluding spaces) for gradient calculation
+    int totalChars = 0;
+    for (int i = 0; i < (int)strlen(wrappedText); i++) {
+        if (wrappedText[i] != ' ' && wrappedText[i] != '\n') {
+            totalChars++;
+        }
+    }
+    
+    Serial.printf("Total characters (excluding spaces): %d\n", totalChars);
+    
+    // Draw each line with gradient fade
+    Serial.println("Drawing multi-fade text with dithering (character by character, line by line)...");
+    
+    // Make a mutable copy for line splitting
+    char wrappedCopy[512];
+    strncpy(wrappedCopy, wrappedText, sizeof(wrappedCopy) - 1);
+    wrappedCopy[sizeof(wrappedCopy) - 1] = '\0';
+    
+    char* line = wrappedCopy;
+    int charIndex = 0; // Track character position across all lines
+    
+    for (int lineIdx = 0; lineIdx < numLines && line && *line; lineIdx++) {
+        // Reset dithering for each new line
+        colorMap.resetDither();
+        
+        // Find end of this line
+        char* nextLine = strchr(line, '\n');
+        if (nextLine) {
+            *nextLine = '\0';
+        }
+        
+        // Calculate line width and starting X position (centered)
+        int16_t lineWidth = ttf.getTextWidth(line, bestFontSize);
+        int16_t lineStartX = centerX - (lineWidth / 2);
+        int16_t lineY = startY + lineIdx * (lineHeight + lineGap);
+        
+        // Count characters in this line (excluding spaces)
+        int lineCharCount = 0;
+        for (int i = 0; i < (int)strlen(line); i++) {
+            if (line[i] != ' ') {
+                lineCharCount++;
+            }
+        }
+        
+        // Draw each character in this line with gradient colour
+        int16_t currentX = lineStartX;
+        int lineLen = strlen(line);
+        int lineCharIdx = 0; // Character index within this line
+        
+        for (int i = 0; i < lineLen; i++) {
+            char ch[2] = {line[i], '\0'};
+            
+            // Skip spaces
+            if (ch[0] == ' ') {
+                int16_t spaceWidth = ttf.getTextWidth(" ", bestFontSize);
+                currentX += spaceWidth;
+                continue;
+            }
+            
+            // Calculate position in overall gradient (0.0 to 1.0)
+            float gradientPos = (totalChars > 0) ? ((float)charIndex / (float)totalChars) : 0.0f;
+            
+            // Select colour pair based on gradient position (cycle through pairs)
+            int pairIdx = (int)(gradientPos * numPairs * 2.0f) % numPairs;
+            const ColorPair& pair = colorPairs[pairIdx];
+            
+            // Calculate position within current pair (0.0 to 1.0)
+            float pairPos = fmod(gradientPos * numPairs * 2.0f, 2.0f);
+            if (pairPos > 1.0f) {
+                // Reverse direction for second half
+                pairPos = 2.0f - pairPos;
+            }
+            
+            // Interpolate RGB values
+            uint8_t r = (uint8_t)(pair.startR + (pair.endR - pair.startR) * pairPos);
+            uint8_t g = (uint8_t)(pair.startG + (pair.endG - pair.startG) * pairPos);
+            uint8_t b = (uint8_t)(pair.startB + (pair.endB - pair.startB) * pairPos);
+            
+            // Use dithering to map RGB to e-ink colour
+            // Calculate character position in line for dithering
+            int16_t charX = currentX - lineStartX;
+            uint8_t fillColor = colorMap.mapColorDithered(charX, lineIdx, r, g, b, lineWidth);
+            uint8_t outlineColor = EL133UF1_BLACK;
+            
+            // Get width of this character
+            int16_t charWidth = ttf.getTextWidth(ch, bestFontSize);
+            
+            // Draw character at current position
+            ttf.drawTextAlignedOutlined(currentX + (charWidth / 2), lineY, ch, bestFontSize,
+                                        fillColor, outlineColor,
+                                        ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);
+            
+            // Advance X position and character indices
+            currentX += charWidth;
+            charIndex++;
+            lineCharIdx++;
+        }
+        
+        // Move to next line
+        if (nextLine) {
+            line = nextLine + 1;
+        } else {
+            break;
+        }
+    }
+    
+    // Update display
+    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display updated");
+    
+    Serial.println("!multi_fade_text command completed successfully");
     return true;
 }
 

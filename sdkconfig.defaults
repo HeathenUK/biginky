@@ -29,3 +29,20 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_200M=y
+
+# HTTPS Server Support (required for PsychicHttpsServer)
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+
+# Increase HTTP request body size limit for file uploads and canvas pixel data
+# Canvas: 800x600 pixels = 480KB raw, ~640KB base64-encoded
+# For larger files, chunked uploads are used (splits into 400KB chunks)
+# PsychicHttp uses ESP-IDF httpd which has a default max body size limit
+# Increase max URI length and header length to allow larger requests
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=4096
+CONFIG_HTTPD_MAX_URI_LEN=2048
+CONFIG_HTTPD_MAX_REQ_BODY_LEN=1048576
+
+# Increase HTTP server task stack size to handle large file uploads
+# Default is 4096 bytes, increase to 16KB to prevent stack overflow
+CONFIG_HTTPD_TASK_STACK_SIZE=16384

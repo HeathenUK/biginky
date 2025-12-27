@@ -24,3 +24,31 @@ platformio_local.ini
 # OS files
 .DS_Store
 Thumbs.db
+
+# SSL/TLS Certificates and Keys (DO NOT COMMIT - contains private keys)
+*.pem
+*.key
+*.crt
+*.cert
+certificates/*.pem
+certificates/*.key
+certificates/*.crt
+
+# Generated files containing sensitive data
+src/certificates.h
+
+# ESP-IDF configuration (may contain sensitive settings)
+sdkconfig
+sdkconfig.old
+sdkconfig.*.old
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Generated web assets (not sensitive, but generated)
+# Uncomment if you don't want to commit generated files:
+# src/web_assets.h

@@ -76,11 +76,11 @@ window.addEventListener('load', function() {
 <h2>Connection</h2>
 <div class="info">
 <p><strong>Broker:</strong> mqtt.flespi.io (WebSocket)</p>
-<p><strong>Topic:</strong> devices/twilio_sms_bridge/cmd</p>
-<p>Enter your Flespi.io token below to connect and send commands to your device.</p>
+<p><strong>Topic:</strong> devices/web-ui/cmd</p>
+<p>A restricted token is embedded for easy access. You can override it below if needed.</p>
 </div>
-<label>Flespi.io Token:</label>
-<input type="text" id="mqttToken" placeholder="Paste your Flespi.io token here" style="font-family:monospace;font-size:12px;">
+<label>Flespi.io Token (optional override):</label>
+<input type="text" id="mqttToken" placeholder="Leave empty to use embedded token" style="font-family:monospace;font-size:12px;">
 <button onclick="connectMQTT()" id="connectBtn">Connect</button>
 <button onclick="disconnectMQTT()" id="disconnectBtn" disabled>Disconnect</button>
 <span id="connectionStatus" class="connection-status disconnected">Disconnected</span>
@@ -160,7 +160,10 @@ window.addEventListener('load', function() {
 <script>
 const MQTT_BROKER = 'mqtt.flespi.io';
 const MQTT_PORT = 443;
-const MQTT_TOPIC = 'devices/twilio_sms_bridge/cmd';
+const MQTT_TOPIC = 'devices/web-ui/cmd';
+// Embedded restricted token for web UI (publish-only to devices/web-ui/cmd)
+// TODO: Replace with your actual restricted Flespi.io token
+const EMBEDDED_TOKEN = 'YOUR_RESTRICTED_TOKEN_HERE';
 let mqttClient = null;
 let isConnected = false;
 
@@ -202,10 +205,13 @@ function logCommand(action, data) {
 function connectMQTT() {
     console.log('connectMQTT() called');
     
-    const token = document.getElementById('mqttToken').value.trim();
-    if (!token) {
+    // Use token from input if provided, otherwise use embedded token
+    const inputToken = document.getElementById('mqttToken').value.trim();
+    const token = inputToken || EMBEDDED_TOKEN;
+    
+    if (!token || token === 'YOUR_RESTRICTED_TOKEN_HERE') {
         console.log('No token provided');
-        updateConnectionStatus('disconnected', 'Please enter a Flespi.io token');
+        updateConnectionStatus('disconnected', 'Please enter a Flespi.io token or configure the embedded token');
         return;
     }
     

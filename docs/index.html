@@ -151,14 +151,11 @@ function updateConnectionStatus(status, message) {
 function logCommand(action, data) {
     const logEl = document.getElementById('commandLog');
     const timestamp = new Date().toLocaleTimeString();
-    const logEntry = `[${timestamp}] ${action}: ${JSON.stringify(data)}
-`;
+    const logEntry = `[${timestamp}] ${action}: ${JSON.stringify(data)}\n`;
     logEl.textContent = logEntry + logEl.textContent;
-    const lines = logEl.textContent.split('
-');
+    const lines = logEl.textContent.split('\n');
     if (lines.length > 50) {
-        logEl.textContent = lines.slice(0, 50).join('
-');
+        logEl.textContent = lines.slice(0, 50).join('\n');
     }
 }
 

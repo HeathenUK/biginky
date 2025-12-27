@@ -3982,9 +3982,189 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
  * Commands are sent as JSON: {"command": "text_display", "text": "...", ...}
  */
 static bool handleWebInterfaceCommand(const String& jsonMessage) {
-    Serial.printf("Processing web interface command: %s\n", jsonMessage.c_str());
+    // For large messages (like canvas_display with 640KB pixelData), we can't parse the entire JSON
+    // So we first check the command type using string operations, then parse only if needed
+    String command = "";
+    int commandPos = jsonMessage.indexOf("\"command\"");
+    if (commandPos >= 0) {
+        int colonPos = jsonMessage.indexOf(':', commandPos);
+        int quoteStart = jsonMessage.indexOf('"', colonPos);
+        if (quoteStart >= 0) {
+            int quoteEnd = jsonMessage.indexOf('"', quoteStart + 1);
+            if (quoteEnd > quoteStart) {
+                command = jsonMessage.substring(quoteStart + 1, quoteEnd);
+                command.toLowerCase();
+            }
+        }
+    }
     
-    // Parse JSON
+    if (command.length() == 0) {
+        Serial.println("ERROR: JSON command missing 'command' field");
+        return false;
+    }
+    
+    Serial.printf("Web interface command: %s (message size: %d bytes)\n", command.c_str(), jsonMessage.length());
+    
+    // For canvas_display commands, extract fields directly without full JSON parsing (too large)
+    if (command == "canvas_display") {
+        // Extract width, height, and pixelData using string operations
+        int width = 0, height = 0;
+        String base64Data = "";
+        
+        // Extract width
+        int widthPos = jsonMessage.indexOf("\"width\"");
+        if (widthPos >= 0) {
+            int colonPos = jsonMessage.indexOf(':', widthPos);
+            if (colonPos >= 0) {
+                // Find the number after the colon
+                int numStart = colonPos + 1;
+                while (numStart < jsonMessage.length() && (jsonMessage.charAt(numStart) == ' ' || jsonMessage.charAt(numStart) == '\t')) {
+                    numStart++;
+                }
+                int numEnd = numStart;
+                while (numEnd < jsonMessage.length() && jsonMessage.charAt(numEnd) >= '0' && jsonMessage.charAt(numEnd) <= '9') {
+                    numEnd++;
+                }
+                if (numEnd > numStart) {
+                    width = jsonMessage.substring(numStart, numEnd).toInt();
+                }
+            }
+        }
+        
+        // Extract height
+        int heightPos = jsonMessage.indexOf("\"height\"");
+        if (heightPos >= 0) {
+            int colonPos = jsonMessage.indexOf(':', heightPos);
+            if (colonPos >= 0) {
+                // Find the number after the colon
+                int numStart = colonPos + 1;
+                while (numStart < jsonMessage.length() && (jsonMessage.charAt(numStart) == ' ' || jsonMessage.charAt(numStart) == '\t')) {
+                    numStart++;
+                }
+                int numEnd = numStart;
+                while (numEnd < jsonMessage.length() && jsonMessage.charAt(numEnd) >= '0' && jsonMessage.charAt(numEnd) <= '9') {
+                    numEnd++;
+                }
+                if (numEnd > numStart) {
+                    height = jsonMessage.substring(numStart, numEnd).toInt();
+                }
+            }
+        }
+        
+        // Extract pixelData (base64 string) - find the value between quotes after "pixelData"
+        int pixelDataPos = jsonMessage.indexOf("\"pixelData\"");
+        if (pixelDataPos >= 0) {
+            int colonPos = jsonMessage.indexOf(':', pixelDataPos);
+            if (colonPos >= 0) {
+                int quoteStart = jsonMessage.indexOf('"', colonPos);
+                if (quoteStart >= 0) {
+                    // Find the closing quote - but it might be the last quote in the JSON
+                    // Since pixelData is the last field, find the quote before the closing brace
+                    int lastBrace = jsonMessage.lastIndexOf('}');
+                    int quoteEnd = jsonMessage.lastIndexOf('"', lastBrace);
+                    if (quoteEnd > quoteStart) {
+                        base64Data = jsonMessage.substring(quoteStart + 1, quoteEnd);
+                    }
+                }
+            }
+        }
+        
+        if (width == 0 || height == 0 || base64Data.length() == 0) {
+            Serial.printf("ERROR: canvas_display command missing required fields (width=%d, height=%d, pixelData_len=%d)\n", 
+                         width, height, base64Data.length());
+            return false;
+        }
+        
+        Serial.printf("Canvas display: width=%d, height=%d, pixelData length=%d\n", width, height, base64Data.length());
+        
+        // Decode base64 and process canvas (reuse existing code)
+        size_t decodedLen = (base64Data.length() * 3) / 4;
+        uint8_t* pixelData = (uint8_t*)malloc(decodedLen);
+        if (!pixelData) {
+            Serial.println("ERROR: Failed to allocate memory for pixel data");
+            return false;
+        }
+        
+        // Simple base64 decode
+        size_t actualLen = 0;
+        for (size_t i = 0; i < base64Data.length() && actualLen < decodedLen; i += 4) {
+            uint32_t value = 0;
+            int padding = 0;
+            
+            for (int j = 0; j < 4 && (i + j) < base64Data.length(); j++) {
+                char c = base64Data.charAt(i + j);
+                if (c == '=') {
+                    padding++;
+                    value <<= 6;
+                } else if (c >= 'A' && c <= 'Z') {
+                    value = (value << 6) | (c - 'A');
+                } else if (c >= 'a' && c <= 'z') {
+                    value = (value << 6) | (c - 'a' + 26);
+                } else if (c >= '0' && c <= '9') {
+                    value = (value << 6) | (c - '0' + 52);
+                } else if (c == '+') {
+                    value = (value << 6) | 62;
+                } else if (c == '/') {
+                    value = (value << 6) | 63;
+                }
+            }
+            
+            int bytes = 3 - padding;
+            for (int j = 0; j < bytes && actualLen < decodedLen; j++) {
+                pixelData[actualLen++] = (value >> (8 * (2 - j))) & 0xFF;
+            }
+        }
+        
+        Serial.printf("Decoded %zu bytes of pixel data\n", actualLen);
+        
+        // Ensure display is initialized
+        if (display.getBuffer() == nullptr) {
+            Serial.println("Display not initialized - initializing now...");
+            displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+            
+            if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+                Serial.println("ERROR: Display initialization failed!");
+                free(pixelData);
+                return false;
+            }
+            Serial.println("Display initialized");
+        }
+        
+        // Clear display
+        display.clear(EL133UF1_WHITE);
+        
+        // Draw pixel data (scale from 800x600 to 1600x1200, centered)
+        int16_t scaleX = display.width() / width;
+        int16_t scaleY = display.height() / height;
+        int16_t offsetX = (display.width() - (width * scaleX)) / 2;
+        int16_t offsetY = (display.height() - (height * scaleY)) / 2;
+        
+        for (int y = 0; y < height && (y * width) < (int)actualLen; y++) {
+            for (int x = 0; x < width && (y * width + x) < (int)actualLen; x++) {
+                uint8_t color = pixelData[y * width + x];
+                for (int sy = 0; sy < scaleY; sy++) {
+                    for (int sx = 0; sx < scaleX; sx++) {
+                        int16_t px = offsetX + (x * scaleX) + sx;
+                        int16_t py = offsetY + (y * scaleY) + sy;
+                        if (px >= 0 && px < display.width() && py >= 0 && py < display.height()) {
+                            display.setPixel(px, py, color);
+                        }
+                    }
+                }
+            }
+        }
+        
+        free(pixelData);
+        
+        // Update display
+        Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+        display.update();
+        Serial.println("Display updated");
+        
+        return true;
+    }
+    
+    // For other commands, parse JSON normally (they're small)
     StaticJsonDocument<4096> doc;
     DeserializationError error = deserializeJson(doc, jsonMessage);
     
@@ -3998,7 +4178,7 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         return false;
     }
     
-    String command = doc["command"].as<String>();
+    command = doc["command"].as<String>();
     command.toLowerCase();
     
     Serial.printf("Web interface command: %s\n", command.c_str());

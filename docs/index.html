@@ -33,7 +33,8 @@ canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;
 let pahoLibraryLoaded = false;
 
 function checkPahoLoaded() {
-    if (typeof Paho !== 'undefined' && typeof Paho.MQTT !== 'undefined' && typeof Paho.MQTT.Client !== 'undefined') {
+    // Paho library exposes Paho.Client and Paho.Message, not Paho.MQTT.Client
+    if (typeof Paho !== 'undefined' && typeof Paho.Client !== 'undefined') {
         pahoLibraryLoaded = true;
         console.log('Paho MQTT library loaded successfully');
         return true;
@@ -220,8 +221,8 @@ function connectMQTT() {
     if (!pahoLibraryLoaded && !checkPahoLoaded()) {
         console.error('Paho MQTT library not loaded!', { 
             Paho: typeof Paho, 
-            MQTT: typeof (typeof Paho !== 'undefined' ? Paho.MQTT : undefined),
-            Client: typeof (typeof Paho !== 'undefined' && typeof Paho.MQTT !== 'undefined' ? Paho.MQTT.Client : undefined),
+            Client: typeof (typeof Paho !== 'undefined' ? Paho.Client : undefined),
+            Message: typeof (typeof Paho !== 'undefined' ? Paho.Message : undefined),
             pahoLibraryLoaded: pahoLibraryLoaded
         });
         updateConnectionStatus('disconnected', 'Error: MQTT library not loaded. Please wait a moment and try again.');
@@ -239,10 +240,10 @@ function connectMQTT() {
     
     const clientId = 'biginky_web_' + Math.random().toString(16).substr(2, 8);
     console.log('Creating MQTT client with ID:', clientId);
-    console.log('Paho.MQTT.Client available:', typeof Paho.MQTT.Client);
+    console.log('Paho.Client available:', typeof Paho.Client);
     
     try {
-        mqttClient = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, '/mqtt', clientId);
+        mqttClient = new Paho.Client(MQTT_BROKER, MQTT_PORT, '/mqtt', clientId);
         console.log('MQTT client created successfully');
     } catch (e) {
         console.error('Failed to create MQTT client:', e);
@@ -311,7 +312,7 @@ function publishMessage(payload) {
     }
     
     try {
-        const message = new Paho.MQTT.Message(JSON.stringify(payload));
+        const message = new Paho.Message(JSON.stringify(payload));
         message.destinationName = MQTT_TOPIC;
         message.qos = 1;
         mqttClient.send(message);

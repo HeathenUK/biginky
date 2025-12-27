@@ -2993,6 +2993,8 @@ static uint8_t* mqttMessageBuffer = nullptr;
 static size_t mqttMessageBufferSize = 0;
 static size_t mqttMessageBufferTotalLen = 0;
 static size_t mqttMessageBufferUsed = 0;
+static bool mqttMessageRetain = false;  // Store retain flag from first chunk
+static char mqttMessageTopic[128] = "";  // Store topic from first chunk
 #define MQTT_MAX_MESSAGE_SIZE (1024 * 1024)  // 1MB maximum message size (safety limit)
 
 // Publish device status to devices/web-ui/status topic
@@ -3157,6 +3159,15 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 
                 mqttMessageBufferTotalLen = event->total_data_len;
                 mqttMessageBufferUsed = 0;
+                mqttMessageRetain = event->retain;  // Store retain flag from first chunk
+                
+                // Store topic from first chunk
+                if (event->topic_len > 0 && event->topic_len < sizeof(mqttMessageTopic)) {
+                    memcpy(mqttMessageTopic, event->topic, event->topic_len);
+                    mqttMessageTopic[event->topic_len] = '\0';
+                } else {
+                    mqttMessageTopic[0] = '\0';
+                }
                 
                 // Allocate buffer with some headroom (add 1 for null terminator)
                 mqttMessageBufferSize = event->total_data_len + 1;
@@ -3167,8 +3178,8 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     break;
                 }
                 
-                Serial.printf("Starting new MQTT message: total_len=%d, allocated buffer=%d bytes\n", 
-                             event->total_data_len, mqttMessageBufferSize);
+                Serial.printf("Starting new MQTT message: total_len=%d, allocated buffer=%d bytes, retain=%d, topic='%s'\n", 
+                             event->total_data_len, mqttMessageBufferSize, mqttMessageRetain ? 1 : 0, mqttMessageTopic);
             }
             
             // Append current chunk to buffer
@@ -3203,28 +3214,28 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 mqttMessageBuffer[mqttMessageBufferUsed] = '\0';  // Null terminate
             }
             Serial.printf("Complete MQTT message received: %d bytes\n", mqttMessageBufferUsed);
-            Serial.printf("Message details: topic='%s', retain=%d, first_char='%c' (0x%02x)\n", 
-                         topic, event->retain ? 1 : 0, 
+            Serial.printf("Message details: topic='%s', retain=%d (stored from first chunk), first_char='%c' (0x%02x)\n", 
+                         mqttMessageTopic, mqttMessageRetain ? 1 : 0, 
                          mqttMessageBuffer != nullptr && mqttMessageBufferUsed > 0 ? mqttMessageBuffer[0] : '?',
                          mqttMessageBuffer != nullptr && mqttMessageBufferUsed > 0 ? mqttMessageBuffer[0] : 0);
             Serial.printf("Topic comparison: received='%s', expected_webui='%s', match=%d\n",
-                         topic, mqttTopicWebUI, strcmp(topic, mqttTopicWebUI) == 0 ? 1 : 0);
+                         mqttMessageTopic, mqttTopicWebUI, strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 ? 1 : 0);
             const char* message = (const char*)mqttMessageBuffer;
             
-            // Process retained messages
-            if (event->retain && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr) {
-                Serial.printf("Processing retained message: topic='%s', size=%d\n", topic, mqttMessageBufferUsed);
+            // Process retained messages (use stored retain flag from first chunk)
+            if (mqttMessageRetain && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr) {
+                Serial.printf("Processing retained message: topic='%s', size=%d\n", mqttMessageTopic, mqttMessageBufferUsed);
                 // Check if it's from web UI topic - these are JSON commands with "command" field
-                if (strcmp(topic, mqttTopicWebUI) == 0 && message[0] == '{') {
+                if (strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 && message[0] == '{') {
                     String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
-                    Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", topic, mqttMessageBufferUsed);
+                    Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", mqttMessageTopic, mqttMessageBufferUsed);
                     // Process the command (may fail if display not initialized, but we'll clear anyway)
                     handleWebInterfaceCommand(jsonMessage);
                     
                     // Always clear the retained message after processing (regardless of success/failure)
-                    if (strlen(topic) > 0 && client != nullptr) {
-                        Serial.printf("Clearing retained message on topic %s...\n", topic);
-                        int msg_id = esp_mqtt_client_publish(client, topic, "", 0, 1, 1);
+                    if (strlen(mqttMessageTopic) > 0 && client != nullptr) {
+                        Serial.printf("Clearing retained message on topic %s...\n", mqttMessageTopic);
+                        int msg_id = esp_mqtt_client_publish(client, mqttMessageTopic, "", 0, 1, 1);
                         if (msg_id > 0) {
                             Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topic, msg_id);
                         } else {
@@ -3235,14 +3246,14 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     }
                 }
                 // Check if it's from SMS bridge topic - these can be text or JSON (with "text" field, not "command")
-                else if (strcmp(topic, mqttTopicSubscribe) == 0) {
+                else if (strcmp(mqttMessageTopic, mqttTopicSubscribe) == 0) {
                     lastMqttMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
                     mqttMessageReceived = true;
                     
                     // Always clear the retained message after storing it
-                    if (strlen(topic) > 0 && client != nullptr) {
-                        Serial.printf("Clearing retained message on topic %s...\n", topic);
-                        int msg_id = esp_mqtt_client_publish(client, topic, "", 0, 1, 1);
+                    if (strlen(mqttMessageTopic) > 0 && client != nullptr) {
+                        Serial.printf("Clearing retained message on topic %s...\n", mqttMessageTopic);
+                        int msg_id = esp_mqtt_client_publish(client, mqttMessageTopic, "", 0, 1, 1);
                         if (msg_id > 0) {
                             Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topic, msg_id);
                         } else {
@@ -3255,7 +3266,7 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             }
             // Process non-retained JSON messages (for web interface commands - immediate delivery)
             // Only process if message is complete
-            else if (!event->retain && messageComplete && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr && message[0] == '{' && strcmp(topic, mqttTopicWebUI) == 0) {
+            else if (!mqttMessageRetain && messageComplete && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr && message[0] == '{' && strcmp(mqttMessageTopic, mqttTopicWebUI) == 0) {
                 // Check if it's a JSON command from web interface (must be on web UI topic)
                 String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
                 Serial.printf("Received non-retained JSON message from web UI: %d bytes\n", mqttMessageBufferUsed);
@@ -3269,6 +3280,8 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 mqttMessageBufferSize = 0;
                 mqttMessageBufferTotalLen = 0;
                 mqttMessageBufferUsed = 0;
+                mqttMessageRetain = false;
+                mqttMessageTopic[0] = '\0';
             }
             break;
         }

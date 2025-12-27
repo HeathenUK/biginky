@@ -1992,6 +1992,7 @@ static String extractCommandFromMessage(const String& msg);
 static String extractCommandParameter(const String& command);
 static String extractFromFieldFromMessage(const String& msg);
 static bool handleMqttCommand(const String& command, const String& originalMessage = "");
+static bool handleWebInterfaceCommand(const String& jsonMessage);
 static bool handleClearCommand();
 static bool handlePingCommand(const String& originalMessage);
 static bool handleIpCommand(const String& originalMessage);
@@ -3015,7 +3016,7 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 message[0] = '\0';
             }
             
-            // Only process non-blank retained messages
+            // Process retained messages (for SMS bridge commands)
             if (event->retain && event->data_len > 0) {
                 lastMqttMessage = String(message);
                 mqttMessageReceived = true;
@@ -3028,7 +3029,13 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     }
                 }
             }
-            // Ignore non-retained messages and blank retained messages
+            // Process non-retained JSON messages (for web interface commands)
+            else if (!event->retain && event->data_len > 0 && message[0] == '{') {
+                // Check if it's a JSON command from web interface
+                String jsonMessage = String(message);
+                Serial.printf("Received non-retained JSON message: %s\n", jsonMessage.c_str());
+                handleWebInterfaceCommand(jsonMessage);
+            }
             break;
         }
             
@@ -3714,6 +3721,226 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
     // Command not recognized
     Serial.printf("Unknown command: %s\n", command.c_str());
     return false;
+}
+
+/**
+ * Handle web interface JSON commands from GitHub Pages MQTT interface
+ * Commands are sent as JSON: {"command": "text_display", "text": "...", ...}
+ */
+static bool handleWebInterfaceCommand(const String& jsonMessage) {
+    Serial.printf("Processing web interface command: %s\n", jsonMessage.c_str());
+    
+    // Parse JSON
+    StaticJsonDocument<4096> doc;
+    DeserializationError error = deserializeJson(doc, jsonMessage);
+    
+    if (error) {
+        Serial.printf("ERROR: Failed to parse JSON command: %s\n", error.c_str());
+        return false;
+    }
+    
+    if (!doc.containsKey("command")) {
+        Serial.println("ERROR: JSON command missing 'command' field");
+        return false;
+    }
+    
+    String command = doc["command"].as<String>();
+    command.toLowerCase();
+    
+    Serial.printf("Web interface command: %s\n", command.c_str());
+    
+    // Route commands
+    if (command == "text_display") {
+        // Extract parameters
+        String text = doc.containsKey("text") ? doc["text"].as<String>() : "";
+        String colorStr = doc.containsKey("color") ? doc["color"].as<String>() : "white";
+        String bgColorStr = doc.containsKey("backgroundColour") ? doc["backgroundColour"].as<String>() : "white";
+        String outlineColorStr = doc.containsKey("outlineColour") ? doc["outlineColour"].as<String>() : "black";
+        
+        colorStr.toLowerCase();
+        bgColorStr.toLowerCase();
+        outlineColorStr.toLowerCase();
+        
+        if (text.length() == 0) {
+            Serial.println("ERROR: text_display command missing 'text' field");
+            return false;
+        }
+        
+        Serial.printf("Text display: text=\"%s\", color=%s, background=%s, outline=%s\n", 
+                     text.c_str(), colorStr.c_str(), bgColorStr.c_str(), outlineColorStr.c_str());
+        
+        // Ensure display is initialized
+        if (display.getBuffer() == nullptr) {
+            Serial.println("Display not initialized - initializing now...");
+            displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+            
+            if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+                Serial.println("ERROR: Display initialization failed!");
+                return false;
+            }
+            Serial.println("Display initialized");
+        }
+        
+        // Convert background color
+        uint8_t bgColor = EL133UF1_WHITE;
+        if (bgColorStr == "black") {
+            bgColor = EL133UF1_BLACK;
+        } else if (bgColorStr == "yellow") {
+            bgColor = EL133UF1_YELLOW;
+        } else if (bgColorStr == "red") {
+            bgColor = EL133UF1_RED;
+        } else if (bgColorStr == "blue") {
+            bgColor = EL133UF1_BLUE;
+        } else if (bgColorStr == "green") {
+            bgColor = EL133UF1_GREEN;
+        }
+        
+        // Handle multi-colour text
+        if (colorStr == "multi") {
+            return handleMultiTextCommand(text, bgColor);
+        }
+        
+        // Handle regular text with colors
+        uint8_t fillColor = EL133UF1_WHITE;
+        uint8_t outlineColor = EL133UF1_BLACK;
+        
+        // Parse fill color
+        if (colorStr == "yellow") {
+            fillColor = EL133UF1_YELLOW;
+        } else if (colorStr == "red") {
+            fillColor = EL133UF1_RED;
+        } else if (colorStr == "blue") {
+            fillColor = EL133UF1_BLUE;
+        } else if (colorStr == "green") {
+            fillColor = EL133UF1_GREEN;
+        } else if (colorStr == "black") {
+            fillColor = EL133UF1_BLACK;
+        }
+        
+        // Parse outline color
+        if (outlineColorStr == "yellow") {
+            outlineColor = EL133UF1_YELLOW;
+        } else if (outlineColorStr == "red") {
+            outlineColor = EL133UF1_RED;
+        } else if (outlineColorStr == "blue") {
+            outlineColor = EL133UF1_BLUE;
+        } else if (outlineColorStr == "green") {
+            outlineColor = EL133UF1_GREEN;
+        } else if (outlineColorStr == "white") {
+            outlineColor = EL133UF1_WHITE;
+        }
+        
+        return handleTextCommandWithColor(text, fillColor, outlineColor, bgColor);
+    }
+    else if (command == "canvas_display") {
+        // Extract pixel data
+        if (!doc.containsKey("pixelData") || !doc.containsKey("width") || !doc.containsKey("height")) {
+            Serial.println("ERROR: canvas_display command missing required fields");
+            return false;
+        }
+        
+        String base64Data = doc["pixelData"].as<String>();
+        int width = doc["width"].as<int>();
+        int height = doc["height"].as<int>();
+        
+        Serial.printf("Canvas display: %dx%d, base64 length: %d\n", width, height, base64Data.length());
+        
+        // Decode base64
+        size_t decodedLen = (base64Data.length() * 3) / 4;
+        uint8_t* pixelData = (uint8_t*)malloc(decodedLen);
+        if (!pixelData) {
+            Serial.println("ERROR: Failed to allocate memory for pixel data");
+            return false;
+        }
+        
+        // Simple base64 decode
+        size_t actualLen = 0;
+        for (size_t i = 0; i < base64Data.length() && actualLen < decodedLen; i += 4) {
+            uint32_t value = 0;
+            int padding = 0;
+            
+            for (int j = 0; j < 4 && (i + j) < base64Data.length(); j++) {
+                char c = base64Data.charAt(i + j);
+                if (c == '=') {
+                    padding++;
+                    value <<= 6;
+                } else if (c >= 'A' && c <= 'Z') {
+                    value = (value << 6) | (c - 'A');
+                } else if (c >= 'a' && c <= 'z') {
+                    value = (value << 6) | (c - 'a' + 26);
+                } else if (c >= '0' && c <= '9') {
+                    value = (value << 6) | (c - '0' + 52);
+                } else if (c == '+') {
+                    value = (value << 6) | 62;
+                } else if (c == '/') {
+                    value = (value << 6) | 63;
+                }
+            }
+            
+            int bytes = 3 - padding;
+            for (int j = 0; j < bytes && actualLen < decodedLen; j++) {
+                pixelData[actualLen++] = (value >> (8 * (2 - j))) & 0xFF;
+            }
+        }
+        
+        Serial.printf("Decoded %zu bytes of pixel data\n", actualLen);
+        
+        // Ensure display is initialized
+        if (display.getBuffer() == nullptr) {
+            Serial.println("Display not initialized - initializing now...");
+            displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+            
+            if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+                Serial.println("ERROR: Display initialization failed!");
+                free(pixelData);
+                return false;
+            }
+            Serial.println("Display initialized");
+        }
+        
+        // Clear display
+        display.clear(EL133UF1_WHITE);
+        
+        // Draw pixel data (scale from 800x600 to 1600x1200, centered)
+        int16_t scaleX = display.width() / width;
+        int16_t scaleY = display.height() / height;
+        int16_t offsetX = (display.width() - (width * scaleX)) / 2;
+        int16_t offsetY = (display.height() - (height * scaleY)) / 2;
+        
+        for (int y = 0; y < height && (y * width) < (int)actualLen; y++) {
+            for (int x = 0; x < width && (y * width + x) < (int)actualLen; x++) {
+                uint8_t color = pixelData[y * width + x];
+                for (int sy = 0; sy < scaleY; sy++) {
+                    for (int sx = 0; sx < scaleX; sx++) {
+                        int16_t px = offsetX + (x * scaleX) + sx;
+                        int16_t py = offsetY + (y * scaleY) + sy;
+                        if (px >= 0 && px < display.width() && py >= 0 && py < display.height()) {
+                            display.setPixel(px, py, color);
+                        }
+                    }
+                }
+            }
+        }
+        
+        free(pixelData);
+        
+        // Update display
+        Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+        display.update();
+        Serial.println("Display updated");
+        
+        return true;
+    }
+    else if (command == "clear") {
+        return handleClearCommand();
+    }
+    else if (command == "next") {
+        return handleNextCommand();
+    }
+    else {
+        Serial.printf("Unknown web interface command: %s\n", command.c_str());
+        return false;
+    }
 }
 
 /**
@@ -5402,10 +5629,11 @@ static bool handleManageCommand() {
         
         String jsonPayload = request->body();
         
-        // Parse JSON to extract text, color, and background color
+        // Parse JSON to extract text, color, background color, and outline color
         String textToDisplay = "";
         String colorStr = "white";
         String bgColorStr = "white";
+        String outlineColorStr = "black";
         
         // Extract text
         int textPos = jsonPayload.indexOf("\"text\"");
@@ -5448,8 +5676,8 @@ static bool handleManageCommand() {
             }
         }
         
-        // Extract background color
-        int bgColorPos = jsonPayload.indexOf("\"backgroundColor\"");
+        // Extract background color (British spelling: "backgroundColour")
+        int bgColorPos = jsonPayload.indexOf("\"backgroundColour\"");
         if (bgColorPos >= 0) {
             int colonPos = jsonPayload.indexOf(':', bgColorPos);
             int quoteStart = jsonPayload.indexOf('"', colonPos);
@@ -5463,12 +5691,27 @@ static bool handleManageCommand() {
             }
         }
         
+        // Extract outline color (British spelling: "outlineColour")
+        int outlineColorPos = jsonPayload.indexOf("\"outlineColour\"");
+        if (outlineColorPos >= 0) {
+            int colonPos = jsonPayload.indexOf(':', outlineColorPos);
+            int quoteStart = jsonPayload.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;
+                int quoteEnd = jsonPayload.indexOf('"', quoteStart);
+                if (quoteEnd > quoteStart) {
+                    outlineColorStr = jsonPayload.substring(quoteStart, quoteEnd);
+                    outlineColorStr.toLowerCase();
+                }
+            }
+        }
+        
         if (textToDisplay.length() == 0) {
             String resp = "{\"success\":false,\"error\":\"Invalid JSON: missing text\"}";
             return response->send(400, "application/json", resp.c_str());
         }
         
-        Serial.printf("Text display: text=\"%s\", color=%s, background=%s\n", textToDisplay.c_str(), colorStr.c_str(), bgColorStr.c_str());
+        Serial.printf("Text display: text=\"%s\", color=%s, background=%s, outline=%s\n", textToDisplay.c_str(), colorStr.c_str(), bgColorStr.c_str(), outlineColorStr.c_str());
         
         // Set lock
         showOperationInProgress = true;
@@ -5478,14 +5721,17 @@ static bool handleManageCommand() {
             String* text;
             String* color;
             String* bgColor;
+            String* outlineColor;
         } taskData;
         
         String textCopy = textToDisplay;
         String colorCopy = colorStr;
         String bgColorCopy = bgColorStr;
+        String outlineColorCopy = outlineColorStr;
         taskData.text = &textCopy;
         taskData.color = &colorCopy;
         taskData.bgColor = &bgColorCopy;
+        taskData.outlineColor = &outlineColorCopy;
         
         // Create task to display text (runs in background)
         xTaskCreate([](void* param) {
@@ -5525,16 +5771,16 @@ static bool handleManageCommand() {
             
             // Call appropriate text display function based on color
             bool result = false;
+            Serial.printf("Text display: color string = \"%s\", bgColor = %d\n", data->color->c_str(), bgColor);
             if (*(data->color) == "multi") {
                 // For multi-colour, pass background colour to the function
+                Serial.println("Text display: Calling handleMultiTextCommand");
                 result = handleMultiTextCommand(*(data->text), bgColor);
-            } else if (*(data->color) == "multi-fade") {
-                // For multi-fade, pass background colour to the function
-                result = handleMultiFadeTextCommand(*(data->text), bgColor);
             } else {
                 uint8_t fillColor = EL133UF1_WHITE;
                 uint8_t outlineColor = EL133UF1_BLACK;
                 
+                // Parse fill color
                 if (*(data->color) == "yellow") {
                     fillColor = EL133UF1_YELLOW;
                 } else if (*(data->color) == "red") {
@@ -5545,10 +5791,25 @@ static bool handleManageCommand() {
                     fillColor = EL133UF1_GREEN;
                 } else if (*(data->color) == "black") {
                     fillColor = EL133UF1_BLACK;
-                    outlineColor = EL133UF1_WHITE;
                 } else {
                     // Default: white
                     fillColor = EL133UF1_WHITE;
+                }
+                
+                // Parse outline color from user selection
+                if (*(data->outlineColor) == "yellow") {
+                    outlineColor = EL133UF1_YELLOW;
+                } else if (*(data->outlineColor) == "red") {
+                    outlineColor = EL133UF1_RED;
+                } else if (*(data->outlineColor) == "blue") {
+                    outlineColor = EL133UF1_BLUE;
+                } else if (*(data->outlineColor) == "green") {
+                    outlineColor = EL133UF1_GREEN;
+                } else if (*(data->outlineColor) == "white") {
+                    outlineColor = EL133UF1_WHITE;
+                } else {
+                    // Default: black
+                    outlineColor = EL133UF1_BLACK;
                 }
                 
                 result = handleTextCommandWithColor(*(data->text), fillColor, outlineColor, bgColor);

@@ -13,9 +13,9 @@ label{display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;}
 textarea{width:100%;min-height:100px;font-family:monospace;padding:10px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
 select{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
 input[type="text"]{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
-button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;}
+button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;min-height:44px;touch-action:manipulation;-webkit-tap-highlight-color:rgba(76,175,80,0.3);}
 button:hover{background:#45a049;}
-button:disabled{background:#666;cursor:not-allowed;}
+button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
 .status{color:#4CAF50;margin:10px 0;font-weight:bold;}
 .error{color:#f44336;}
 .info{color:#2196F3;margin:10px 0;padding:10px;background:#1a1a1a;border-radius:4px;border-left:3px solid #2196F3;}
@@ -476,10 +476,22 @@ function sendTextDisplay() {
 }
 
 function sendCanvasToDisplay() {
+    console.log('sendCanvasToDisplay() called');
     const canvas = document.getElementById('drawCanvas');
+    if (!canvas) {
+        console.error('Canvas element not found');
+        showStatus('canvasStatus', 'Error: Canvas not found', true);
+        return;
+    }
     const ctx = canvas.getContext('2d');
-    const imageData = ctx.getImageData(0, 0, 800, 600);
-    const data = imageData.data;
+    if (!ctx) {
+        console.error('Could not get canvas context');
+        showStatus('canvasStatus', 'Error: Could not access canvas', true);
+        return;
+    }
+    try {
+        const imageData = ctx.getImageData(0, 0, 800, 600);
+        const data = imageData.data;
     
     const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
     const einkColorValues = [0,1,2,3,5,6];
@@ -520,10 +532,14 @@ function sendCanvasToDisplay() {
         height: 600
     };
     
-    if (publishMessage(payload)) {
-        showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
-    } else {
-        showStatus('canvasStatus', 'Failed to send command', true);
+        if (publishMessage(payload)) {
+            showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+        } else {
+            showStatus('canvasStatus', 'Failed to send command', true);
+        }
+    } catch (error) {
+        console.error('Error in sendCanvasToDisplay:', error);
+        showStatus('canvasStatus', 'Error: ' + error.message, true);
     }
 }
 

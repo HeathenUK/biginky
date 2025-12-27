@@ -3214,19 +3214,24 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 mqttMessageBuffer[mqttMessageBufferUsed] = '\0';  // Null terminate
             }
             Serial.printf("Complete MQTT message received: %d bytes\n", mqttMessageBufferUsed);
-            Serial.printf("Message details: topic='%s', retain=%d (stored from first chunk), first_char='%c' (0x%02x)\n", 
-                         mqttMessageTopic, mqttMessageRetain ? 1 : 0, 
+            Serial.printf("Message details: stored_topic='%s', current_event_topic='%s', stored_retain=%d, current_event_retain=%d, first_char='%c' (0x%02x)\n", 
+                         mqttMessageTopic, topic, mqttMessageRetain ? 1 : 0, event->retain ? 1 : 0,
                          mqttMessageBuffer != nullptr && mqttMessageBufferUsed > 0 ? mqttMessageBuffer[0] : '?',
                          mqttMessageBuffer != nullptr && mqttMessageBufferUsed > 0 ? mqttMessageBuffer[0] : 0);
-            Serial.printf("Topic comparison: received='%s', expected_webui='%s', match=%d\n",
-                         mqttMessageTopic, mqttTopicWebUI, strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 ? 1 : 0);
+            Serial.printf("Topic comparison: stored='%s', current='%s', expected_webui='%s', stored_match=%d, current_match=%d\n",
+                         mqttMessageTopic, topic, mqttTopicWebUI, 
+                         strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 ? 1 : 0,
+                         strcmp(topic, mqttTopicWebUI) == 0 ? 1 : 0);
             const char* message = (const char*)mqttMessageBuffer;
             
             // Process retained messages (use stored retain flag from first chunk)
+            // Note: ESP-IDF provides topic and retain on all chunks, but we store from first chunk for safety
             if (mqttMessageRetain && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr) {
                 Serial.printf("Processing retained message: topic='%s', size=%d\n", mqttMessageTopic, mqttMessageBufferUsed);
                 // Check if it's from web UI topic - these are JSON commands with "command" field
-                if (strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 && message[0] == '{') {
+                // Also check the current event topic as fallback (in case stored topic is wrong)
+                const char* topicToCheck = (strlen(mqttMessageTopic) > 0) ? mqttMessageTopic : topic;
+                if ((strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 || strcmp(topic, mqttTopicWebUI) == 0) && message[0] == '{') {
                     String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
                     Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", mqttMessageTopic, mqttMessageBufferUsed);
                     // Process the command (may fail if display not initialized, but we'll clear anyway)

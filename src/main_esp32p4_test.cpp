@@ -3177,8 +3177,12 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 if (offset + event->data_len <= mqttMessageBufferSize) {
                     memcpy(mqttMessageBuffer + offset, event->data, event->data_len);
                     mqttMessageBufferUsed = offset + event->data_len;
-                    Serial.printf("MQTT message chunk: offset=%d, chunk_len=%d, buffer_used=%d, total_len=%d\n",
-                                 offset, event->data_len, mqttMessageBufferUsed, event->total_data_len);
+                    // Only log every 50KB or on completion to reduce spam
+                    if (mqttMessageBufferUsed % 51200 < event->data_len || mqttMessageBufferUsed >= event->total_data_len) {
+                        Serial.printf("MQTT message progress: %d/%d bytes (%.1f%%)\n",
+                                     mqttMessageBufferUsed, event->total_data_len,
+                                     100.0f * mqttMessageBufferUsed / event->total_data_len);
+                    }
                 } else {
                     Serial.printf("ERROR: Chunk would overflow buffer! offset=%d, chunk_len=%d, buffer_size=%d\n",
                                  offset, event->data_len, mqttMessageBufferSize);
@@ -3191,9 +3195,7 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             // Check if we have the complete message
             bool messageComplete = (mqttMessageBufferUsed >= event->total_data_len);
             if (!messageComplete) {
-                Serial.printf("Message incomplete, waiting for more chunks... (have %d of %d bytes)\n",
-                             mqttMessageBufferUsed, event->total_data_len);
-                break;  // Wait for more chunks
+                break;  // Wait for more chunks (no logging - too spammy)
             }
             
             // We have the complete message - null-terminate and process it

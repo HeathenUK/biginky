@@ -2988,9 +2988,12 @@ static esp_mqtt_client_handle_t mqttClient = nullptr;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
 static bool mqttConnected = false;
-// Buffer for multi-chunk MQTT messages
-static String mqttMessageBuffer = "";
+// Buffer for multi-chunk MQTT messages (heap-allocated for large messages)
+static uint8_t* mqttMessageBuffer = nullptr;
+static size_t mqttMessageBufferSize = 0;
 static size_t mqttMessageBufferTotalLen = 0;
+static size_t mqttMessageBufferUsed = 0;
+#define MQTT_MAX_MESSAGE_SIZE (1024 * 1024)  // 1MB maximum message size (safety limit)
 
 // Publish device status to devices/web-ui/status topic
 static void publishMQTTStatus() {
@@ -3129,38 +3132,75 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             }
             
             // Handle multi-chunk messages
-            // If this is the first chunk (offset == 0), reset the buffer
+            // If this is the first chunk (offset == 0), allocate/reset the buffer
             if (event->current_data_offset == 0) {
-                mqttMessageBuffer = "";
+                // Free old buffer if exists
+                if (mqttMessageBuffer != nullptr) {
+                    free(mqttMessageBuffer);
+                    mqttMessageBuffer = nullptr;
+                }
+                
+                // Check message size limit (safety check)
+                if (event->total_data_len > MQTT_MAX_MESSAGE_SIZE) {
+                    Serial.printf("ERROR: MQTT message too large: %d bytes (max: %d)\n", 
+                                 event->total_data_len, MQTT_MAX_MESSAGE_SIZE);
+                    break;
+                }
+                
                 mqttMessageBufferTotalLen = event->total_data_len;
-                Serial.printf("Starting new MQTT message: total_len=%d\n", event->total_data_len);
+                mqttMessageBufferUsed = 0;
+                
+                // Allocate buffer with some headroom (add 1 for null terminator)
+                mqttMessageBufferSize = event->total_data_len + 1;
+                mqttMessageBuffer = (uint8_t*)malloc(mqttMessageBufferSize);
+                
+                if (mqttMessageBuffer == nullptr) {
+                    Serial.printf("ERROR: Failed to allocate %d bytes for MQTT message buffer!\n", mqttMessageBufferSize);
+                    break;
+                }
+                
+                Serial.printf("Starting new MQTT message: total_len=%d, allocated buffer=%d bytes\n", 
+                             event->total_data_len, mqttMessageBufferSize);
             }
             
             // Append current chunk to buffer
-            if (event->data_len > 0) {
-                mqttMessageBuffer += String((const char*)event->data, event->data_len);
-                Serial.printf("MQTT message chunk: offset=%d, chunk_len=%d, buffer_len=%d, total_len=%d\n",
-                             event->current_data_offset, event->data_len, mqttMessageBuffer.length(), event->total_data_len);
+            if (event->data_len > 0 && mqttMessageBuffer != nullptr) {
+                size_t offset = event->current_data_offset;
+                if (offset + event->data_len <= mqttMessageBufferSize) {
+                    memcpy(mqttMessageBuffer + offset, event->data, event->data_len);
+                    mqttMessageBufferUsed = offset + event->data_len;
+                    Serial.printf("MQTT message chunk: offset=%d, chunk_len=%d, buffer_used=%d, total_len=%d\n",
+                                 offset, event->data_len, mqttMessageBufferUsed, event->total_data_len);
+                } else {
+                    Serial.printf("ERROR: Chunk would overflow buffer! offset=%d, chunk_len=%d, buffer_size=%d\n",
+                                 offset, event->data_len, mqttMessageBufferSize);
+                    free(mqttMessageBuffer);
+                    mqttMessageBuffer = nullptr;
+                    break;
+                }
             }
             
             // Check if we have the complete message
-            bool messageComplete = (mqttMessageBuffer.length() >= event->total_data_len);
+            bool messageComplete = (mqttMessageBufferUsed >= event->total_data_len);
             if (!messageComplete) {
                 Serial.printf("Message incomplete, waiting for more chunks... (have %d of %d bytes)\n",
-                             mqttMessageBuffer.length(), event->total_data_len);
+                             mqttMessageBufferUsed, event->total_data_len);
                 break;  // Wait for more chunks
             }
             
-            // We have the complete message - process it
-            Serial.printf("Complete MQTT message received: %d bytes\n", mqttMessageBuffer.length());
-            const char* message = mqttMessageBuffer.c_str();
+            // We have the complete message - null-terminate and process it
+            if (mqttMessageBuffer != nullptr) {
+                mqttMessageBuffer[mqttMessageBufferUsed] = '\0';  // Null terminate
+            }
+            Serial.printf("Complete MQTT message received: %d bytes\n", mqttMessageBufferUsed);
+            const char* message = (const char*)mqttMessageBuffer;
             
             // Process retained messages
-            if (event->retain && mqttMessageBuffer.length() > 0) {
+            if (event->retain && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr) {
                 // Check if it's from web UI topic - these are JSON commands with "command" field
                 if (strcmp(topic, mqttTopicWebUI) == 0 && message[0] == '{') {
-                    String jsonMessage = mqttMessageBuffer;  // Use the complete buffered message
-                    Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", topic, jsonMessage.length());
+                    String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
+                    Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", topic, mqttMessageBufferUsed);
                     // Process the command (may fail if display not initialized, but we'll clear anyway)
                     handleWebInterfaceCommand(jsonMessage);
                     
@@ -3179,7 +3219,7 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 }
                 // Check if it's from SMS bridge topic - these can be text or JSON (with "text" field, not "command")
                 else if (strcmp(topic, mqttTopicSubscribe) == 0) {
-                    lastMqttMessage = mqttMessageBuffer;  // Use the complete buffered message
+                    lastMqttMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
                     mqttMessageReceived = true;
                     
                     // Always clear the retained message after storing it
@@ -3198,17 +3238,20 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             }
             // Process non-retained JSON messages (for web interface commands - immediate delivery)
             // Only process if message is complete
-            else if (!event->retain && messageComplete && mqttMessageBuffer.length() > 0 && message[0] == '{' && strcmp(topic, mqttTopicWebUI) == 0) {
+            else if (!event->retain && messageComplete && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr && message[0] == '{' && strcmp(topic, mqttTopicWebUI) == 0) {
                 // Check if it's a JSON command from web interface (must be on web UI topic)
-                String jsonMessage = mqttMessageBuffer;  // Use the complete buffered message
-                Serial.printf("Received non-retained JSON message from web UI: %d bytes\n", jsonMessage.length());
+                String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
+                Serial.printf("Received non-retained JSON message from web UI: %d bytes\n", mqttMessageBufferUsed);
                 handleWebInterfaceCommand(jsonMessage);
             }
             
-            // Clear buffer after processing complete message
-            if (messageComplete) {
-                mqttMessageBuffer = "";
+            // Free buffer after processing complete message
+            if (messageComplete && mqttMessageBuffer != nullptr) {
+                free(mqttMessageBuffer);
+                mqttMessageBuffer = nullptr;
+                mqttMessageBufferSize = 0;
                 mqttMessageBufferTotalLen = 0;
+                mqttMessageBufferUsed = 0;
             }
             break;
         }

@@ -80,6 +80,10 @@
 #include "mqtt_client.h"
 #include "esp_crt_bundle.h"
 #include <string.h>
+// ESP32-P4 hardware JPEG encoder for thumbnail generation
+#if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
+#include "driver/jpeg_encode.h"
+#endif
 // OTA update support - custom implementation with SD card buffering
 #include <WiFiServer.h>
 #include <WiFiClient.h>
@@ -3114,8 +3118,7 @@ static void publishMQTTThumbnail() {
     }
     
     // Check if display is initialized
-    uint8_t* framebuffer = display.getBuffer();
-    if (framebuffer == nullptr) {
+    if (display.getBuffer() == nullptr) {
         Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
         return;
     }
@@ -3126,6 +3129,12 @@ static void publishMQTTThumbnail() {
     const int thumbHeight = 300;
     const int scale = 4;  // 1600/400 = 4, 1200/300 = 4
     
+    // Check if we're using ARGB8888 mode (ESP32-P4) or L8 mode
+    bool isARGBMode = false;
+#if EL133UF1_USE_ARGB8888
+    isARGBMode = display.isARGBMode();
+#endif
+    
     // Allocate thumbnail buffer (RGB888: 3 bytes per pixel)
     size_t thumbSize = thumbWidth * thumbHeight * 3;
     uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
@@ -3134,7 +3143,31 @@ static void publishMQTTThumbnail() {
         return;
     }
     
-    Serial.printf("Generating thumbnail: %dx%d -> %dx%d\n", srcWidth, srcHeight, thumbWidth, thumbHeight);
+    Serial.printf("Generating thumbnail: %dx%d -> %dx%d (mode: %s)\n", 
+                  srcWidth, srcHeight, thumbWidth, thumbHeight, 
+                  isARGBMode ? "ARGB8888" : "L8");
+    
+    // Debug: Sample a few pixels to verify we're reading correctly
+    if (isARGBMode) {
+#if EL133UF1_USE_ARGB8888
+        uint32_t* argbBuffer = display.getBufferARGB();
+        if (argbBuffer != nullptr) {
+            Serial.printf("  Sample pixels: [0,0]=0x%08X, [799,599]=0x%08X, [1599,1199]=0x%08X\n",
+                         argbBuffer[0], 
+                         argbBuffer[799 * 1600 + 599],
+                         argbBuffer[1199 * 1600 + 1599]);
+        }
+#endif
+    } else {
+        uint8_t* framebuffer = display.getBuffer();
+        if (framebuffer != nullptr) {
+            Serial.printf("  Sample pixels: [0,0]=0x%02X, [799,599]=0x%02X, [1599,1199]=0x%02X\n",
+                         framebuffer[0],
+                         framebuffer[799 * 1600 + 599],
+                         framebuffer[1199 * 1600 + 1599]);
+        }
+    }
+    
     uint32_t thumbStart = millis();
     
     // Color mapping from e-ink 3-bit color to RGB
@@ -3163,9 +3196,27 @@ static void publishMQTTThumbnail() {
             
             for (int dy = 0; dy < scale && (sy + dy) < srcHeight; dy++) {
                 for (int dx = 0; dx < scale && (sx + dx) < srcWidth; dx++) {
-                    int srcIdx = (sy + dy) * srcWidth + (sx + dx);
-                    uint8_t einkColor = framebuffer[srcIdx] & 0x07;  // 3-bit color
-                    if (einkColor > 7) einkColor = 1;  // Default to white if invalid
+                    uint8_t einkColor = 1;  // Default to white
+                    
+                    if (isARGBMode) {
+#if EL133UF1_USE_ARGB8888
+                        // ARGB8888 mode: 4 bytes per pixel
+                        uint32_t* argbBuffer = display.getBufferARGB();
+                        if (argbBuffer != nullptr) {
+                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                            uint32_t argb = argbBuffer[srcIdx];
+                            einkColor = EL133UF1::argbToColor(argb);
+                        }
+#endif
+                    } else {
+                        // L8 mode: 1 byte per pixel
+                        uint8_t* framebuffer = display.getBuffer();
+                        if (framebuffer != nullptr) {
+                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                            einkColor = framebuffer[srcIdx] & 0x07;  // 3-bit color
+                            if (einkColor > 7) einkColor = 1;  // Default to white if invalid
+                        }
+                    }
                     
                     rSum += colorMap[einkColor][0];
                     gSum += colorMap[einkColor][1];
@@ -3184,12 +3235,115 @@ static void publishMQTTThumbnail() {
     }
     
     uint32_t thumbMs = millis() - thumbStart;
-    Serial.printf("Thumbnail generated in %lu ms\n", (unsigned long)thumbMs);
+    Serial.printf("Thumbnail RGB generated in %lu ms\n", (unsigned long)thumbMs);
     
-    // Base64 encode the thumbnail
-    // Base64 encoding increases size by ~33%: 400*300*3 = 360KB -> ~480KB
-    // MQTT message size limit might be an issue, but let's try
-    size_t base64Size = ((thumbSize + 2) / 3) * 4 + 1;  // +1 for null terminator
+    // Encode to JPEG using ESP32-P4 hardware encoder
+    uint8_t* jpegBuffer = nullptr;
+    size_t jpegSize = 0;
+    
+#if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
+    uint32_t jpegStart = millis();
+    
+    // Create JPEG encoder engine
+    jpeg_encoder_handle_t jpeg_handle = nullptr;
+    jpeg_encode_engine_cfg_t encode_eng_cfg = {
+        .timeout_ms = 1000,  // 1 second timeout
+    };
+    
+    esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: Failed to create JPEG encoder engine: %d\n", ret);
+        free(thumbBuffer);
+        return;
+    }
+    
+    // Allocate memory for JPEG output (using encoder's memory allocator)
+    // Estimate: JPEG typically compresses to 10-20% of original size
+    size_t estimated_jpeg_size = thumbSize / 10;  // Conservative estimate
+    jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = {
+        .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
+    };
+    size_t rx_buffer_size = 0;
+    jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);
+    if (jpegBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JPEG output buffer");
+        jpeg_del_encoder_engine(jpeg_handle);
+        free(thumbBuffer);
+        return;
+    }
+    
+    // Configure JPEG encoding
+    jpeg_encode_cfg_t enc_config;
+    enc_config.width = thumbWidth;
+    enc_config.height = thumbHeight;
+    enc_config.src_type = JPEG_ENCODE_IN_FORMAT_RGB888;
+    enc_config.sub_sample = JPEG_DOWN_SAMPLING_YUV422;  // 4:2:2 subsampling for good quality/size balance
+    enc_config.image_quality = 75;  // Quality 75 (0-100, higher = better quality but larger file)
+    
+    // Encode the image (jpegSize must be uint32_t, not size_t)
+    uint32_t jpeg_size_u32 = 0;
+    ret = jpeg_encoder_process(jpeg_handle, &enc_config, thumbBuffer, thumbSize, 
+                                jpegBuffer, rx_buffer_size, &jpeg_size_u32);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
+        free(jpegBuffer);  // Use regular free for encoder-allocated memory
+        jpeg_del_encoder_engine(jpeg_handle);
+        free(thumbBuffer);
+        return;
+    }
+    
+    jpegSize = jpeg_size_u32;
+    Serial.printf("JPEG encoded: %d bytes (from %d bytes RGB, %.1f%% compression) in %lu ms\n", 
+                  jpegSize, thumbSize, (100.0f * jpegSize) / thumbSize, millis() - jpegStart);
+    
+    // Clean up encoder engine (but keep JPEG buffer)
+    jpeg_del_encoder_engine(jpeg_handle);
+    free(thumbBuffer);  // Free RGB buffer, keep JPEG
+    
+    // Base64 encode the JPEG
+    size_t base64Size = ((jpegSize + 2) / 3) * 4 + 1;  // +1 for null terminator
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        free(jpegBuffer);
+        return;
+    }
+    
+    // Simple base64 encoding
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < jpegSize; i += 3) {
+        uint32_t b0 = jpegBuffer[i];
+        uint32_t b1 = (i + 1 < jpegSize) ? jpegBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < jpegSize) ? jpegBuffer[i + 2] : 0;
+        
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < jpegSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < jpegSize) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    
+    free(jpegBuffer);  // Free JPEG buffer, keep base64
+    
+    // Create JSON payload with JPEG thumbnail data
+    String thumbJson = "{";
+    thumbJson += "\"width\":" + String(thumbWidth) + ",";
+    thumbJson += "\"height\":" + String(thumbHeight) + ",";
+    thumbJson += "\"format\":\"jpeg\",";
+    thumbJson += "\"data\":\"" + String(base64Buffer) + "\"";
+    thumbJson += "}";
+    
+    free(base64Buffer);
+#else
+    // Fallback: Base64 encode raw RGB if JPEG encoder not available
+    Serial.println("WARNING: JPEG encoder not available, using raw RGB base64");
+    size_t base64Size = ((thumbSize + 2) / 3) * 4 + 1;
     char* base64Buffer = (char*)malloc(base64Size);
     if (base64Buffer == nullptr) {
         Serial.println("ERROR: Failed to allocate base64 buffer");
@@ -3197,7 +3351,6 @@ static void publishMQTTThumbnail() {
         return;
     }
     
-    // Simple base64 encoding
     const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t base64Idx = 0;
     
@@ -3217,9 +3370,8 @@ static void publishMQTTThumbnail() {
     }
     base64Buffer[base64Idx] = '\0';
     
-    free(thumbBuffer);  // Free thumbnail buffer, keep base64
+    free(thumbBuffer);
     
-    // Create JSON payload with thumbnail data
     String thumbJson = "{";
     thumbJson += "\"width\":" + String(thumbWidth) + ",";
     thumbJson += "\"height\":" + String(thumbHeight) + ",";
@@ -3228,6 +3380,7 @@ static void publishMQTTThumbnail() {
     thumbJson += "}";
     
     free(base64Buffer);
+#endif
     
     Serial.printf("Publishing thumbnail JSON (%d bytes) to %s...\n", thumbJson.length(), mqttTopicThumb);
     

@@ -521,14 +521,15 @@ function sendCanvasToDisplay() {
     }
     
     const pixelBytes = new Uint8Array(pixelData);
-    // Use chunked encoding for large arrays to avoid stack overflow on mobile
-    let base64Data = '';
-    const chunkSize = 8192; // Process in chunks
+    // Convert Uint8Array to binary string in chunks to avoid stack overflow on mobile
+    // Then base64 encode the entire binary string
+    let binaryString = '';
+    const chunkSize = 8192; // Process in chunks to avoid stack overflow
     for (let i = 0; i < pixelBytes.length; i += chunkSize) {
         const chunk = pixelBytes.slice(i, i + chunkSize);
-        const chunkString = String.fromCharCode.apply(null, Array.from(chunk));
-        base64Data += btoa(chunkString);
+        binaryString += String.fromCharCode.apply(null, Array.from(chunk));
     }
+    const base64Data = btoa(binaryString);
     
     showStatus('canvasStatus', 'Sending canvas data...', false);
     

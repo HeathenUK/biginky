@@ -213,33 +213,42 @@ function updateDeviceStatus(status) {
     const statusEl = document.getElementById('deviceStatus');
     let html = '<div style="line-height:1.6;">';
     
-    // Timestamp
+    // Timestamp and current time
     if (status.timestamp) {
         const date = new Date(status.timestamp * 1000);
         html += `<p><strong>Last Update:</strong> ${date.toLocaleString()}</p>`;
     }
+    if (status.current_time) {
+        html += `<p><strong>Device Time:</strong> ${status.current_time}</p>`;
+    }
     
-    // WiFi status
-    if (status.wifi) {
-        html += '<p><strong>WiFi:</strong> ';
-        if (status.wifi.connected) {
-            html += `<span style="color:#4CAF50;">Connected</span>`;
-            if (status.wifi.ssid) html += ` (${status.wifi.ssid})`;
-            if (status.wifi.ip) html += ` - IP: ${status.wifi.ip}`;
-        } else {
-            html += `<span style="color:#f44336;">Disconnected</span>`;
+    // Next media item
+    if (status.next_media) {
+        html += '<p><strong>Next Media:</strong> ';
+        html += `<span style="color:#4CAF50;">${status.next_media.image}</span>`;
+        if (status.next_media.audio) {
+            html += ` <span style="color:#888;">(${status.next_media.audio})</span>`;
+        }
+        html += ` <span style="color:#888;font-size:11px;">[index ${status.next_media.index}]</span>`;
+        html += '</p>';
+    }
+    
+    // Next wake time
+    if (status.next_wake) {
+        html += `<p><strong>Next Wake:</strong> <span style="color:#2196F3;">${status.next_wake}</span>`;
+        if (status.sleep_interval_minutes) {
+            html += ` <span style="color:#888;font-size:11px;">(every ${status.sleep_interval_minutes} min)</span>`;
         }
         html += '</p>';
     }
     
-    // MQTT status
-    if (status.mqtt) {
-        html += '<p><strong>MQTT:</strong> ';
-        if (status.mqtt.connected) {
-            html += `<span style="color:#4CAF50;">Connected</span>`;
-            if (status.mqtt.broker) html += ` (${status.mqtt.broker}:${status.mqtt.port || ''})`;
+    // Connection status
+    if (status.connected !== undefined) {
+        html += '<p><strong>Status:</strong> ';
+        if (status.connected) {
+            html += '<span style="color:#4CAF50;">Connected</span>';
         } else {
-            html += `<span style="color:#f44336;">Disconnected</span>`;
+            html += '<span style="color:#f44336;">Disconnected</span>';
         }
         html += '</p>';
     }

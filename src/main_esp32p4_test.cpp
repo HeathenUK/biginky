@@ -2987,9 +2987,16 @@ static bool mqttConnected = false;
 
 // Publish device status to devices/web-ui/status topic
 static void publishMQTTStatus() {
-    if (mqttClient == nullptr || !mqttConnected) {
+    Serial.println("publishMQTTStatus() called");
+    if (mqttClient == nullptr) {
+        Serial.println("ERROR: mqttClient is nullptr, cannot publish status");
         return;  // Can't publish if not connected
     }
+    if (!mqttConnected) {
+        Serial.println("ERROR: mqttConnected is false, cannot publish status");
+        return;  // Can't publish if not connected
+    }
+    Serial.println("MQTT client and connection OK, building status JSON...");
     
     // Build JSON status object
     String statusJson = "{";
@@ -3060,11 +3067,12 @@ static void publishMQTTStatus() {
     statusJson += "}";
     
     // Publish as retained message
+    Serial.printf("Publishing status JSON (%d bytes) to %s...\n", statusJson.length(), mqttTopicStatus);
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, statusJson.c_str(), statusJson.length(), 1, 1);
     if (msg_id > 0) {
         Serial.printf("Published status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     } else {
-        Serial.printf("Failed to publish status to %s\n", mqttTopicStatus);
+        Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     }
 }
 

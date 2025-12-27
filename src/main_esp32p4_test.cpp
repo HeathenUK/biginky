@@ -1987,6 +1987,7 @@ bool mqttConnect();
 bool mqttCheckMessages(uint32_t timeoutMs);
 String mqttGetLastMessage();  // Get the last received message
 static void publishMQTTStatus();  // Publish device status to devices/web-ui/status
+static void publishMQTTThumbnail();  // Publish display thumbnail to devices/web-ui/thumb
 
 // MQTT command handling
 static String extractCommandFromMessage(const String& msg);
@@ -2911,6 +2912,11 @@ static void auto_cycle_task(void* arg) {
     display.update();
     uint32_t refreshMs = millis() - refreshStart;
     Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
+    
+    // Publish thumbnail after display update
+    if (mqttConnected) {
+        publishMQTTThumbnail();
+    }
 
     // ================================================================
     // AUDIO - Play WAV file for this image (or fallback to beep)
@@ -2973,6 +2979,7 @@ static void auto_cycle_task(void* arg) {
 #define MQTT_TOPIC_WEBUI "devices/web-ui/cmd"                       // Topic to subscribe to (GitHub Pages web UI)
 #define MQTT_TOPIC_PUBLISH "devices/twilio_sms_bridge/outbox"            // Topic to publish to
 #define MQTT_TOPIC_STATUS "devices/web-ui/status"                   // Topic to publish device status
+#define MQTT_TOPIC_THUMB "devices/web-ui/thumb"                    // Topic to publish display thumbnail
 
 // MQTT runtime state
 static char mqttBroker[128] = MQTT_BROKER_HOSTNAME;
@@ -2984,6 +2991,7 @@ static char mqttTopicSubscribe[128] = MQTT_TOPIC_SUBSCRIBE;
 static char mqttTopicWebUI[128] = MQTT_TOPIC_WEBUI;
 static char mqttTopicPublish[128] = MQTT_TOPIC_PUBLISH;
 static char mqttTopicStatus[128] = MQTT_TOPIC_STATUS;
+static char mqttTopicThumb[128] = MQTT_TOPIC_THUMB;
 static esp_mqtt_client_handle_t mqttClient = nullptr;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
@@ -3085,6 +3093,142 @@ static void publishMQTTStatus() {
         Serial.printf("Published status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     } else {
         Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+    }
+}
+
+/**
+ * Publish display thumbnail to MQTT
+ * Scales 1600x1200 framebuffer to 400x300 and publishes as base64-encoded RGB data
+ */
+static void publishMQTTThumbnail() {
+    if (mqttClient == nullptr || !mqttConnected) {
+        return;  // Can't publish if not connected
+    }
+    
+    // Check if display is initialized
+    uint8_t* framebuffer = display.getBuffer();
+    if (framebuffer == nullptr) {
+        Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
+        return;
+    }
+    
+    const int srcWidth = 1600;
+    const int srcHeight = 1200;
+    const int thumbWidth = 400;
+    const int thumbHeight = 300;
+    const int scale = 4;  // 1600/400 = 4, 1200/300 = 4
+    
+    // Allocate thumbnail buffer (RGB888: 3 bytes per pixel)
+    size_t thumbSize = thumbWidth * thumbHeight * 3;
+    uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
+    if (thumbBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate thumbnail buffer");
+        return;
+    }
+    
+    Serial.printf("Generating thumbnail: %dx%d -> %dx%d\n", srcWidth, srcHeight, thumbWidth, thumbHeight);
+    uint32_t thumbStart = millis();
+    
+    // Color mapping from e-ink 3-bit color to RGB
+    // EL133UF1 colors: 0=black, 1=white, 2=yellow, 3=red, 5=blue, 6=green
+    uint8_t colorMap[8][3] = {
+        {0, 0, 0},       // 0: Black -> RGB(0,0,0)
+        {255, 255, 255}, // 1: White -> RGB(255,255,255)
+        {255, 255, 0},   // 2: Yellow -> RGB(255,255,0)
+        {255, 0, 0},     // 3: Red -> RGB(255,0,0)
+        {128, 128, 128}, // 4: (unused, gray)
+        {0, 0, 255},     // 5: Blue -> RGB(0,0,255)
+        {0, 255, 0},     // 6: Green -> RGB(0,255,0)
+        {128, 128, 128}, // 7: (unused, gray)
+    };
+    
+    // Scale down by averaging 4x4 blocks
+    for (int ty = 0; ty < thumbHeight; ty++) {
+        for (int tx = 0; tx < thumbWidth; tx++) {
+            // Source region: (tx*scale, ty*scale) to (tx*scale+scale, ty*scale+scale)
+            int sx = tx * scale;
+            int sy = ty * scale;
+            
+            // Average the 4x4 block (or smaller if at edges)
+            uint32_t rSum = 0, gSum = 0, bSum = 0;
+            int count = 0;
+            
+            for (int dy = 0; dy < scale && (sy + dy) < srcHeight; dy++) {
+                for (int dx = 0; dx < scale && (sx + dx) < srcWidth; dx++) {
+                    int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                    uint8_t einkColor = framebuffer[srcIdx] & 0x07;  // 3-bit color
+                    if (einkColor > 7) einkColor = 1;  // Default to white if invalid
+                    
+                    rSum += colorMap[einkColor][0];
+                    gSum += colorMap[einkColor][1];
+                    bSum += colorMap[einkColor][2];
+                    count++;
+                }
+            }
+            
+            if (count > 0) {
+                int thumbIdx = (ty * thumbWidth + tx) * 3;
+                thumbBuffer[thumbIdx + 0] = rSum / count;  // R
+                thumbBuffer[thumbIdx + 1] = gSum / count;    // G
+                thumbBuffer[thumbIdx + 2] = bSum / count;    // B
+            }
+        }
+    }
+    
+    uint32_t thumbMs = millis() - thumbStart;
+    Serial.printf("Thumbnail generated in %lu ms\n", (unsigned long)thumbMs);
+    
+    // Base64 encode the thumbnail
+    // Base64 encoding increases size by ~33%: 400*300*3 = 360KB -> ~480KB
+    // MQTT message size limit might be an issue, but let's try
+    size_t base64Size = ((thumbSize + 2) / 3) * 4 + 1;  // +1 for null terminator
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        free(thumbBuffer);
+        return;
+    }
+    
+    // Simple base64 encoding
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < thumbSize; i += 3) {
+        uint32_t b0 = thumbBuffer[i];
+        uint32_t b1 = (i + 1 < thumbSize) ? thumbBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < thumbSize) ? thumbBuffer[i + 2] : 0;
+        
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < thumbSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < thumbSize) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    
+    free(thumbBuffer);  // Free thumbnail buffer, keep base64
+    
+    // Create JSON payload with thumbnail data
+    String thumbJson = "{";
+    thumbJson += "\"width\":" + String(thumbWidth) + ",";
+    thumbJson += "\"height\":" + String(thumbHeight) + ",";
+    thumbJson += "\"format\":\"rgb888\",";
+    thumbJson += "\"data\":\"" + String(base64Buffer) + "\"";
+    thumbJson += "}";
+    
+    free(base64Buffer);
+    
+    Serial.printf("Publishing thumbnail JSON (%d bytes) to %s...\n", thumbJson.length(), mqttTopicThumb);
+    
+    // Publish as retained message so web UI gets it immediately on connect
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, thumbJson.c_str(), thumbJson.length(), 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+    } else {
+        Serial.printf("Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     }
 }
 
@@ -4161,6 +4305,11 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         display.update();
         Serial.println("Display updated");
         
+        // Publish thumbnail after display update
+        if (mqttConnected) {
+            publishMQTTThumbnail();
+        }
+        
         return true;
     }
     
@@ -4435,6 +4584,11 @@ static bool handleOAICommand(const String& parameter) {
             uint32_t updateStart = millis();
             display.update();
             uint32_t updateMs = millis() - updateStart;
+            
+            // Publish thumbnail after display update
+            if (mqttConnected) {
+                publishMQTTThumbnail();
+            }
             
             Serial.printf("Display update completed in %lu ms (%.1f seconds)\n", 
                          (unsigned long)updateMs, updateMs / 1000.0f);
@@ -5544,6 +5698,11 @@ static bool handleClearCommand() {
     display.update();
     Serial.println("Display cleared and updated");
     
+    // Publish thumbnail after display update
+    if (mqttConnected) {
+        publishMQTTThumbnail();
+    }
+    
     return true;  // Command handled successfully
 }
 
@@ -5769,6 +5928,11 @@ static void show_media_task(void* parameter) {
                         Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
                         display.update();
                         Serial.println("Display updated");
+                        
+                        // Publish thumbnail after display update
+                        if (mqttConnected) {
+                            publishMQTTThumbnail();
+                        }
                         
                         // Play audio file for this image
                         String audioFile = getAudioForImage(g_lastImagePath);
@@ -7281,6 +7445,11 @@ static bool handleManageCommand() {
             display.update();
             Serial.println("Canvas display: Success!");
             *(data->success) = true;
+            
+            // Publish thumbnail after display update
+            if (mqttConnected) {
+                publishMQTTThumbnail();
+            }
             
             free(data->pixels);
             showOperationInProgress = false;

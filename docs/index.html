@@ -90,6 +90,14 @@ window.addEventListener('load', function() {
 </div>
 </div>
 <div class="section">
+<h2>Display Preview</h2>
+<p>Latest display content (updated whenever the display is refreshed):</p>
+<div id="thumbnailContainer" style="text-align:center;margin:20px 0;">
+<canvas id="thumbnailCanvas" width="400" height="300" style="border:2px solid #666;background:#fff;max-width:100%;height:auto;display:none;"></canvas>
+<p id="thumbnailStatus" style="color:#888;">No preview available yet</p>
+</div>
+</div>
+<div class="section">
 <h2>Text Display</h2>
 <p>Enter text to display on the panel. Select text colour, background colour, and outline colour.</p>
 <label>Text:</label>
@@ -165,6 +173,7 @@ const MQTT_BROKER = 'mqtt.flespi.io';
 const MQTT_PORT = 443;
 const MQTT_TOPIC = 'devices/web-ui/cmd';
 const MQTT_TOPIC_STATUS = 'devices/web-ui/status';
+const MQTT_TOPIC_THUMB = 'devices/web-ui/thumb';
 // Embedded restricted token for web UI (publish-only to devices/web-ui/cmd)
 // TODO: Replace with your actual restricted Flespi.io token
 const EMBEDDED_TOKEN = 'WdTjkCQjNXodmMWLSDWhAvrE6dDmcoQY1V47HSd3M7mb9P4HI3Ph8nTnA18MioBn';
@@ -290,6 +299,61 @@ function updateDeviceStatus(status) {
     statusEl.innerHTML = html;
 }
 
+function updateThumbnail(thumb) {
+    const canvas = document.getElementById('thumbnailCanvas');
+    const statusEl = document.getElementById('thumbnailStatus');
+    
+    if (!thumb || !thumb.data || !thumb.width || !thumb.height) {
+        statusEl.textContent = 'Invalid thumbnail data';
+        canvas.style.display = 'none';
+        return;
+    }
+    
+    if (thumb.format !== 'rgb888') {
+        statusEl.textContent = 'Unsupported thumbnail format: ' + thumb.format;
+        canvas.style.display = 'none';
+        return;
+    }
+    
+    try {
+        // Decode base64 data
+        const binaryString = atob(thumb.data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        // Set canvas size
+        canvas.width = thumb.width;
+        canvas.height = thumb.height;
+        const ctx = canvas.getContext('2d');
+        
+        // Create ImageData from RGB888 data
+        const imageData = ctx.createImageData(thumb.width, thumb.height);
+        const data = imageData.data;
+        
+        // Convert RGB888 to RGBA8888
+        for (let i = 0; i < bytes.length; i += 3) {
+            const pixelIdx = (i / 3) * 4;
+            if (pixelIdx + 3 < data.length) {
+                data[pixelIdx + 0] = bytes[i + 0];     // R
+                data[pixelIdx + 1] = bytes[i + 1];     // G
+                data[pixelIdx + 2] = bytes[i + 2];     // B
+                data[pixelIdx + 3] = 255;               // A (opaque)
+            }
+        }
+        
+        // Draw to canvas
+        ctx.putImageData(imageData, 0, 0);
+        canvas.style.display = 'block';
+        statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' (updated ' + new Date().toLocaleTimeString() + ')';
+    } catch (e) {
+        console.error('Error updating thumbnail:', e);
+        statusEl.textContent = 'Error displaying thumbnail: ' + e.message;
+        canvas.style.display = 'none';
+    }
+}
+
 function connectMQTT() {
     console.log('connectMQTT() called');
     
@@ -353,7 +417,7 @@ function connectMQTT() {
     
     mqttClient.onMessageArrived = function(message) {
         console.log('Message received:', message);
-        logCommand('MESSAGE_RECEIVED', { topic: message.destinationName, payload: message.payloadString });
+        logCommand('MESSAGE_RECEIVED', { topic: message.destinationName, payload: message.payloadString.substring(0, 100) + '...' });
         
         // Handle status messages
         if (message.destinationName === MQTT_TOPIC_STATUS) {
@@ -365,6 +429,16 @@ function connectMQTT() {
             } catch (e) {
                 console.error('Failed to parse status message:', e);
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error parsing status message: ' + e.message + '</p>';
+            }
+        } else if (message.destinationName === MQTT_TOPIC_THUMB) {
+            console.log('Thumbnail message received, parsing...');
+            try {
+                const thumb = JSON.parse(message.payloadString);
+                console.log('Parsed thumbnail:', { width: thumb.width, height: thumb.height, format: thumb.format, dataLength: thumb.data ? thumb.data.length : 0 });
+                updateThumbnail(thumb);
+            } catch (e) {
+                console.error('Failed to parse thumbnail message:', e);
+                document.getElementById('thumbnailStatus').textContent = 'Error parsing thumbnail: ' + e.message;
             }
         } else {
             console.log('Message on different topic, ignoring:', message.destinationName);
@@ -384,9 +458,11 @@ function connectMQTT() {
             // Update status display to show we're waiting for status
             document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Connected - waiting for device status...</p>';
             
-            // Subscribe to status topic
+            // Subscribe to status and thumbnail topics
             mqttClient.subscribe(MQTT_TOPIC_STATUS, { qos: 1 });
+            mqttClient.subscribe(MQTT_TOPIC_THUMB, { qos: 1 });
             console.log('Subscribed to status topic:', MQTT_TOPIC_STATUS);
+            console.log('Subscribed to thumbnail topic:', MQTT_TOPIC_THUMB);
             
             // If no status message arrives within 3 seconds, show a message
             setTimeout(function() {

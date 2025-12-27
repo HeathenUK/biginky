@@ -2294,7 +2294,11 @@ static void auto_cycle_task(void* arg) {
                 }
                 
                 // Publish device status (while still connected to MQTT)
+                Serial.println("About to call publishMQTTStatus()...");
+                Serial.flush();
                 publishMQTTStatus();
+                Serial.println("Returned from publishMQTTStatus()");
+                Serial.flush();
                 delay(200);  // Allow time for status publish to complete
                 
                 // Disconnect from MQTT immediately after checking for messages

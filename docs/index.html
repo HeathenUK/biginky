@@ -325,12 +325,17 @@ function connectMQTT() {
         
         // Handle status messages
         if (message.destinationName === MQTT_TOPIC_STATUS) {
+            console.log('Status message received, parsing...');
             try {
                 const status = JSON.parse(message.payloadString);
+                console.log('Parsed status:', status);
                 updateDeviceStatus(status);
             } catch (e) {
                 console.error('Failed to parse status message:', e);
+                document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error parsing status message: ' + e.message + '</p>';
             }
+        } else {
+            console.log('Message on different topic, ignoring:', message.destinationName);
         }
     };
     
@@ -344,9 +349,20 @@ function connectMQTT() {
             updateConnectionStatus('connected', 'Connected successfully!');
             logCommand('CONNECTED', { broker: MQTT_BROKER, topic: MQTT_TOPIC });
             
+            // Update status display to show we're waiting for status
+            document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Connected - waiting for device status...</p>';
+            
             // Subscribe to status topic
             mqttClient.subscribe(MQTT_TOPIC_STATUS, { qos: 1 });
             console.log('Subscribed to status topic:', MQTT_TOPIC_STATUS);
+            
+            // If no status message arrives within 3 seconds, show a message
+            setTimeout(function() {
+                const statusEl = document.getElementById('deviceStatus');
+                if (statusEl.innerHTML.includes('waiting for device status')) {
+                    statusEl.innerHTML = '<p style="color:#ff9800;">Connected - no status received yet (device may not have published status)</p>';
+                }
+            }, 3000);
         },
         onFailure: function(error) {
             console.error('Connection failed:', error);

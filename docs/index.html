@@ -74,10 +74,14 @@ window.addEventListener('load', function() {
 <h1>BigInky Remote Control</h1>
 <div class="section">
 <h2>Connection</h2>
+<div style="text-align:center;">
 <button onclick="connectMQTT()" id="connectBtn">Connect</button>
 <button onclick="disconnectMQTT()" id="disconnectBtn" disabled>Disconnect</button>
+<div style="margin-top:10px;">
 <span id="connectionStatus" class="connection-status disconnected">Disconnected</span>
-<div id="connectionStatusMsg"></div>
+</div>
+<div id="connectionStatusMsg" style="margin-top:10px;"></div>
+</div>
 </div>
 <div class="section">
 <h2>Device Status</h2>

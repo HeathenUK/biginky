@@ -2292,6 +2292,10 @@ static void auto_cycle_task(void* arg) {
                     Serial.println("No retained messages");
                 }
                 
+                // Publish device status (while still connected to MQTT)
+                publishMQTTStatus();
+                delay(200);  // Allow time for status publish to complete
+                
                 // Disconnect from MQTT immediately after checking for messages
                 // This prevents connection issues during long-running commands (like display updates)
                 mqttDisconnect();
@@ -2963,6 +2967,7 @@ static void auto_cycle_task(void* arg) {
 #define MQTT_TOPIC_SUBSCRIBE "devices/twilio_sms_bridge/cmd"       // Topic to subscribe to (SMS/WiFi UI)
 #define MQTT_TOPIC_WEBUI "devices/web-ui/cmd"                       // Topic to subscribe to (GitHub Pages web UI)
 #define MQTT_TOPIC_PUBLISH "devices/twilio_sms_bridge/outbox"            // Topic to publish to
+#define MQTT_TOPIC_STATUS "devices/web-ui/status"                   // Topic to publish device status
 
 // MQTT runtime state
 static char mqttBroker[128] = MQTT_BROKER_HOSTNAME;
@@ -2973,10 +2978,61 @@ static char mqttPassword[64] = MQTT_PASSWORD;
 static char mqttTopicSubscribe[128] = MQTT_TOPIC_SUBSCRIBE;
 static char mqttTopicWebUI[128] = MQTT_TOPIC_WEBUI;
 static char mqttTopicPublish[128] = MQTT_TOPIC_PUBLISH;
+static char mqttTopicStatus[128] = MQTT_TOPIC_STATUS;
 static esp_mqtt_client_handle_t mqttClient = nullptr;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
 static bool mqttConnected = false;
+
+// Publish device status to devices/web-ui/status topic
+static void publishMQTTStatus() {
+    if (mqttClient == nullptr || !mqttConnected) {
+        return;  // Can't publish if not connected
+    }
+    
+    // Build JSON status object
+    String statusJson = "{";
+    statusJson += "\"timestamp\":" + String(time(nullptr)) + ",";
+    
+    // WiFi status
+#if WIFI_ENABLED
+    if (WiFi.status() == WL_CONNECTED) {
+        statusJson += "\"wifi\":{";
+        statusJson += "\"connected\":true,";
+        statusJson += "\"ssid\":\"" + WiFi.SSID() + "\",";
+        statusJson += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
+        statusJson += "},";
+    } else {
+        statusJson += "\"wifi\":{";
+        statusJson += "\"connected\":false";
+        statusJson += "},";
+    }
+#else
+    statusJson += "\"wifi\":{";
+    statusJson += "\"connected\":false,";
+    statusJson += "\"enabled\":false";
+    statusJson += "},";
+#endif
+    
+    // MQTT status
+    statusJson += "\"mqtt\":{";
+    statusJson += "\"connected\":" + String(mqttConnected ? "true" : "false");
+    if (mqttConnected) {
+        statusJson += ",\"broker\":\"" + String(mqttBroker) + "\"";
+        statusJson += ",\"port\":" + String(mqttPort);
+    }
+    statusJson += "}";
+    
+    statusJson += "}";
+    
+    // Publish as retained message
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, statusJson.c_str(), statusJson.length(), 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+    } else {
+        Serial.printf("Failed to publish status to %s\n", mqttTopicStatus);
+    }
+}
 
 // MQTT event handler
 static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
@@ -3103,6 +3159,7 @@ void mqttLoadConfig() {
     strncpy(mqttTopicSubscribe, MQTT_TOPIC_SUBSCRIBE, sizeof(mqttTopicSubscribe) - 1);
     strncpy(mqttTopicWebUI, MQTT_TOPIC_WEBUI, sizeof(mqttTopicWebUI) - 1);
     strncpy(mqttTopicPublish, MQTT_TOPIC_PUBLISH, sizeof(mqttTopicPublish) - 1);
+    strncpy(mqttTopicStatus, MQTT_TOPIC_STATUS, sizeof(mqttTopicStatus) - 1);
     Serial.printf("MQTT config (hardcoded): broker=%s, port=%d, client_id=%s\n", 
                   mqttBroker, mqttPort, mqttClientId);
 }

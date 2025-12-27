@@ -564,16 +564,26 @@ function getDrawColor() {
 function startDraw(e) {
     isDrawing = true;
     const rect = canvas.getBoundingClientRect();
-    lastX = e.clientX ? e.clientX - rect.left : e.touches[0].clientX - rect.left;
-    lastY = e.clientY ? e.clientY - rect.top : e.touches[0].clientY - rect.top;
+    // Scale coordinates to account for CSS scaling (canvas may be displayed smaller than its actual size)
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clientX = e.clientX !== undefined ? e.clientX : e.touches[0].clientX;
+    const clientY = e.clientY !== undefined ? e.clientY : e.touches[0].clientY;
+    lastX = (clientX - rect.left) * scaleX;
+    lastY = (clientY - rect.top) * scaleY;
 }
 
 function draw(e) {
     if (!isDrawing) return;
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX ? e.clientX - rect.left : e.touches[0].clientX - rect.left;
-    const y = e.clientY ? e.clientY - rect.top : e.touches[0].clientY - rect.top;
+    // Scale coordinates to account for CSS scaling (canvas may be displayed smaller than its actual size)
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clientX = e.clientX !== undefined ? e.clientX : e.touches[0].clientX;
+    const clientY = e.clientY !== undefined ? e.clientY : e.touches[0].clientY;
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
     ctx.strokeStyle = getDrawColor();
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';

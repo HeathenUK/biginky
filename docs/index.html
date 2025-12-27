@@ -163,28 +163,51 @@ function logCommand(action, data) {
 }
 
 function connectMQTT() {
+    console.log('connectMQTT() called');
+    
     const token = document.getElementById('mqttToken').value.trim();
     if (!token) {
+        console.log('No token provided');
         updateConnectionStatus('disconnected', 'Please enter a Flespi.io token');
         return;
     }
     
     if (mqttClient && isConnected) {
+        console.log('Already connected');
         return;
     }
     
+    console.log('Starting connection to', MQTT_BROKER, 'port', MQTT_PORT);
     updateConnectionStatus('connecting', 'Connecting to MQTT broker...');
     
+    // Check if Paho MQTT library is loaded
+    if (typeof Paho === 'undefined' || typeof Paho.MQTT === 'undefined') {
+        console.error('Paho MQTT library not loaded!');
+        updateConnectionStatus('disconnected', 'Error: MQTT library not loaded. Check browser console.');
+        return;
+    }
+    
     const clientId = 'biginky_web_' + Math.random().toString(16).substr(2, 8);
-    mqttClient = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, '/', clientId);
+    console.log('Creating MQTT client with ID:', clientId);
+    
+    try {
+        mqttClient = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, '/mqtt', clientId);
+        console.log('MQTT client created');
+    } catch (e) {
+        console.error('Failed to create MQTT client:', e);
+        updateConnectionStatus('disconnected', 'Error creating MQTT client: ' + e.message);
+        return;
+    }
     
     mqttClient.onConnectionLost = function(responseObject) {
+        console.log('Connection lost:', responseObject);
         isConnected = false;
         updateConnectionStatus('disconnected', 'Connection lost: ' + (responseObject.errorMessage || 'Unknown error'));
         logCommand('DISCONNECTED', { reason: responseObject.errorMessage });
     };
     
     mqttClient.onMessageArrived = function(message) {
+        console.log('Message received:', message);
         logCommand('MESSAGE_RECEIVED', { topic: message.destinationName, payload: message.payloadString });
     };
     
@@ -193,21 +216,31 @@ function connectMQTT() {
         password: '',
         useSSL: true,
         onSuccess: function() {
+            console.log('Connection successful!');
             isConnected = true;
             updateConnectionStatus('connected', 'Connected successfully!');
             logCommand('CONNECTED', { broker: MQTT_BROKER, topic: MQTT_TOPIC });
         },
         onFailure: function(error) {
+            console.error('Connection failed:', error);
             isConnected = false;
-            updateConnectionStatus('disconnected', 'Connection failed: ' + (error.errorMessage || 'Unknown error'));
-            logCommand('CONNECTION_FAILED', { error: error.errorMessage });
+            const errorMsg = error.errorMessage || error.toString() || 'Unknown error';
+            updateConnectionStatus('disconnected', 'Connection failed: ' + errorMsg);
+            logCommand('CONNECTION_FAILED', { error: errorMsg });
             mqttClient = null;
         },
         timeout: 10,
         keepAliveInterval: 60
     };
     
-    mqttClient.connect(connectOptions);
+    console.log('Attempting to connect with options:', { userName: token.substring(0, 10) + '...', useSSL: true });
+    try {
+        mqttClient.connect(connectOptions);
+        console.log('connect() called');
+    } catch (e) {
+        console.error('Exception during connect():', e);
+        updateConnectionStatus('disconnected', 'Error: ' + e.message);
+    }
 }
 
 function disconnectMQTT() {

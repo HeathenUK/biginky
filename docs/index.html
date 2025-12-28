@@ -80,6 +80,8 @@ table th,table td{padding:6px;font-size:12px;}
 }
 </style>
 <script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js" onerror="loadPahoFallback()"></script>
+<!-- Load custom MQTT configuration if available, otherwise defaults will be used -->
+<script src="js/mqtt-config.js" onerror="console.log('No custom mqtt-config.js found, using defaults')"></script>
 <script>
 let pahoLibraryLoaded = false;
 
@@ -1369,12 +1371,13 @@ function connectMQTT() {
         return;
     }
     
-    // Always use embedded token
-    const token = EMBEDDED_TOKEN;
+    // Use token from configuration
+    const token = MQTT_CONFIG.auth.token;
+    const password = MQTT_CONFIG.auth.password || '';
     
     if (!token || token === 'YOUR_RESTRICTED_TOKEN_HERE') {
-        console.log('Embedded token not configured');
-        updateConnectionStatus('disconnected', 'Error: Embedded token not configured');
+        console.log('MQTT token not configured');
+        updateConnectionStatus('disconnected', 'Error: MQTT token not configured. Please create mqtt-config.js from mqtt-config.example.js');
         return;
     }
     
@@ -1412,7 +1415,7 @@ function connectMQTT() {
     console.log('Paho.Client available:', typeof Paho.Client);
     
     try {
-        mqttClient = new Paho.Client(MQTT_BROKER, MQTT_PORT, '/mqtt', clientId);
+        mqttClient = new Paho.Client(MQTT_BROKER, MQTT_PORT, MQTT_CONFIG.path || '/mqtt', clientId);
         console.log('MQTT client created successfully');
     } catch (e) {
         console.error('Failed to create MQTT client:', e);
@@ -1756,8 +1759,8 @@ function connectMQTT() {
     };
     
     const connectOptions = {
-        userName: token,
-        password: '',
+        userName: MQTT_CONFIG.auth.useTokenAsUsername ? token : (MQTT_CONFIG.auth.token || ''),
+        password: password,
         useSSL: true,
         onSuccess: function() {
             console.log('Connection successful!');

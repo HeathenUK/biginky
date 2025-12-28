@@ -1,0 +1,3 @@
+# Custom MQTT configuration (contains sensitive credentials)
+js/mqtt-config.js
+

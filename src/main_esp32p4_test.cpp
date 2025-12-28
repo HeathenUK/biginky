@@ -4982,19 +4982,19 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         // Extract width
         int widthPos = messageToProcess.indexOf("\"width\"");
         if (widthPos >= 0) {
-            int colonPos = jsonMessage.indexOf(':', widthPos);
+            int colonPos = messageToProcess.indexOf(':', widthPos);
             if (colonPos >= 0) {
                 // Find the number after the colon
                 int numStart = colonPos + 1;
-                while (numStart < jsonMessage.length() && (jsonMessage.charAt(numStart) == ' ' || jsonMessage.charAt(numStart) == '\t')) {
+                while (numStart < messageToProcess.length() && (messageToProcess.charAt(numStart) == ' ' || messageToProcess.charAt(numStart) == '\t')) {
                     numStart++;
                 }
                 int numEnd = numStart;
-                while (numEnd < jsonMessage.length() && jsonMessage.charAt(numEnd) >= '0' && jsonMessage.charAt(numEnd) <= '9') {
+                while (numEnd < messageToProcess.length() && messageToProcess.charAt(numEnd) >= '0' && messageToProcess.charAt(numEnd) <= '9') {
                     numEnd++;
                 }
                 if (numEnd > numStart) {
-                    width = jsonMessage.substring(numStart, numEnd).toInt();
+                    width = messageToProcess.substring(numStart, numEnd).toInt();
                 }
             }
         }

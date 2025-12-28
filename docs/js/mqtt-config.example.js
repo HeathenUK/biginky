@@ -10,7 +10,8 @@
  */
 
 // MQTT Broker Configuration
-const MQTT_CONFIG = {
+// This must be assigned to window.MQTT_CONFIG so config.js can access it
+window.MQTT_CONFIG = {
     // MQTT broker hostname (e.g., 'mqtt.flespi.io', 'broker.hivemq.com', or your own broker)
     broker: 'mqtt.flespi.io',
     

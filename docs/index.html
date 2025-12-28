@@ -1074,12 +1074,15 @@ function updateMediaMappingsTable(mappings) {
     html += '<th style="padding:10px;text-align:left;border:1px solid #555;">Thumbnail</th>';
     html += '<th style="padding:10px;text-align:left;border:1px solid #555;">Image</th>';
     html += '<th style="padding:10px;text-align:left;border:1px solid #555;">Audio</th>';
+    html += '<th style="padding:10px;text-align:center;border:1px solid #555;">Actions</th>';
     html += '</tr></thead><tbody>';
     
     for (let i = 0; i < mappings.length; i++) {
         const mapping = mappings[i];
+        // Use 1-based index for display and commands (matching firmware convention)
+        const displayIndex = mapping.index !== undefined ? mapping.index : (i + 1);
         html += '<tr style="border-bottom:1px solid #555;">';
-        html += `<td style="padding:10px;border:1px solid #555;">${mapping.index !== undefined ? mapping.index : i}</td>`;
+        html += `<td style="padding:10px;border:1px solid #555;">${displayIndex}</td>`;
         
         // Thumbnail column
         html += '<td style="padding:10px;border:1px solid #555;text-align:center;">';
@@ -1095,6 +1098,11 @@ function updateMediaMappingsTable(mappings) {
         
         // Audio column
         html += `<td style="padding:10px;border:1px solid #555;">${mapping.audio || '<span style="color:#888;">(none)</span>'}</td>`;
+        
+        // Actions column - Show button
+        html += '<td style="padding:10px;border:1px solid #555;text-align:center;">';
+        html += `<button onclick="showMediaItem(${displayIndex})" style="padding:6px 12px;font-size:14px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Show</button>`;
+        html += '</td>';
         
         html += '</tr>';
     }

@@ -14113,6 +14113,10 @@ static String encryptAndFormatMessage(const String& plaintext) {
     uint8_t iv[16];
     esp_fill_random(iv, 16);
     
+    // Save a copy of the original IV (mbedtls_aes_crypt_cbc modifies it in place)
+    uint8_t ivOriginal[16];
+    memcpy(ivOriginal, iv, 16);
+    
     // Prepare plaintext
     size_t plaintextLen = plaintext.length();
     size_t paddedLen = ((plaintextLen + 15) / 16) * 16;  // PKCS7 padding
@@ -14160,10 +14164,11 @@ static String encryptAndFormatMessage(const String& plaintext) {
     free(paddedPlaintext);
     
     // Base64 encode IV and ciphertext separately using mbedTLS
+    // Use the ORIGINAL IV (before mbedtls_aes_crypt_cbc modified it)
     // Encode IV (16 bytes -> 24 base64 chars + null terminator)
     char ivBase64[25];
     size_t ivBase64Len = 0;
-    if (mbedtls_base64_encode((unsigned char*)ivBase64, 25, &ivBase64Len, iv, 16) != 0) {
+    if (mbedtls_base64_encode((unsigned char*)ivBase64, 25, &ivBase64Len, ivOriginal, 16) != 0) {
         Serial.println("ERROR: Failed to base64 encode IV");
         free(ciphertext);
         return "";

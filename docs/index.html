@@ -377,6 +377,11 @@ async function decryptMessage(payloadBase64, ivBase64) {
         const debugBytes = Array.from(plaintextArray.slice(0, Math.min(20, plaintextArray.length)));
         console.log('Decrypted bytes (first 20):', debugBytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         
+        // Debug: log last 20 bytes to see padding
+        const last20Bytes = Array.from(plaintextArray.slice(-20));
+        console.log('Decrypted bytes (last 20):', last20Bytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        console.log('Decrypted bytes (last 20 as ASCII):', last20Bytes.map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join(''));
+        
         // Get padding value (last byte)
         const padValue = plaintextArray[plaintextArray.length - 1];
         
@@ -386,7 +391,31 @@ async function decryptMessage(payloadBase64, ivBase64) {
             console.error('This usually means the encryption key is incorrect or the ciphertext is corrupted');
             console.error('Plaintext length:', plaintextArray.length);
             console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-            return null;
+            // Try to find valid padding by checking if any of the last 16 bytes could be padding
+            let foundValidPadding = false;
+            for (let testPad = 1; testPad <= 16 && testPad <= plaintextArray.length; testPad++) {
+                const testStart = plaintextArray.length - testPad;
+                let allMatch = true;
+                for (let i = testStart; i < plaintextArray.length; i++) {
+                    if (plaintextArray[i] !== testPad) {
+                        allMatch = false;
+                        break;
+                    }
+                }
+                if (allMatch) {
+                    console.log(`Found valid padding: ${testPad} bytes at position ${testStart}`);
+                    foundValidPadding = true;
+                    // Try using this padding value
+                    const unpaddedArray = plaintextArray.slice(0, testStart);
+                    const decoder = new TextDecoder('utf-8', { fatal: false });
+                    const decoded = decoder.decode(unpaddedArray);
+                    console.log('Successfully decoded with alternative padding:', decoded.substring(0, 100));
+                    return decoded;
+                }
+            }
+            if (!foundValidPadding) {
+                return null;
+            }
         }
         
         // Verify all padding bytes are the same

@@ -475,13 +475,21 @@ async function decryptMessage(payloadBase64, ivBase64) {
         // Decrypt
         let plaintext;
         try {
+            console.log('decryptMessage: Attempting decryption with ciphertext length:', ciphertext.length, 'bytes');
             plaintext = await crypto.subtle.decrypt(
                 { name: 'AES-CBC', iv: iv },
                 key,
                 ciphertext
             );
+            console.log('decryptMessage: Decryption successful, plaintext length:', plaintext.byteLength, 'bytes');
         } catch (decryptError) {
             console.error('crypto.subtle.decrypt failed:', decryptError);
+            console.error('Decryption failure details:');
+            console.error('  - IV length:', iv.length);
+            console.error('  - Ciphertext length:', ciphertext.length);
+            console.error('  - Ciphertext length % 16:', ciphertext.length % 16);
+            console.error('  - Error name:', decryptError.name);
+            console.error('  - Error message:', decryptError.message);
             // This usually means the key is wrong or the ciphertext is corrupted
             return null;
         }

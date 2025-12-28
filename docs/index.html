@@ -1960,7 +1960,7 @@ async function sendCanvasToDisplay() {
             const base64SizeKB = (base64Data.length / 1024).toFixed(1);
             const ratio = ((compressed.length / pixelBytes.length) * 100).toFixed(1);
             const savedKB = ((pixelBytes.length - compressed.length) / 1024).toFixed(1);
-            const jsonSize = JSON.stringify({pixelData: base64Data, width: 800, height: 600, compressed: true}).length;
+            const jsonSize = JSON.stringify({pixelData: base64Data, width: canvas.width, height: canvas.height, compressed: true}).length;
             const jsonSizeKB = (jsonSize / 1024).toFixed(1);
             
             showStatus('canvasStatus', 'Compressed: ' + compressedSizeKB + ' KB binary (' + base64SizeKB + ' KB base64), ' + ratio + '% of ' + rawSizeKB + ' KB raw. Saved: ' + savedKB + ' KB. Total JSON: ' + jsonSizeKB + ' KB', false);
@@ -1968,8 +1968,8 @@ async function sendCanvasToDisplay() {
             const payload = {
                 command: 'canvas_display',
                 pixelData: base64Data,
-                width: 800,
-                height: 600,
+                width: canvas.width,
+                height: canvas.height,
                 compressed: true
             };
             
@@ -1993,15 +1993,15 @@ async function sendCanvasToDisplay() {
             }
             const base64Data = btoa(binaryString);
             const base64SizeKB = (base64Data.length / 1024).toFixed(1);
-            const jsonSize = JSON.stringify({pixelData: base64Data, width: 800, height: 600, compressed: false}).length;
+            const jsonSize = JSON.stringify({pixelData: base64Data, width: canvas.width, height: canvas.height, compressed: false}).length;
             const jsonSizeKB = (jsonSize / 1024).toFixed(1);
             showStatus('canvasStatus', 'Uncompressed: ' + rawSizeKB + ' KB raw (' + base64SizeKB + ' KB base64). Total JSON: ' + jsonSizeKB + ' KB (compression not available)', false);
             
             const payload = {
                 command: 'canvas_display',
                 pixelData: base64Data,
-                width: 800,
-                height: 600,
+                width: canvas.width,
+                height: canvas.height,
                 compressed: false
             };
             

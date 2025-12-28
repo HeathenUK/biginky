@@ -4623,8 +4623,8 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 
                 // Defer heavy commands (display updates, large data processing) to be processed after MQTT disconnects
                 // This prevents stack overflow in the MQTT task context
-                // Heavy commands: next, canvas_display, text_display, clear (all call display.update() which takes 20-30s)
-                if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
+                // Heavy commands: next, canvas_display, text_display, clear, go (all call display.update() which takes 20-30s)
+                if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear" || command == "go") {
                     Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
                     webUICommandPending = true;
                     pendingWebUICommand = jsonMessage;

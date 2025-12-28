@@ -4955,12 +4955,19 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
                 return false;
             }
             
-            // Decompress using miniz (deflate format from browser's CompressionStream)
+            // Decompress using miniz (raw deflate format from browser's CompressionStream)
+            // CompressionStream('deflate') produces raw deflate, not zlib-wrapped
             // miniz is available via pngle library
             size_t decompressedSize = 0;
-            void* decompressed = tinfl_decompress_mem_to_heap(compressedData, compressedSize, &decompressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+            // Use 0 flags for raw deflate (no zlib header, no adler32 checksum)
+            void* decompressed = tinfl_decompress_mem_to_heap(compressedData, compressedSize, &decompressedSize, 0);
             if (decompressed == nullptr || decompressedSize != expectedSize) {
                 Serial.printf("ERROR: miniz decompression failed (got %zu, expected %zu)\n", decompressedSize, expectedSize);
+                if (decompressed) {
+                    Serial.printf("  Decompressed %zu bytes but expected %zu\n", decompressedSize, expectedSize);
+                } else {
+                    Serial.println("  Decompression returned nullptr");
+                }
                 free(compressedData);
                 free(pixelData);
                 if (decompressed) mz_free(decompressed);

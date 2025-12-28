@@ -76,18 +76,19 @@ window.addEventListener('load', function() {
 <body>
 <h1>BigInky Remote Control</h1>
 <div class="section">
-<h2>Authentication</h2>
-<p style="color:#888;font-size:14px;margin-bottom:15px;">Enter the password configured on the device to enable HMAC authentication for secure MQTT communication.</p>
+<h2>Authentication (Required)</h2>
+<p style="color:#888;font-size:14px;margin-bottom:15px;"><strong>Password is required to use this interface.</strong> Enter the password configured on the device (via local WiFi UI) to enable HMAC authentication. All functionality is disabled until a password is set.</p>
 <div class="flex-row">
 <div class="flex-item">
 <label>Web UI Password:</label>
-<input type="password" id="webUIPassword" placeholder="Enter password..." style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-family:monospace;">
+<input type="password" id="webUIPassword" placeholder="Enter password (min 8 characters)..." style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-family:monospace;">
 </div>
 <div class="flex-item" style="flex:0 0 auto;">
 <button onclick="savePassword()" style="margin-top:0;">Save Password</button>
 </div>
 </div>
 <div id="passwordStatus" style="margin-top:10px;"></div>
+<p style="color:#888;font-size:12px;margin-top:10px;font-style:italic;">Note: HMAC provides authentication and integrity verification. Encryption (for confidentiality) is a separate feature that can be added later.</p>
 </div>
 <div class="section">
 <h2>Connection</h2>
@@ -212,13 +213,42 @@ function updateConnectionStatus(status, message) {
         msgEl.innerHTML = '';
     }
     
-    connectBtn.disabled = (status === 'connected' || status === 'connecting');
+    // Update button states based on connection AND password
+    const hasPassword = (webUIPassword && webUIPassword.length > 0);
+    connectBtn.disabled = (status === 'connected' || status === 'connecting' || !hasPassword);
     disconnectBtn.disabled = (status === 'disconnected');
     
     const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn'];
     buttons.forEach(id => {
-        document.getElementById(id).disabled = (status !== 'connected');
+        document.getElementById(id).disabled = (status !== 'connected' || !hasPassword);
     });
+}
+
+// Update UI state based on password status
+function updatePasswordStatus() {
+    const hasPassword = (webUIPassword && webUIPassword.length > 0);
+    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn', 'connectBtn'];
+    
+    buttons.forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) {
+            if (id === 'connectBtn') {
+                // Connect button disabled if no password
+                btn.disabled = !hasPassword;
+            } else {
+                // Other buttons disabled if no password OR not connected
+                btn.disabled = !hasPassword || !isConnected;
+            }
+        }
+    });
+    
+    // Show warning if no password
+    const passwordStatusEl = document.getElementById('passwordStatus');
+    if (!hasPassword) {
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">⚠️ Password required: All functionality is disabled until a password is set.</div>';
+    } else {
+        passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password configured - interface enabled</div>';
+    }
 }
 
 function logCommand(action, data) {

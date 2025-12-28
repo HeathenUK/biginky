@@ -619,6 +619,11 @@ async function deriveEncryptionKey(password) {
     const salt = encoder.encode('biginky_enc_key_v1');
     const passwordData = encoder.encode(password);
     
+    // Debug: log password length and first few bytes
+    console.log('deriveEncryptionKey: password length =', password.length);
+    console.log('deriveEncryptionKey: password bytes (first 20) =', Array.from(passwordData.slice(0, 20)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    console.log('deriveEncryptionKey: salt =', Array.from(salt).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    
     // Import password as HMAC key
     const key = await crypto.subtle.importKey(
         'raw',
@@ -630,7 +635,12 @@ async function deriveEncryptionKey(password) {
     
     // Compute HMAC(password, salt) to derive key
     const derivedKey = await crypto.subtle.sign('HMAC', key, salt);
-    return new Uint8Array(derivedKey);
+    const keyArray = new Uint8Array(derivedKey);
+    
+    // Debug: log derived key (first 16 bytes)
+    console.log('deriveEncryptionKey: derived key (first 16 bytes) =', Array.from(keyArray.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    
+    return keyArray;
 }
 
 // Compute HMAC-SHA256 of a message using the derived HMAC key

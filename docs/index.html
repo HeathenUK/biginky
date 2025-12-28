@@ -901,37 +901,67 @@ function connectMQTT() {
         } else if (message.destinationName === MQTT_TOPIC_THUMB) {
             console.log('Thumbnail message received, parsing...');
             try {
-                const thumb = JSON.parse(message.payloadString);
-                console.log('Parsed thumbnail:', { width: thumb.width, height: thumb.height, format: thumb.format, dataLength: thumb.data ? thumb.data.length : 0 });
+                const payload = JSON.parse(message.payloadString);
+                console.log('Parsed payload:', payload);
                 
-                // Verify HMAC if password is configured
-                if (webUIPassword && thumb.hmac) {
-                    // Extract hmac and verify
-                    const providedHMAC = thumb.hmac;
-                    delete thumb.hmac;  // Remove hmac for verification
-                    const messageForHMAC = JSON.stringify(thumb);
+                // Check if message is encrypted
+                let thumb = payload;
+                let isEncrypted = false;
+                
+                if (payload.encrypted && payload.payload) {
+                    isEncrypted = true;
+                    console.log('Thumbnail message is encrypted, decrypting...');
                     
-                    verifyHMAC(messageForHMAC, providedHMAC).then(valid => {
-                        if (valid) {
-                            console.log('Thumbnail message HMAC verified successfully');
-                            updateThumbnail(thumb);
-                        } else {
+                    // Verify HMAC first (on encrypted message)
+                    if (webUIPassword && payload.hmac) {
+                        const providedHMAC = payload.hmac;
+                        const messageForHMAC = JSON.stringify({ encrypted: true, payload: payload.payload });
+                        
+                        const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                        if (!hmacValid) {
                             console.error('Thumbnail message HMAC verification failed');
                             document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                            return;
                         }
-                        // Restore hmac field
-                        thumb.hmac = providedHMAC;
-                    });
+                    }
+                    
+                    // Decrypt the payload
+                    const decrypted = await decryptMessage(payload.payload);
+                    if (!decrypted) {
+                        console.error('Failed to decrypt thumbnail message');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect.';
+                        return;
+                    }
+                    
+                    // Parse decrypted JSON
+                    thumb = JSON.parse(decrypted);
+                    console.log('Decrypted thumbnail:', { width: thumb.width, height: thumb.height, format: thumb.format, dataLength: thumb.data ? thumb.data.length : 0 });
+                } else if (webUIPassword && payload.hmac) {
+                    // Unencrypted but has HMAC - verify it
+                    const providedHMAC = payload.hmac;
+                    delete payload.hmac;
+                    const messageForHMAC = JSON.stringify(payload);
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Thumbnail message HMAC verification failed');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                        return;
+                    }
+                    thumb = payload;
+                    console.log('Thumbnail message HMAC verified successfully (unencrypted)');
                 } else {
-                    // No password configured or no HMAC - just display (for backward compatibility during transition)
+                    // No password configured or no HMAC - just display (for backward compatibility)
                     if (!webUIPassword) {
                         console.warn('No password configured - cannot verify HMAC');
                     }
-                    updateThumbnail(thumb);
+                    thumb = payload;
                 }
+                
+                updateThumbnail(thumb);
             } catch (e) {
-                console.error('Failed to parse thumbnail message:', e);
-                document.getElementById('thumbnailStatus').textContent = 'Error parsing thumbnail: ' + e.message;
+                console.error('Failed to parse/decrypt thumbnail message:', e);
+                document.getElementById('thumbnailStatus').textContent = 'Error parsing thumbnail message: ' + e.message;
             }
         } else {
             console.log('Message on different topic, ignoring:', message.destinationName);

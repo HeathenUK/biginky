@@ -1,0 +1,1806 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BigInky Remote Control</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#1a1a1a;color:#e0e0e0;}
+h1{color:#e0e0e0;border-bottom:2px solid #4CAF50;padding-bottom:10px;}
+.section{background:#2a2a2a;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.3);}
+h2{color:#4CAF50;margin-top:0;}
+label{display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;}
+textarea{width:100%;min-height:100px;font-family:monospace;padding:10px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
+select{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
+input[type="text"]{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
+button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;min-height:44px;touch-action:manipulation;-webkit-tap-highlight-color:rgba(76,175,80,0.3);}
+button:hover{background:#45a049;}
+button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
+.status{color:#4CAF50;margin:10px 0;font-weight:bold;}
+.error{color:#f44336;}
+.info{color:#2196F3;margin:10px 0;padding:10px;background:#1a1a1a;border-radius:4px;border-left:3px solid #2196F3;}
+.connection-status{display:inline-block;padding:5px 10px;border-radius:4px;font-weight:bold;margin-left:10px;}
+.connected{background:#4CAF50;color:white;}
+.disconnected{background:#f44336;color:white;}
+.connecting{background:#ff9800;color:white;}
+.flex-row{display:flex;flex-wrap:wrap;gap:15px;align-items:flex-end;margin-top:15px;}
+.flex-item{flex:1;min-width:150px;}
+button.flex-shrink{flex-shrink:0;margin-top:0;}
+canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;}
+</style>
+<script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js" onerror="loadPahoFallback()"></script>
+<script>
+let pahoLibraryLoaded = false;
+
+function checkPahoLoaded() {
+    // Paho library exposes Paho.Client and Paho.Message, not Paho.MQTT.Client
+    if (typeof Paho !== 'undefined' && typeof Paho.Client !== 'undefined') {
+        pahoLibraryLoaded = true;
+        console.log('Paho MQTT library loaded successfully');
+        return true;
+    }
+    return false;
+}
+
+function loadPahoFallback() {
+    console.log('Paho MQTT library failed to load from jsDelivr, trying fallback...');
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/paho-mqtt@1.1.0/paho-mqtt.js';
+    script.onload = function() {
+        if (checkPahoLoaded()) {
+            console.log('Paho MQTT library loaded from fallback (unpkg)');
+        } else {
+            console.error('Library loaded but structure incorrect');
+        }
+    };
+    script.onerror = function() {
+        console.error('Failed to load Paho MQTT from all sources');
+        document.getElementById('connectionStatusMsg').innerHTML = '<div class="error">Error: Could not load MQTT library. Please check your internet connection or try refreshing the page.</div>';
+    };
+    document.head.appendChild(script);
+}
+
+// Verify Paho library loaded after page load
+window.addEventListener('load', function() {
+    setTimeout(function() {
+        if (!checkPahoLoaded()) {
+            loadPahoFallback();
+        }
+        // Load password from localStorage (after functions are defined)
+        if (typeof loadPassword === 'function') {
+            loadPassword();
+        } else {
+            // Functions not loaded yet, wait a bit
+            setTimeout(function() {
+                if (typeof loadPassword === 'function') {
+                    loadPassword();
+                }
+            }, 100);
+        }
+    }, 100);
+});
+</script>
+</head>
+<body>
+<h1>BigInky Remote Control</h1>
+<div class="section">
+<h2>Authentication (Required)</h2>
+<p style="color:#888;font-size:14px;margin-bottom:15px;"><strong>Password is required to use this interface.</strong> Enter the password configured on the device (via local WiFi UI) to enable HMAC authentication. All functionality is disabled until a password is set.</p>
+<div class="flex-row">
+<div class="flex-item">
+<label>Web UI Password:</label>
+<input type="password" id="webUIPassword" placeholder="Enter password (min 8 characters)..." style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-family:monospace;">
+</div>
+<div class="flex-item" style="flex:0 0 auto;">
+<button onclick="savePassword()" style="margin-top:0;">Save Password</button>
+<button onclick="clearPassword()" style="margin-top:0;background:#f44336;">Clear Password</button>
+</div>
+</div>
+<div id="passwordStatus" style="margin-top:10px;"></div>
+<p style="color:#888;font-size:12px;margin-top:10px;font-style:italic;">Note: HMAC provides authentication and integrity verification. Encryption (for confidentiality) is a separate feature that can be added later.</p>
+</div>
+<div class="section">
+<h2>Connection</h2>
+<div style="text-align:center;">
+<button onclick="connectMQTT()" id="connectBtn">Connect</button>
+<button onclick="disconnectMQTT()" id="disconnectBtn" disabled>Disconnect</button>
+<div style="margin-top:10px;">
+<span id="connectionStatus" class="connection-status disconnected">Disconnected</span>
+</div>
+<div id="connectionStatusMsg" style="margin-top:10px;"></div>
+</div>
+</div>
+<div class="section">
+<h2>Device Status</h2>
+<div id="deviceStatus" style="font-family:monospace;font-size:12px;color:#e0e0e0;">
+<p>Not connected - status will appear when connected to MQTT</p>
+</div>
+</div>
+<div class="section">
+<h2>Display Preview</h2>
+<p>Latest display content (updated whenever the display is refreshed):</p>
+<div id="thumbnailContainer" style="text-align:center;margin:20px 0;">
+<canvas id="thumbnailCanvas" width="400" height="300" style="border:2px solid #666;background:#fff;max-width:100%;height:auto;display:none;"></canvas>
+<p id="thumbnailStatus" style="color:#888;">No preview available yet</p>
+</div>
+</div>
+<div class="section">
+<h2>Media Mappings</h2>
+<p>Available media files from media.txt (with thumbnails):</p>
+<div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded yet - will appear when connected to MQTT</div>
+<div id="mediaMappingsTable" style="overflow-x:auto;">
+<!-- Table will be populated here -->
+</div>
+</div>
+<div class="section">
+<h2>Text Display</h2>
+<p>Enter text to display on the panel. Select text colour, background colour, and outline colour.</p>
+<label>Text:</label>
+<textarea id="textInput" placeholder="Enter text to display..."></textarea>
+<div class="flex-row">
+<div class="flex-item">
+<label>Text Colour:</label>
+<select id="textColor">
+<option value="black" selected>Black</option>
+<option value="yellow">Yellow</option>
+<option value="red">Red</option>
+<option value="blue">Blue</option>
+<option value="green">Green</option>
+<option value="multi">Multi (Random Colours)</option>
+<option value="white">White</option>
+</select>
+</div>
+<div class="flex-item">
+<label>Background Colour:</label>
+<select id="textBackgroundColor">
+<option value="black">Black</option>
+<option value="yellow">Yellow</option>
+<option value="red">Red</option>
+<option value="blue">Blue</option>
+<option value="green">Green</option>
+<option value="white" selected>White</option>
+</select>
+</div>
+<div class="flex-item">
+<label>Outline Colour:</label>
+<select id="textOutlineColor">
+<option value="black" selected>Black</option>
+<option value="yellow">Yellow</option>
+<option value="red">Red</option>
+<option value="blue">Blue</option>
+<option value="green">Green</option>
+<option value="white">White</option>
+</select>
+</div>
+<button onclick="sendTextDisplay()" class="flex-shrink" id="textDisplayBtn" disabled>Display Text</button>
+</div>
+<div id="textStatus"></div>
+</div>
+<div class="section">
+<h2>Drawing Canvas</h2>
+<p>Draw on the canvas (800x600) and display it on the panel (1600x1200). The drawing will be scaled 2x and centered.</p>
+<label>Colour:</label>
+<select id="drawColor" style="width:150px;margin:10px 0;">
+<option value="0" selected>Black</option>
+<option value="2">Yellow</option>
+<option value="3">Red</option>
+<option value="5">Blue</option>
+<option value="6">Green</option>
+<option value="1">White</option>
+</select>
+<button onclick="clearCanvas()">Clear Canvas</button>
+<button onclick="sendCanvasToDisplay()" id="canvasDisplayBtn" disabled>Display on Panel</button>
+<canvas id="drawCanvas" width="800" height="600"></canvas>
+<div id="canvasStatus"></div>
+</div>
+<div class="section">
+<h2>Other Commands</h2>
+<button onclick="sendCommand('clear')" id="clearBtn" disabled>Clear Display</button>
+<button onclick="sendCommand('next')" id="nextBtn" disabled>Next Media Item</button>
+<div id="commandStatus"></div>
+</div>
+<div class="section">
+<h2>Command Log</h2>
+<div id="commandLog" style="max-height:300px;overflow-y:auto;background:#1a1a1a;padding:10px;border:1px solid #444;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#e0e0e0;"></div>
+</div>
+<script>
+const MQTT_BROKER = 'mqtt.flespi.io';
+const MQTT_PORT = 443;
+const MQTT_TOPIC = 'devices/web-ui/cmd';
+const MQTT_TOPIC_STATUS = 'devices/web-ui/status';
+const MQTT_TOPIC_THUMB = 'devices/web-ui/thumb';
+const MQTT_TOPIC_MEDIA = 'devices/web-ui/media';
+// Embedded restricted token for web UI (publish-only to devices/web-ui/cmd)
+// TODO: Replace with your actual restricted Flespi.io token
+const EMBEDDED_TOKEN = 'WdTjkCQjNXodmMWLSDWhAvrE6dDmcoQY1V47HSd3M7mb9P4HI3Ph8nTnA18MioBn';
+let mqttClient = null;
+let isConnected = false;
+let webUIPassword = null;  // Stored password for HMAC computation
+
+// Load password from localStorage on page load
+function loadPassword() {
+    const stored = localStorage.getItem('biginky_webui_password');
+    if (stored) {
+        try {
+            // Simple obfuscation (not real encryption, but better than plaintext)
+            webUIPassword = atob(stored);
+            document.getElementById('webUIPassword').value = webUIPassword;
+        } catch (e) {
+            console.error('Failed to load password:', e);
+            webUIPassword = null;
+        }
+    } else {
+        webUIPassword = null;
+    }
+    updatePasswordStatus();
+}
+
+// Encrypt a message using AES-256-CBC
+async function encryptMessage(plaintext) {
+    if (!webUIPassword) {
+        console.error('No password configured for encryption');
+        return null;
+    }
+    
+    try {
+        // Derive encryption key from password
+        const encryptionKey = await deriveEncryptionKey(webUIPassword);
+        
+        // Import key for AES-CBC
+        const key = await crypto.subtle.importKey(
+            'raw',
+            encryptionKey,
+            { name: 'AES-CBC' },
+            false,
+            ['encrypt']
+        );
+        
+        // Generate random IV (16 bytes)
+        const iv = crypto.getRandomValues(new Uint8Array(16));
+        
+        // Encrypt
+        const encoder = new TextEncoder();
+        const plaintextData = encoder.encode(plaintext);
+        const ciphertext = await crypto.subtle.encrypt(
+            { name: 'AES-CBC', iv: iv },
+            key,
+            plaintextData
+        );
+        
+        // Combine IV + ciphertext and base64 encode
+        const combined = new Uint8Array(16 + ciphertext.byteLength);
+        combined.set(iv, 0);
+        combined.set(new Uint8Array(ciphertext), 16);
+        
+        // Base64 encode
+        const binaryString = String.fromCharCode.apply(null, combined);
+        const base64 = btoa(binaryString);
+        
+        return base64;
+    } catch (e) {
+        console.error('Encryption error:', e);
+        return null;
+    }
+}
+
+// Decrypt a message using AES-256-CBC
+// Accepts either: (ciphertextBase64) for legacy format with IV prepended
+//                 or (payloadBase64, ivBase64) for new format with separate IV
+async function decryptMessage(payloadBase64, ivBase64) {
+    if (!webUIPassword) {
+        console.error('No password configured for decryption');
+        return null;
+    }
+    
+    try {
+        let iv, ciphertext;
+        
+        if (ivBase64) {
+            // New format: IV and payload are separate
+            const ivBinaryString = atob(ivBase64);
+            iv = new Uint8Array(ivBinaryString.length);
+            for (let i = 0; i < ivBinaryString.length; i++) {
+                iv[i] = ivBinaryString.charCodeAt(i);
+            }
+            
+            const payloadBinaryString = atob(payloadBase64);
+            ciphertext = new Uint8Array(payloadBinaryString.length);
+            for (let i = 0; i < payloadBinaryString.length; i++) {
+                ciphertext[i] = payloadBinaryString.charCodeAt(i);
+            }
+        } else {
+            // Legacy format: IV is prepended to ciphertext
+            const binaryString = atob(payloadBase64);
+            const combined = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                combined[i] = binaryString.charCodeAt(i);
+            }
+            
+            // Extract IV (first 16 bytes) and ciphertext
+            iv = combined.slice(0, 16);
+            ciphertext = combined.slice(16);
+        }
+        
+        // Validate IV length
+        if (iv.length !== 16) {
+            console.error('Invalid IV length:', iv.length);
+            return null;
+        }
+        
+        // Validate ciphertext is not empty
+        if (ciphertext.length === 0) {
+            console.error('Ciphertext is empty');
+            return null;
+        }
+        
+        // Validate ciphertext length is multiple of 16 (AES block size)
+        if (ciphertext.length % 16 !== 0) {
+            console.error('Invalid ciphertext length (not multiple of 16):', ciphertext.length);
+            return null;
+        }
+        
+        // Derive encryption key from password
+        const encryptionKey = await deriveEncryptionKey(webUIPassword);
+        
+        // Import key for AES-CBC
+        const key = await crypto.subtle.importKey(
+            'raw',
+            encryptionKey,
+            { name: 'AES-CBC' },
+            false,
+            ['decrypt']
+        );
+        
+        // Decrypt
+        let plaintext;
+        try {
+            plaintext = await crypto.subtle.decrypt(
+                { name: 'AES-CBC', iv: iv },
+                key,
+                ciphertext
+            );
+        } catch (decryptError) {
+            console.error('crypto.subtle.decrypt failed:', decryptError);
+            // This usually means the key is wrong or the ciphertext is corrupted
+            return null;
+        }
+        
+        // Remove PKCS7 padding from ArrayBuffer BEFORE converting to string
+        // Padding bytes might not be valid UTF-8, so we must remove them first
+        const plaintextArray = new Uint8Array(plaintext);
+        if (plaintextArray.length === 0) {
+            console.error('Decrypted plaintext is empty');
+            return null;
+        }
+        
+        // Debug: log first few bytes of decrypted data
+        const debugBytes = Array.from(plaintextArray.slice(0, Math.min(20, plaintextArray.length)));
+        console.log('Decrypted bytes (first 20):', debugBytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        
+        // Get padding value (last byte)
+        const padValue = plaintextArray[plaintextArray.length - 1];
+        
+        // Validate padding (must be between 1 and 16)
+        if (padValue < 1 || padValue > 16) {
+            console.error('Invalid padding value:', padValue, '(expected 1-16)');
+            console.error('This usually means the encryption key is incorrect or the ciphertext is corrupted');
+            console.error('Plaintext length:', plaintextArray.length);
+            console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+            return null;
+        }
+        
+        // Verify all padding bytes are the same
+        let validPadding = true;
+        const paddingStart = plaintextArray.length - padValue;
+        if (paddingStart < 0) {
+            console.error('Padding length exceeds plaintext length');
+            return null;
+        }
+        
+        for (let i = paddingStart; i < plaintextArray.length; i++) {
+            if (plaintextArray[i] !== padValue) {
+                validPadding = false;
+                break;
+            }
+        }
+        
+        if (!validPadding) {
+            console.error('Invalid PKCS7 padding - bytes are not all the same');
+            return null;
+        }
+        
+        // Remove padding by slicing the array
+        const unpaddedArray = plaintextArray.slice(0, paddingStart);
+        
+        // Convert to string
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        const decoded = decoder.decode(unpaddedArray);
+        
+        return decoded;
+    } catch (e) {
+        console.error('Decryption error:', e);
+        return null;
+    }
+}
+
+// Verify password by attempting to decrypt the retained status message
+async function verifyPasswordByDecryption(password) {
+    // Try to get the retained status message from MQTT
+    // If we're connected, we can request it; otherwise we'll need to connect temporarily
+    return new Promise(async (resolve) => {
+        if (!mqttClient || !isConnected) {
+            // Not connected - we can't verify yet, but we'll allow saving
+            // The password will be verified when we connect and receive the first status message
+            console.log('Not connected to MQTT - password will be verified on first status message');
+            resolve(true);  // Allow saving, verify later
+            return;
+        }
+        
+        // We're connected - try to get retained status message
+        // The status message should already be in the retained topic
+        // We can subscribe and wait for it, or check if we already have it
+        // For now, we'll just allow saving and verify on the next status message
+        console.log('Connected - password will be verified on next status message');
+        resolve(true);  // Allow saving, verify on next message
+    });
+}
+
+// Save password to localStorage and verify it by decrypting status message
+async function savePassword() {
+    const password = document.getElementById('webUIPassword').value.trim();
+    const passwordStatusEl = document.getElementById('passwordStatus');
+    
+    if (password.length === 0) {
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Password cannot be empty</div>';
+        updatePasswordStatus();
+        return;
+    }
+    if (password.length < 8) {
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Password must be at least 8 characters</div>';
+        updatePasswordStatus();
+        return;
+    }
+    
+    // Show verifying message
+    passwordStatusEl.innerHTML = '<div class="info" style="margin-top:10px;">Verifying password by decrypting status message...</div>';
+    
+    // Temporarily set password to test decryption
+    const oldPassword = webUIPassword;
+    webUIPassword = password;
+    
+    // If connected, try to verify by decrypting a status message
+    // We'll subscribe to status topic and wait for retained message
+    let verificationSuccess = false;
+    
+    if (mqttClient && isConnected) {
+        // Create a one-time message handler to verify password
+        const verifyHandler = async function(message) {
+            if (message.destinationName === MQTT_TOPIC_STATUS) {
+                try {
+                    const payload = JSON.parse(message.payloadString);
+                    
+                    // Check if message is encrypted
+                    if (payload.encrypted && payload.payload) {
+                        // Try to decrypt
+                        const decrypted = await decryptMessage(payload.payload);
+                        if (decrypted) {
+                            // Try to parse as JSON to verify it's valid
+                            const status = JSON.parse(decrypted);
+                            if (status.timestamp || status.current_time) {
+                                // Valid decrypted status - password is correct!
+                                verificationSuccess = true;
+                                mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                                mqttClient.onMessageArrived = originalHandler;
+                                
+                                // Save password
+                                try {
+                                    localStorage.setItem('biginky_webui_password', btoa(password));
+                                    passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password verified and saved successfully!</div>';
+                                    updatePasswordStatus();
+                                } catch (e) {
+                                    passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
+                                    webUIPassword = oldPassword;
+                                    updatePasswordStatus();
+                                }
+                                return;
+                            }
+                        }
+                    } else if (payload.hmac) {
+                        // Unencrypted but has HMAC - password might still be correct
+                        // For now, allow it (backward compatibility)
+                        verificationSuccess = true;
+                        mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                        mqttClient.onMessageArrived = originalHandler;
+                        
+                        try {
+                            localStorage.setItem('biginky_webui_password', btoa(password));
+                            passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password saved (unencrypted message received - will verify on encrypted message)</div>';
+                            updatePasswordStatus();
+                        } catch (e) {
+                            passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
+                            webUIPassword = oldPassword;
+                            updatePasswordStatus();
+                        }
+                        return;
+                    }
+                } catch (e) {
+                    console.error('Failed to verify password:', e);
+                }
+                
+                // Verification failed
+                mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                mqttClient.onMessageArrived = originalHandler;
+                webUIPassword = oldPassword;
+                passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">✗ Password verification failed: Could not decrypt status message. Please check your password.</div>';
+                updatePasswordStatus();
+            }
+        };
+        
+        // Save original handler and set verification handler
+        const originalHandler = mqttClient.onMessageArrived;
+        mqttClient.onMessageArrived = verifyHandler;
+        
+        // Subscribe to status topic to get retained message
+        mqttClient.subscribe(MQTT_TOPIC_STATUS, { qos: 1 });
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            if (!verificationSuccess) {
+                mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                mqttClient.onMessageArrived = originalHandler;
+                webUIPassword = oldPassword;
+                passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">✗ Password verification timeout: No status message received. Password saved but not verified. Will verify on next status message.</div>';
+                // Still save the password
+                try {
+                    localStorage.setItem('biginky_webui_password', btoa(password));
+                    updatePasswordStatus();
+                } catch (e) {
+                    console.error('Failed to save password:', e);
+                }
+            }
+        }, 5000);
+    } else {
+        // Not connected - just save password, verify later
+        try {
+            localStorage.setItem('biginky_webui_password', btoa(password));
+            webUIPassword = password;
+            passwordStatusEl.innerHTML = '<div class="info" style="margin-top:10px;">Password saved. Will verify when connected to MQTT and status message is received.</div>';
+            updatePasswordStatus();
+        } catch (e) {
+            console.error('Failed to save password:', e);
+            passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
+            webUIPassword = oldPassword;
+            updatePasswordStatus();
+        }
+    }
+}
+
+// Clear password from localStorage and reset UI
+function clearPassword() {
+    if (confirm('Are you sure you want to clear the saved password? You will need to re-enter it to use the web UI.')) {
+        localStorage.removeItem('biginky_webui_password');
+        webUIPassword = null;
+        document.getElementById('webUIPassword').value = '';
+        document.getElementById('passwordStatus').innerHTML = '<div class="info" style="margin-top:10px;">Password cleared. Please enter a new password and click Save Password.</div>';
+        updatePasswordStatus();
+        
+        // Disconnect from MQTT if connected
+        if (mqttClient && isConnected) {
+            mqttClient.disconnect();
+            isConnected = false;
+            updateConnectionStatus('disconnected', 'Disconnected after password cleared');
+        }
+    }
+}
+
+// Derive HMAC key from password using HMAC-SHA256 with salt
+async function deriveHMACKey(password) {
+    const encoder = new TextEncoder();
+    const salt = encoder.encode('biginky_hmac_key_v1');
+    const passwordData = encoder.encode(password);
+    
+    // Import password as HMAC key
+    const key = await crypto.subtle.importKey(
+        'raw',
+        passwordData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    
+    // Compute HMAC(password, salt) to derive key
+    const derivedKey = await crypto.subtle.sign('HMAC', key, salt);
+    return new Uint8Array(derivedKey);
+}
+
+// Derive encryption key from password using HMAC-SHA256 with salt
+async function deriveEncryptionKey(password) {
+    const encoder = new TextEncoder();
+    const salt = encoder.encode('biginky_enc_key_v1');
+    const passwordData = encoder.encode(password);
+    
+    // Debug: log password length and first few bytes
+    console.log('deriveEncryptionKey: password length =', password.length);
+    console.log('deriveEncryptionKey: password bytes (first 20) =', Array.from(passwordData.slice(0, 20)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    console.log('deriveEncryptionKey: salt =', Array.from(salt).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    
+    // Import password as HMAC key
+    const key = await crypto.subtle.importKey(
+        'raw',
+        passwordData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    
+    // Compute HMAC(password, salt) to derive key
+    const derivedKey = await crypto.subtle.sign('HMAC', key, salt);
+    const keyArray = new Uint8Array(derivedKey);
+    
+    // Debug: log derived key (first 16 bytes)
+    console.log('deriveEncryptionKey: derived key (first 16 bytes) =', Array.from(keyArray.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    
+    return keyArray;
+}
+
+// Compute HMAC-SHA256 of a message using the derived HMAC key
+async function computeHMAC(message) {
+    if (!webUIPassword) {
+        console.error('No password configured for HMAC computation');
+        return null;
+    }
+    
+    try {
+        // Derive HMAC key from password
+        const hmacKey = await deriveHMACKey(webUIPassword);
+        
+        // Import derived key
+        const key = await crypto.subtle.importKey(
+            'raw',
+            hmacKey,
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+        
+        // Sign the message
+        const encoder = new TextEncoder();
+        const messageData = encoder.encode(message);
+        const signature = await crypto.subtle.sign('HMAC', key, messageData);
+        
+        // Convert to hex string
+        const hashArray = Array.from(new Uint8Array(signature));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        return hashHex;
+    } catch (e) {
+        console.error('HMAC computation error:', e);
+        return null;
+    }
+}
+
+// Verify HMAC signature of a message
+async function verifyHMAC(message, providedHMAC) {
+    if (!webUIPassword) {
+        console.warn('No password configured for HMAC verification');
+        return false;
+    }
+    
+    const computedHMAC = await computeHMAC(message);
+    if (!computedHMAC) {
+        return false;
+    }
+    
+    // Constant-time comparison
+    if (computedHMAC.length !== providedHMAC.length) {
+        return false;
+    }
+    
+    let result = 0;
+    for (let i = 0; i < computedHMAC.length; i++) {
+        result |= computedHMAC.charCodeAt(i) ^ providedHMAC.charCodeAt(i);
+    }
+    return result === 0;
+}
+
+function updateConnectionStatus(status, message) {
+    const statusEl = document.getElementById('connectionStatus');
+    const msgEl = document.getElementById('connectionStatusMsg');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    
+    statusEl.className = 'connection-status ' + status;
+    statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    
+    if (message) {
+        msgEl.innerHTML = '<div class="' + (status === 'connected' ? 'status' : 'error') + '">' + message + '</div>';
+    } else {
+        msgEl.innerHTML = '';
+    }
+    
+    // Update button states based on connection AND password
+    const hasPassword = (webUIPassword && webUIPassword.length > 0);
+    connectBtn.disabled = (status === 'connected' || status === 'connecting' || !hasPassword);
+    disconnectBtn.disabled = (status === 'disconnected');
+    
+    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn'];
+    buttons.forEach(id => {
+        document.getElementById(id).disabled = (status !== 'connected' || !hasPassword);
+    });
+}
+
+// Update UI state based on password status
+function updatePasswordStatus() {
+    const hasPassword = (webUIPassword && webUIPassword.length > 0);
+    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn', 'connectBtn'];
+    
+    buttons.forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) {
+            if (id === 'connectBtn') {
+                // Connect button disabled if no password
+                btn.disabled = !hasPassword;
+            } else {
+                // Other buttons disabled if no password OR not connected
+                btn.disabled = !hasPassword || !isConnected;
+            }
+        }
+    });
+    
+    // Show warning if no password
+    const passwordStatusEl = document.getElementById('passwordStatus');
+    if (!hasPassword) {
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">⚠️ Password required: All functionality is disabled until a password is set.</div>';
+    } else {
+        passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password configured - interface enabled</div>';
+    }
+}
+
+function logCommand(action, data) {
+    const logEl = document.getElementById('commandLog');
+    const timestamp = new Date().toLocaleTimeString();
+    let logEntry = `[${timestamp}] ${action}: `;
+    
+    // Summarize commands instead of dumping full payload (especially for large canvas commands)
+    if (action === 'PUBLISH' && data && data.command) {
+        const command = data.command;
+        let summary = `command="${command}"`;
+        
+        if (command === 'canvas_display') {
+            const size = data.pixelData ? data.pixelData.length : 0;
+            summary += `, width=${data.width || '?'}, height=${data.height || '?'}, pixelData=${(size / 1024).toFixed(1)}KB`;
+        } else if (command === 'text_display') {
+            const text = data.text || '';
+            const preview = text.length > 50 ? text.substring(0, 50) + '...' : text;
+            summary += `, text="${preview}"`;
+        } else {
+            // For other commands, show a brief summary
+            summary += ` (${Object.keys(data).length} fields)`;
+        }
+        
+        logEntry += summary;
+    } else {
+        // For non-PUBLISH actions, show a brief summary
+        if (data && typeof data === 'object') {
+            const keys = Object.keys(data);
+            if (keys.length <= 3) {
+                // Small objects - show them
+                logEntry += JSON.stringify(data);
+            } else {
+                // Large objects - just show keys
+                logEntry += `{${keys.join(', ')}}`;
+            }
+        } else {
+            logEntry += data;
+        }
+    }
+    
+    logEntry += '\n';
+    logEl.textContent = logEntry + logEl.textContent;
+    const lines = logEl.textContent.split('\n');
+    if (lines.length > 50) {
+        logEl.textContent = lines.slice(0, 50).join('\n');
+    }
+}
+
+function updateDeviceStatus(status) {
+    const statusEl = document.getElementById('deviceStatus');
+    let html = '<div style="line-height:1.6;">';
+    
+    // Timestamp and current time
+    if (status.timestamp) {
+        const date = new Date(status.timestamp * 1000);
+        html += `<p><strong>Last Update:</strong> ${date.toLocaleString()}</p>`;
+    }
+    if (status.current_time) {
+        html += `<p><strong>Device Time:</strong> ${status.current_time}</p>`;
+    }
+    
+    // Next media item
+    if (status.next_media) {
+        html += '<p><strong>Next Media:</strong> ';
+        html += `<span style="color:#4CAF50;">${status.next_media.image}</span>`;
+        if (status.next_media.audio) {
+            html += ` <span style="color:#888;">(${status.next_media.audio})</span>`;
+        }
+        html += ` <span style="color:#888;font-size:11px;">[index ${status.next_media.index}]</span>`;
+        html += '</p>';
+    }
+    
+    // Next wake time
+    if (status.next_wake) {
+        html += `<p><strong>Next Wake:</strong> <span style="color:#2196F3;">${status.next_wake}</span>`;
+        if (status.sleep_interval_minutes) {
+            html += ` <span style="color:#888;font-size:11px;">(every ${status.sleep_interval_minutes} min)</span>`;
+        }
+        html += '</p>';
+    }
+    
+    // Connection status
+    if (status.connected !== undefined) {
+        html += '<p><strong>Status:</strong> ';
+        if (status.connected) {
+            html += '<span style="color:#4CAF50;">Connected</span>';
+        } else {
+            html += '<span style="color:#f44336;">Disconnected</span>';
+        }
+        html += '</p>';
+    }
+    
+    html += '</div>';
+    statusEl.innerHTML = html;
+}
+
+function updateMediaMappingsTable(mappings) {
+    const statusEl = document.getElementById('mediaMappingsStatus');
+    const tableEl = document.getElementById('mediaMappingsTable');
+    
+    if (!mappings || mappings.length === 0) {
+        statusEl.textContent = 'No media mappings available';
+        tableEl.innerHTML = '<p style="color:#888;">No media mappings found.</p>';
+        return;
+    }
+    
+    statusEl.textContent = `Loaded ${mappings.length} media mapping(s) (updated ${new Date().toLocaleTimeString()})`;
+    
+    // Create table
+    let html = '<table style="width:100%;border-collapse:collapse;margin-top:10px;">';
+    html += '<thead><tr style="background:#333;color:#e0e0e0;">';
+    html += '<th style="padding:10px;text-align:left;border:1px solid #555;">Index</th>';
+    html += '<th style="padding:10px;text-align:left;border:1px solid #555;">Thumbnail</th>';
+    html += '<th style="padding:10px;text-align:left;border:1px solid #555;">Image</th>';
+    html += '<th style="padding:10px;text-align:left;border:1px solid #555;">Audio</th>';
+    html += '</tr></thead><tbody>';
+    
+    for (let i = 0; i < mappings.length; i++) {
+        const mapping = mappings[i];
+        html += '<tr style="border-bottom:1px solid #555;">';
+        html += `<td style="padding:10px;border:1px solid #555;">${mapping.index !== undefined ? mapping.index : i}</td>`;
+        
+        // Thumbnail column
+        html += '<td style="padding:10px;border:1px solid #555;text-align:center;">';
+        if (mapping.thumbnail) {
+            html += `<img src="data:image/jpeg;base64,${mapping.thumbnail}" style="max-width:200px;max-height:150px;border:1px solid #666;" alt="Thumbnail" />`;
+        } else {
+            html += '<span style="color:#888;">No thumbnail</span>';
+        }
+        html += '</td>';
+        
+        // Image column
+        html += `<td style="padding:10px;border:1px solid #555;">${mapping.image || 'N/A'}</td>`;
+        
+        // Audio column
+        html += `<td style="padding:10px;border:1px solid #555;">${mapping.audio || '<span style="color:#888;">(none)</span>'}</td>`;
+        
+        html += '</tr>';
+    }
+    
+    html += '</tbody></table>';
+    tableEl.innerHTML = html;
+    
+    console.log(`Media mappings table updated with ${mappings.length} entries`);
+}
+
+function updateThumbnail(thumb) {
+    const canvas = document.getElementById('thumbnailCanvas');
+    const statusEl = document.getElementById('thumbnailStatus');
+    
+    if (!thumb || !thumb.data || !thumb.width || !thumb.height) {
+        statusEl.textContent = 'Invalid thumbnail data';
+        canvas.style.display = 'none';
+        return;
+    }
+    
+    // Set canvas size
+    canvas.width = thumb.width;
+    canvas.height = thumb.height;
+    const ctx = canvas.getContext('2d');
+    
+    try {
+        if (thumb.format === 'jpeg') {
+            // JPEG format: create data URL and load as image (much simpler!)
+            const dataUrl = 'data:image/jpeg;base64,' + thumb.data;
+            const img = new Image();
+            img.onload = function() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                canvas.style.display = 'block';
+                statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' JPEG (updated ' + new Date().toLocaleTimeString() + ')';
+                console.log('JPEG thumbnail updated successfully.');
+            };
+            img.onerror = function() {
+                console.error('Failed to load JPEG thumbnail');
+                statusEl.textContent = 'Error loading JPEG preview';
+                canvas.style.display = 'none';
+            };
+            img.src = dataUrl;
+        } else if (thumb.format === 'rgb888') {
+            // Legacy RGB888 format: decode raw RGB data
+            // Validate base64 data before decoding
+            if (!/^[A-Za-z0-9+/=]+$/.test(thumb.data)) {
+                console.error('Invalid base64 data in RGB888 thumbnail');
+                statusEl.textContent = 'Error: Invalid base64 data in thumbnail';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            // Validate expected data length
+            const expectedBytes = thumb.width * thumb.height * 3;
+            let binaryString;
+            try {
+                binaryString = atob(thumb.data);
+            } catch (e) {
+                console.error('Failed to decode base64 data:', e);
+                statusEl.textContent = 'Error: Failed to decode base64 data. Message may be incomplete.';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            if (binaryString.length !== expectedBytes) {
+                console.error('RGB888 data length mismatch:', { 
+                    expected: expectedBytes, 
+                    actual: binaryString.length,
+                    width: thumb.width,
+                    height: thumb.height
+                });
+                statusEl.textContent = 'Error: Thumbnail data incomplete. Expected ' + expectedBytes + ' bytes, got ' + binaryString.length + '.';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            
+            // Create ImageData from RGB888 data
+            const imageData = ctx.createImageData(thumb.width, thumb.height);
+            const data = imageData.data;
+            
+            // Convert RGB888 to RGBA8888
+            for (let i = 0; i < bytes.length; i += 3) {
+                const pixelIdx = (i / 3) * 4;
+                if (pixelIdx + 3 < data.length) {
+                    data[pixelIdx + 0] = bytes[i + 0];     // R
+                    data[pixelIdx + 1] = bytes[i + 1];     // G
+                    data[pixelIdx + 2] = bytes[i + 2];     // B
+                    data[pixelIdx + 3] = 255;               // A (opaque)
+                }
+            }
+            
+            // Draw to canvas
+            try {
+                ctx.putImageData(imageData, 0, 0);
+                canvas.style.display = 'block';
+                statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' RGB888 (updated ' + new Date().toLocaleTimeString() + ')';
+            } catch (drawError) {
+                console.error('Failed to draw RGB888 thumbnail to canvas:', drawError);
+                statusEl.textContent = 'Error drawing thumbnail to canvas';
+                canvas.style.display = 'none';
+            }
+        } else {
+            statusEl.textContent = 'Unsupported thumbnail format: ' + thumb.format;
+            canvas.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('Error updating thumbnail:', e);
+        statusEl.textContent = 'Error displaying thumbnail: ' + e.message;
+        canvas.style.display = 'none';
+    }
+}
+
+function connectMQTT() {
+    console.log('connectMQTT() called');
+    
+    // Require password before connecting
+    if (!webUIPassword || webUIPassword.length === 0) {
+        updateConnectionStatus('disconnected', 'Error: Password required. Please set password in Authentication section above.');
+        return;
+    }
+    
+    // Always use embedded token
+    const token = EMBEDDED_TOKEN;
+    
+    if (!token || token === 'YOUR_RESTRICTED_TOKEN_HERE') {
+        console.log('Embedded token not configured');
+        updateConnectionStatus('disconnected', 'Error: Embedded token not configured');
+        return;
+    }
+    
+    if (mqttClient && isConnected) {
+        console.log('Already connected');
+        return;
+    }
+    
+    console.log('Starting connection to', MQTT_BROKER, 'port', MQTT_PORT);
+    updateConnectionStatus('connecting', 'Connecting to MQTT broker...');
+    
+    // Check if Paho MQTT library is loaded
+    if (!pahoLibraryLoaded && !checkPahoLoaded()) {
+        console.error('Paho MQTT library not loaded!', { 
+            Paho: typeof Paho, 
+            Client: typeof (typeof Paho !== 'undefined' ? Paho.Client : undefined),
+            Message: typeof (typeof Paho !== 'undefined' ? Paho.Message : undefined),
+            pahoLibraryLoaded: pahoLibraryLoaded
+        });
+        updateConnectionStatus('disconnected', 'Error: MQTT library not loaded. Please wait a moment and try again.');
+        // Try waiting a bit and retry
+        setTimeout(function() {
+            if (checkPahoLoaded()) {
+                console.log('Library now available, retrying connection...');
+                connectMQTT();
+            } else {
+                console.error('Library still not available after wait');
+            }
+        }, 1000);
+        return;
+    }
+    
+    const clientId = 'biginky_web_' + Math.random().toString(16).substr(2, 8);
+    console.log('Creating MQTT client with ID:', clientId);
+    console.log('Paho.Client available:', typeof Paho.Client);
+    
+    try {
+        mqttClient = new Paho.Client(MQTT_BROKER, MQTT_PORT, '/mqtt', clientId);
+        console.log('MQTT client created successfully');
+    } catch (e) {
+        console.error('Failed to create MQTT client:', e);
+        updateConnectionStatus('disconnected', 'Error creating MQTT client: ' + e.message);
+        return;
+    }
+    
+    mqttClient.onConnectionLost = function(responseObject) {
+        console.log('Connection lost:', responseObject);
+        isConnected = false;
+        updateConnectionStatus('disconnected', 'Connection lost: ' + (responseObject.errorMessage || 'Unknown error'));
+        updatePasswordStatus();  // Update button states
+        logCommand('DISCONNECTED', { reason: responseObject.errorMessage });
+    };
+    
+    mqttClient.onMessageArrived = async function(message) {
+        console.log('Message received:', message);
+        logCommand('MESSAGE_RECEIVED', { topic: message.destinationName, payload: message.payloadString.substring(0, 100) + '...' });
+        
+        // Handle status messages
+        if (message.destinationName === MQTT_TOPIC_STATUS) {
+            console.log('Status message received, parsing...');
+            try {
+                const payload = JSON.parse(message.payloadString);
+                console.log('Parsed status:', payload);
+                
+                // Check if message is encrypted
+                let status = payload;
+                
+                if (payload.encrypted && payload.payload) {
+                    // Validate encrypted message structure
+                    if (!payload.iv || !payload.payload) {
+                        console.error('Invalid encrypted message structure - missing iv or payload');
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Invalid encrypted message structure. Message may be incomplete.</p>';
+                        return;
+                    }
+                    
+                    // Verify HMAC first (on encrypted message)
+                    if (webUIPassword && payload.hmac) {
+                        const providedHMAC = payload.hmac;
+                        const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
+                        
+                        const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                        if (!hmacValid) {
+                            console.error('Status message HMAC verification failed');
+                            document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
+                            return;
+                        }
+                        console.log('HMAC verification passed - password is correct for HMAC');
+                    } else {
+                        console.warn('No password or HMAC provided - cannot verify message authenticity');
+                    }
+                    
+                    // Decrypt the payload
+                    let decrypted;
+                    try {
+                        decrypted = await decryptMessage(payload.payload, payload.iv);
+                    } catch (decryptError) {
+                        console.error('Failed to decrypt status message:', decryptError);
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Failed to decrypt status message. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
+                        return;
+                    }
+                    
+                    if (!decrypted || decrypted.length === 0) {
+                        console.error('Decryption returned empty result');
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Decryption failed - empty result. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
+                        return;
+                    }
+                    
+                    // Debug: log first few characters of decrypted data
+                    console.log('Decrypted data (first 100 chars):', decrypted.substring(0, 100));
+                    console.log('Decrypted data length:', decrypted.length);
+                    
+                    // Parse decrypted JSON
+                    try {
+                        status = JSON.parse(decrypted);
+                    } catch (parseError) {
+                        console.error('Failed to parse decrypted status JSON:', parseError);
+                        console.error('Decrypted data (full):', decrypted);
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Invalid status data after decryption. Message may be incomplete or corrupted.</p>';
+                        return;
+                    }
+                    
+                    console.log('Decrypted status:', status);
+                } else if (webUIPassword && payload.hmac) {
+                    // Unencrypted but has HMAC - verify it
+                    const providedHMAC = payload.hmac;
+                    delete payload.hmac;
+                    const messageForHMAC = JSON.stringify(payload);
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Status message HMAC verification failed');
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
+                        return;
+                    }
+                    status = payload;
+                    console.log('Status message HMAC verified successfully (unencrypted)');
+                } else {
+                    // No password configured or no HMAC - just display (for backward compatibility)
+                    if (!webUIPassword) {
+                        console.warn('No password configured - cannot verify HMAC');
+                    }
+                    status = payload;
+                }
+                
+                // Display status
+                updateDeviceStatus(status);
+            } catch (e) {
+                console.error('Failed to parse/decrypt status message:', e);
+                document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error parsing status message: ' + e.message + '</p>';
+            }
+        } else if (message.destinationName === MQTT_TOPIC_THUMB) {
+            console.log('Thumbnail message received, parsing...');
+            try {
+                const payload = JSON.parse(message.payloadString);
+                console.log('Parsed payload:', payload);
+                
+                // Check if message is encrypted
+                let thumb = payload;
+                let isEncrypted = false;
+                
+                if (payload.encrypted && payload.payload) {
+                    isEncrypted = true;
+                    console.log('Thumbnail message is encrypted, decrypting...');
+                    
+                    // Validate encrypted message structure
+                    if (!payload.iv || !payload.payload) {
+                        console.error('Invalid encrypted message structure - missing iv or payload');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
+                        return;
+                    }
+                    
+                    // Verify HMAC first (on encrypted message)
+                    if (webUIPassword && payload.hmac) {
+                        const providedHMAC = payload.hmac;
+                        const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
+                        
+                        const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                        if (!hmacValid) {
+                            console.error('Thumbnail message HMAC verification failed');
+                            document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                            return;
+                        }
+                    }
+                    
+                    // Decrypt the payload
+                    let decrypted;
+                    try {
+                        decrypted = await decryptMessage(payload.payload, payload.iv);
+                    } catch (decryptError) {
+                        console.error('Failed to decrypt thumbnail message:', decryptError);
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect or message corrupted.';
+                        return;
+                    }
+                    
+                    if (!decrypted || decrypted.length === 0) {
+                        console.error('Decryption returned empty result');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
+                        return;
+                    }
+                    
+                    // Parse decrypted JSON
+                    try {
+                        thumb = JSON.parse(decrypted);
+                    } catch (parseError) {
+                        console.error('Failed to parse decrypted thumbnail JSON:', parseError);
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Invalid thumbnail data after decryption. Message may be incomplete or corrupted.';
+                        return;
+                    }
+                    
+                    // Validate decrypted thumbnail structure
+                    if (!thumb || typeof thumb.width !== 'number' || typeof thumb.height !== 'number' || !thumb.format || !thumb.data) {
+                        console.error('Invalid thumbnail structure after decryption:', thumb);
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Invalid thumbnail structure. Message may be incomplete.';
+                        return;
+                    }
+                    
+                    console.log('Decrypted thumbnail:', { width: thumb.width, height: thumb.height, format: thumb.format, dataLength: thumb.data ? thumb.data.length : 0 });
+                } else if (webUIPassword && payload.hmac) {
+                    // Unencrypted but has HMAC - verify it
+                    const providedHMAC = payload.hmac;
+                    delete payload.hmac;
+                    const messageForHMAC = JSON.stringify(payload);
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Thumbnail message HMAC verification failed');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                        return;
+                    }
+                    thumb = payload;
+                    console.log('Thumbnail message HMAC verified successfully (unencrypted)');
+                } else {
+                    // No password configured or no HMAC - just display (for backward compatibility)
+                    if (!webUIPassword) {
+                        console.warn('No password configured - cannot verify HMAC');
+                    }
+                    thumb = payload;
+                }
+                
+                // Validate thumbnail structure before displaying
+                if (!thumb || typeof thumb.width !== 'number' || typeof thumb.height !== 'number' || !thumb.format || !thumb.data) {
+                    console.error('Invalid thumbnail structure:', thumb);
+                    document.getElementById('thumbnailStatus').textContent = 'Error: Invalid thumbnail structure. Required fields missing.';
+                    return;
+                }
+                
+                // Validate data length matches expected size for the format
+                if (thumb.format === 'jpeg' || thumb.format === 'rgb888') {
+                    const expectedDataLength = thumb.format === 'jpeg' 
+                        ? undefined  // JPEG can vary in size
+                        : thumb.width * thumb.height * 3;  // RGB888: width * height * 3 bytes
+                    
+                    if (thumb.format === 'rgb888' && thumb.data.length < expectedDataLength) {
+                        console.error('Thumbnail data incomplete:', { 
+                            expected: expectedDataLength, 
+                            actual: thumb.data.length,
+                            width: thumb.width,
+                            height: thumb.height
+                        });
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Thumbnail data incomplete. Expected ' + expectedDataLength + ' bytes, got ' + thumb.data.length + '.';
+                        return;
+                    }
+                }
+                
+                // All validations passed - safe to display
+                updateThumbnail(thumb);
+            } catch (e) {
+                console.error('Failed to parse/decrypt thumbnail message:', e);
+                document.getElementById('thumbnailStatus').textContent = 'Error parsing thumbnail message: ' + e.message;
+            }
+        } else if (message.destinationName === MQTT_TOPIC_MEDIA) {
+            console.log('Media mappings message received, parsing...');
+            try {
+                const payload = JSON.parse(message.payloadString);
+                console.log('Parsed media payload:', payload);
+                
+                // Check if message is encrypted
+                let mediaData = payload;
+                
+                if (payload.encrypted && payload.payload) {
+                    // Validate encrypted message structure
+                    if (!payload.iv || !payload.payload) {
+                        console.error('Invalid encrypted message structure - missing iv or payload');
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
+                        return;
+                    }
+                    
+                    // Verify HMAC first
+                    if (webUIPassword && payload.hmac) {
+                        const providedHMAC = payload.hmac;
+                        const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
+                        
+                        const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                        if (!hmacValid) {
+                            console.error('Media mappings message HMAC verification failed');
+                            document.getElementById('mediaMappingsStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                            return;
+                        }
+                    }
+                    
+                    // Decrypt the payload
+                    let decrypted;
+                    try {
+                        decrypted = await decryptMessage(payload.payload, payload.iv);
+                    } catch (decryptError) {
+                        console.error('Failed to decrypt media mappings message:', decryptError);
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Failed to decrypt media mappings. Password may be incorrect or message corrupted.';
+                        return;
+                    }
+                    
+                    if (!decrypted || decrypted.length === 0) {
+                        console.error('Decryption returned empty result');
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
+                        return;
+                    }
+                    
+                    // Parse decrypted JSON
+                    try {
+                        mediaData = JSON.parse(decrypted);
+                    } catch (parseError) {
+                        console.error('Failed to parse decrypted media mappings JSON:', parseError);
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Invalid media mappings data after decryption. Message may be incomplete or corrupted.';
+                        return;
+                    }
+                    
+                    console.log('Decrypted media mappings:', { mappingCount: mediaData.mappings ? mediaData.mappings.length : 0 });
+                } else if (webUIPassword && payload.hmac) {
+                    // Unencrypted but has HMAC - verify it
+                    const providedHMAC = payload.hmac;
+                    delete payload.hmac;
+                    const messageForHMAC = JSON.stringify(payload);
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Media mappings message HMAC verification failed');
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                        return;
+                    }
+                    mediaData = payload;
+                } else {
+                    // No password configured or no HMAC - just display (for backward compatibility)
+                    if (!webUIPassword) {
+                        console.warn('No password configured - cannot verify HMAC');
+                    }
+                    mediaData = payload;
+                }
+                
+                // Validate media data structure
+                if (!mediaData || !mediaData.mappings || !Array.isArray(mediaData.mappings)) {
+                    console.error('Invalid media mappings structure:', mediaData);
+                    document.getElementById('mediaMappingsStatus').textContent = 'Error: Invalid media mappings structure. Required fields missing.';
+                    return;
+                }
+                
+                // Display media mappings table
+                updateMediaMappingsTable(mediaData.mappings);
+            } catch (e) {
+                console.error('Failed to parse/decrypt media mappings message:', e);
+                document.getElementById('mediaMappingsStatus').textContent = 'Error parsing media mappings message: ' + e.message;
+            }
+        } else {
+            console.log('Message on different topic, ignoring:', message.destinationName);
+        }
+    };
+    
+    const connectOptions = {
+        userName: token,
+        password: '',
+        useSSL: true,
+        onSuccess: function() {
+            console.log('Connection successful!');
+            isConnected = true;
+            updateConnectionStatus('connected', 'Connected successfully!');
+            updatePasswordStatus();  // Update button states
+            logCommand('CONNECTED', { broker: MQTT_BROKER, topic: MQTT_TOPIC });
+            
+            // Update status display to show we're waiting for status
+            document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Connected - waiting for device status...</p>';
+            
+            // Subscribe to status, thumbnail, and media topics
+            mqttClient.subscribe(MQTT_TOPIC_STATUS, { qos: 1 });
+            mqttClient.subscribe(MQTT_TOPIC_THUMB, { qos: 1 });
+            mqttClient.subscribe(MQTT_TOPIC_MEDIA, { qos: 1 });
+            console.log('Subscribed to status topic:', MQTT_TOPIC_STATUS);
+            console.log('Subscribed to thumbnail topic:', MQTT_TOPIC_THUMB);
+            console.log('Subscribed to media topic:', MQTT_TOPIC_MEDIA);
+            
+            // If no status message arrives within 3 seconds, show a message
+            setTimeout(function() {
+                const statusEl = document.getElementById('deviceStatus');
+                if (statusEl.innerHTML.includes('waiting for device status')) {
+                    statusEl.innerHTML = '<p style="color:#ff9800;">Connected - no status received yet (device may not have published status)</p>';
+                }
+            }, 3000);
+        },
+        onFailure: function(error) {
+            console.error('Connection failed:', error);
+            isConnected = false;
+            const errorMsg = error.errorMessage || error.toString() || 'Unknown error';
+            updateConnectionStatus('disconnected', 'Connection failed: ' + errorMsg);
+            updatePasswordStatus();  // Update button states
+            logCommand('CONNECTION_FAILED', { error: errorMsg });
+            mqttClient = null;
+        },
+        timeout: 10,
+        keepAliveInterval: 60
+    };
+    
+    console.log('Attempting to connect with options:', { userName: token.substring(0, 10) + '...', useSSL: true });
+    try {
+        mqttClient.connect(connectOptions);
+        console.log('connect() called');
+    } catch (e) {
+        console.error('Exception during connect():', e);
+        updateConnectionStatus('disconnected', 'Error: ' + e.message);
+    }
+}
+
+function disconnectMQTT() {
+    if (mqttClient && isConnected) {
+        mqttClient.disconnect();
+        mqttClient = null;
+        isConnected = false;
+        updateConnectionStatus('disconnected', 'Disconnected');
+        logCommand('DISCONNECTED', { reason: 'User requested' });
+        
+        // Clear device status
+        document.getElementById('deviceStatus').innerHTML = '<p>Not connected - status will appear when connected to MQTT</p>';
+    }
+}
+
+async function publishMessage(payload) {
+    // Check if password is configured FIRST (before connection check)
+    if (!webUIPassword || webUIPassword.length === 0) {
+        showStatus('commandStatus', 'Error: Password required. Please set password in Authentication section above.', true);
+        return false;
+    }
+    
+    if (!mqttClient || !isConnected) {
+        showStatus('commandStatus', 'Not connected to MQTT broker', true);
+        return false;
+    }
+    
+    try {
+        // Encrypt the payload
+        const plaintext = JSON.stringify(payload);
+        const encryptedPayload = await encryptMessage(plaintext);
+        
+        if (!encryptedPayload) {
+            showStatus('commandStatus', 'Error: Failed to encrypt message', true);
+            return false;
+        }
+        
+        // Create encrypted message structure
+        const encryptedMessage = {
+            encrypted: true,
+            payload: encryptedPayload
+        };
+        
+        // Compute HMAC of encrypted message (without hmac field)
+        const messageForHMAC = JSON.stringify(encryptedMessage);
+        const hmac = await computeHMAC(messageForHMAC);
+        
+        if (!hmac) {
+            showStatus('commandStatus', 'Error: Failed to compute HMAC signature', true);
+            return false;
+        }
+        
+        // Add HMAC to encrypted message
+        encryptedMessage.hmac = hmac;
+        
+        const message = new Paho.Message(JSON.stringify(encryptedMessage));
+        message.destinationName = MQTT_TOPIC;
+        message.qos = 1;
+        message.retained = true;  // Use retained messages so device receives them when it wakes up
+        mqttClient.send(message);
+        logCommand('PUBLISH', { command: payload.command, encrypted: true });
+        return true;
+    } catch (error) {
+        showStatus('commandStatus', 'Failed to send message: ' + error, true);
+        return false;
+    }
+}
+
+async function sendTextDisplay() {
+    const text = document.getElementById('textInput').value.trim();
+    if (text.length === 0) {
+        showStatus('textStatus', 'Please enter some text', true);
+        return;
+    }
+    
+    const color = document.getElementById('textColor').value;
+    const bgColor = document.getElementById('textBackgroundColor').value;
+    const outlineColor = document.getElementById('textOutlineColor').value;
+    
+    showStatus('textStatus', 'Sending text display command...', false);
+    
+    const payload = {
+        command: 'text_display',
+        text: text,
+        color: color,
+        backgroundColour: bgColor,
+        outlineColour: outlineColor
+    };
+    
+    if (await publishMessage(payload)) {
+        showStatus('textStatus', 'Text display command sent successfully!', false);
+    } else {
+        showStatus('textStatus', 'Failed to send command', true);
+    }
+}
+
+async function sendCanvasToDisplay() {
+    console.log('sendCanvasToDisplay() called');
+    const canvas = document.getElementById('drawCanvas');
+    if (!canvas) {
+        console.error('Canvas element not found');
+        showStatus('canvasStatus', 'Error: Canvas not found', true);
+        return;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+        console.error('Could not get canvas context');
+        showStatus('canvasStatus', 'Error: Could not access canvas', true);
+        return;
+    }
+    try {
+        const imageData = ctx.getImageData(0, 0, 800, 600);
+        const data = imageData.data;
+    
+    const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+    const einkColorValues = [0,1,2,3,5,6];
+    
+    function findClosestColorIdx(r, g, b) {
+        let minDist = Infinity;
+        let closestIdx = 0;
+        for (let i = 0; i < einkColors.length; i++) {
+            const ec = einkColors[i];
+            const dist = Math.pow(r-ec[0],2) + Math.pow(g-ec[1],2) + Math.pow(b-ec[2],2);
+            if (dist < minDist) {
+                minDist = dist;
+                closestIdx = i;
+            }
+        }
+        return closestIdx;
+    }
+    
+    const pixelData = [];
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i+1];
+        const b = data[i+2];
+        const arrayIdx = findClosestColorIdx(r, g, b);
+        const einkColorValue = einkColorValues[arrayIdx];
+        pixelData.push(einkColorValue);
+    }
+    
+    const pixelBytes = new Uint8Array(pixelData);
+    const rawSizeKB = (pixelBytes.length / 1024).toFixed(1);
+    showStatus('canvasStatus', 'Compressing pixel data (' + rawSizeKB + ' KB raw)...', false);
+    
+    // Try to compress using browser's CompressionStream API (deflate/zlib)
+    if (typeof CompressionStream !== 'undefined') {
+        const stream = new CompressionStream('deflate');
+        const writer = stream.writable.getWriter();
+        const reader = stream.readable.getReader();
+        
+        writer.write(pixelBytes).then(() => writer.close());
+        
+        const compressedChunks = [];
+        function pump() {
+            return reader.read().then(({done, value}) => {
+                if (done) return;
+                compressedChunks.push(value);
+                return pump();
+            });
+        }
+        
+        pump().then(() => {
+            const compressedLength = compressedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            const compressed = new Uint8Array(compressedLength);
+            let offset = 0;
+            compressedChunks.forEach(chunk => {
+                compressed.set(chunk, offset);
+                offset += chunk.length;
+            });
+            
+            // Convert compressed Uint8Array to binary string in chunks
+            let binaryString = '';
+            const chunkSize = 8192;
+            for (let i = 0; i < compressed.length; i += chunkSize) {
+                const chunk = compressed.slice(i, i + chunkSize);
+                binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+            }
+            const base64Data = btoa(binaryString);
+            
+            const compressedSizeKB = (compressed.length / 1024).toFixed(1);
+            const base64SizeKB = (base64Data.length / 1024).toFixed(1);
+            const ratio = ((compressed.length / pixelBytes.length) * 100).toFixed(1);
+            const savedKB = ((pixelBytes.length - compressed.length) / 1024).toFixed(1);
+            const jsonSize = JSON.stringify({pixelData: base64Data, width: 800, height: 600, compressed: true}).length;
+            const jsonSizeKB = (jsonSize / 1024).toFixed(1);
+            
+            showStatus('canvasStatus', 'Compressed: ' + compressedSizeKB + ' KB binary (' + base64SizeKB + ' KB base64), ' + ratio + '% of ' + rawSizeKB + ' KB raw. Saved: ' + savedKB + ' KB. Total JSON: ' + jsonSizeKB + ' KB', false);
+            
+            const payload = {
+                command: 'canvas_display',
+                pixelData: base64Data,
+                width: 800,
+                height: 600,
+                compressed: true
+            };
+            
+            publishMessage(payload).then(success => {
+                if (success) {
+                    showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+                } else {
+                    showStatus('canvasStatus', 'Failed to send command', true);
+                }
+            });
+        }).catch(e => {
+            console.error('Compression error:', e);
+            showStatus('canvasStatus', 'Compression error: ' + e + ', sending uncompressed', true);
+            // Fallback to uncompressed
+            let binaryString = '';
+            const chunkSize = 8192;
+            for (let i = 0; i < pixelBytes.length; i += chunkSize) {
+                const chunk = pixelBytes.slice(i, i + chunkSize);
+                binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+            }
+            const base64Data = btoa(binaryString);
+            const base64SizeKB = (base64Data.length / 1024).toFixed(1);
+            const jsonSize = JSON.stringify({pixelData: base64Data, width: 800, height: 600, compressed: false}).length;
+            const jsonSizeKB = (jsonSize / 1024).toFixed(1);
+            showStatus('canvasStatus', 'Uncompressed: ' + rawSizeKB + ' KB raw (' + base64SizeKB + ' KB base64). Total JSON: ' + jsonSizeKB + ' KB (compression not available)', false);
+            
+            const payload = {
+                command: 'canvas_display',
+                pixelData: base64Data,
+                width: 800,
+                height: 600,
+                compressed: false
+            };
+            
+            if (publishMessage(payload)) {
+                showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+            } else {
+                showStatus('canvasStatus', 'Failed to send command', true);
+            }
+        });
+    } else {
+        // Compression not available - send uncompressed
+        let binaryString = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < pixelBytes.length; i += chunkSize) {
+            const chunk = pixelBytes.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+        }
+        const base64Data = btoa(binaryString);
+        const base64SizeKB = (base64Data.length / 1024).toFixed(1);
+        const jsonSize = JSON.stringify({pixelData: base64Data, width: 800, height: 600, compressed: false}).length;
+        const jsonSizeKB = (jsonSize / 1024).toFixed(1);
+        showStatus('canvasStatus', 'Uncompressed: ' + rawSizeKB + ' KB raw (' + base64SizeKB + ' KB base64). Total JSON: ' + jsonSizeKB + ' KB (compression not available)', false);
+        
+        const payload = {
+            command: 'canvas_display',
+            pixelData: base64Data,
+            width: 800,
+            height: 600,
+            compressed: false
+        };
+        
+        publishMessage(payload).then(success => {
+            if (success) {
+                showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+            } else {
+                showStatus('canvasStatus', 'Failed to send command', true);
+            }
+        });
+    }
+    } catch (error) {
+        console.error('Error in sendCanvasToDisplay:', error);
+        showStatus('canvasStatus', 'Error: ' + error.message, true);
+    }
+}
+
+async function sendCommand(cmd) {
+    const payload = { command: cmd };
+    
+    if (await publishMessage(payload)) {
+        showStatus('commandStatus', cmd + ' command sent successfully!', false);
+    } else {
+        showStatus('commandStatus', 'Failed to send command', true);
+    }
+}
+
+function showStatus(id, msg, isError) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = isError ? 'error status' : 'status';
+}
+
+let canvas = document.getElementById('drawCanvas');
+let ctx = canvas.getContext('2d');
+let isDrawing = false;
+let lastX = 0;
+let lastY = 0;
+
+const colorMap = {0:'#000000',1:'#FFFFFF',2:'#FFFF00',3:'#FF0000',5:'#0000FF',6:'#00FF00'};
+
+function getDrawColor() {
+    const val = parseInt(document.getElementById('drawColor').value);
+    return colorMap[val] || '#000000';
+}
+
+function startDraw(e) {
+    isDrawing = true;
+    const rect = canvas.getBoundingClientRect();
+    // Scale coordinates to account for CSS scaling (canvas may be displayed smaller than its actual size)
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clientX = e.clientX !== undefined ? e.clientX : e.touches[0].clientX;
+    const clientY = e.clientY !== undefined ? e.clientY : e.touches[0].clientY;
+    lastX = (clientX - rect.left) * scaleX;
+    lastY = (clientY - rect.top) * scaleY;
+}
+
+function draw(e) {
+    if (!isDrawing) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    // Scale coordinates to account for CSS scaling (canvas may be displayed smaller than its actual size)
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clientX = e.clientX !== undefined ? e.clientX : e.touches[0].clientX;
+    const clientY = e.clientY !== undefined ? e.clientY : e.touches[0].clientY;
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+    ctx.strokeStyle = getDrawColor();
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    lastX = x;
+    lastY = y;
+}
+
+function stopDraw() {
+    isDrawing = false;
+}
+
+function clearCanvas() {
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, 800, 600);
+    showStatus('canvasStatus', 'Canvas cleared', false);
+}
+
+canvas.addEventListener('mousedown', startDraw);
+canvas.addEventListener('mousemove', draw);
+canvas.addEventListener('mouseup', stopDraw);
+canvas.addEventListener('mouseleave', stopDraw);
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDraw(e); });
+canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); });
+canvas.addEventListener('touchend', (e) => { e.preventDefault(); stopDraw(); });
+
+clearCanvas();
+
+// Load password on page load (after all functions are defined)
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+        loadPassword();
+    });
+} else {
+    // DOM already loaded
+    loadPassword();
+}
+</script>
+</body>
+</html>

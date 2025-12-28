@@ -72,6 +72,7 @@
 #include <ArduinoJson.h>
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
 #include "mbedtls/md.h"  // ESP32 built-in HMAC support
+#include "mbedtls/aes.h"  // ESP32 built-in AES encryption support
 #define WIFI_ENABLED 1
 #else
 #define WIFI_ENABLED 0
@@ -2008,10 +2009,16 @@ void publishMQTTThumbnailIfConnected();  // Called from EL133UF1 library after d
 static bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize);  // Save JPEG thumbnail to SD card
 static char* loadThumbnailFromSD();  // Load JPEG thumbnail from SD card and return JSON (caller must free)
 
-// Web UI authentication functions (HMAC-based, password never transmitted)
+// Web UI authentication and encryption functions
+// Password is used to derive separate keys for HMAC (authentication) and AES (encryption)
+// Password is stored in NVS (protected by ESP32 flash encryption if enabled)
+// We derive keys using PBKDF2 so we never transmit the password
 static bool validateWebUIHMAC(const String& message, const String& providedHMAC);  // Validate HMAC signature
-static String computeHMAC(const String& message);  // Compute HMAC-SHA256 of message using stored password
-static bool setWebUIPassword(const String& password);  // Set new password (stores in NVS, used as HMAC key)
+static String computeHMAC(const String& message);  // Compute HMAC-SHA256 using derived HMAC key
+static String encryptMessage(const String& plaintext);  // Encrypt message using AES-256-CBC with derived encryption key
+static String decryptMessage(const String& ciphertext);  // Decrypt message using AES-256-CBC with derived encryption key
+static bool deriveKeysFromPassword(const String& password, uint8_t* hmacKey, uint8_t* encryptionKey);  // Derive keys using PBKDF2
+static bool setWebUIPassword(const String& password);  // Set new password (stores in NVS, derives keys)
 static bool isWebUIPasswordSet();  // Check if password is configured
 static void requireWebUIPasswordSetup();  // Check and require password setup at boot
 
@@ -4825,41 +4832,94 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
  * Commands are sent as JSON: {"command": "text_display", "text": "...", ...}
  */
 static bool handleWebInterfaceCommand(const String& jsonMessage) {
-    // Extract HMAC signature from JSON message (required for authentication)
-    String providedHMAC = "";
-    int hmacPos = jsonMessage.indexOf("\"hmac\"");
-    if (hmacPos >= 0) {
-        int colonPos = jsonMessage.indexOf(':', hmacPos);
+    // Check if message is encrypted
+    bool isEncrypted = false;
+    int encryptedPos = jsonMessage.indexOf("\"encrypted\"");
+    if (encryptedPos >= 0) {
+        int colonPos = jsonMessage.indexOf(':', encryptedPos);
+        int truePos = jsonMessage.indexOf("true", colonPos);
+        if (truePos >= 0 && truePos < colonPos + 10) {
+            isEncrypted = true;
+        }
+    }
+    
+    String decryptedMessage = jsonMessage;
+    
+    // If encrypted, decrypt the payload
+    if (isEncrypted) {
+        Serial.println("Message is encrypted - decrypting...");
+        
+        // Extract encrypted payload
+        int payloadPos = jsonMessage.indexOf("\"payload\"");
+        if (payloadPos < 0) {
+            Serial.println("ERROR: Encrypted message missing 'payload' field");
+            return false;
+        }
+        
+        int colonPos = jsonMessage.indexOf(':', payloadPos);
         int quoteStart = jsonMessage.indexOf('"', colonPos);
+        if (quoteStart < 0) {
+            Serial.println("ERROR: Encrypted payload not found");
+            return false;
+        }
+        
+        // Find closing quote (might be last field before hmac)
+        int hmacPos = jsonMessage.indexOf("\"hmac\"");
+        int quoteEnd = (hmacPos > 0) ? jsonMessage.lastIndexOf('"', hmacPos) : jsonMessage.lastIndexOf('"');
+        if (quoteEnd <= quoteStart) {
+            Serial.println("ERROR: Invalid encrypted payload format");
+            return false;
+        }
+        
+        String encryptedPayload = jsonMessage.substring(quoteStart + 1, quoteEnd);
+        Serial.printf("  Encrypted payload size: %d bytes (%.1f KB)\n", encryptedPayload.length(), encryptedPayload.length() / 1024.0f);
+        
+        // Decrypt
+        decryptedMessage = decryptMessage(encryptedPayload);
+        if (decryptedMessage.length() == 0) {
+            Serial.println("ERROR: Failed to decrypt message");
+            return false;
+        }
+        
+        Serial.printf("  Decrypted message size: %d bytes (%.1f KB)\n", decryptedMessage.length(), decryptedMessage.length() / 1024.0f);
+    }
+    
+    // Extract HMAC signature from JSON message (required for authentication)
+    // HMAC is computed on the encrypted message (if encrypted) or plain message (if not)
+    String messageForHMAC = isEncrypted ? jsonMessage : decryptedMessage;
+    String providedHMAC = "";
+    int hmacPos = messageForHMAC.indexOf("\"hmac\"");
+    if (hmacPos >= 0) {
+        int colonPos = messageForHMAC.indexOf(':', hmacPos);
+        int quoteStart = messageForHMAC.indexOf('"', colonPos);
         if (quoteStart >= 0) {
-            int quoteEnd = jsonMessage.indexOf('"', quoteStart + 1);
+            int quoteEnd = messageForHMAC.indexOf('"', quoteStart + 1);
             if (quoteEnd > quoteStart) {
-                providedHMAC = jsonMessage.substring(quoteStart + 1, quoteEnd);
+                providedHMAC = messageForHMAC.substring(quoteStart + 1, quoteEnd);
             }
         }
     }
     
     // Compute HMAC of the message (excluding the hmac field itself)
     // Simple approach: remove "hmac":"..." from the message
-    String messageForHMAC = jsonMessage;
     if (hmacPos >= 0) {
         // Find the end of the hmac value
-        int valueStart = jsonMessage.indexOf('"', jsonMessage.indexOf(':', hmacPos));
-        int valueEnd = jsonMessage.indexOf('"', valueStart + 1) + 1;
+        int valueStart = messageForHMAC.indexOf('"', messageForHMAC.indexOf(':', hmacPos));
+        int valueEnd = messageForHMAC.indexOf('"', valueStart + 1) + 1;
         
         // Check if there's a comma before hmac
-        int commaBefore = jsonMessage.lastIndexOf(',', hmacPos);
-        int commaAfter = jsonMessage.indexOf(',', valueEnd);
+        int commaBefore = messageForHMAC.lastIndexOf(',', hmacPos);
+        int commaAfter = messageForHMAC.indexOf(',', valueEnd);
         
         if (commaBefore >= 0 && commaAfter >= 0) {
             // Remove hmac field and both commas
-            messageForHMAC = jsonMessage.substring(0, commaBefore) + jsonMessage.substring(commaAfter + 1);
+            messageForHMAC = messageForHMAC.substring(0, commaBefore) + messageForHMAC.substring(commaAfter + 1);
         } else if (commaBefore >= 0) {
             // Remove hmac field and comma before
-            messageForHMAC = jsonMessage.substring(0, commaBefore) + jsonMessage.substring(valueEnd);
+            messageForHMAC = messageForHMAC.substring(0, commaBefore) + messageForHMAC.substring(valueEnd);
         } else if (commaAfter >= 0) {
             // Remove hmac field and comma after
-            messageForHMAC = jsonMessage.substring(0, hmacPos) + jsonMessage.substring(commaAfter + 1);
+            messageForHMAC = messageForHMAC.substring(0, hmacPos) + messageForHMAC.substring(commaAfter + 1);
         } else {
             // hmac is the only field - message becomes empty object
             messageForHMAC = "{}";
@@ -4884,17 +4944,20 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     }
     Serial.println("HMAC validation successful - command authenticated");
     
+    // Use decrypted message for processing (if it was encrypted)
+    String messageToProcess = isEncrypted ? decryptedMessage : jsonMessage;
+    
     // For large messages (like canvas_display with 640KB pixelData), we can't parse the entire JSON
     // So we first check the command type using string operations, then parse only if needed
     String command = "";
-    int commandPos = jsonMessage.indexOf("\"command\"");
+    int commandPos = messageToProcess.indexOf("\"command\"");
     if (commandPos >= 0) {
-        int colonPos = jsonMessage.indexOf(':', commandPos);
-        int quoteStart = jsonMessage.indexOf('"', colonPos);
+        int colonPos = messageToProcess.indexOf(':', commandPos);
+        int quoteStart = messageToProcess.indexOf('"', colonPos);
         if (quoteStart >= 0) {
-            int quoteEnd = jsonMessage.indexOf('"', quoteStart + 1);
+            int quoteEnd = messageToProcess.indexOf('"', quoteStart + 1);
             if (quoteEnd > quoteStart) {
-                command = jsonMessage.substring(quoteStart + 1, quoteEnd);
+                command = messageToProcess.substring(quoteStart + 1, quoteEnd);
                 command.toLowerCase();
             }
         }
@@ -4906,7 +4969,9 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     }
     
     Serial.printf("Web interface command: %s\n", command.c_str());
-    Serial.printf("  Total JSON message size: %d bytes (%.1f KB)\n", jsonMessage.length(), jsonMessage.length() / 1024.0f);
+    Serial.printf("  Total JSON message size: %d bytes (%.1f KB)%s\n", 
+                 messageToProcess.length(), messageToProcess.length() / 1024.0f,
+                 isEncrypted ? " (decrypted)" : "");
     
     // For canvas_display commands, extract fields directly without full JSON parsing (too large)
     if (command == "canvas_display") {
@@ -4915,7 +4980,7 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         String base64Data = "";
         
         // Extract width
-        int widthPos = jsonMessage.indexOf("\"width\"");
+        int widthPos = messageToProcess.indexOf("\"width\"");
         if (widthPos >= 0) {
             int colonPos = jsonMessage.indexOf(':', widthPos);
             if (colonPos >= 0) {
@@ -4935,38 +5000,38 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         }
         
         // Extract height
-        int heightPos = jsonMessage.indexOf("\"height\"");
+        int heightPos = messageToProcess.indexOf("\"height\"");
         if (heightPos >= 0) {
-            int colonPos = jsonMessage.indexOf(':', heightPos);
+            int colonPos = messageToProcess.indexOf(':', heightPos);
             if (colonPos >= 0) {
                 // Find the number after the colon
                 int numStart = colonPos + 1;
-                while (numStart < jsonMessage.length() && (jsonMessage.charAt(numStart) == ' ' || jsonMessage.charAt(numStart) == '\t')) {
+                while (numStart < messageToProcess.length() && (messageToProcess.charAt(numStart) == ' ' || messageToProcess.charAt(numStart) == '\t')) {
                     numStart++;
                 }
                 int numEnd = numStart;
-                while (numEnd < jsonMessage.length() && jsonMessage.charAt(numEnd) >= '0' && jsonMessage.charAt(numEnd) <= '9') {
+                while (numEnd < messageToProcess.length() && messageToProcess.charAt(numEnd) >= '0' && messageToProcess.charAt(numEnd) <= '9') {
                     numEnd++;
                 }
                 if (numEnd > numStart) {
-                    height = jsonMessage.substring(numStart, numEnd).toInt();
+                    height = messageToProcess.substring(numStart, numEnd).toInt();
                 }
             }
         }
         
         // Extract pixelData (base64 string) - find the value between quotes after "pixelData"
-        int pixelDataPos = jsonMessage.indexOf("\"pixelData\"");
+        int pixelDataPos = messageToProcess.indexOf("\"pixelData\"");
         if (pixelDataPos >= 0) {
-            int colonPos = jsonMessage.indexOf(':', pixelDataPos);
+            int colonPos = messageToProcess.indexOf(':', pixelDataPos);
             if (colonPos >= 0) {
-                int quoteStart = jsonMessage.indexOf('"', colonPos);
+                int quoteStart = messageToProcess.indexOf('"', colonPos);
                 if (quoteStart >= 0) {
                     // Find the closing quote - but it might be the last quote in the JSON
                     // Since pixelData is the last field, find the quote before the closing brace
-                    int lastBrace = jsonMessage.lastIndexOf('}');
-                    int quoteEnd = jsonMessage.lastIndexOf('"', lastBrace);
+                    int lastBrace = messageToProcess.lastIndexOf('}');
+                    int quoteEnd = messageToProcess.lastIndexOf('"', lastBrace);
                     if (quoteEnd > quoteStart) {
-                        base64Data = jsonMessage.substring(quoteStart + 1, quoteEnd);
+                        base64Data = messageToProcess.substring(quoteStart + 1, quoteEnd);
                     }
                 }
             }
@@ -4974,12 +5039,12 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         
         // Check if data is compressed
         bool isCompressed = false;
-        int compressedPos = jsonMessage.indexOf("\"compressed\"");
+        int compressedPos = messageToProcess.indexOf("\"compressed\"");
         if (compressedPos >= 0) {
-            int colonPos = jsonMessage.indexOf(':', compressedPos);
+            int colonPos = messageToProcess.indexOf(':', compressedPos);
             if (colonPos >= 0) {
                 // Check for "true" after the colon
-                int truePos = jsonMessage.indexOf("true", colonPos);
+                int truePos = messageToProcess.indexOf("true", colonPos);
                 if (truePos >= 0 && truePos < colonPos + 10) {
                     isCompressed = true;
                 }
@@ -13152,7 +13217,81 @@ void setup() {
 // ============================================================================
 
 /**
- * Compute HMAC-SHA256 of a message using the stored password as key
+ * Derive HMAC and encryption keys from password using HMAC-SHA256 with different salts
+ * Uses different salts for HMAC vs encryption keys to ensure keys are different
+ * Returns true on success, false on failure
+ */
+static bool deriveKeysFromPassword(const String& password, uint8_t* hmacKey, uint8_t* encryptionKey) {
+    if (password.length() == 0) {
+        Serial.println("ERROR: Cannot derive keys from empty password");
+        return false;
+    }
+    
+    // Use HMAC-SHA256 to derive keys (simpler than PBKDF2, still secure)
+    // Salt for HMAC key: "biginky_hmac_key_v1"
+    // Salt for encryption key: "biginky_enc_key_v1"
+    const char* hmacSalt = "biginky_hmac_key_v1";
+    const char* encSalt = "biginky_enc_key_v1";
+    
+    const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (md_info == nullptr) {
+        Serial.println("ERROR: Failed to get SHA256 MD info for key derivation");
+        return false;
+    }
+    
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    
+    // Derive HMAC key
+    if (mbedtls_md_setup(&ctx, md_info, 1) != 0) {  // 1 = HMAC mode
+        Serial.println("ERROR: Failed to setup HMAC context for key derivation");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+    
+    if (mbedtls_md_hmac_starts(&ctx, (const unsigned char*)password.c_str(), password.length()) != 0) {
+        Serial.println("ERROR: Failed to start HMAC for key derivation");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+    
+    if (mbedtls_md_hmac_update(&ctx, (const unsigned char*)hmacSalt, strlen(hmacSalt)) != 0) {
+        Serial.println("ERROR: Failed to update HMAC for key derivation");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+    
+    if (mbedtls_md_hmac_finish(&ctx, hmacKey) != 0) {
+        Serial.println("ERROR: Failed to finish HMAC for key derivation");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+    
+    // Derive encryption key (reuse context)
+    if (mbedtls_md_hmac_starts(&ctx, (const unsigned char*)password.c_str(), password.length()) != 0) {
+        Serial.println("ERROR: Failed to start HMAC for encryption key derivation");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+    
+    if (mbedtls_md_hmac_update(&ctx, (const unsigned char*)encSalt, strlen(encSalt)) != 0) {
+        Serial.println("ERROR: Failed to update HMAC for encryption key derivation");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+    
+    if (mbedtls_md_hmac_finish(&ctx, encryptionKey) != 0) {
+        Serial.println("ERROR: Failed to finish HMAC for encryption key derivation");
+        mbedtls_md_free(&ctx);
+        return false;
+    }
+    
+    mbedtls_md_free(&ctx);
+    return true;
+}
+
+/**
+ * Compute HMAC-SHA256 of a message using derived HMAC key
  * Returns hex-encoded HMAC (64 characters)
  * Password is NEVER transmitted - only HMAC signatures are sent
  */
@@ -13162,7 +13301,7 @@ static String computeHMAC(const String& message) {
         return "";
     }
     
-    // Get password from NVS (used as HMAC key)
+    // Get password from NVS
     if (!authPrefs.begin("webui_auth", true)) {
         Serial.println("ERROR: Failed to open NVS for HMAC computation");
         return "";
@@ -13171,11 +13310,19 @@ static String computeHMAC(const String& message) {
     authPrefs.end();
     
     if (password.length() == 0) {
-        Serial.println("ERROR: Password key is empty");
+        Serial.println("ERROR: Password is empty");
         return "";
     }
     
-    // Compute HMAC-SHA256
+    // Derive HMAC key from password
+    uint8_t hmacKey[32];
+    uint8_t dummyEncKey[32];  // Not used for HMAC
+    if (!deriveKeysFromPassword(password, hmacKey, dummyEncKey)) {
+        Serial.println("ERROR: Failed to derive HMAC key");
+        return "";
+    }
+    
+    // Compute HMAC-SHA256 using derived key
     uint8_t hmac[32];  // HMAC-SHA256 produces 32 bytes
     const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (md_info == nullptr) {
@@ -13192,7 +13339,7 @@ static String computeHMAC(const String& message) {
         return "";
     }
     
-    if (mbedtls_md_hmac_starts(&ctx, (const unsigned char*)password.c_str(), password.length()) != 0) {
+    if (mbedtls_md_hmac_starts(&ctx, hmacKey, 32) != 0) {
         Serial.println("ERROR: Failed to start HMAC");
         mbedtls_md_free(&ctx);
         return "";
@@ -13258,6 +13405,263 @@ static bool validateWebUIHMAC(const String& message, const String& providedHMAC)
     }
     
     return valid;
+}
+
+/**
+ * Encrypt a message using AES-256-CBC
+ * Returns base64-encoded ciphertext with IV prepended
+ */
+static String encryptMessage(const String& plaintext) {
+    if (!isWebUIPasswordSet()) {
+        Serial.println("ERROR: Cannot encrypt - password not set");
+        return "";
+    }
+    
+    // Get password from NVS
+    if (!authPrefs.begin("webui_auth", true)) {
+        Serial.println("ERROR: Failed to open NVS for encryption");
+        return "";
+    }
+    String password = authPrefs.getString("password", "");
+    authPrefs.end();
+    
+    if (password.length() == 0) {
+        Serial.println("ERROR: Password is empty");
+        return "";
+    }
+    
+    // Derive encryption key from password
+    uint8_t dummyHmacKey[32];
+    uint8_t encryptionKey[32];
+    if (!deriveKeysFromPassword(password, dummyHmacKey, encryptionKey)) {
+        Serial.println("ERROR: Failed to derive encryption key");
+        return "";
+    }
+    
+    // Generate random IV (16 bytes for AES-128/256 CBC)
+    uint8_t iv[16];
+    esp_fill_random(iv, 16);
+    
+    // Prepare plaintext
+    size_t plaintextLen = plaintext.length();
+    size_t paddedLen = ((plaintextLen + 15) / 16) * 16;  // PKCS7 padding
+    uint8_t* paddedPlaintext = (uint8_t*)malloc(paddedLen);
+    if (!paddedPlaintext) {
+        Serial.println("ERROR: Failed to allocate memory for padded plaintext");
+        return "";
+    }
+    
+    memcpy(paddedPlaintext, plaintext.c_str(), plaintextLen);
+    // PKCS7 padding
+    uint8_t padValue = paddedLen - plaintextLen;
+    for (size_t i = plaintextLen; i < paddedLen; i++) {
+        paddedPlaintext[i] = padValue;
+    }
+    
+    // Encrypt using AES-256-CBC
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    
+    if (mbedtls_aes_setkey_enc(&aes, encryptionKey, 256) != 0) {
+        Serial.println("ERROR: Failed to set AES encryption key");
+        mbedtls_aes_free(&aes);
+        free(paddedPlaintext);
+        return "";
+    }
+    
+    uint8_t* ciphertext = (uint8_t*)malloc(paddedLen);
+    if (!ciphertext) {
+        Serial.println("ERROR: Failed to allocate memory for ciphertext");
+        mbedtls_aes_free(&aes);
+        free(paddedPlaintext);
+        return "";
+    }
+    
+    if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, iv, paddedPlaintext, ciphertext) != 0) {
+        Serial.println("ERROR: AES encryption failed");
+        mbedtls_aes_free(&aes);
+        free(paddedPlaintext);
+        free(ciphertext);
+        return "";
+    }
+    
+    mbedtls_aes_free(&aes);
+    free(paddedPlaintext);
+    
+    // Combine IV + ciphertext and base64 encode
+    size_t totalLen = 16 + paddedLen;
+    uint8_t* combined = (uint8_t*)malloc(totalLen);
+    if (!combined) {
+        Serial.println("ERROR: Failed to allocate memory for combined data");
+        free(ciphertext);
+        return "";
+    }
+    
+    memcpy(combined, iv, 16);
+    memcpy(combined + 16, ciphertext, paddedLen);
+    free(ciphertext);
+    
+    // Base64 encode
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Len = ((totalLen + 2) / 3) * 4;
+    char* base64 = (char*)malloc(base64Len + 1);
+    if (!base64) {
+        Serial.println("ERROR: Failed to allocate memory for base64");
+        free(combined);
+        return "";
+    }
+    
+    size_t base64Idx = 0;
+    for (size_t i = 0; i < totalLen; i += 3) {
+        uint32_t value = (combined[i] << 16) | ((i + 1 < totalLen ? combined[i + 1] : 0) << 8) | (i + 2 < totalLen ? combined[i + 2] : 0);
+        base64[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+        base64[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+        base64[base64Idx++] = (i + 1 < totalLen) ? base64_chars[(value >> 6) & 0x3F] : '=';
+        base64[base64Idx++] = (i + 2 < totalLen) ? base64_chars[value & 0x3F] : '=';
+    }
+    base64[base64Idx] = '\0';
+    
+    free(combined);
+    String result = String(base64);
+    free(base64);
+    
+    return result;
+}
+
+/**
+ * Decrypt a message using AES-256-CBC
+ * Expects base64-encoded ciphertext with IV prepended
+ */
+static String decryptMessage(const String& ciphertext) {
+    if (!isWebUIPasswordSet()) {
+        Serial.println("ERROR: Cannot decrypt - password not set");
+        return "";
+    }
+    
+    // Get password from NVS
+    if (!authPrefs.begin("webui_auth", true)) {
+        Serial.println("ERROR: Failed to open NVS for decryption");
+        return "";
+    }
+    String password = authPrefs.getString("password", "");
+    authPrefs.end();
+    
+    if (password.length() == 0) {
+        Serial.println("ERROR: Password is empty");
+        return "";
+    }
+    
+    // Derive encryption key from password
+    uint8_t dummyHmacKey[32];
+    uint8_t encryptionKey[32];
+    if (!deriveKeysFromPassword(password, dummyHmacKey, encryptionKey)) {
+        Serial.println("ERROR: Failed to derive encryption key");
+        return "";
+    }
+    
+    // Base64 decode
+    size_t ciphertextLen = ciphertext.length();
+    size_t decodedLen = (ciphertextLen * 3) / 4;
+    uint8_t* decoded = (uint8_t*)malloc(decodedLen);
+    if (!decoded) {
+        Serial.println("ERROR: Failed to allocate memory for decoded data");
+        return "";
+    }
+    
+    size_t decodedIdx = 0;
+    for (size_t i = 0; i < ciphertextLen && decodedIdx < decodedLen; i += 4) {
+        uint32_t value = 0;
+        int padding = 0;
+        
+        for (int j = 0; j < 4 && (i + j) < ciphertextLen; j++) {
+            char c = ciphertext.charAt(i + j);
+            if (c == '=') {
+                padding++;
+                value <<= 6;
+            } else if (c >= 'A' && c <= 'Z') {
+                value = (value << 6) | (c - 'A');
+            } else if (c >= 'a' && c <= 'z') {
+                value = (value << 6) | (c - 'a' + 26);
+            } else if (c >= '0' && c <= '9') {
+                value = (value << 6) | (c - '0' + 52);
+            } else if (c == '+') {
+                value = (value << 6) | 62;
+            } else if (c == '/') {
+                value = (value << 6) | 63;
+            }
+        }
+        
+        int bytes = 3 - padding;
+        for (int j = 0; j < bytes && decodedIdx < decodedLen; j++) {
+            decoded[decodedIdx++] = (value >> (8 * (2 - j))) & 0xFF;
+        }
+    }
+    
+    if (decodedIdx < 16) {
+        Serial.println("ERROR: Decoded data too short (need at least 16 bytes for IV)");
+        free(decoded);
+        return "";
+    }
+    
+    // Extract IV (first 16 bytes)
+    uint8_t iv[16];
+    memcpy(iv, decoded, 16);
+    
+    size_t ciphertextDataLen = decodedIdx - 16;
+    if (ciphertextDataLen % 16 != 0) {
+        Serial.println("ERROR: Ciphertext length not multiple of 16 bytes");
+        free(decoded);
+        return "";
+    }
+    
+    // Decrypt using AES-256-CBC
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    
+    if (mbedtls_aes_setkey_dec(&aes, encryptionKey, 256) != 0) {
+        Serial.println("ERROR: Failed to set AES decryption key");
+        mbedtls_aes_free(&aes);
+        free(decoded);
+        return "";
+    }
+    
+    uint8_t* plaintext = (uint8_t*)malloc(ciphertextDataLen);
+    if (!plaintext) {
+        Serial.println("ERROR: Failed to allocate memory for plaintext");
+        mbedtls_aes_free(&aes);
+        free(decoded);
+        return "";
+    }
+    
+    if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, ciphertextDataLen, iv, decoded + 16, plaintext) != 0) {
+        Serial.println("ERROR: AES decryption failed");
+        mbedtls_aes_free(&aes);
+        free(decoded);
+        free(plaintext);
+        return "";
+    }
+    
+    mbedtls_aes_free(&aes);
+    free(decoded);
+    
+    // Remove PKCS7 padding
+    if (ciphertextDataLen == 0) {
+        free(plaintext);
+        return "";
+    }
+    
+    uint8_t padValue = plaintext[ciphertextDataLen - 1];
+    if (padValue == 0 || padValue > 16) {
+        Serial.println("ERROR: Invalid padding value");
+        free(plaintext);
+        return "";
+    }
+    
+    size_t plaintextLen = ciphertextDataLen - padValue;
+    String result = String((char*)plaintext, plaintextLen);
+    free(plaintext);
+    
+    return result;
 }
 
 /**

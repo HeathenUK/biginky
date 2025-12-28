@@ -8,7 +8,13 @@
 body{font-family:Arial,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#1a1a1a;color:#e0e0e0;}
 h1{color:#e0e0e0;border-bottom:2px solid #4CAF50;padding-bottom:10px;}
 .section{background:#2a2a2a;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.3);}
-h2{color:#4CAF50;margin-top:0;}
+h2{color:#4CAF50;margin-top:0;cursor:pointer;user-select:none;display:flex;align-items:center;gap:10px;}
+h2:hover{color:#5CBF60;}
+h2::before{content:'▼';font-size:14px;transition:transform 0.3s;display:inline-block;}
+h2.collapsed::before{transform:rotate(-90deg);}
+.section-content{overflow:hidden;transition:max-height 0.3s ease-out;}
+.section-content.collapsed{max-height:0;padding-top:0;padding-bottom:0;margin:0;}
+.section-content:not(.collapsed){max-height:10000px;}
 label{display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;}
 textarea{width:100%;min-height:100px;font-family:monospace;padding:10px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
 select{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
@@ -19,10 +25,17 @@ button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
 .status{color:#4CAF50;margin:10px 0;font-weight:bold;}
 .error{color:#f44336;}
 .info{color:#2196F3;margin:10px 0;padding:10px;background:#1a1a1a;border-radius:4px;border-left:3px solid #2196F3;}
-.connection-status{display:inline-block;padding:5px 10px;border-radius:4px;font-weight:bold;margin-left:10px;}
+.connection-status{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border-radius:4px;font-weight:bold;margin-left:10px;}
+.connection-status::before{font-size:16px;}
 .connected{background:#4CAF50;color:white;}
+.connected::before{content:'✓';}
 .disconnected{background:#f44336;color:white;}
+.disconnected::before{content:'✗';}
 .connecting{background:#ff9800;color:white;}
+.connecting::before{content:'⟳';animation:spin 1s linear infinite;}
+.reconnecting{background:#ff9800;color:white;}
+.reconnecting::before{content:'⟳';animation:spin 1s linear infinite;}
+.status-timestamp{font-size:11px;opacity:0.7;margin-left:10px;font-weight:normal;}
 .flex-row{display:flex;flex-wrap:wrap;gap:15px;align-items:flex-end;margin-top:15px;}
 .flex-item{flex:1;min-width:150px;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
@@ -84,7 +97,8 @@ window.addEventListener('load', function() {
 <body>
 <h1>BigInky Remote Control</h1>
 <div class="section">
-<h2>Authentication (Required)</h2>
+<h2 onclick="toggleSection(this)">Authentication (Required)</h2>
+<div class="section-content" id="section-auth">
 <p style="color:#888;font-size:14px;margin-bottom:15px;"><strong>Password is required to use this interface.</strong> Enter the password configured on the device (via local WiFi UI) to enable HMAC authentication. All functionality is disabled until a password is set.</p>
 <div class="flex-row">
 <div class="flex-item">
@@ -99,41 +113,58 @@ window.addEventListener('load', function() {
 <div id="passwordStatus" style="margin-top:10px;"></div>
 <p style="color:#888;font-size:12px;margin-top:10px;font-style:italic;">Note: HMAC provides authentication and integrity verification. Encryption (for confidentiality) is a separate feature that can be added later.</p>
 </div>
+</div>
 <div class="section">
-<h2>Connection</h2>
+<h2 onclick="toggleSection(this)">Connection</h2>
+<div class="section-content" id="section-connection">
 <div style="text-align:center;">
 <button onclick="connectMQTT()" id="connectBtn">Connect</button>
 <button onclick="disconnectMQTT()" id="disconnectBtn" disabled>Disconnect</button>
 <div style="margin-top:10px;">
 <span id="connectionStatus" class="connection-status disconnected">Disconnected</span>
+<span id="connectionTimestamp" class="status-timestamp"></span>
 </div>
 <div id="connectionStatusMsg" style="margin-top:10px;"></div>
+<label style="margin-top:15px;display:block;">
+<input type="checkbox" id="autoReconnect" checked style="margin-right:5px;">
+Enable auto-reconnect
+</label>
+</div>
 </div>
 </div>
 <div class="section">
-<h2>Device Status</h2>
+<h2 onclick="toggleSection(this)">Device Status</h2>
+<div class="section-content" id="section-status">
 <div id="deviceStatus" style="font-family:monospace;font-size:12px;color:#e0e0e0;">
 <p>Not connected - status will appear when connected to MQTT</p>
 </div>
 </div>
+</div>
 <div class="section">
-<h2>Display Preview</h2>
+<h2 onclick="toggleSection(this)">Display Preview</h2>
+<div class="section-content" id="section-preview">
 <p>Latest display content (updated whenever the display is refreshed):</p>
 <div id="thumbnailContainer" style="text-align:center;margin:20px 0;">
 <canvas id="thumbnailCanvas" width="400" height="300" style="border:2px solid #666;background:#fff;max-width:100%;height:auto;display:none;"></canvas>
 <p id="thumbnailStatus" style="color:#888;">No preview available yet</p>
 </div>
 </div>
+</div>
 <div class="section">
-<h2>Media Mappings</h2>
+<h2 onclick="toggleSection(this)">Media Mappings</h2>
+<div class="section-content" id="section-media">
 <p>Available media files from media.txt (with thumbnails):</p>
 <div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded yet - will appear when connected to MQTT</div>
-<div id="mediaMappingsTable" style="overflow-x:auto;">
+<div class="table-wrapper">
+<div id="mediaMappingsTable">
 <!-- Table will be populated here -->
 </div>
 </div>
+</div>
+</div>
 <div class="section">
-<h2>Text Display</h2>
+<h2 onclick="toggleSection(this)">Text Display</h2>
+<div class="section-content" id="section-text">
 <p>Enter text to display on the panel. Select text colour, background colour, and outline colour.</p>
 <label>Text:</label>
 <textarea id="textInput" placeholder="Enter text to display..."></textarea>
@@ -177,7 +208,8 @@ window.addEventListener('load', function() {
 <div id="textStatus"></div>
 </div>
 <div class="section">
-<h2>Drawing Canvas</h2>
+<h2 onclick="toggleSection(this)">Drawing Canvas</h2>
+<div class="section-content" id="section-canvas">
 <p>Draw on the canvas (800x600) and display it on the panel (1600x1200). The drawing will be scaled 2x and centered.</p>
 <label>Colour:</label>
 <select id="drawColor" style="width:150px;margin:10px 0;">
@@ -704,12 +736,19 @@ async function verifyHMAC(message, providedHMAC) {
 
 function updateConnectionStatus(status, message) {
     const statusEl = document.getElementById('connectionStatus');
+    const timestampEl = document.getElementById('connectionTimestamp');
     const msgEl = document.getElementById('connectionStatusMsg');
     const connectBtn = document.getElementById('connectBtn');
     const disconnectBtn = document.getElementById('disconnectBtn');
     
     statusEl.className = 'connection-status ' + status;
     statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    
+    // Update timestamp
+    if (timestampEl) {
+        const now = new Date();
+        timestampEl.textContent = now.toLocaleTimeString();
+    }
     
     if (message) {
         msgEl.innerHTML = '<div class="' + (status === 'connected' ? 'status' : 'error') + '">' + message + '</div>';
@@ -719,12 +758,15 @@ function updateConnectionStatus(status, message) {
     
     // Update button states based on connection AND password
     const hasPassword = (webUIPassword && webUIPassword.length > 0);
-    connectBtn.disabled = (status === 'connected' || status === 'connecting' || !hasPassword);
+    connectBtn.disabled = (status === 'connected' || status === 'connecting' || status === 'reconnecting' || !hasPassword);
     disconnectBtn.disabled = (status === 'disconnected');
     
     const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn'];
     buttons.forEach(id => {
-        document.getElementById(id).disabled = (status !== 'connected' || !hasPassword);
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.disabled = (status !== 'connected' || !hasPassword);
+        }
     });
 }
 
@@ -1395,6 +1437,8 @@ function connectMQTT() {
         onSuccess: function() {
             console.log('Connection successful!');
             isConnected = true;
+            cancelReconnect(); // Reset reconnect attempts on successful connection
+            reconnectAttempts = 0;
             updateConnectionStatus('connected', 'Connected successfully!');
             updatePasswordStatus();  // Update button states
             logCommand('CONNECTED', { broker: MQTT_BROKER, topic: MQTT_TOPIC });

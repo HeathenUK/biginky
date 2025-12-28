@@ -4953,20 +4953,38 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     // Use decrypted message for processing (if it was encrypted)
     String messageToProcess = isEncrypted ? decryptedMessage : jsonMessage;
     
+    // Debug: verify messageToProcess is set correctly
+    Serial.printf("  messageToProcess length: %d, isEncrypted: %d\n", messageToProcess.length(), isEncrypted ? 1 : 0);
+    
     // For large messages (like canvas_display with 640KB pixelData), we can't parse the entire JSON
     // So we first check the command type using string operations, then parse only if needed
     String command = "";
     int commandPos = messageToProcess.indexOf("\"command\"");
+    Serial.printf("  Command position search: commandPos=%d\n", commandPos);
     if (commandPos >= 0) {
         int colonPos = messageToProcess.indexOf(':', commandPos);
-        int quoteStart = messageToProcess.indexOf('"', colonPos);
-        if (quoteStart >= 0) {
-            int quoteEnd = messageToProcess.indexOf('"', quoteStart + 1);
-            if (quoteEnd > quoteStart) {
-                command = messageToProcess.substring(quoteStart + 1, quoteEnd);
-                command.toLowerCase();
+        Serial.printf("  Colon position: %d\n", colonPos);
+        if (colonPos >= 0) {
+            int quoteStart = messageToProcess.indexOf('"', colonPos);
+            Serial.printf("  Quote start: %d\n", quoteStart);
+            if (quoteStart >= 0) {
+                int quoteEnd = messageToProcess.indexOf('"', quoteStart + 1);
+                Serial.printf("  Quote end: %d\n", quoteEnd);
+                if (quoteEnd > quoteStart) {
+                    command = messageToProcess.substring(quoteStart + 1, quoteEnd);
+                    command.toLowerCase();
+                    Serial.printf("  Extracted command: '%s'\n", command.c_str());
+                } else {
+                    Serial.println("  ERROR: Quote end not found or invalid");
+                }
+            } else {
+                Serial.println("  ERROR: Quote start not found after colon");
             }
+        } else {
+            Serial.println("  ERROR: Colon not found after 'command'");
         }
+    } else {
+        Serial.println("  ERROR: 'command' field not found in message");
     }
     
     if (command.length() == 0) {

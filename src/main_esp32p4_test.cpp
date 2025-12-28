@@ -3227,6 +3227,26 @@ static void publishMQTTStatus() {
     // Connection status (without sensitive details)
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
     
+    // Pending action (if a command is being processed)
+    if (webUICommandPending && pendingWebUICommand.length() > 0) {
+        // Extract command name from JSON for display
+        String cmdName = "unknown";
+        int cmdPos = pendingWebUICommand.indexOf("\"command\":");
+        if (cmdPos >= 0) {
+            int colonPos = pendingWebUICommand.indexOf(':', cmdPos);
+            int quoteStart = pendingWebUICommand.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;
+                int quoteEnd = pendingWebUICommand.indexOf('"', quoteStart);
+                if (quoteEnd > quoteStart) {
+                    cmdName = pendingWebUICommand.substring(quoteStart, quoteEnd);
+                }
+            }
+        }
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"pending_action\":\"%s\"",
+                           cmdName.c_str());
+    }
+    
     // Close JSON object (before adding HMAC)
     written += snprintf(jsonBuffer + written, jsonSize - written, "}");
     

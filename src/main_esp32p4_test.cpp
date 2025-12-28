@@ -341,6 +341,7 @@ static bool g_is_cold_boot = false;  // Flag to indicate this is a cold boot (no
 bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
 bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
 bool sdInitDirect(bool mode1bit = false);
+static void publishMQTTMediaMappings();  // Forward declaration - publish media.txt mappings with thumbnails
 
 // NVS storage functions (defined later)
 void mediaIndexLoadFromNVS();  // Load media index from NVS (called on startup)

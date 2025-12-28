@@ -2215,6 +2215,7 @@ function updateToolOptions(tool) {
     const fillColorContainer = document.getElementById('fillColorContainer');
     const outlineColorContainer = document.getElementById('outlineColorContainer');
     const colorLabel = document.getElementById('colorLabel');
+    const colorContainer = colorLabel ? colorLabel.parentElement : null;
     
     // Show/hide text options
     if (textOptions && textInput) {
@@ -2228,15 +2229,17 @@ function updateToolOptions(tool) {
     }
     
     // Show/hide fill and outline for shapes
-    if (fillColorContainer && outlineColorContainer && colorLabel) {
+    if (fillColorContainer && outlineColorContainer && colorLabel && colorContainer) {
         if (tool === 'rectangle' || tool === 'circle') {
+            // Hide regular color selector, show fill and outline
+            colorContainer.style.display = 'none';
             fillColorContainer.style.display = 'block';
             outlineColorContainer.style.display = 'block';
-            colorLabel.textContent = 'Colour:';
         } else {
+            // Show regular color selector, hide fill and outline
+            colorContainer.style.display = 'block';
             fillColorContainer.style.display = 'none';
             outlineColorContainer.style.display = 'none';
-            colorLabel.textContent = 'Colour:';
         }
     }
 }

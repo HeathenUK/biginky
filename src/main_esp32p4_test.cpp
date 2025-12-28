@@ -5890,6 +5890,16 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     else if (command == "next") {
         return handleNextCommand();
     }
+    else if (command == "go") {
+        // Extract parameter field from JSON
+        String parameter = doc.containsKey("parameter") ? doc["parameter"].as<String>() : "";
+        if (parameter.length() == 0) {
+            Serial.println("ERROR: go command missing 'parameter' field");
+            return false;
+        }
+        Serial.printf("Go command: parameter=\"%s\"\n", parameter.c_str());
+        return handleGoCommand(parameter);
+    }
     else {
         Serial.printf("Unknown web interface command: %s\n", command.c_str());
         return false;

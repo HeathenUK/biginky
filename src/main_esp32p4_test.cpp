@@ -44,6 +44,7 @@
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
+#include <pngle.h>  // For direct PNG decoding to RGB buffer
 #include "EL133UF1_TextPlacement.h"
 #include "OpenAIImage.h"
 
@@ -3932,25 +3933,108 @@ static char* loadThumbnailFromSD() {
  * Returns base64-encoded JPEG string, or empty string on error
  * Quarter size: 200x150 for 800x600 images, or 400x300 for 1600x1200 images
  */
+// Helper structure for PNG to RGB decoding (using static global like existing PNG decoder)
+static struct {
+    uint8_t* rgbBuffer;
+    uint32_t width;
+    uint32_t height;
+    bool success;
+} g_pngToRGBContext;
+
+// Callback for pngle to write directly to RGB buffer
+static void pngle_rgb_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]) {
+    if (!g_pngToRGBContext.rgbBuffer) return;
+    
+    uint32_t imgWidth = pngle_get_width(pngle);
+    
+    // Write RGBA to RGB888 buffer (alpha blending with white background)
+    for (uint32_t py = 0; py < h && (y + py) < g_pngToRGBContext.height; py++) {
+        for (uint32_t px = 0; px < w && (x + px) < g_pngToRGBContext.width; px++) {
+            uint32_t idx = ((y + py) * imgWidth + (x + px)) * 3;
+            if (idx + 2 < g_pngToRGBContext.width * g_pngToRGBContext.height * 3) {
+                // Convert RGBA to RGB888 (simple alpha blending with white background)
+                uint8_t alpha = rgba[3];
+                uint8_t r = (rgba[0] * alpha + 255 * (255 - alpha)) / 255;
+                uint8_t g = (rgba[1] * alpha + 255 * (255 - alpha)) / 255;
+                uint8_t b = (rgba[2] * alpha + 255 * (255 - alpha)) / 255;
+                
+                g_pngToRGBContext.rgbBuffer[idx + 0] = r;
+                g_pngToRGBContext.rgbBuffer[idx + 1] = g;
+                g_pngToRGBContext.rgbBuffer[idx + 2] = b;
+            }
+        }
+    }
+}
+
+// Decode PNG to RGB888 buffer (doesn't require display)
+static bool decodePNGToRGB(const uint8_t* pngData, size_t pngLen, uint8_t** rgbBuffer, uint32_t* width, uint32_t* height) {
+    if (!pngData || pngLen < 24) return false;
+    
+    // Check PNG signature
+    static const uint8_t PNG_SIG[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (int i = 0; i < 8; i++) {
+        if (pngData[i] != PNG_SIG[i]) return false;
+    }
+    
+    // Read dimensions from IHDR
+    *width = ((uint32_t)pngData[16] << 24) | ((uint32_t)pngData[17] << 16) | 
+             ((uint32_t)pngData[18] << 8) | pngData[19];
+    *height = ((uint32_t)pngData[20] << 24) | ((uint32_t)pngData[21] << 16) | 
+              ((uint32_t)pngData[22] << 8) | pngData[23];
+    
+    if (*width == 0 || *height == 0 || *width > 4096 || *height > 4096) {
+        Serial.printf("ERROR: Invalid PNG dimensions: %lux%lu\n", *width, *height);
+        return false;
+    }
+    
+    // Allocate RGB buffer
+    size_t rgbSize = *width * *height * 3;
+    *rgbBuffer = (uint8_t*)hal_psram_malloc(rgbSize);
+    if (!*rgbBuffer) {
+        Serial.println("ERROR: Failed to allocate PSRAM for RGB buffer");
+        return false;
+    }
+    memset(*rgbBuffer, 255, rgbSize);  // Initialize to white
+    
+    // Create pngle instance
+    pngle_t* pngle = pngle_new();
+    if (!pngle) {
+        Serial.println("ERROR: Failed to create pngle instance");
+        hal_psram_free(*rgbBuffer);
+        *rgbBuffer = nullptr;
+        return false;
+    }
+    
+    // Set up global context for callback
+    g_pngToRGBContext.rgbBuffer = *rgbBuffer;
+    g_pngToRGBContext.width = *width;
+    g_pngToRGBContext.height = *height;
+    g_pngToRGBContext.success = false;
+    
+    pngle_set_draw_callback(pngle, pngle_rgb_callback);
+    
+    // Decode PNG
+    int result = pngle_feed(pngle, pngData, pngLen);
+    if (result >= 0) {
+        g_pngToRGBContext.success = true;
+    } else {
+        Serial.printf("ERROR: PNG decode failed: %s\n", pngle_error(pngle));
+        hal_psram_free(*rgbBuffer);
+        *rgbBuffer = nullptr;
+    }
+    
+    pngle_destroy(pngle);
+    bool success = g_pngToRGBContext.success;
+    g_pngToRGBContext.rgbBuffer = nullptr;  // Clear context
+    return success;
+}
+
 static String generateThumbnailFromImageFile(const String& imagePath) {
 #if SDMMC_ENABLED && defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
     if (!sdCardMounted && sd_card == nullptr) {
         Serial.printf("ERROR: SD card not mounted, cannot generate thumbnail for %s\n", imagePath.c_str());
         return "";
     }
-    
-    // Ensure display is initialized
-    if (display.getBuffer() == nullptr) {
-        Serial.println("ERROR: Display buffer is nullptr, cannot generate thumbnail");
-        return "";
-    }
-    
-    // Clear display buffer
-    display.clear(EL133UF1_WHITE);
-    
-    // Load and draw the image to display buffer
-    uint32_t sd_ms = 0, dec_ms = 0;
-    bool loaded = false;
     
     // Load image file from SD into memory
     String fullPath = "0:/" + imagePath;
@@ -3987,58 +4071,42 @@ static String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    // Try to load as PNG first
-    PNGResult pngResult = pngLoader.drawFullscreen(imageData, fileSize);
-    if (pngResult == PNG_OK) {
+    // Decode PNG to RGB buffer (works without display)
+    uint8_t* rgbBuffer = nullptr;
+    uint32_t srcWidth = 0, srcHeight = 0;
+    bool loaded = false;
+    
+    // Try PNG first
+    if (decodePNGToRGB(imageData, fileSize, &rgbBuffer, &srcWidth, &srcHeight)) {
         loaded = true;
     } else {
-        // Try BMP as fallback
-        BMPResult bmpResult = bmpLoader.drawFullscreen(imageData, fileSize);
-        if (bmpResult == BMP_OK) {
-            loaded = true;
-        }
+        // Try BMP as fallback (would need BMP decoder, but for now just skip)
+        Serial.printf("WARNING: PNG decode failed, BMP fallback not implemented yet\n");
     }
     
     hal_psram_free(imageData);
     
-    if (!loaded) {
-        Serial.printf("ERROR: Failed to load image %s for thumbnail generation\n", imagePath.c_str());
+    if (!loaded || !rgbBuffer) {
+        Serial.printf("ERROR: Failed to decode image %s for thumbnail generation\n", imagePath.c_str());
+        if (rgbBuffer) hal_psram_free(rgbBuffer);
         return "";
     }
     
-    // Generate quarter-size thumbnail from display buffer
+    // Generate quarter-size thumbnail
     // Quarter size: 200x150 for 800x600, or 400x300 for 1600x1200
-    const int srcWidth = display.width();
-    const int srcHeight = display.height();
     const int thumbWidth = srcWidth / 4;   // Quarter width
     const int thumbHeight = srcHeight / 4;  // Quarter height
     const int scale = 4;
-    
-    bool isARGBMode = false;
-#if EL133UF1_USE_ARGB8888
-    isARGBMode = display.isARGBMode();
-#endif
     
     size_t thumbSize = thumbWidth * thumbHeight * 3;
     uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
     if (thumbBuffer == nullptr) {
         Serial.println("ERROR: Failed to allocate thumbnail buffer");
+        hal_psram_free(rgbBuffer);
         return "";
     }
     
-    // Color mapping (same as main thumbnail)
-    uint8_t colorMap[8][3] = {
-        {10, 10, 10},        // 0: Black
-        {245, 245, 235},     // 1: White
-        {245, 210, 50},      // 2: Yellow
-        {190, 60, 55},       // 3: Red
-        {128, 128, 128},     // 4: (unused)
-        {45, 75, 160},       // 5: Blue
-        {55, 140, 85},       // 6: Green
-        {128, 128, 128},     // 7: (unused)
-    };
-    
-    // Scale down by averaging 4x4 blocks
+    // Scale down by averaging 4x4 blocks from RGB buffer
     for (int ty = 0; ty < thumbHeight; ty++) {
         for (int tx = 0; tx < thumbWidth; tx++) {
             int sx = tx * scale;
@@ -4047,32 +4115,15 @@ static String generateThumbnailFromImageFile(const String& imagePath) {
             uint32_t rSum = 0, gSum = 0, bSum = 0;
             int count = 0;
             
-            for (int dy = 0; dy < scale && (sy + dy) < srcHeight; dy++) {
-                for (int dx = 0; dx < scale && (sx + dx) < srcWidth; dx++) {
-                    uint8_t einkColor = 1;  // Default to white
-                    
-                    if (isARGBMode) {
-#if EL133UF1_USE_ARGB8888
-                        uint32_t* argbBuffer = display.getBufferARGB();
-                        if (argbBuffer != nullptr) {
-                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
-                            uint32_t argb = argbBuffer[srcIdx];
-                            einkColor = EL133UF1::argbToColor(argb);
-                        }
-#endif
-                    } else {
-                        uint8_t* framebuffer = display.getBuffer();
-                        if (framebuffer != nullptr) {
-                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
-                            einkColor = framebuffer[srcIdx] & 0x07;
-                            if (einkColor > 7) einkColor = 1;
-                        }
+            for (int dy = 0; dy < scale && (sy + dy) < (int)srcHeight; dy++) {
+                for (int dx = 0; dx < scale && (sx + dx) < (int)srcWidth; dx++) {
+                    int srcIdx = ((sy + dy) * srcWidth + (sx + dx)) * 3;
+                    if (srcIdx + 2 < (int)(srcWidth * srcHeight * 3)) {
+                        rSum += rgbBuffer[srcIdx + 0];
+                        gSum += rgbBuffer[srcIdx + 1];
+                        bSum += rgbBuffer[srcIdx + 2];
+                        count++;
                     }
-                    
-                    rSum += colorMap[einkColor][0];
-                    gSum += colorMap[einkColor][1];
-                    bSum += colorMap[einkColor][2];
-                    count++;
                 }
             }
             
@@ -4086,6 +4137,8 @@ static String generateThumbnailFromImageFile(const String& imagePath) {
             }
         }
     }
+    
+    hal_psram_free(rgbBuffer);
     
     // Encode to JPEG
     jpeg_encoder_handle_t jpeg_handle = nullptr;

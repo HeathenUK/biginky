@@ -207,7 +207,6 @@ function loadPassword() {
             // Simple obfuscation (not real encryption, but better than plaintext)
             webUIPassword = atob(stored);
             document.getElementById('webUIPassword').value = webUIPassword;
-            showStatus('passwordStatus', 'Password loaded from storage', false);
         } catch (e) {
             console.error('Failed to load password:', e);
             webUIPassword = null;
@@ -222,12 +221,14 @@ function loadPassword() {
 function savePassword() {
     const password = document.getElementById('webUIPassword').value.trim();
     if (password.length === 0) {
-        showStatus('passwordStatus', 'Error: Password cannot be empty', true);
+        const passwordStatusEl = document.getElementById('passwordStatus');
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Password cannot be empty</div>';
         updatePasswordStatus();
         return;
     }
     if (password.length < 8) {
-        showStatus('passwordStatus', 'Error: Password must be at least 8 characters', true);
+        const passwordStatusEl = document.getElementById('passwordStatus');
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Password must be at least 8 characters</div>';
         updatePasswordStatus();
         return;
     }
@@ -236,11 +237,11 @@ function savePassword() {
         // Simple obfuscation (not real encryption, but better than plaintext)
         localStorage.setItem('biginky_webui_password', btoa(password));
         webUIPassword = password;
-        showStatus('passwordStatus', 'Password saved successfully', false);
-        updatePasswordStatus();
+        updatePasswordStatus();  // This will show success message
     } catch (e) {
         console.error('Failed to save password:', e);
-        showStatus('passwordStatus', 'Error: Failed to save password: ' + e.message, true);
+        const passwordStatusEl = document.getElementById('passwordStatus');
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
         updatePasswordStatus();
     }
 }

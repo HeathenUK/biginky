@@ -4241,6 +4241,11 @@ bool mqttConnect() {
     mqtt_cfg.network.reconnect_timeout_ms = 0;  // Disable auto-reconnect (0 = disabled)
     mqtt_cfg.network.timeout_ms = 10000;  // Connection timeout (10 seconds)
     
+    // Task configuration - increase stack size to handle large operations (decryption, decompression, etc.)
+    // Default is usually 6144 bytes, we need much more for canvas_display with 480KB pixel data
+    mqtt_cfg.task.stack_size = 16384;  // 16KB stack (was causing stack overflow with default ~6KB)
+    mqtt_cfg.task.priority = 5;  // Default priority (can adjust if needed)
+    
     // Create and start MQTT client
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
     if (mqttClient == nullptr) {

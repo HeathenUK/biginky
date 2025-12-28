@@ -4608,9 +4608,16 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
                     webUICommandPending = true;
                     pendingWebUICommand = jsonMessage;
+                    
+                    // Publish status immediately to acknowledge command receipt
+                    // This lets the web UI know the command was received and is being processed
+                    publishMQTTStatus();
                 } else {
                     // Process lightweight commands immediately
                     handleWebInterfaceCommand(jsonMessage);
+                    
+                    // Publish status to acknowledge command receipt
+                    publishMQTTStatus();
                 }
             }
             

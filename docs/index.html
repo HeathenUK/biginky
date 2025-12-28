@@ -152,7 +152,7 @@ window.addEventListener('load', function() {
 <label style="display:inline;margin:0;margin-right:8px;">Web UI Password:</label>
 </div>
 <div style="flex:1 1 auto;min-width:200px;">
-<input type="password" id="webUIPassword" placeholder="Enter password (min 8 characters)..." style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-family:monospace;height:38px;">
+<input type="password" id="webUIPassword" placeholder="Enter password (min 8 characters)..." onkeydown="if(event.key==='Enter'){event.preventDefault();savePassword();}" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-family:monospace;height:38px;">
 </div>
 <div style="flex:0 0 auto;display:flex;gap:10px;">
 <button onclick="savePassword()" style="height:38px;min-height:38px;padding:8px 16px;margin:0;">Save Password</button>
@@ -207,7 +207,7 @@ window.addEventListener('load', function() {
 <div class="section-content" id="section-text">
 <p>Enter text to display. Select text, background, and outline colours.</p>
 <label>Text:</label>
-<textarea id="textInput" placeholder="Enter text to display..."></textarea>
+<textarea id="textInput" placeholder="Enter text to display..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendTextDisplay();}"></textarea>
 <div class="flex-row">
 <div class="flex-item">
 <label>Text Colour:</label>
@@ -246,6 +246,7 @@ window.addEventListener('load', function() {
 <button onclick="sendTextDisplay()" class="flex-shrink" id="textDisplayBtn" disabled>Display Text</button>
 </div>
 <div id="textStatus"></div>
+</div>
 </div>
 <div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>

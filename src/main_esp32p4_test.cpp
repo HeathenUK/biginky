@@ -1621,6 +1621,12 @@ int loadMediaMappingsFromSD() {
     if (g_media_mappings.size() > 0) {
         g_media_mappings_loaded = true;
         Serial.printf("  Loaded %d media mappings from SD card\n", g_media_mappings.size());
+        
+        // Publish media mappings if MQTT is connected (media.txt was changed/reloaded)
+        if (mqttConnected && mqttClient != nullptr) {
+            Serial.println("  Media mappings changed - publishing to MQTT...");
+            publishMQTTMediaMappings();
+        }
     } else {
         Serial.println("  No mappings found in file");
     }
@@ -2205,9 +2211,9 @@ static void auto_cycle_task(void* arg) {
     
     // COLD BOOT: Always do WiFi->NTP->MQTT check on first boot (not deep sleep wake)
     // This ensures we can receive !manage commands to change the hour schedule
+    // Don't clear g_is_cold_boot yet - we need it later to publish media mappings
     if (g_is_cold_boot) {
         Serial.println("=== COLD BOOT: Always doing MQTT check (ignoring hour schedule) ===");
-        g_is_cold_boot = false;  // Clear flag after first use
         
         // Ensure WiFi is connected and time is synced
         if (!time_ok) {
@@ -2370,16 +2376,21 @@ static void auto_cycle_task(void* arg) {
                     delay(1000);  // Wait for connection and subscriptions
                     publishMQTTStatus();
                     
-                    // On cold boot, also publish media mappings
+                    // On cold boot, also publish media mappings (ONLY on cold boot, not deep sleep wake)
                     if (g_is_cold_boot) {
                         Serial.println("=== COLD BOOT: Publishing media mappings ===");
                         publishMQTTMediaMappings();
+                        g_is_cold_boot = false;  // Clear flag after publishing media mappings
                     }
                     
                     delay(200);  // Allow time for publishes to complete
                     mqttDisconnect();
                 } else {
                     Serial.println("WARNING: Failed to reconnect to MQTT for status publish");
+                    // Clear cold boot flag even if MQTT failed (don't retry on next cycle)
+                    if (g_is_cold_boot) {
+                        g_is_cold_boot = false;
+                    }
                 }
                 Serial.println("Returned from publishMQTTStatus()");
                 Serial.flush();

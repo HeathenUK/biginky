@@ -4973,7 +4973,18 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
                  messageToProcess.length(), messageToProcess.length() / 1024.0f,
                  isEncrypted ? " (decrypted)" : "");
     
+    // For canvas_display commands, defer processing to avoid stack overflow in MQTT task
+    // Even though we already decrypted, the decompression and pixel processing is too heavy
+    if (command == "canvas_display") {
+        Serial.println("Deferring canvas_display command processing (heavy operation - will process after MQTT disconnect)");
+        // Store the decrypted message for deferred processing
+        webUICommandPending = true;
+        pendingWebUICommand = messageToProcess;  // Store decrypted message
+        return true;  // Return success - command will be processed later
+    }
+    
     // For canvas_display commands, extract fields directly without full JSON parsing (too large)
+    // NOTE: This code path should not be reached for canvas_display (deferred above)
     if (command == "canvas_display") {
         // Extract width, height, and pixelData using string operations
         int width = 0, height = 0;

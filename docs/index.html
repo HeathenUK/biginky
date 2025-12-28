@@ -274,23 +274,60 @@ async function encryptMessage(plaintext) {
 }
 
 // Decrypt a message using AES-256-CBC
-async function decryptMessage(ciphertextBase64) {
+// Accepts either: (ciphertextBase64) for legacy format with IV prepended
+//                 or (payloadBase64, ivBase64) for new format with separate IV
+async function decryptMessage(payloadBase64, ivBase64) {
     if (!webUIPassword) {
         console.error('No password configured for decryption');
         return null;
     }
     
     try {
-        // Base64 decode
-        const binaryString = atob(ciphertextBase64);
-        const combined = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            combined[i] = binaryString.charCodeAt(i);
+        let iv, ciphertext;
+        
+        if (ivBase64) {
+            // New format: IV and payload are separate
+            const ivBinaryString = atob(ivBase64);
+            iv = new Uint8Array(ivBinaryString.length);
+            for (let i = 0; i < ivBinaryString.length; i++) {
+                iv[i] = ivBinaryString.charCodeAt(i);
+            }
+            
+            const payloadBinaryString = atob(payloadBase64);
+            ciphertext = new Uint8Array(payloadBinaryString.length);
+            for (let i = 0; i < payloadBinaryString.length; i++) {
+                ciphertext[i] = payloadBinaryString.charCodeAt(i);
+            }
+        } else {
+            // Legacy format: IV is prepended to ciphertext
+            const binaryString = atob(payloadBase64);
+            const combined = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                combined[i] = binaryString.charCodeAt(i);
+            }
+            
+            // Extract IV (first 16 bytes) and ciphertext
+            iv = combined.slice(0, 16);
+            ciphertext = combined.slice(16);
         }
         
-        // Extract IV (first 16 bytes) and ciphertext
-        const iv = combined.slice(0, 16);
-        const ciphertext = combined.slice(16);
+        // Validate IV length
+        if (iv.length !== 16) {
+            console.error('Invalid IV length:', iv.length);
+            return null;
+        }
+        
+        // Validate ciphertext is not empty
+        if (ciphertext.length === 0) {
+            console.error('Ciphertext is empty');
+            return null;
+        }
+        
+        // Validate ciphertext length is multiple of 16 (AES block size)
+        if (ciphertext.length % 16 !== 0) {
+            console.error('Invalid ciphertext length (not multiple of 16):', ciphertext.length);
+            return null;
+        }
         
         // Derive encryption key from password
         const encryptionKey = await deriveEncryptionKey(webUIPassword);
@@ -754,7 +791,38 @@ function updateThumbnail(thumb) {
             img.src = dataUrl;
         } else if (thumb.format === 'rgb888') {
             // Legacy RGB888 format: decode raw RGB data
-            const binaryString = atob(thumb.data);
+            // Validate base64 data before decoding
+            if (!/^[A-Za-z0-9+/=]+$/.test(thumb.data)) {
+                console.error('Invalid base64 data in RGB888 thumbnail');
+                statusEl.textContent = 'Error: Invalid base64 data in thumbnail';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            // Validate expected data length
+            const expectedBytes = thumb.width * thumb.height * 3;
+            let binaryString;
+            try {
+                binaryString = atob(thumb.data);
+            } catch (e) {
+                console.error('Failed to decode base64 data:', e);
+                statusEl.textContent = 'Error: Failed to decode base64 data. Message may be incomplete.';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            if (binaryString.length !== expectedBytes) {
+                console.error('RGB888 data length mismatch:', { 
+                    expected: expectedBytes, 
+                    actual: binaryString.length,
+                    width: thumb.width,
+                    height: thumb.height
+                });
+                statusEl.textContent = 'Error: Thumbnail data incomplete. Expected ' + expectedBytes + ' bytes, got ' + binaryString.length + '.';
+                canvas.style.display = 'none';
+                return;
+            }
+            
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) {
                 bytes[i] = binaryString.charCodeAt(i);
@@ -776,9 +844,15 @@ function updateThumbnail(thumb) {
             }
             
             // Draw to canvas
-            ctx.putImageData(imageData, 0, 0);
-            canvas.style.display = 'block';
-            statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' RGB888 (updated ' + new Date().toLocaleTimeString() + ')';
+            try {
+                ctx.putImageData(imageData, 0, 0);
+                canvas.style.display = 'block';
+                statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' RGB888 (updated ' + new Date().toLocaleTimeString() + ')';
+            } catch (drawError) {
+                console.error('Failed to draw RGB888 thumbnail to canvas:', drawError);
+                statusEl.textContent = 'Error drawing thumbnail to canvas';
+                canvas.style.display = 'none';
+            }
         } else {
             statusEl.textContent = 'Unsupported thumbnail format: ' + thumb.format;
             canvas.style.display = 'none';
@@ -912,10 +986,17 @@ function connectMQTT() {
                     isEncrypted = true;
                     console.log('Thumbnail message is encrypted, decrypting...');
                     
+                    // Validate encrypted message structure
+                    if (!payload.iv || !payload.payload) {
+                        console.error('Invalid encrypted message structure - missing iv or payload');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
+                        return;
+                    }
+                    
                     // Verify HMAC first (on encrypted message)
                     if (webUIPassword && payload.hmac) {
                         const providedHMAC = payload.hmac;
-                        const messageForHMAC = JSON.stringify({ encrypted: true, payload: payload.payload });
+                        const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
                         
                         const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
                         if (!hmacValid) {
@@ -926,15 +1007,37 @@ function connectMQTT() {
                     }
                     
                     // Decrypt the payload
-                    const decrypted = await decryptMessage(payload.payload);
-                    if (!decrypted) {
-                        console.error('Failed to decrypt thumbnail message');
-                        document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect.';
+                    let decrypted;
+                    try {
+                        decrypted = await decryptMessage(payload.payload, payload.iv);
+                    } catch (decryptError) {
+                        console.error('Failed to decrypt thumbnail message:', decryptError);
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect or message corrupted.';
+                        return;
+                    }
+                    
+                    if (!decrypted || decrypted.length === 0) {
+                        console.error('Decryption returned empty result');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
                         return;
                     }
                     
                     // Parse decrypted JSON
-                    thumb = JSON.parse(decrypted);
+                    try {
+                        thumb = JSON.parse(decrypted);
+                    } catch (parseError) {
+                        console.error('Failed to parse decrypted thumbnail JSON:', parseError);
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Invalid thumbnail data after decryption. Message may be incomplete or corrupted.';
+                        return;
+                    }
+                    
+                    // Validate decrypted thumbnail structure
+                    if (!thumb || typeof thumb.width !== 'number' || typeof thumb.height !== 'number' || !thumb.format || !thumb.data) {
+                        console.error('Invalid thumbnail structure after decryption:', thumb);
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Invalid thumbnail structure. Message may be incomplete.';
+                        return;
+                    }
+                    
                     console.log('Decrypted thumbnail:', { width: thumb.width, height: thumb.height, format: thumb.format, dataLength: thumb.data ? thumb.data.length : 0 });
                 } else if (webUIPassword && payload.hmac) {
                     // Unencrypted but has HMAC - verify it
@@ -958,6 +1061,32 @@ function connectMQTT() {
                     thumb = payload;
                 }
                 
+                // Validate thumbnail structure before displaying
+                if (!thumb || typeof thumb.width !== 'number' || typeof thumb.height !== 'number' || !thumb.format || !thumb.data) {
+                    console.error('Invalid thumbnail structure:', thumb);
+                    document.getElementById('thumbnailStatus').textContent = 'Error: Invalid thumbnail structure. Required fields missing.';
+                    return;
+                }
+                
+                // Validate data length matches expected size for the format
+                if (thumb.format === 'jpeg' || thumb.format === 'rgb888') {
+                    const expectedDataLength = thumb.format === 'jpeg' 
+                        ? undefined  // JPEG can vary in size
+                        : thumb.width * thumb.height * 3;  // RGB888: width * height * 3 bytes
+                    
+                    if (thumb.format === 'rgb888' && thumb.data.length < expectedDataLength) {
+                        console.error('Thumbnail data incomplete:', { 
+                            expected: expectedDataLength, 
+                            actual: thumb.data.length,
+                            width: thumb.width,
+                            height: thumb.height
+                        });
+                        document.getElementById('thumbnailStatus').textContent = 'Error: Thumbnail data incomplete. Expected ' + expectedDataLength + ' bytes, got ' + thumb.data.length + '.';
+                        return;
+                    }
+                }
+                
+                // All validations passed - safe to display
                 updateThumbnail(thumb);
             } catch (e) {
                 console.error('Failed to parse/decrypt thumbnail message:', e);

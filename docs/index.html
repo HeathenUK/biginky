@@ -1530,6 +1530,7 @@ async function sendTextDisplay() {
     
     if (await publishMessage(payload)) {
         showStatus('textStatus', 'Text display command sent successfully!', false);
+        setBusyState(true, 'Command sent, waiting for device response...');
     } else {
         showStatus('textStatus', 'Failed to send command', true);
     }
@@ -1639,6 +1640,7 @@ async function sendCanvasToDisplay() {
             publishMessage(payload).then(success => {
                 if (success) {
                     showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+                    setBusyState(true, 'Command sent, waiting for device response...');
                 } else {
                     showStatus('canvasStatus', 'Failed to send command', true);
                 }
@@ -1667,11 +1669,14 @@ async function sendCanvasToDisplay() {
                 compressed: false
             };
             
-            if (publishMessage(payload)) {
-                showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
-            } else {
-                showStatus('canvasStatus', 'Failed to send command', true);
-            }
+            publishMessage(payload).then(success => {
+                if (success) {
+                    showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+                    setBusyState(true, 'Command sent, waiting for device response...');
+                } else {
+                    showStatus('canvasStatus', 'Failed to send command', true);
+                }
+            });
         });
     } else {
         // Compression not available - send uncompressed

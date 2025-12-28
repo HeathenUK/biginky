@@ -44,9 +44,9 @@ def generate_cert_header(source, target, env):
                         header_mtime = os.path.getmtime(header_file)
                         cert_mtime = os.path.getmtime(cert_file)
                         if header_mtime >= cert_mtime:
-                            # Header is up to date, skip regeneration
-                            print("Certificate and header file are up to date, skipping generation.")
-                            return
+                    # Header is up to date, skip regeneration
+                    print("Certificate and header file are up to date, skipping generation.")
+                    return True
                     
                     # Certificates exist and are valid, just need to regenerate header
                     print("Valid certificates found, generating header file...")

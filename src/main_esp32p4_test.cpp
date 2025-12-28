@@ -2016,6 +2016,7 @@ static char* loadThumbnailFromSD();  // Load JPEG thumbnail from SD card and ret
 static bool validateWebUIHMAC(const String& message, const String& providedHMAC);  // Validate HMAC signature
 static String computeHMAC(const String& message);  // Compute HMAC-SHA256 using derived HMAC key
 static String encryptMessage(const String& plaintext);  // Encrypt message using AES-256-CBC with derived encryption key
+static String encryptAndFormatMessage(const String& plaintext);  // Encrypt and format as {"encrypted":true,"iv":"...","payload":"...","hmac":"..."}
 static String decryptMessage(const String& ciphertext);  // Decrypt message using AES-256-CBC with derived encryption key
 static bool deriveKeysFromPassword(const String& password, uint8_t* hmacKey, uint8_t* encryptionKey);  // Derive keys using PBKDF2
 static bool setWebUIPassword(const String& password);  // Set new password (stores in NVS, derives keys)
@@ -3656,6 +3657,28 @@ static void publishMQTTThumbnail() {
     }
     
     free(base64Buffer);  // Free base64 buffer, keep JSON
+    
+    // Encrypt and format the JSON payload (like commands)
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);  // Free original JSON buffer
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt thumbnail - publishing without encryption");
+        return;
+    }
+    
+    // Allocate buffer for encrypted JSON
+    size_t encryptedLen = encryptedJson.length();
+    jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    written = encryptedLen;
 #else
     // Fallback: Base64 encode raw RGB if JPEG encoder not available
     Serial.println("WARNING: JPEG encoder not available, using raw RGB base64");
@@ -3700,34 +3723,44 @@ static void publishMQTTThumbnail() {
         return;
     }
     
-    // Compute HMAC signature for the message (before adding hmac field)
-    String messageForHMAC = String("{\"width\":") + thumbWidth + ",\"height\":" + thumbHeight + ",\"format\":\"rgb888\",\"data\":\"" + String(base64Buffer) + "\"}";
-    String hmac = computeHMAC(messageForHMAC);
+    // Build JSON and encrypt it (like JPEG path above)
+    int written = snprintf(jsonBuffer, jsonSize, 
+                          "{\"width\":%d,\"height\":%d,\"format\":\"rgb888\",\"data\":\"%s\"}",
+                          thumbWidth, thumbHeight, base64Buffer);
     
-    // Add HMAC to JSON (recompute with larger buffer)
-    size_t jsonSizeWithHMAC = 60 + base64Idx + 80;  // Extra space for HMAC field
-    char* jsonBuffer = (char*)malloc(jsonSizeWithHMAC);
-    if (jsonBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate JSON buffer");
-        free(base64Buffer);
-        return;
-    }
-    
-    int written = snprintf(jsonBuffer, jsonSizeWithHMAC,
-                          "{\"width\":%d,\"height\":%d,\"format\":\"rgb888\",\"data\":\"%s\",\"hmac\":\"%s\"}",
-                          thumbWidth, thumbHeight, base64Buffer, hmac.c_str());
-    
-    if (written < 0 || written >= (int)jsonSizeWithHMAC) {
-        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSizeWithHMAC);
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
         free(jsonBuffer);
         free(base64Buffer);
         return;
     }
     
-    free(base64Buffer);
+    free(base64Buffer);  // Free base64 buffer, keep JSON
+    
+    // Encrypt and format the JSON payload (like commands)
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);  // Free original JSON buffer
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt thumbnail - publishing without encryption");
+        return;
+    }
+    
+    // Allocate buffer for encrypted JSON
+    size_t encryptedLen = encryptedJson.length();
+    jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    written = encryptedLen;
 #endif
     
-    Serial.printf("Publishing thumbnail JSON (%d bytes) with HMAC to %s...\n", written, mqttTopicThumb);
+    Serial.printf("Publishing encrypted thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
     
     // Publish as retained message so web UI gets it immediately on connect
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
@@ -13607,6 +13640,148 @@ static String encryptMessage(const String& plaintext) {
     String result = String(base64);
     free(base64);
     
+    return result;
+}
+
+/**
+ * Encrypt and format message for web UI
+ * Returns JSON string: {"encrypted":true,"iv":"...","payload":"...","hmac":"..."}
+ */
+static String encryptAndFormatMessage(const String& plaintext) {
+    if (!isWebUIPasswordSet()) {
+        Serial.println("ERROR: Cannot encrypt - password not set");
+        return "";
+    }
+    
+    // Get password from NVS
+    if (!authPrefs.begin("webui_auth", true)) {
+        Serial.println("ERROR: Failed to open NVS for encryption");
+        return "";
+    }
+    String password = authPrefs.getString("password", "");
+    authPrefs.end();
+    
+    if (password.length() == 0) {
+        Serial.println("ERROR: Password is empty");
+        return "";
+    }
+    
+    // Derive encryption key from password
+    uint8_t dummyHmacKey[32];
+    uint8_t encryptionKey[32];
+    if (!deriveKeysFromPassword(password, dummyHmacKey, encryptionKey)) {
+        Serial.println("ERROR: Failed to derive encryption key");
+        return "";
+    }
+    
+    // Generate random IV (16 bytes for AES-256 CBC)
+    uint8_t iv[16];
+    esp_fill_random(iv, 16);
+    
+    // Prepare plaintext
+    size_t plaintextLen = plaintext.length();
+    size_t paddedLen = ((plaintextLen + 15) / 16) * 16;  // PKCS7 padding
+    uint8_t* paddedPlaintext = (uint8_t*)malloc(paddedLen);
+    if (!paddedPlaintext) {
+        Serial.println("ERROR: Failed to allocate memory for padded plaintext");
+        return "";
+    }
+    
+    memcpy(paddedPlaintext, plaintext.c_str(), plaintextLen);
+    // PKCS7 padding
+    uint8_t padValue = paddedLen - plaintextLen;
+    for (size_t i = plaintextLen; i < paddedLen; i++) {
+        paddedPlaintext[i] = padValue;
+    }
+    
+    // Encrypt using AES-256-CBC
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    
+    if (mbedtls_aes_setkey_enc(&aes, encryptionKey, 256) != 0) {
+        Serial.println("ERROR: Failed to set AES encryption key");
+        mbedtls_aes_free(&aes);
+        free(paddedPlaintext);
+        return "";
+    }
+    
+    uint8_t* ciphertext = (uint8_t*)malloc(paddedLen);
+    if (!ciphertext) {
+        Serial.println("ERROR: Failed to allocate memory for ciphertext");
+        mbedtls_aes_free(&aes);
+        free(paddedPlaintext);
+        return "";
+    }
+    
+    if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, iv, paddedPlaintext, ciphertext) != 0) {
+        Serial.println("ERROR: AES encryption failed");
+        mbedtls_aes_free(&aes);
+        free(paddedPlaintext);
+        free(ciphertext);
+        return "";
+    }
+    
+    mbedtls_aes_free(&aes);
+    free(paddedPlaintext);
+    
+    // Base64 encode IV and ciphertext separately
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    
+    // Encode IV (16 bytes -> 24 base64 chars)
+    char ivBase64[25];
+    size_t ivIdx = 0;
+    for (size_t i = 0; i < 16; i += 3) {
+        uint32_t b0 = iv[i];
+        uint32_t b1 = (i + 1 < 16) ? iv[i + 1] : 0;
+        uint32_t b2 = (i + 2 < 16) ? iv[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        if (ivIdx < 24) ivBase64[ivIdx++] = base64_chars[(value >> 18) & 0x3F];
+        if (ivIdx < 24) ivBase64[ivIdx++] = base64_chars[(value >> 12) & 0x3F];
+        if (ivIdx < 24) ivBase64[ivIdx++] = (i + 1 < 16) ? base64_chars[(value >> 6) & 0x3F] : '=';
+        if (ivIdx < 24) ivBase64[ivIdx++] = (i + 2 < 16) ? base64_chars[value & 0x3F] : '=';
+    }
+    ivBase64[24] = '\0';
+    
+    // Encode ciphertext
+    size_t ciphertextBase64Len = ((paddedLen + 2) / 3) * 4 + 1;
+    char* ciphertextBase64 = (char*)malloc(ciphertextBase64Len);
+    if (!ciphertextBase64) {
+        Serial.println("ERROR: Failed to allocate memory for ciphertext base64");
+        free(ciphertext);
+        return "";
+    }
+    
+    size_t ctIdx = 0;
+    for (size_t i = 0; i < paddedLen; i += 3) {
+        uint32_t b0 = ciphertext[i];
+        uint32_t b1 = (i + 1 < paddedLen) ? ciphertext[i + 1] : 0;
+        uint32_t b2 = (i + 2 < paddedLen) ? ciphertext[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        if (ctIdx + 4 < ciphertextBase64Len) {
+            ciphertextBase64[ctIdx++] = base64_chars[(value >> 18) & 0x3F];
+            ciphertextBase64[ctIdx++] = base64_chars[(value >> 12) & 0x3F];
+            ciphertextBase64[ctIdx++] = (i + 1 < paddedLen) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            ciphertextBase64[ctIdx++] = (i + 2 < paddedLen) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    ciphertextBase64[ctIdx] = '\0';
+    
+    free(ciphertext);
+    
+    // Compute HMAC of the encrypted message (before adding hmac field)
+    String messageForHMAC = String("{\"encrypted\":true,\"iv\":\"") + ivBase64 + "\",\"payload\":\"" + String(ciphertextBase64) + "\"}";
+    String hmac = computeHMAC(messageForHMAC);
+    
+    if (hmac.length() == 0) {
+        Serial.println("ERROR: Failed to compute HMAC for encrypted message");
+        free(ciphertextBase64);
+        return "";
+    }
+    
+    // Build final JSON
+    String result = String("{\"encrypted\":true,\"iv\":\"") + ivBase64 + "\",\"payload\":\"" + String(ciphertextBase64) + "\",\"hmac\":\"" + hmac + "\"}";
+    
+    free(ciphertextBase64);
     return result;
 }
 

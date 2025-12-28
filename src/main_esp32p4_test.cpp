@@ -3171,12 +3171,15 @@ static void publishMQTTStatus() {
  * This is a non-static wrapper so it can be called from the library
  */
 void publishMQTTThumbnailIfConnected() {
+    // ALWAYS generate thumbnail - publish if MQTT connected, otherwise save to SD for later
+    // This ensures thumbnails are always created and persist through deep sleep
     if (mqttConnected) {
+        // MQTT is connected - publish immediately
         publishMQTTThumbnail();
     } else {
         // MQTT is not connected - generate thumbnail and save to SD card
         // This ensures it persists through deep sleep and can be published on next connect
-        Serial.println("MQTT not connected - generating thumbnail and saving to SD card...");
+        Serial.println("MQTT not connected - generating thumbnail and saving to SD card for later publish...");
         
         // Generate JPEG thumbnail (reuse logic from publishMQTTThumbnail)
         // Check if display is initialized

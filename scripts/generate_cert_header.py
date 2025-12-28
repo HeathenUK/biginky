@@ -11,6 +11,7 @@ This script:
 This is a PlatformIO pre-build script that runs before compilation.
 """
 
+Import("env")
 import os
 import subprocess
 import sys
@@ -36,7 +37,7 @@ def ensure_certificates_exist(cert_dir):
             
             with open(key_file, 'r') as f:
                 key_content = f.read()
-                if not key_content.strip() or 'BEGIN PRIVATE KEY' not in key_content and 'BEGIN RSA PRIVATE KEY' not in key_content:
+                if not key_content.strip() or ('BEGIN PRIVATE KEY' not in key_content and 'BEGIN RSA PRIVATE KEY' not in key_content):
                     need_generate = True
                     print("Key file is invalid, regenerating...")
         except Exception as e:
@@ -124,6 +125,10 @@ static const char server_cert_pem[] = "{cert_data}";
 // Server private key (full PEM format)
 static const char server_key_pem[] = "{key_data}";
 
+// Aliases for compatibility with code that uses server_cert/server_key
+#define server_cert server_cert_pem
+#define server_key server_key_pem
+
 #endif // CERTIFICATES_H
 """
         
@@ -142,15 +147,9 @@ static const char server_key_pem[] = "{key_data}";
         print(f"ERROR: Failed to generate certificate header: {e}")
         return False
 
-def main():
-    """Main function for PlatformIO pre-build script."""
-    # Get project directory
-    if len(sys.argv) > 1:
-        project_dir = sys.argv[1]
-    else:
-        # Try to get from environment (PlatformIO sets this)
-        project_dir = os.getenv('PROJECT_DIR', os.getcwd())
-    
+def generate_certificates(source, target, env):
+    """PlatformIO pre-build action to generate certificates.h."""
+    project_dir = env.subst("$PROJECT_DIR")
     cert_dir = os.path.join(project_dir, "certificates")
     cert_file = os.path.join(cert_dir, "server_cert.pem")
     key_file = os.path.join(cert_dir, "server_key.pem")
@@ -159,16 +158,14 @@ def main():
     # Ensure certificates exist
     if not ensure_certificates_exist(cert_dir):
         print("ERROR: Failed to ensure certificates exist")
-        sys.exit(1)
+        return
     
     # Generate header file
     if not generate_cert_header(cert_file, key_file, output_file):
         print("ERROR: Failed to generate certificate header")
-        sys.exit(1)
+        return
     
     print("Certificate generation completed successfully")
-    return 0
 
-if __name__ == "__main__":
-    sys.exit(main())
-
+# Register the pre-build action
+env.AddPreAction("buildprog", generate_certificates)

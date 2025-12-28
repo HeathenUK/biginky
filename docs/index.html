@@ -351,11 +351,18 @@ async function decryptMessage(payloadBase64, ivBase64) {
         );
         
         // Decrypt
-        const plaintext = await crypto.subtle.decrypt(
-            { name: 'AES-CBC', iv: iv },
-            key,
-            ciphertext
-        );
+        let plaintext;
+        try {
+            plaintext = await crypto.subtle.decrypt(
+                { name: 'AES-CBC', iv: iv },
+                key,
+                ciphertext
+            );
+        } catch (decryptError) {
+            console.error('crypto.subtle.decrypt failed:', decryptError);
+            // This usually means the key is wrong or the ciphertext is corrupted
+            return null;
+        }
         
         // Remove PKCS7 padding from ArrayBuffer BEFORE converting to string
         // Padding bytes might not be valid UTF-8, so we must remove them first
@@ -365,12 +372,19 @@ async function decryptMessage(payloadBase64, ivBase64) {
             return null;
         }
         
+        // Debug: log first few bytes of decrypted data
+        const debugBytes = Array.from(plaintextArray.slice(0, Math.min(20, plaintextArray.length)));
+        console.log('Decrypted bytes (first 20):', debugBytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        
         // Get padding value (last byte)
         const padValue = plaintextArray[plaintextArray.length - 1];
         
         // Validate padding (must be between 1 and 16)
         if (padValue < 1 || padValue > 16) {
-            console.error('Invalid padding value:', padValue);
+            console.error('Invalid padding value:', padValue, '(expected 1-16)');
+            console.error('This usually means the encryption key is incorrect or the ciphertext is corrupted');
+            console.error('Plaintext length:', plaintextArray.length);
+            console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
             return null;
         }
         

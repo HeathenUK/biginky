@@ -73,6 +73,20 @@ window.addEventListener('load', function() {
 <body>
 <h1>BigInky Remote Control</h1>
 <div class="section">
+<h2>Authentication</h2>
+<p style="color:#888;font-size:14px;margin-bottom:15px;">Enter the password configured on the device to enable HMAC authentication for secure MQTT communication.</p>
+<div class="flex-row">
+<div class="flex-item">
+<label>Web UI Password:</label>
+<input type="password" id="webUIPassword" placeholder="Enter password..." style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-family:monospace;">
+</div>
+<div class="flex-item" style="flex:0 0 auto;">
+<button onclick="savePassword()" style="margin-top:0;">Save Password</button>
+</div>
+</div>
+<div id="passwordStatus" style="margin-top:10px;"></div>
+</div>
+<div class="section">
 <h2>Connection</h2>
 <div style="text-align:center;">
 <button onclick="connectMQTT()" id="connectBtn">Connect</button>
@@ -441,7 +455,32 @@ function connectMQTT() {
             try {
                 const status = JSON.parse(message.payloadString);
                 console.log('Parsed status:', status);
-                updateDeviceStatus(status);
+                
+                // Verify HMAC if password is configured
+                if (webUIPassword && status.hmac) {
+                    // Extract hmac and verify
+                    const providedHMAC = status.hmac;
+                    delete status.hmac;  // Remove hmac for verification
+                    const messageForHMAC = JSON.stringify(status);
+                    
+                    verifyHMAC(messageForHMAC, providedHMAC).then(valid => {
+                        if (valid) {
+                            console.log('Status message HMAC verified successfully');
+                            updateDeviceStatus(status);
+                        } else {
+                            console.error('Status message HMAC verification failed');
+                            document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
+                        }
+                        // Restore hmac field for display
+                        status.hmac = providedHMAC;
+                    });
+                } else {
+                    // No password configured or no HMAC - just display (for backward compatibility during transition)
+                    if (!webUIPassword) {
+                        console.warn('No password configured - cannot verify HMAC');
+                    }
+                    updateDeviceStatus(status);
+                }
             } catch (e) {
                 console.error('Failed to parse status message:', e);
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error parsing status message: ' + e.message + '</p>';
@@ -451,7 +490,32 @@ function connectMQTT() {
             try {
                 const thumb = JSON.parse(message.payloadString);
                 console.log('Parsed thumbnail:', { width: thumb.width, height: thumb.height, format: thumb.format, dataLength: thumb.data ? thumb.data.length : 0 });
-                updateThumbnail(thumb);
+                
+                // Verify HMAC if password is configured
+                if (webUIPassword && thumb.hmac) {
+                    // Extract hmac and verify
+                    const providedHMAC = thumb.hmac;
+                    delete thumb.hmac;  // Remove hmac for verification
+                    const messageForHMAC = JSON.stringify(thumb);
+                    
+                    verifyHMAC(messageForHMAC, providedHMAC).then(valid => {
+                        if (valid) {
+                            console.log('Thumbnail message HMAC verified successfully');
+                            updateThumbnail(thumb);
+                        } else {
+                            console.error('Thumbnail message HMAC verification failed');
+                            document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                        }
+                        // Restore hmac field
+                        thumb.hmac = providedHMAC;
+                    });
+                } else {
+                    // No password configured or no HMAC - just display (for backward compatibility during transition)
+                    if (!webUIPassword) {
+                        console.warn('No password configured - cannot verify HMAC');
+                    }
+                    updateThumbnail(thumb);
+                }
             } catch (e) {
                 console.error('Failed to parse thumbnail message:', e);
                 document.getElementById('thumbnailStatus').textContent = 'Error parsing thumbnail: ' + e.message;
@@ -523,19 +587,37 @@ function disconnectMQTT() {
     }
 }
 
-function publishMessage(payload) {
+async function publishMessage(payload) {
     if (!mqttClient || !isConnected) {
         showStatus('commandStatus', 'Not connected to MQTT broker', true);
         return false;
     }
     
+    // Check if password is configured
+    if (!webUIPassword) {
+        showStatus('commandStatus', 'Error: Password not configured. Please set password in Authentication section.', true);
+        return false;
+    }
+    
     try {
-        const message = new Paho.Message(JSON.stringify(payload));
+        // Compute HMAC of message (without hmac field)
+        const messageForHMAC = JSON.stringify(payload);
+        const hmac = await computeHMAC(messageForHMAC);
+        
+        if (!hmac) {
+            showStatus('commandStatus', 'Error: Failed to compute HMAC signature', true);
+            return false;
+        }
+        
+        // Add HMAC to payload
+        const payloadWithHMAC = { ...payload, hmac: hmac };
+        
+        const message = new Paho.Message(JSON.stringify(payloadWithHMAC));
         message.destinationName = MQTT_TOPIC;
         message.qos = 1;
         message.retained = true;  // Use retained messages so device receives them when it wakes up
         mqttClient.send(message);
-        logCommand('PUBLISH', payload);
+        logCommand('PUBLISH', payloadWithHMAC);
         return true;
     } catch (error) {
         showStatus('commandStatus', 'Failed to send message: ' + error, true);
@@ -543,7 +625,7 @@ function publishMessage(payload) {
     }
 }
 
-function sendTextDisplay() {
+async function sendTextDisplay() {
     const text = document.getElementById('textInput').value.trim();
     if (text.length === 0) {
         showStatus('textStatus', 'Please enter some text', true);
@@ -564,14 +646,14 @@ function sendTextDisplay() {
         outlineColour: outlineColor
     };
     
-    if (publishMessage(payload)) {
+    if (await publishMessage(payload)) {
         showStatus('textStatus', 'Text display command sent successfully!', false);
     } else {
         showStatus('textStatus', 'Failed to send command', true);
     }
 }
 
-function sendCanvasToDisplay() {
+async function sendCanvasToDisplay() {
     console.log('sendCanvasToDisplay() called');
     const canvas = document.getElementById('drawCanvas');
     if (!canvas) {
@@ -672,11 +754,13 @@ function sendCanvasToDisplay() {
                 compressed: true
             };
             
-            if (publishMessage(payload)) {
-                showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
-            } else {
-                showStatus('canvasStatus', 'Failed to send command', true);
-            }
+            publishMessage(payload).then(success => {
+                if (success) {
+                    showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+                } else {
+                    showStatus('canvasStatus', 'Failed to send command', true);
+                }
+            });
         }).catch(e => {
             console.error('Compression error:', e);
             showStatus('canvasStatus', 'Compression error: ' + e + ', sending uncompressed', true);
@@ -729,11 +813,13 @@ function sendCanvasToDisplay() {
             compressed: false
         };
         
-        if (publishMessage(payload)) {
-            showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
-        } else {
-            showStatus('canvasStatus', 'Failed to send command', true);
-        }
+        publishMessage(payload).then(success => {
+            if (success) {
+                showStatus('canvasStatus', 'Canvas display command sent successfully!', false);
+            } else {
+                showStatus('canvasStatus', 'Failed to send command', true);
+            }
+        });
     }
     } catch (error) {
         console.error('Error in sendCanvasToDisplay:', error);
@@ -741,10 +827,10 @@ function sendCanvasToDisplay() {
     }
 }
 
-function sendCommand(cmd) {
+async function sendCommand(cmd) {
     const payload = { command: cmd };
     
-    if (publishMessage(payload)) {
+    if (await publishMessage(payload)) {
         showStatus('commandStatus', cmd + ' command sent successfully!', false);
     } else {
         showStatus('commandStatus', 'Failed to send command', true);

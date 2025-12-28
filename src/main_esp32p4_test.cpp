@@ -1517,7 +1517,7 @@ int loadQuotesFromSD() {
  * 
  * Returns: number of mappings loaded
  */
-int loadMediaMappingsFromSD() {
+int loadMediaMappingsFromSD(bool autoPublish = true) {
     g_media_mappings.clear();
     g_media_mappings_loaded = false;
     
@@ -1625,7 +1625,8 @@ int loadMediaMappingsFromSD() {
         Serial.printf("  Loaded %d media mappings from SD card\n", g_media_mappings.size());
         
         // Publish media mappings if MQTT is connected (media.txt was changed/reloaded)
-        if (mqttConnected && mqttClient != nullptr) {
+        // BUT only if autoPublish is true (to avoid double-publishing when called from publishMQTTMediaMappings)
+        if (autoPublish && mqttConnected && mqttClient != nullptr) {
             Serial.println("  Media mappings changed - publishing to MQTT...");
             publishMQTTMediaMappings();
         }
@@ -4236,9 +4237,10 @@ static void publishMQTTMediaMappings() {
     }
     
     // Load media mappings if not already loaded (SD card is always mounted)
+    // Pass false to skip auto-publish (we'll publish ourselves)
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
         Serial.println("Media mappings not loaded yet - loading from SD card now...");
-        loadMediaMappingsFromSD();
+        loadMediaMappingsFromSD(false);
         if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
             Serial.println("WARNING: No media mappings found on SD card, cannot publish media mappings");
             return;

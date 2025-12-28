@@ -33,6 +33,9 @@ button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
 .flex-row{display:flex;flex-wrap:wrap;gap:15px;align-items:flex-end;margin-top:15px;}
 .flex-item{flex:1;min-width:150px;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
+.tool-btn{background:#333;border:2px solid #555;color:#e0e0e0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
+.tool-btn:hover{background:#444;border-color:#666;}
+.tool-btn.active{background:#4CAF50;border-color:#45a049;color:white;}
 h2{cursor:pointer;user-select:none;position:relative;padding-right:20px;}
 h2::after{content:'▼';position:absolute;right:0;font-size:14px;opacity:0.7;transition:transform 0.2s;}
 h2.collapsed::after{transform:rotate(-90deg);}
@@ -244,23 +247,45 @@ window.addEventListener('load', function() {
 <div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
-<p>Draw on the canvas (1600x1200) - matches the display panel size. Images can be loaded and will be automatically resized to fit.</p>
+<p>Draw on the canvas (1600x1200) - matches the display panel size. Images can be loaded and will be automatically posterized to match e-ink colors.</p>
+<div style="margin-bottom:15px;">
+<label style="display:block;margin-bottom:8px;">Tool:</label>
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">
+<button onclick="setTool('brush')" id="tool-brush" class="tool-btn active" title="Brush" style="width:44px;height:44px;padding:8px;font-size:20px;">🖌️</button>
+<button onclick="setTool('text')" id="tool-text" class="tool-btn" title="Text" style="width:44px;height:44px;padding:8px;font-size:20px;">T</button>
+<button onclick="setTool('fill')" id="tool-fill" class="tool-btn" title="Fill" style="width:44px;height:44px;padding:8px;font-size:20px;">🪣</button>
+<button onclick="setTool('rectangle')" id="tool-rectangle" class="tool-btn" title="Rectangle" style="width:44px;height:44px;padding:8px;font-size:20px;">▭</button>
+<button onclick="setTool('circle')" id="tool-circle" class="tool-btn" title="Circle" style="width:44px;height:44px;padding:8px;font-size:20px;">○</button>
+<button onclick="setTool('line')" id="tool-line" class="tool-btn" title="Line" style="width:44px;height:44px;padding:8px;font-size:20px;">/</button>
+<button onclick="setTool('eraser')" id="tool-eraser" class="tool-btn" title="Eraser" style="width:44px;height:44px;padding:8px;font-size:20px;">🧹</button>
+</div>
+</div>
 <div class="flex-row" style="margin-bottom:15px;">
 <div class="flex-item" style="min-width:120px;">
-<label>Tool:</label>
-<select id="drawTool" style="width:100%;">
-<option value="brush" selected>Brush</option>
-<option value="text">Text</option>
-<option value="fill">Fill</option>
-<option value="rectangle">Rectangle</option>
-<option value="circle">Circle</option>
-<option value="line">Line</option>
-<option value="eraser">Eraser</option>
+<label id="colorLabel">Colour:</label>
+<select id="drawColor" style="width:100%;">
+<option value="0" selected>Black</option>
+<option value="2">Yellow</option>
+<option value="3">Red</option>
+<option value="5">Blue</option>
+<option value="6">Green</option>
+<option value="1">White</option>
 </select>
 </div>
-<div class="flex-item" style="min-width:120px;">
-<label>Colour:</label>
-<select id="drawColor" style="width:100%;">
+<div class="flex-item" id="fillColorContainer" style="min-width:120px;display:none;">
+<label>Fill Colour:</label>
+<select id="fillColor" style="width:100%;">
+<option value="1" selected>White</option>
+<option value="0">Black</option>
+<option value="2">Yellow</option>
+<option value="3">Red</option>
+<option value="5">Blue</option>
+<option value="6">Green</option>
+</select>
+</div>
+<div class="flex-item" id="outlineColorContainer" style="min-width:120px;display:none;">
+<label>Outline Colour:</label>
+<select id="outlineColor" style="width:100%;">
 <option value="0" selected>Black</option>
 <option value="2">Yellow</option>
 <option value="3">Red</option>
@@ -2141,7 +2166,16 @@ function getDrawColor() {
 }
 
 function getCurrentTool() {
-    return document.getElementById('drawTool').value;
+    return document.getElementById('drawTool').value || 'brush';
+}
+
+// Initialize tool on page load
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+        setTool('brush');
+    });
+} else {
+    setTool('brush');
 }
 
 function getCanvasCoordinates(e) {
@@ -2280,25 +2314,33 @@ function draw(e) {
         ctx.stroke();
         lastX = x;
         lastY = y;
-    } else if (tool === 'rectangle' || tool === 'circle' || tool === 'line') {
+        } else if (tool === 'rectangle' || tool === 'circle' || tool === 'line') {
         // Restore last saved state and draw preview
         if (historyIndex >= 0) {
             ctx.putImageData(canvasHistory[historyIndex], 0, 0);
         }
         
-        ctx.strokeStyle = getDrawColor();
         ctx.lineWidth = 2;
         ctx.beginPath();
         
         if (tool === 'rectangle') {
             const width = coords.x - startX;
             const height = coords.y - startY;
+            // Fill first, then stroke
+            ctx.fillStyle = getFillColor();
+            ctx.fillRect(startX, startY, width, height);
+            ctx.strokeStyle = getOutlineColor();
             ctx.strokeRect(startX, startY, width, height);
         } else if (tool === 'circle') {
             const radius = Math.sqrt(Math.pow(coords.x - startX, 2) + Math.pow(coords.y - startY, 2));
             ctx.arc(startX, startY, radius, 0, Math.PI * 2);
+            // Fill first, then stroke
+            ctx.fillStyle = getFillColor();
+            ctx.fill();
+            ctx.strokeStyle = getOutlineColor();
             ctx.stroke();
         } else if (tool === 'line') {
+            ctx.strokeStyle = getDrawColor();
             ctx.moveTo(startX, startY);
             ctx.lineTo(coords.x, coords.y);
             ctx.stroke();
@@ -2326,13 +2368,28 @@ document.getElementById('drawTool').addEventListener('change', function() {
     const tool = this.value;
     const textOptions = document.getElementById('textToolOptions');
     const textInput = document.getElementById('textInputContainer');
+    const fillColorContainer = document.getElementById('fillColorContainer');
+    const outlineColorContainer = document.getElementById('outlineColorContainer');
+    const colorLabel = document.getElementById('colorLabel');
     
+    // Show/hide text options
     if (tool === 'text') {
         textOptions.style.display = 'block';
         textInput.style.display = 'block';
     } else {
         textOptions.style.display = 'none';
         textInput.style.display = 'none';
+    }
+    
+    // Show/hide fill and outline for shapes
+    if (tool === 'rectangle' || tool === 'circle') {
+        fillColorContainer.style.display = 'block';
+        outlineColorContainer.style.display = 'block';
+        colorLabel.textContent = 'Colour:';
+    } else {
+        fillColorContainer.style.display = 'none';
+        outlineColorContainer.style.display = 'none';
+        colorLabel.textContent = 'Colour:';
     }
 });
 
@@ -2387,7 +2444,10 @@ function handleImageFileSelect(event) {
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
             
-            showStatus('canvasStatus', `Image loaded: ${img.width}x${img.height} (scaled to fit ${Math.round(drawWidth)}x${Math.round(drawHeight)})`, false);
+            // Posterize image to match e-ink colors
+            posterizeImage(drawX, drawY, drawWidth, drawHeight);
+            
+            showStatus('canvasStatus', `Image loaded and posterized: ${img.width}x${img.height} (scaled to fit ${Math.round(drawWidth)}x${Math.round(drawHeight)})`, false);
         };
         img.onerror = function() {
             showStatus('canvasStatus', 'Error: Failed to load image', true);

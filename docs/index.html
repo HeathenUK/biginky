@@ -82,7 +82,7 @@ table th,table td{padding:6px;font-size:12px;}
 <script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js" onerror="loadPahoFallback()"></script>
 <!-- Load custom MQTT configuration if available, otherwise defaults will be used -->
 <!-- Note: mqtt-config.js is optional - if it doesn't exist, defaults from config.js will be used -->
-<script src="js/mqtt-config.js" onerror="console.log('No custom mqtt-config.js found, using defaults from config.js')"></script>
+<script src="js/mqtt-config.js" onerror="void(0)"></script>
 <!-- Load modules in dependency order -->
 <script src="js/config.js"></script>
 <script src="js/encryption.js"></script>

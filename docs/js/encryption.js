@@ -215,20 +215,26 @@ async function decryptMessage(payloadBase64, ivBase64) {
         
         if (ivBase64) {
             // New format: IV and payload are separate
-            const ivBinaryString = atob(ivBase64);
+            // Remove any whitespace/newlines from base64 strings
+            const cleanIvBase64 = ivBase64.replace(/\s/g, '');
+            const cleanPayloadBase64 = payloadBase64.replace(/\s/g, '');
+            
+            const ivBinaryString = atob(cleanIvBase64);
             iv = new Uint8Array(ivBinaryString.length);
             for (let i = 0; i < ivBinaryString.length; i++) {
                 iv[i] = ivBinaryString.charCodeAt(i);
             }
             
-            const payloadBinaryString = atob(payloadBase64);
+            const payloadBinaryString = atob(cleanPayloadBase64);
             ciphertext = new Uint8Array(payloadBinaryString.length);
             for (let i = 0; i < payloadBinaryString.length; i++) {
                 ciphertext[i] = payloadBinaryString.charCodeAt(i);
             }
         } else {
             // Legacy format: IV is prepended to ciphertext
-            const binaryString = atob(payloadBase64);
+            // Remove any whitespace/newlines from base64 string
+            const cleanPayloadBase64 = payloadBase64.replace(/\s/g, '');
+            const binaryString = atob(cleanPayloadBase64);
             const combined = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) {
                 combined[i] = binaryString.charCodeAt(i);

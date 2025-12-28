@@ -371,18 +371,123 @@ function getPixelColor(data, x, y, width) {
     };
 }
 
+// Adjust image for e-ink display: brightness +10%, contrast +20%, saturation +20%
+function adjustImageForEink(imageData) {
+    const data = imageData.data;
+    
+    // Brightness: +10% (multiply by 1.1)
+    // Contrast: +20% (using standard contrast formula)
+    // Saturation: +20% (convert RGB to HSL, adjust, convert back)
+    
+    for (let i = 0; i < data.length; i += 4) {
+        let r = data[i];
+        let g = data[i + 1];
+        let b = data[i + 2];
+        
+        // Apply brightness (+10%)
+        r = Math.min(255, Math.max(0, r * 1.1));
+        g = Math.min(255, Math.max(0, g * 1.1));
+        b = Math.min(255, Math.max(0, b * 1.1));
+        
+        // Apply contrast (+20%)
+        // Contrast formula: new = (old - 128) * (1 + contrast) + 128
+        const contrast = 0.20;
+        r = Math.min(255, Math.max(0, (r - 128) * (1 + contrast) + 128));
+        g = Math.min(255, Math.max(0, (g - 128) * (1 + contrast) + 128));
+        b = Math.min(255, Math.max(0, (b - 128) * (1 + contrast) + 128));
+        
+        // Apply saturation (+20%)
+        // Convert RGB to HSL
+        r /= 255;
+        g /= 255;
+        b /= 255;
+        
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        let h, s, l = (max + min) / 2;
+        
+        if (max === min) {
+            h = s = 0; // achromatic
+        } else {
+            const d = max - min;
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            
+            if (max === r) {
+                h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+            } else if (max === g) {
+                h = ((b - r) / d + 2) / 6;
+            } else {
+                h = ((r - g) / d + 4) / 6;
+            }
+        }
+        
+        // Increase saturation by 20%
+        s = Math.min(1, s * 1.20);
+        
+        // Convert HSL back to RGB
+        if (s === 0) {
+            r = g = b = l; // achromatic
+        } else {
+            const hue2rgb = (p, q, t) => {
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                if (t < 1/6) return p + (q - p) * 6 * t;
+                if (t < 1/2) return q;
+                if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                return p;
+            };
+            
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            r = hue2rgb(p, q, h + 1/3);
+            g = hue2rgb(p, q, h);
+            b = hue2rgb(p, q, h - 1/3);
+        }
+        
+        // Convert back to 0-255 range
+        data[i] = Math.round(r * 255);
+        data[i + 1] = Math.round(g * 255);
+        data[i + 2] = Math.round(b * 255);
+    }
+    
+    return imageData;
+}
+
 // Posterize image to match e-ink colors using Atkinson dithering
+// Based on: https://github.com/Toon-nooT/PhotoPainter-E-Ink-Spectra-6-image-converter
 function posterizeImage(x, y, width, height) {
     const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
     
+    // Precompute luma values for palette colors
+    // Luma formula: (r * 250 + g * 350 + b * 400) / (255.0 * 1000)
+    const paletteLuma = einkColors.map(c => (c[0] * 250 + c[1] * 350 + c[2] * 400) / (255.0 * 1000));
+    
     function findClosestColorIdx(r, g, b) {
+        // Calculate luma for input pixel
+        const luma1 = (r * 250 + g * 350 + b * 400) / (255.0 * 1000);
+        
         let minDist = Infinity;
         let closestIdx = 0;
+        
         for (let i = 0; i < einkColors.length; i++) {
             const ec = einkColors[i];
-            const dist = Math.pow(r-ec[0],2) + Math.pow(g-ec[1],2) + Math.pow(b-ec[2],2);
-            if (dist < minDist) {
-                minDist = dist;
+            
+            // RGB component distance with weighted channels
+            // Weights: R*0.250, G*0.350, B*0.400 (compensates for human eye sensitivity and e-ink display)
+            const diffR = r - ec[0];
+            const diffG = g - ec[1];
+            const diffB = b - ec[2];
+            const rgbDist = (diffR * diffR * 0.250 + diffG * diffG * 0.350 + diffB * diffB * 0.400) * 0.75 / (255.0 * 255.0);
+            
+            // Luma distance
+            const lumaDiff = luma1 - paletteLuma[i];
+            const lumaDist = lumaDiff * lumaDiff;
+            
+            // Total distance: RGB distance weighted more heavily (hue errors are more important)
+            const totalDist = 1.5 * rgbDist + 0.60 * lumaDist;
+            
+            if (totalDist < minDist) {
+                minDist = totalDist;
                 closestIdx = i;
             }
         }
@@ -414,56 +519,41 @@ function posterizeImage(x, y, width, height) {
             data[idx + 1] = targetColor[1];
             data[idx + 2] = targetColor[2];
             
-            // Distribute error to neighboring pixels (Atkinson: 1/8 to each of 6 neighbors = 75% total)
-            const errorFraction = 1/8;
+            // Distribute error to neighboring pixels (Atkinson: 5/8 total, standard pattern)
+            // Pattern: Right: 1/8, Bottom-left: 1/8, Bottom: 1/4, Bottom-right: 1/8
+            // Based on: https://github.com/Toon-nooT/PhotoPainter-E-Ink-Spectra-6-image-converter
             
-            // Right
+            // Right (1/8)
             if (px < width - 1) {
                 const rightIdx = idx + 4;
-                data[rightIdx] = Math.max(0, Math.min(255, data[rightIdx] + errorR * errorFraction));
-                data[rightIdx + 1] = Math.max(0, Math.min(255, data[rightIdx + 1] + errorG * errorFraction));
-                data[rightIdx + 2] = Math.max(0, Math.min(255, data[rightIdx + 2] + errorB * errorFraction));
-            }
-            
-            // Right+1 (two positions to the right)
-            if (px < width - 2) {
-                const right2Idx = idx + 8;
-                data[right2Idx] = Math.max(0, Math.min(255, data[right2Idx] + errorR * errorFraction));
-                data[right2Idx + 1] = Math.max(0, Math.min(255, data[right2Idx + 1] + errorG * errorFraction));
-                data[right2Idx + 2] = Math.max(0, Math.min(255, data[right2Idx + 2] + errorB * errorFraction));
+                data[rightIdx] = Math.max(0, Math.min(255, data[rightIdx] + errorR * (1/8)));
+                data[rightIdx + 1] = Math.max(0, Math.min(255, data[rightIdx + 1] + errorG * (1/8)));
+                data[rightIdx + 2] = Math.max(0, Math.min(255, data[rightIdx + 2] + errorB * (1/8)));
             }
             
             if (py < height - 1) {
                 const bottomIdx = idx + width * 4;
                 
-                // Bottom-left
+                // Bottom-left (1/8)
                 if (px > 0) {
                     const bottomLeftIdx = bottomIdx - 4;
-                    data[bottomLeftIdx] = Math.max(0, Math.min(255, data[bottomLeftIdx] + errorR * errorFraction));
-                    data[bottomLeftIdx + 1] = Math.max(0, Math.min(255, data[bottomLeftIdx + 1] + errorG * errorFraction));
-                    data[bottomLeftIdx + 2] = Math.max(0, Math.min(255, data[bottomLeftIdx + 2] + errorB * errorFraction));
+                    data[bottomLeftIdx] = Math.max(0, Math.min(255, data[bottomLeftIdx] + errorR * (1/8)));
+                    data[bottomLeftIdx + 1] = Math.max(0, Math.min(255, data[bottomLeftIdx + 1] + errorG * (1/8)));
+                    data[bottomLeftIdx + 2] = Math.max(0, Math.min(255, data[bottomLeftIdx + 2] + errorB * (1/8)));
                 }
                 
-                // Bottom
-                data[bottomIdx] = Math.max(0, Math.min(255, data[bottomIdx] + errorR * errorFraction));
-                data[bottomIdx + 1] = Math.max(0, Math.min(255, data[bottomIdx + 1] + errorG * errorFraction));
-                data[bottomIdx + 2] = Math.max(0, Math.min(255, data[bottomIdx + 2] + errorB * errorFraction));
+                // Bottom (1/4 - double weight)
+                data[bottomIdx] = Math.max(0, Math.min(255, data[bottomIdx] + errorR * (1/4)));
+                data[bottomIdx + 1] = Math.max(0, Math.min(255, data[bottomIdx + 1] + errorG * (1/4)));
+                data[bottomIdx + 2] = Math.max(0, Math.min(255, data[bottomIdx + 2] + errorB * (1/4)));
                 
-                // Bottom-right
+                // Bottom-right (1/8)
                 if (px < width - 1) {
                     const bottomRightIdx = bottomIdx + 4;
-                    data[bottomRightIdx] = Math.max(0, Math.min(255, data[bottomRightIdx] + errorR * errorFraction));
-                    data[bottomRightIdx + 1] = Math.max(0, Math.min(255, data[bottomRightIdx + 1] + errorG * errorFraction));
-                    data[bottomRightIdx + 2] = Math.max(0, Math.min(255, data[bottomRightIdx + 2] + errorB * errorFraction));
+                    data[bottomRightIdx] = Math.max(0, Math.min(255, data[bottomRightIdx] + errorR * (1/8)));
+                    data[bottomRightIdx + 1] = Math.max(0, Math.min(255, data[bottomRightIdx + 1] + errorG * (1/8)));
+                    data[bottomRightIdx + 2] = Math.max(0, Math.min(255, data[bottomRightIdx + 2] + errorB * (1/8)));
                 }
-            }
-            
-            // Bottom+1 (two rows below)
-            if (py < height - 2) {
-                const bottom2Idx = idx + width * 8;
-                data[bottom2Idx] = Math.max(0, Math.min(255, data[bottom2Idx] + errorR * errorFraction));
-                data[bottom2Idx + 1] = Math.max(0, Math.min(255, data[bottom2Idx + 1] + errorG * errorFraction));
-                data[bottom2Idx + 2] = Math.max(0, Math.min(255, data[bottom2Idx + 2] + errorB * errorFraction));
             }
         }
     }
@@ -650,7 +740,12 @@ function handleImageFileSelect(event) {
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
             
-            // Posterize image to match e-ink colors
+            // Adjust image for e-ink display (brightness +10%, contrast +20%, saturation +20%)
+            const imageData = ctx.getImageData(drawX, drawY, drawWidth, drawHeight);
+            adjustImageForEink(imageData);
+            ctx.putImageData(imageData, drawX, drawY);
+            
+            // Posterize image to match e-ink colors using Atkinson dithering
             posterizeImage(drawX, drawY, drawWidth, drawHeight);
             
             showStatus('canvasStatus', `Image loaded and posterized: ${img.width}x${img.height} (scaled to fit ${Math.round(drawWidth)}x${Math.round(drawHeight)})`, false);

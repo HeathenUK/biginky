@@ -235,7 +235,7 @@ window.addEventListener('load', function() {
 <div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
-<p>Draw on the canvas (800x600) and display it on the panel (1600x1200). The drawing will be scaled 2x and centered.</p>
+<p>Draw on the canvas (1600x1200) - matches the display panel size. Images can be loaded and will be automatically resized to fit.</p>
 <div class="flex-row" style="margin-bottom:15px;">
 <div class="flex-item" style="min-width:120px;">
 <label>Tool:</label>
@@ -281,9 +281,11 @@ window.addEventListener('load', function() {
 <div style="margin-bottom:10px;">
 <button onclick="clearCanvas()">Clear Canvas</button>
 <button onclick="undoCanvas()" id="undoBtn" disabled>Undo</button>
+<button onclick="loadImageToCanvas()" id="loadImageBtn">Load Image</button>
+<input type="file" id="imageFileInput" accept="image/*" style="display:none;" onchange="handleImageFileSelect(event)">
 <button onclick="sendCanvasToDisplay()" id="canvasDisplayBtn" disabled>Display on Panel</button>
 </div>
-<canvas id="drawCanvas" width="800" height="600"></canvas>
+<canvas id="drawCanvas" width="1600" height="1200" style="max-width:100%;height:auto;"></canvas>
 <div id="canvasStatus"></div>
 </div>
 </div>
@@ -1885,7 +1887,7 @@ async function sendCanvasToDisplay() {
         return;
     }
     try {
-        const imageData = ctx.getImageData(0, 0, 800, 600);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
     const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
@@ -2328,8 +2330,68 @@ document.getElementById('drawTool').addEventListener('change', function() {
 function clearCanvas() {
     saveCanvasState();
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, 800, 600);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     showStatus('canvasStatus', 'Canvas cleared', false);
+}
+
+function loadImageToCanvas() {
+    document.getElementById('imageFileInput').click();
+}
+
+function handleImageFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    if (!file.type.startsWith('image/')) {
+        showStatus('canvasStatus', 'Error: Please select an image file', true);
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+            saveCanvasState();
+            
+            // Calculate scaling to fit canvas while maintaining aspect ratio
+            const canvasAspect = canvas.width / canvas.height;
+            const imgAspect = img.width / img.height;
+            
+            let drawWidth, drawHeight, drawX, drawY;
+            
+            if (imgAspect > canvasAspect) {
+                // Image is wider - fit to width
+                drawWidth = canvas.width;
+                drawHeight = canvas.width / imgAspect;
+                drawX = 0;
+                drawY = (canvas.height - drawHeight) / 2;
+            } else {
+                // Image is taller - fit to height
+                drawWidth = canvas.height * imgAspect;
+                drawHeight = canvas.height;
+                drawX = (canvas.width - drawWidth) / 2;
+                drawY = 0;
+            }
+            
+            // Clear canvas and draw image centered
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+            
+            showStatus('canvasStatus', `Image loaded: ${img.width}x${img.height} (scaled to fit ${Math.round(drawWidth)}x${Math.round(drawHeight)})`, false);
+        };
+        img.onerror = function() {
+            showStatus('canvasStatus', 'Error: Failed to load image', true);
+        };
+        img.src = e.target.result;
+    };
+    reader.onerror = function() {
+        showStatus('canvasStatus', 'Error: Failed to read file', true);
+    };
+    reader.readAsDataURL(file);
+    
+    // Reset file input so same file can be selected again
+    event.target.value = '';
 }
 
 canvas.addEventListener('mousedown', startDraw);

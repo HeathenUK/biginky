@@ -13815,27 +13815,6 @@ static bool deriveKeysFromPassword(const String& password, uint8_t* hmacKey, uin
         return false;
     }
     
-    // Debug: log password length and first few bytes
-    Serial.printf("deriveKeysFromPassword: password length = %d\n", password.length());
-    Serial.print("deriveKeysFromPassword: password bytes (first 20) = ");
-    for (int i = 0; i < 20 && i < password.length(); i++) {
-        Serial.printf("0x%02x ", (uint8_t)password.c_str()[i]);
-    }
-    Serial.println();
-    
-    Serial.print("deriveKeysFromPassword: salt = ");
-    for (size_t i = 0; i < strlen(encSalt); i++) {
-        Serial.printf("0x%02x ", (uint8_t)encSalt[i]);
-    }
-    Serial.println();
-    
-    // Debug: log derived encryption key (first 16 bytes)
-    Serial.print("deriveKeysFromPassword: derived encryption key (first 16 bytes) = ");
-    for (int i = 0; i < 16; i++) {
-        Serial.printf("0x%02x ", encryptionKey[i]);
-    }
-    Serial.println();
-    
     mbedtls_md_free(&ctx);
     return true;
 }

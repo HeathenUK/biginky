@@ -4003,9 +4003,10 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                         }
                     }
                     
-                    // Defer heavy commands (like "next" and "canvas_display") to be processed after MQTT disconnects
+                    // Defer heavy commands (display updates, large data processing) to be processed after MQTT disconnects
                     // This prevents stack overflow in the MQTT task context
-                    if (command == "next" || command == "canvas_display") {
+                    // Heavy commands: next, canvas_display, text_display, clear (all call display.update() which takes 20-30s)
+                    if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
                         Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
                         webUICommandPending = true;
                         pendingWebUICommand = jsonMessage;
@@ -4065,9 +4066,10 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     }
                 }
                 
-                // Defer heavy commands (like "next" and "canvas_display") to be processed after MQTT disconnects
+                // Defer heavy commands (display updates, large data processing) to be processed after MQTT disconnects
                 // This prevents stack overflow in the MQTT task context
-                if (command == "next" || command == "canvas_display") {
+                // Heavy commands: next, canvas_display, text_display, clear (all call display.update() which takes 20-30s)
+                if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
                     Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
                     webUICommandPending = true;
                     pendingWebUICommand = jsonMessage;

@@ -1080,6 +1080,9 @@ function connectMQTT() {
                             document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
                             return;
                         }
+                        console.log('HMAC verification passed - password is correct for HMAC');
+                    } else {
+                        console.warn('No password or HMAC provided - cannot verify message authenticity');
                     }
                     
                     // Decrypt the payload
@@ -1088,13 +1091,13 @@ function connectMQTT() {
                         decrypted = await decryptMessage(payload.payload, payload.iv);
                     } catch (decryptError) {
                         console.error('Failed to decrypt status message:', decryptError);
-                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Failed to decrypt status message. Password may be incorrect or message corrupted.</p>';
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Failed to decrypt status message. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
                         return;
                     }
                     
                     if (!decrypted || decrypted.length === 0) {
                         console.error('Decryption returned empty result');
-                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Decryption failed - empty result. Message may be corrupted.</p>';
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Decryption failed - empty result. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
                         return;
                     }
                     

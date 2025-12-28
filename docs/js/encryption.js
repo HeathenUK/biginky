@@ -143,10 +143,16 @@ async function deriveEncryptionKey(password) {
     const derivedKey = await crypto.subtle.sign('HMAC', key, salt);
     const keyArray = new Uint8Array(derivedKey);
     
-    // Debug: log derived key (first 16 bytes)
-    console.log('deriveEncryptionKey: derived key (first 16 bytes) =', Array.from(keyArray.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    // Ensure we have exactly 32 bytes (256 bits) for AES-256
+    // HMAC-SHA256 always produces 32 bytes, but let's be explicit
+    const finalKey = keyArray.length === 32 ? keyArray : keyArray.slice(0, 32);
     
-    return keyArray;
+    // Debug: log derived key length and first 16 bytes
+    console.log('deriveEncryptionKey: derived key length =', keyArray.length, 'bytes');
+    console.log('deriveEncryptionKey: final key length =', finalKey.length, 'bytes');
+    console.log('deriveEncryptionKey: derived key (first 16 bytes) =', Array.from(finalKey.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    
+    return finalKey;
 }
 
 // Encrypt a message using AES-256-CBC
@@ -160,11 +166,17 @@ async function encryptMessage(plaintext) {
         // Derive encryption key from password
         const encryptionKey = await deriveEncryptionKey(webUIPassword);
         
+        // Ensure key is exactly 32 bytes (256 bits) for AES-256
+        if (encryptionKey.length !== 32) {
+            console.error('Invalid encryption key length:', encryptionKey.length, '(expected 32 bytes for AES-256)');
+            return null;
+        }
+        
         // Import key for AES-CBC
         const key = await crypto.subtle.importKey(
             'raw',
             encryptionKey,
-            { name: 'AES-CBC' },
+            { name: 'AES-CBC', length: 256 },
             false,
             ['encrypt']
         );
@@ -205,6 +217,10 @@ async function decryptMessage(payloadBase64, ivBase64) {
         console.error('No password configured for decryption');
         return null;
     }
+    
+    // Diagnostic: Log password info (first few chars only for security)
+    console.log('decryptMessage: password length =', webUIPassword ? webUIPassword.length : 0);
+    console.log('decryptMessage: password preview =', webUIPassword ? webUIPassword.substring(0, 3) + '...' : 'null');
     
     try {
         let iv, ciphertext;
@@ -272,11 +288,17 @@ async function decryptMessage(payloadBase64, ivBase64) {
         // Derive encryption key from password
         const encryptionKey = await deriveEncryptionKey(webUIPassword);
         
+        // Ensure key is exactly 32 bytes (256 bits) for AES-256
+        if (encryptionKey.length !== 32) {
+            console.error('Invalid encryption key length:', encryptionKey.length, '(expected 32 bytes for AES-256)');
+            return null;
+        }
+        
         // Import key for AES-CBC
         const key = await crypto.subtle.importKey(
             'raw',
             encryptionKey,
-            { name: 'AES-CBC' },
+            { name: 'AES-CBC', length: 256 },
             false,
             ['decrypt']
         );

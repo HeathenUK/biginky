@@ -4998,15 +4998,17 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         return false;
     }
     
-    Serial.printf("Web interface command: %s\n", command.c_str());
-    Serial.printf("  Total JSON message size: %d bytes (%.1f KB)%s\n", 
-                 messageToProcess.length(), messageToProcess.length() / 1024.0f,
-                 isEncrypted ? " (decrypted)" : "");
-    
-    // Debug: print first 200 chars of decrypted message to verify it's valid JSON
-    if (isEncrypted && messageToProcess.length() > 0) {
-        String preview = messageToProcess.substring(0, messageToProcess.length() < 200 ? messageToProcess.length() : 200);
-        Serial.printf("  Decrypted message preview: %s\n", preview.c_str());
+    if (command.length() > 0) {
+        Serial.printf("Web interface command: %s\n", command.c_str());
+        Serial.printf("  Total JSON message size: %d bytes (%.1f KB)%s\n", 
+                     messageToProcess.length(), messageToProcess.length() / 1024.0f,
+                     isEncrypted ? " (decrypted)" : "");
+        
+        // Debug: print first 200 chars of decrypted message to verify it's valid JSON
+        if (isEncrypted && messageToProcess.length() > 0) {
+            String preview = messageToProcess.substring(0, messageToProcess.length() < 200 ? messageToProcess.length() : 200);
+            Serial.printf("  Decrypted message preview: %s\n", preview.c_str());
+        }
     }
     
     // For canvas_display commands, extract fields directly without full JSON parsing (too large)

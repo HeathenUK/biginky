@@ -3010,7 +3010,46 @@ static void auto_cycle_task(void* arg) {
 #endif
 
     // Thumbnail was already published above while display was updating (non-blocking)
-    // If WiFi wasn't connected, it was saved to SD card and will be published on next MQTT connect
+    // If WiFi wasn't connected, it was saved to SD card
+    // Now explicitly connect to WiFi/MQTT to publish thumbnail (top-of-hour only)
+    Serial.println("=== Publishing thumbnail after top-of-hour update ===");
+#if WIFI_ENABLED
+    // Load WiFi and MQTT credentials
+    if (wifiLoadCredentials()) {
+        mqttLoadConfig();
+        
+        // Connect to WiFi for thumbnail publishing
+        if (wifiConnectPersistent(5, 20000, false)) {  // 5 retries, 20s per attempt, not required (fail gracefully)
+            Serial.println("WiFi connected for thumbnail publish");
+            
+            // Connect to MQTT
+            if (mqttConnect()) {
+                delay(1000);  // Wait for connection and subscriptions
+                
+                // Publish thumbnail (will load from SD if available, otherwise regenerate from framebuffer)
+                Serial.println("Publishing thumbnail to MQTT...");
+                publishMQTTThumbnail();
+                delay(200);  // Allow time for publish to complete
+                
+                mqttDisconnect();
+                Serial.println("Thumbnail published, MQTT disconnected");
+            } else {
+                Serial.println("WARNING: Failed to connect to MQTT for thumbnail publish");
+            }
+            
+            // Disconnect WiFi
+            Serial.println("Disconnecting WiFi...");
+            WiFi.disconnect();
+            delay(100);
+        } else {
+            Serial.println("WARNING: Failed to connect to WiFi for thumbnail publish (continuing anyway)");
+        }
+    } else {
+        Serial.println("WARNING: WiFi credentials not available, skipping thumbnail publish");
+    }
+#else
+    Serial.println("WiFi disabled - cannot publish thumbnail");
+#endif
 
     if (time_ok) {
         Serial.println("Time is valid, calculating sleep until next minute...");

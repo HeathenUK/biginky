@@ -2457,16 +2457,25 @@ function toggleSection(h2Element) {
     }
 }
 
-// Restore section states on page load (default to collapsed)
+// Restore section states on page load (default to collapsed, except Authentication)
 function restoreSectionStates() {
     document.querySelectorAll('.section-content').forEach(function(content) {
         const state = localStorage.getItem('section_' + content.id);
         const h2 = content.previousElementSibling;
-        // Default to collapsed if no saved state, or use saved state
-        if (!state || state === 'collapsed') {
-            if (h2) {
+        // Keep Authentication section open by default (it's required)
+        if (content.id === 'section-auth') {
+            // Only collapse if explicitly saved as collapsed
+            if (state === 'collapsed' && h2) {
                 h2.classList.add('collapsed');
                 content.classList.add('collapsed');
+            }
+        } else {
+            // Default to collapsed for all other sections if no saved state
+            if (!state || state === 'collapsed') {
+                if (h2) {
+                    h2.classList.add('collapsed');
+                    content.classList.add('collapsed');
+                }
             }
         }
     });

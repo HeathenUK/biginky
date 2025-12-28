@@ -1101,6 +1101,96 @@ function connectMQTT() {
                 console.error('Failed to parse/decrypt thumbnail message:', e);
                 document.getElementById('thumbnailStatus').textContent = 'Error parsing thumbnail message: ' + e.message;
             }
+        } else if (message.destinationName === MQTT_TOPIC_MEDIA) {
+            console.log('Media mappings message received, parsing...');
+            try {
+                const payload = JSON.parse(message.payloadString);
+                console.log('Parsed media payload:', payload);
+                
+                // Check if message is encrypted
+                let mediaData = payload;
+                
+                if (payload.encrypted && payload.payload) {
+                    // Validate encrypted message structure
+                    if (!payload.iv || !payload.payload) {
+                        console.error('Invalid encrypted message structure - missing iv or payload');
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
+                        return;
+                    }
+                    
+                    // Verify HMAC first
+                    if (webUIPassword && payload.hmac) {
+                        const providedHMAC = payload.hmac;
+                        const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
+                        
+                        const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                        if (!hmacValid) {
+                            console.error('Media mappings message HMAC verification failed');
+                            document.getElementById('mediaMappingsStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                            return;
+                        }
+                    }
+                    
+                    // Decrypt the payload
+                    let decrypted;
+                    try {
+                        decrypted = await decryptMessage(payload.payload, payload.iv);
+                    } catch (decryptError) {
+                        console.error('Failed to decrypt media mappings message:', decryptError);
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Failed to decrypt media mappings. Password may be incorrect or message corrupted.';
+                        return;
+                    }
+                    
+                    if (!decrypted || decrypted.length === 0) {
+                        console.error('Decryption returned empty result');
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
+                        return;
+                    }
+                    
+                    // Parse decrypted JSON
+                    try {
+                        mediaData = JSON.parse(decrypted);
+                    } catch (parseError) {
+                        console.error('Failed to parse decrypted media mappings JSON:', parseError);
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: Invalid media mappings data after decryption. Message may be incomplete or corrupted.';
+                        return;
+                    }
+                    
+                    console.log('Decrypted media mappings:', { mappingCount: mediaData.mappings ? mediaData.mappings.length : 0 });
+                } else if (webUIPassword && payload.hmac) {
+                    // Unencrypted but has HMAC - verify it
+                    const providedHMAC = payload.hmac;
+                    delete payload.hmac;
+                    const messageForHMAC = JSON.stringify(payload);
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Media mappings message HMAC verification failed');
+                        document.getElementById('mediaMappingsStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                        return;
+                    }
+                    mediaData = payload;
+                } else {
+                    // No password configured or no HMAC - just display (for backward compatibility)
+                    if (!webUIPassword) {
+                        console.warn('No password configured - cannot verify HMAC');
+                    }
+                    mediaData = payload;
+                }
+                
+                // Validate media data structure
+                if (!mediaData || !mediaData.mappings || !Array.isArray(mediaData.mappings)) {
+                    console.error('Invalid media mappings structure:', mediaData);
+                    document.getElementById('mediaMappingsStatus').textContent = 'Error: Invalid media mappings structure. Required fields missing.';
+                    return;
+                }
+                
+                // Display media mappings table
+                updateMediaMappingsTable(mediaData.mappings);
+            } catch (e) {
+                console.error('Failed to parse/decrypt media mappings message:', e);
+                document.getElementById('mediaMappingsStatus').textContent = 'Error parsing media mappings message: ' + e.message;
+            }
         } else {
             console.log('Message on different topic, ignoring:', message.destinationName);
         }
@@ -1120,11 +1210,13 @@ function connectMQTT() {
             // Update status display to show we're waiting for status
             document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Connected - waiting for device status...</p>';
             
-            // Subscribe to status and thumbnail topics
+            // Subscribe to status, thumbnail, and media topics
             mqttClient.subscribe(MQTT_TOPIC_STATUS, { qos: 1 });
             mqttClient.subscribe(MQTT_TOPIC_THUMB, { qos: 1 });
+            mqttClient.subscribe(MQTT_TOPIC_MEDIA, { qos: 1 });
             console.log('Subscribed to status topic:', MQTT_TOPIC_STATUS);
             console.log('Subscribed to thumbnail topic:', MQTT_TOPIC_THUMB);
+            console.log('Subscribed to media topic:', MQTT_TOPIC_MEDIA);
             
             // If no status message arrives within 3 seconds, show a message
             setTimeout(function() {

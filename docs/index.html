@@ -1066,6 +1066,16 @@ canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); });
 canvas.addEventListener('touchend', (e) => { e.preventDefault(); stopDraw(); });
 
 clearCanvas();
+
+// Load password on page load (after all functions are defined)
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+        loadPassword();
+    });
+} else {
+    // DOM already loaded
+    loadPassword();
+}
 </script>
 </body>
 </html>

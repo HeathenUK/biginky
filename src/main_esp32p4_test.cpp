@@ -13347,6 +13347,14 @@ void setup() {
         logPrintf("\n=== Boot: %lu ms ===\n", (unsigned long)millis());
         logPrintf("SD card already mounted\n");
     }
+    
+    // Load media mappings early (needed for cold boot MQTT publishing)
+    if (sdCardMounted && sd_card != nullptr) {
+        if (!g_media_mappings_loaded) {
+            Serial.println("Loading media.txt early in setup()...");
+            loadMediaMappingsFromSD();
+        }
+    }
 #endif
 
     // Load volume setting from NVS early (before any audio initialization)

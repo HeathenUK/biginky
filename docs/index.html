@@ -390,6 +390,12 @@ function updateThumbnail(thumb) {
 function connectMQTT() {
     console.log('connectMQTT() called');
     
+    // Require password before connecting
+    if (!webUIPassword || webUIPassword.length === 0) {
+        updateConnectionStatus('disconnected', 'Error: Password required. Please set password in Authentication section above.');
+        return;
+    }
+    
     // Always use embedded token
     const token = EMBEDDED_TOKEN;
     
@@ -445,6 +451,7 @@ function connectMQTT() {
         console.log('Connection lost:', responseObject);
         isConnected = false;
         updateConnectionStatus('disconnected', 'Connection lost: ' + (responseObject.errorMessage || 'Unknown error'));
+        updatePasswordStatus();  // Update button states
         logCommand('DISCONNECTED', { reason: responseObject.errorMessage });
     };
     
@@ -536,6 +543,7 @@ function connectMQTT() {
             console.log('Connection successful!');
             isConnected = true;
             updateConnectionStatus('connected', 'Connected successfully!');
+            updatePasswordStatus();  // Update button states
             logCommand('CONNECTED', { broker: MQTT_BROKER, topic: MQTT_TOPIC });
             
             // Update status display to show we're waiting for status
@@ -560,6 +568,7 @@ function connectMQTT() {
             isConnected = false;
             const errorMsg = error.errorMessage || error.toString() || 'Unknown error';
             updateConnectionStatus('disconnected', 'Connection failed: ' + errorMsg);
+            updatePasswordStatus();  // Update button states
             logCommand('CONNECTION_FAILED', { error: errorMsg });
             mqttClient = null;
         },
@@ -591,14 +600,14 @@ function disconnectMQTT() {
 }
 
 async function publishMessage(payload) {
-    if (!mqttClient || !isConnected) {
-        showStatus('commandStatus', 'Not connected to MQTT broker', true);
+    // Check if password is configured FIRST (before connection check)
+    if (!webUIPassword || webUIPassword.length === 0) {
+        showStatus('commandStatus', 'Error: Password required. Please set password in Authentication section above.', true);
         return false;
     }
     
-    // Check if password is configured
-    if (!webUIPassword) {
-        showStatus('commandStatus', 'Error: Password not configured. Please set password in Authentication section.', true);
+    if (!mqttClient || !isConnected) {
+        showStatus('commandStatus', 'Not connected to MQTT broker', true);
         return false;
     }
     

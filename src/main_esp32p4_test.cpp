@@ -3396,7 +3396,7 @@ void publishMQTTThumbnailIfConnected() {
                 jpeg_del_encoder_engine(jpeg_handle);
             }
         }
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         
         if (jpegBuffer != nullptr && jpegSize > 0) {
             // Save to SD card
@@ -3413,7 +3413,7 @@ void publishMQTTThumbnailIfConnected() {
             thumbnailPendingPublish = true;
         }
 #else
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         Serial.println("ERROR: JPEG encoder not available");
         thumbnailPendingPublish = true;
 #endif
@@ -3568,7 +3568,7 @@ static void publishMQTTThumbnail() {
     esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
     if (ret != ESP_OK) {
         Serial.printf("ERROR: Failed to create JPEG encoder engine: %d\n", ret);
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         return;
     }
     
@@ -3584,7 +3584,7 @@ static void publishMQTTThumbnail() {
     if (jpegBuffer == nullptr) {
         Serial.println("ERROR: Failed to allocate JPEG output buffer");
         jpeg_del_encoder_engine(jpeg_handle);
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         return;
     }
     
@@ -3604,7 +3604,7 @@ static void publishMQTTThumbnail() {
         Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
         free(jpegBuffer);  // Use regular free for encoder-allocated memory
         jpeg_del_encoder_engine(jpeg_handle);
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         return;
     }
     
@@ -3702,7 +3702,7 @@ static void publishMQTTThumbnail() {
     char* base64Buffer = (char*)malloc(base64Size);
     if (base64Buffer == nullptr) {
         Serial.println("ERROR: Failed to allocate base64 buffer");
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         return;
     }
     
@@ -4099,9 +4099,9 @@ static String generateThumbnailFromImageFile(const String& imagePath) {
     const int scale = 4;
     
     size_t thumbSize = thumbWidth * thumbHeight * 3;
-    uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
+    uint8_t* thumbBuffer = (uint8_t*)hal_psram_malloc(thumbSize);
     if (thumbBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate thumbnail buffer");
+        Serial.println("ERROR: Failed to allocate PSRAM for thumbnail buffer");
         hal_psram_free(rgbBuffer);
         return "";
     }
@@ -4149,7 +4149,7 @@ static String generateThumbnailFromImageFile(const String& imagePath) {
     esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
     if (ret != ESP_OK) {
         Serial.printf("ERROR: Failed to create JPEG encoder engine: %d\n", ret);
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         return "";
     }
     
@@ -4162,7 +4162,7 @@ static String generateThumbnailFromImageFile(const String& imagePath) {
     if (jpegBuffer == nullptr) {
         Serial.println("ERROR: Failed to allocate JPEG output buffer");
         jpeg_del_encoder_engine(jpeg_handle);
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         return "";
     }
     
@@ -4180,7 +4180,7 @@ static String generateThumbnailFromImageFile(const String& imagePath) {
         Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
         free(jpegBuffer);
         jpeg_del_encoder_engine(jpeg_handle);
-        free(thumbBuffer);
+        hal_psram_free(thumbBuffer);
         return "";
     }
     

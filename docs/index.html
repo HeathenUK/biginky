@@ -2248,6 +2248,8 @@ function updateToolOptions(tool) {
 function initializeCanvasTools() {
     if (document.getElementById('drawTool')) {
         setTool('brush');
+        // Ensure UI is updated for initial tool
+        updateToolOptions('brush');
     }
 }
 

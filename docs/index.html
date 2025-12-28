@@ -2131,11 +2131,58 @@ async function showMediaItem(index) {
     }
 }
 
+// Format time remaining until next wake
+function formatTimeUntilWake() {
+    if (!nextWakeTime) return null;
+    
+    const now = new Date();
+    const diff = nextWakeTime.getTime() - now.getTime();
+    
+    if (diff <= 0) {
+        return 'Device should be awake now';
+    }
+    
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) {
+        return `${days}d ${hours % 24}h ${minutes % 60}m`;
+    } else if (hours > 0) {
+        return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+    } else if (minutes > 0) {
+        return `${minutes}m ${seconds % 60}s`;
+    } else {
+        return `${seconds}s`;
+    }
+}
+
+// Update busy state message with countdown
+function updateBusyMessage() {
+    if (!isBusy) return;
+    
+    const msgEl = document.getElementById('busyOverlay')?.querySelector('.message');
+    if (!msgEl) return;
+    
+    const timeUntilWake = formatTimeUntilWake();
+    if (timeUntilWake && nextWakeTime) {
+        const wakeTimeStr = nextWakeTime.toLocaleTimeString();
+        msgEl.textContent = `Device is asleep. Command will be processed at ${wakeTimeStr} (in ${timeUntilWake})`;
+    } else {
+        msgEl.textContent = 'Device may be asleep. Command will be processed when device wakes. Waiting for status...';
+    }
+}
+
 function setBusyState(busy, message) {
-    // Clear any existing timeout
+    // Clear any existing timeout and interval
     if (busyTimeoutId) {
         clearTimeout(busyTimeoutId);
         busyTimeoutId = null;
+    }
+    if (busyCountdownInterval) {
+        clearInterval(busyCountdownInterval);
+        busyCountdownInterval = null;
     }
     
     isBusy = busy;
@@ -2151,15 +2198,25 @@ function setBusyState(busy, message) {
             // Set timeout: if no status message arrives within 10 seconds, assume device might be asleep
             busyTimeoutId = setTimeout(() => {
                 if (isBusy) {
-                    // Device might be asleep - update message but keep busy state
-                    const msgEl = overlay.querySelector('.message');
-                    if (msgEl) {
-                        msgEl.textContent = 'Device may be asleep. Command will be processed when device wakes. Waiting for status...';
+                    // Device might be asleep - update message with countdown if we have next_wake time
+                    updateBusyMessage();
+                    
+                    // Start countdown interval to update message every second
+                    if (nextWakeTime) {
+                        busyCountdownInterval = setInterval(() => {
+                            if (isBusy) {
+                                updateBusyMessage();
+                            } else {
+                                clearInterval(busyCountdownInterval);
+                                busyCountdownInterval = null;
+                            }
+                        }, 1000);
                     }
                 }
             }, 10000);  // 10 seconds
         } else {
             overlay.classList.remove('active');
+            nextWakeTime = null;
         }
     }
 }

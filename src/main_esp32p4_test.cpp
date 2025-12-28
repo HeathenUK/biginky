@@ -70,6 +70,8 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
+#include "mbedtls/md.h"  // ESP32 built-in HMAC support
 #define WIFI_ENABLED 1
 #else
 #define WIFI_ENABLED 0
@@ -310,6 +312,7 @@ static Preferences sleepPrefs;  // NVS preferences for sleep duration setting
 static Preferences otaPrefs;  // NVS preferences for OTA version tracking
 static Preferences mediaPrefs;  // NVS preferences for media index storage
 static Preferences hourSchedulePrefs;  // NVS preferences for hour schedule
+static Preferences authPrefs;  // NVS preferences for web UI authentication
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 static uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60)
@@ -2005,6 +2008,13 @@ void publishMQTTThumbnailIfConnected();  // Called from EL133UF1 library after d
 static bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize);  // Save JPEG thumbnail to SD card
 static char* loadThumbnailFromSD();  // Load JPEG thumbnail from SD card and return JSON (caller must free)
 
+// Web UI authentication functions (HMAC-based, password never transmitted)
+static bool validateWebUIHMAC(const String& message, const String& providedHMAC);  // Validate HMAC signature
+static String computeHMAC(const String& message);  // Compute HMAC-SHA256 of message using stored password
+static bool setWebUIPassword(const String& password);  // Set new password (stores in NVS, used as HMAC key)
+static bool isWebUIPasswordSet();  // Check if password is configured
+static void requireWebUIPasswordSetup();  // Check and require password setup at boot
+
 // MQTT command handling
 static String extractCommandFromMessage(const String& msg);
 static String extractCommandParameter(const String& command);
@@ -3145,13 +3155,42 @@ static void publishMQTTStatus() {
     // Connection status (without sensitive details)
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
     
-    // Close JSON object
+    // Close JSON object (before adding HMAC)
     written += snprintf(jsonBuffer + written, jsonSize - written, "}");
     
     if (written < 0 || written >= (int)jsonSize) {
         Serial.printf("ERROR: Status JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
         free(jsonBuffer);
         return;
+    }
+    
+    // Compute HMAC signature for the message (before adding hmac field)
+    String messageForHMAC = String(jsonBuffer);
+    String hmac = computeHMAC(messageForHMAC);
+    
+    if (hmac.length() == 0) {
+        Serial.println("WARNING: Failed to compute HMAC for status - publishing without HMAC");
+    } else {
+        // Add HMAC to JSON (reallocate buffer if needed)
+        size_t jsonSizeWithHMAC = written + 80;  // Extra space for HMAC field
+        char* jsonBufferWithHMAC = (char*)malloc(jsonSizeWithHMAC);
+        if (jsonBufferWithHMAC != nullptr) {
+            // Remove closing brace, add HMAC, then close
+            jsonBuffer[written - 1] = '\0';  // Remove '}'
+            int writtenWithHMAC = snprintf(jsonBufferWithHMAC, jsonSizeWithHMAC,
+                                          "%s,\"hmac\":\"%s\"}", jsonBuffer, hmac.c_str());
+            if (writtenWithHMAC > 0 && writtenWithHMAC < (int)jsonSizeWithHMAC) {
+                free(jsonBuffer);
+                jsonBuffer = jsonBufferWithHMAC;
+                written = writtenWithHMAC;
+            } else {
+                // HMAC addition failed, use original
+                free(jsonBufferWithHMAC);
+                Serial.println("WARNING: Failed to add HMAC to status JSON - publishing without HMAC");
+            }
+        } else {
+            Serial.println("WARNING: Failed to allocate buffer for HMAC - publishing without HMAC");
+        }
     }
     
     // Publish as retained message
@@ -3615,12 +3654,25 @@ static void publishMQTTThumbnail() {
         return;
     }
     
-    int written = snprintf(jsonBuffer, jsonSize,
-                          "{\"width\":%d,\"height\":%d,\"format\":\"rgb888\",\"data\":\"%s\"}",
-                          thumbWidth, thumbHeight, base64Buffer);
+    // Compute HMAC signature for the message (before adding hmac field)
+    String messageForHMAC = String("{\"width\":") + thumbWidth + ",\"height\":" + thumbHeight + ",\"format\":\"rgb888\",\"data\":\"" + String(base64Buffer) + "\"}";
+    String hmac = computeHMAC(messageForHMAC);
     
-    if (written < 0 || written >= (int)jsonSize) {
-        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+    // Add HMAC to JSON (recompute with larger buffer)
+    size_t jsonSizeWithHMAC = 60 + base64Idx + 80;  // Extra space for HMAC field
+    char* jsonBuffer = (char*)malloc(jsonSizeWithHMAC);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer");
+        free(base64Buffer);
+        return;
+    }
+    
+    int written = snprintf(jsonBuffer, jsonSizeWithHMAC,
+                          "{\"width\":%d,\"height\":%d,\"format\":\"rgb888\",\"data\":\"%s\",\"hmac\":\"%s\"}",
+                          thumbWidth, thumbHeight, base64Buffer, hmac.c_str());
+    
+    if (written < 0 || written >= (int)jsonSizeWithHMAC) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSizeWithHMAC);
         free(jsonBuffer);
         free(base64Buffer);
         return;
@@ -3629,7 +3681,7 @@ static void publishMQTTThumbnail() {
     free(base64Buffer);
 #endif
     
-    Serial.printf("Publishing thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
+    Serial.printf("Publishing thumbnail JSON (%d bytes) with HMAC to %s...\n", written, mqttTopicThumb);
     
     // Publish as retained message so web UI gets it immediately on connect
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
@@ -4773,6 +4825,59 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
  * Commands are sent as JSON: {"command": "text_display", "text": "...", ...}
  */
 static bool handleWebInterfaceCommand(const String& jsonMessage) {
+    // Extract HMAC signature from JSON message (required for authentication)
+    String providedHMAC = "";
+    int hmacPos = jsonMessage.indexOf("\"hmac\"");
+    if (hmacPos >= 0) {
+        int colonPos = jsonMessage.indexOf(':', hmacPos);
+        int quoteStart = jsonMessage.indexOf('"', colonPos);
+        if (quoteStart >= 0) {
+            int quoteEnd = jsonMessage.indexOf('"', quoteStart + 1);
+            if (quoteEnd > quoteStart) {
+                providedHMAC = jsonMessage.substring(quoteStart + 1, quoteEnd);
+            }
+        }
+    }
+    
+    // Compute HMAC of the message (excluding the hmac field itself)
+    // Simple approach: remove "hmac":"..." from the message
+    String messageForHMAC = jsonMessage;
+    if (hmacPos >= 0) {
+        // Find the end of the hmac value
+        int valueStart = jsonMessage.indexOf('"', jsonMessage.indexOf(':', hmacPos));
+        int valueEnd = jsonMessage.indexOf('"', valueStart + 1) + 1;
+        
+        // Check if there's a comma before hmac
+        int commaBefore = jsonMessage.lastIndexOf(',', hmacPos);
+        int commaAfter = jsonMessage.indexOf(',', valueEnd);
+        
+        if (commaBefore >= 0 && commaAfter >= 0) {
+            // Remove hmac field and both commas
+            messageForHMAC = jsonMessage.substring(0, commaBefore) + jsonMessage.substring(commaAfter + 1);
+        } else if (commaBefore >= 0) {
+            // Remove hmac field and comma before
+            messageForHMAC = jsonMessage.substring(0, commaBefore) + jsonMessage.substring(valueEnd);
+        } else if (commaAfter >= 0) {
+            // Remove hmac field and comma after
+            messageForHMAC = jsonMessage.substring(0, hmacPos) + jsonMessage.substring(commaAfter + 1);
+        } else {
+            // hmac is the only field - message becomes empty object
+            messageForHMAC = "{}";
+        }
+        
+        // Clean up any formatting issues
+        messageForHMAC.trim();
+        if (messageForHMAC.length() == 0) {
+            messageForHMAC = "{}";
+        }
+    }
+    
+    // Validate HMAC (all-or-nothing: if password is set, HMAC is required)
+    if (!validateWebUIHMAC(messageForHMAC, providedHMAC)) {
+        Serial.println("ERROR: Web UI command rejected - HMAC validation failed");
+        return false;
+    }
+    
     // For large messages (like canvas_display with 640KB pixelData), we can't parse the entire JSON
     // So we first check the command type using string operations, then parse only if needed
     String command = "";
@@ -7339,6 +7444,62 @@ static bool handleManageCommand() {
         String body = request->body();
         bool success = updateDeviceSettings(body);
         String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to update settings\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // POST /api/auth/password - Set web UI password (for GitHub Pages UI authentication)
+    server.on("/api/auth/password", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String body = request->body();
+        
+        // Parse JSON to extract password
+        String password = "";
+        int passwordPos = body.indexOf("\"password\"");
+        if (passwordPos >= 0) {
+            int colonPos = body.indexOf(':', passwordPos);
+            int quoteStart = body.indexOf('"', colonPos);
+            if (quoteStart >= 0) {
+                quoteStart++;  // Skip opening quote
+                int quoteEnd = quoteStart;
+                while (quoteEnd < (int)body.length()) {
+                    if (body.charAt(quoteEnd) == '"' && (quoteEnd == 0 || body.charAt(quoteEnd - 1) != '\\')) {
+                        break;
+                    }
+                    quoteEnd++;
+                }
+                if (quoteEnd > quoteStart) {
+                    password = body.substring(quoteStart, quoteEnd);
+                    // Unescape JSON string
+                    password.replace("\\n", "\n");
+                    password.replace("\\r", "\r");
+                    password.replace("\\t", "\t");
+                    password.replace("\\\"", "\"");
+                    password.replace("\\\\", "\\");
+                }
+            }
+        }
+        
+        if (password.length() == 0) {
+            String resp = "{\"success\":false,\"error\":\"Password field is required\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        if (password.length() < 8) {
+            String resp = "{\"success\":false,\"error\":\"Password must be at least 8 characters\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        bool success = setWebUIPassword(password);
+        String resp = success ? "{\"success\":true,\"message\":\"Password set successfully. GitHub Pages UI will now require HMAC authentication.\"}" 
+                              : "{\"success\":false,\"error\":\"Failed to set password\"}";
+        return response->send(success ? 200 : 500, "application/json", resp.c_str());
+    });
+    
+    // GET /api/auth/status - Check if password is configured
+    server.on("/api/auth/status", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        bool isSet = isWebUIPasswordSet();
+        String resp = "{\"password_configured\":" + String(isSet ? "true" : "false") + "}";
         return response->send(200, "application/json", resp.c_str());
     });
     
@@ -12663,6 +12824,9 @@ void setup() {
     
     // Load media index from NVS
     mediaIndexLoadFromNVS();
+    
+    // Check and require web UI password setup (for GitHub Pages UI)
+    requireWebUIPasswordSetup();
 
     // Bring up PA enable early (matches known-good ESP-IDF example behavior)
     pinMode(PIN_CODEC_PA_EN, OUTPUT);
@@ -12975,6 +13139,184 @@ void setup() {
     }
     }
 #endif // WIFI_ENABLED
+}
+
+// ============================================================================
+// Web UI Authentication Functions
+// ============================================================================
+
+/**
+ * Compute HMAC-SHA256 of a message using the stored password as key
+ * Returns hex-encoded HMAC (64 characters)
+ * Password is NEVER transmitted - only HMAC signatures are sent
+ */
+static String computeHMAC(const String& message) {
+    if (!isWebUIPasswordSet()) {
+        Serial.println("ERROR: Cannot compute HMAC - password not set");
+        return "";
+    }
+    
+    // Get password from NVS (used as HMAC key)
+    if (!authPrefs.begin("webui_auth", true)) {
+        Serial.println("ERROR: Failed to open NVS for HMAC computation");
+        return "";
+    }
+    String password = authPrefs.getString("password", "");
+    authPrefs.end();
+    
+    if (password.length() == 0) {
+        Serial.println("ERROR: Password key is empty");
+        return "";
+    }
+    
+    // Compute HMAC-SHA256
+    uint8_t hmac[32];  // HMAC-SHA256 produces 32 bytes
+    const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (md_info == nullptr) {
+        Serial.println("ERROR: Failed to get SHA256 MD info");
+        return "";
+    }
+    
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    
+    if (mbedtls_md_setup(&ctx, md_info, 1) != 0) {  // 1 = HMAC mode
+        Serial.println("ERROR: Failed to setup HMAC context");
+        mbedtls_md_free(&ctx);
+        return "";
+    }
+    
+    if (mbedtls_md_hmac_starts(&ctx, (const unsigned char*)password.c_str(), password.length()) != 0) {
+        Serial.println("ERROR: Failed to start HMAC");
+        mbedtls_md_free(&ctx);
+        return "";
+    }
+    
+    if (mbedtls_md_hmac_update(&ctx, (const unsigned char*)message.c_str(), message.length()) != 0) {
+        Serial.println("ERROR: Failed to update HMAC");
+        mbedtls_md_free(&ctx);
+        return "";
+    }
+    
+    if (mbedtls_md_hmac_finish(&ctx, hmac) != 0) {
+        Serial.println("ERROR: Failed to finish HMAC");
+        mbedtls_md_free(&ctx);
+        return "";
+    }
+    
+    mbedtls_md_free(&ctx);
+    
+    // Convert to hex string
+    String hexHMAC = "";
+    for (int i = 0; i < 32; i++) {
+        if (hmac[i] < 16) hexHMAC += "0";
+        hexHMAC += String(hmac[i], HEX);
+    }
+    return hexHMAC;
+}
+
+/**
+ * Validate HMAC signature of a message
+ * Returns true if HMAC matches, false otherwise
+ */
+static bool validateWebUIHMAC(const String& message, const String& providedHMAC) {
+    // If no password is set, reject all requests (require setup)
+    if (!isWebUIPasswordSet()) {
+        Serial.println("ERROR: Web UI password not configured - rejecting request");
+        return false;
+    }
+    
+    if (providedHMAC.length() != 64) {
+        Serial.println("ERROR: Invalid HMAC format (must be 64 hex characters)");
+        return false;
+    }
+    
+    String computedHMAC = computeHMAC(message);
+    if (computedHMAC.length() == 0) {
+        Serial.println("ERROR: Failed to compute HMAC for validation");
+        return false;
+    }
+    
+    // Constant-time comparison to prevent timing attacks
+    bool valid = true;
+    for (int i = 0; i < 64; i++) {
+        if (computedHMAC[i] != providedHMAC[i]) {
+            valid = false;
+        }
+    }
+    
+    if (valid) {
+        Serial.println("HMAC validation successful");
+    } else {
+        Serial.println("HMAC validation failed");
+    }
+    
+    return valid;
+}
+
+/**
+ * Check if a password is configured
+ */
+static bool isWebUIPasswordSet() {
+    if (!authPrefs.begin("webui_auth", true)) {
+        return false;
+    }
+    String password = authPrefs.getString("password", "");
+    authPrefs.end();
+    return (password.length() > 0);
+}
+
+/**
+ * Set a new password (stores in NVS, used as HMAC key)
+ * Password is stored in plaintext in NVS (it's already secure - NVS is encrypted)
+ */
+static bool setWebUIPassword(const String& password) {
+    if (password.length() == 0) {
+        Serial.println("ERROR: Cannot set empty password");
+        return false;
+    }
+    
+    if (password.length() < 8) {
+        Serial.println("WARNING: Password is less than 8 characters - consider using a stronger password");
+    }
+    
+    if (!authPrefs.begin("webui_auth", false)) {
+        Serial.println("ERROR: Failed to open NVS for password storage");
+        return false;
+    }
+    
+    bool success = authPrefs.putString("password", password);
+    authPrefs.end();
+    
+    if (success) {
+        Serial.println("Web UI password set successfully (stored as HMAC key)");
+    } else {
+        Serial.println("ERROR: Failed to store password in NVS");
+    }
+    
+    return success;
+}
+
+/**
+ * Require password setup at boot if not configured
+ * Blocks web UI functionality until password is set
+ */
+static void requireWebUIPasswordSetup() {
+    if (!isWebUIPasswordSet()) {
+        Serial.println("\n========================================");
+        Serial.println("CRITICAL: Web UI password not configured!");
+        Serial.println("========================================");
+        Serial.println("The GitHub Pages web UI will NOT work until a password is set.");
+        Serial.println("To set the password:");
+        Serial.println("  1. Connect to the device's local WiFi UI");
+        Serial.println("  2. Navigate to Settings > Web UI Password");
+        Serial.println("  3. Set a password (minimum 8 characters recommended)");
+        Serial.println("  4. The password will be used as HMAC key for message signing");
+        Serial.println("  5. Password is NEVER transmitted - only HMAC signatures are sent");
+        Serial.println("========================================\n");
+    } else {
+        Serial.println("Web UI password is configured - GitHub Pages UI is enabled");
+    }
 }
 
 void loop() {

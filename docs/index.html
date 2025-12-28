@@ -1042,11 +1042,16 @@ function connectMQTT() {
                         return;
                     }
                     
+                    // Debug: log first few characters of decrypted data
+                    console.log('Decrypted data (first 100 chars):', decrypted.substring(0, 100));
+                    console.log('Decrypted data length:', decrypted.length);
+                    
                     // Parse decrypted JSON
                     try {
                         status = JSON.parse(decrypted);
                     } catch (parseError) {
                         console.error('Failed to parse decrypted status JSON:', parseError);
+                        console.error('Decrypted data (full):', decrypted);
                         document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Invalid status data after decryption. Message may be incomplete or corrupted.</p>';
                         return;
                     }

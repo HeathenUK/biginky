@@ -4182,9 +4182,14 @@ static void publishMQTTMediaMappings() {
         return;
     }
     
+    // Load media mappings if not already loaded (SD card is always mounted)
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
-        Serial.println("WARNING: No media mappings loaded, cannot publish media mappings");
-        return;
+        Serial.println("Media mappings not loaded yet - loading from SD card now...");
+        loadMediaMappingsFromSD();
+        if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+            Serial.println("WARNING: No media mappings found on SD card, cannot publish media mappings");
+            return;
+        }
     }
     
     Serial.printf("Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
@@ -13346,14 +13351,6 @@ void setup() {
         logInit();
         logPrintf("\n=== Boot: %lu ms ===\n", (unsigned long)millis());
         logPrintf("SD card already mounted\n");
-    }
-    
-    // Load media mappings early (needed for cold boot MQTT publishing)
-    if (sdCardMounted && sd_card != nullptr) {
-        if (!g_media_mappings_loaded) {
-            Serial.println("Loading media.txt early in setup()...");
-            loadMediaMappingsFromSD();
-        }
     }
 #endif
 

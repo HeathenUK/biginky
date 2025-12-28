@@ -2573,8 +2573,8 @@ function stopDraw() {
     // Rectangle, circle, and line already saved state in startDraw
 }
 
-function undoCanvas() {
-    restoreCanvasState();
+async function undoCanvas() {
+    await restoreCanvasState();
 }
 
 // Update tool options visibility

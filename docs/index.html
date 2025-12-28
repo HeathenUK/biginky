@@ -2159,8 +2159,6 @@ let startY = 0;
 let canvasHistory = [];
 let historyIndex = -1;
 
-const colorMap = {0:'#000000',1:'#FFFFFF',2:'#FFFF00',3:'#FF0000',5:'#0000FF',6:'#00FF00'};
-
 const colorMap = {
     0: '#000000',  // Black
     1: '#FFFFFF',  // White
@@ -2201,13 +2199,18 @@ function getCurrentTool() {
     return document.getElementById('drawTool').value || 'brush';
 }
 
-// Initialize tool on page load
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() {
+// Initialize tool on page load (defer until DOM is ready)
+function initializeCanvasTools() {
+    if (document.getElementById('drawTool')) {
         setTool('brush');
-    });
+    }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeCanvasTools);
 } else {
-    setTool('brush');
+    // DOM already loaded
+    setTimeout(initializeCanvasTools, 0);
 }
 
 function getCanvasCoordinates(e) {

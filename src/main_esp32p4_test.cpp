@@ -4958,24 +4958,41 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
             // Decompress using miniz (raw deflate format from browser's CompressionStream)
             // CompressionStream('deflate') produces raw deflate, not zlib-wrapped
             // miniz is available via pngle library
-            size_t decompressedSize = 0;
-            // Use 0 flags for raw deflate (no zlib header, no adler32 checksum)
-            void* decompressed = tinfl_decompress_mem_to_heap(compressedData, compressedSize, &decompressedSize, 0);
-            if (decompressed == nullptr || decompressedSize != expectedSize) {
-                Serial.printf("ERROR: miniz decompression failed (got %zu, expected %zu)\n", decompressedSize, expectedSize);
-                if (decompressed) {
-                    Serial.printf("  Decompressed %zu bytes but expected %zu\n", decompressedSize, expectedSize);
-                } else {
-                    Serial.println("  Decompression returned nullptr");
+            
+            // Debug: print first few bytes of compressed data to verify format
+            Serial.printf("  Compressed data preview (first 16 bytes): ");
+            for (size_t i = 0; i < compressedSize && i < 16; i++) {
+                Serial.printf("%02X ", compressedData[i]);
+            }
+            Serial.println();
+            
+            // Use tinfl_decompress_mem_to_mem since we already have the output buffer
+            // This is more memory-efficient and gives us better error handling
+            size_t decompressedSize = tinfl_decompress_mem_to_mem(pixelData, expectedSize, compressedData, compressedSize, 0);
+            
+            if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                Serial.println("ERROR: miniz decompression failed (TINFL_DECOMPRESS_MEM_TO_MEM_FAILED)");
+                Serial.printf("  Compressed size: %zu bytes, Expected output: %zu bytes\n", compressedSize, expectedSize);
+                // Try with zlib header flag as fallback (in case browser actually sends zlib format)
+                Serial.println("  Trying with zlib header flag...");
+                decompressedSize = tinfl_decompress_mem_to_mem(pixelData, expectedSize, compressedData, compressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+                if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                    Serial.println("  Zlib header flag also failed");
+                    free(compressedData);
+                    free(pixelData);
+                    return false;
                 }
+                Serial.println("  Zlib header flag succeeded!");
+            }
+            
+            if (decompressedSize != expectedSize) {
+                Serial.printf("ERROR: Decompressed size mismatch: got %zu, expected %zu\n", decompressedSize, expectedSize);
                 free(compressedData);
                 free(pixelData);
-                if (decompressed) mz_free(decompressed);
                 return false;
             }
-            memcpy(pixelData, decompressed, expectedSize);
-            mz_free(decompressed);
-            actualLen = expectedSize;
+            
+            actualLen = decompressedSize;
             float compressionRatio = (100.0f * compressedSize) / actualLen;
             float sizeReduction = 100.0f - compressionRatio;
             Serial.printf("  Decompressed: %zu bytes (%.1f KB)\n", actualLen, actualLen / 1024.0f);

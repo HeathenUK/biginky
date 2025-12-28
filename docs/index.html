@@ -2279,7 +2279,10 @@ function saveCanvasState() {
         canvasHistory.shift();
         historyIndex--;
     }
-    document.getElementById('undoBtn').disabled = historyIndex < 0;
+    const undoBtn = document.getElementById('undoBtn');
+    if (undoBtn) {
+        undoBtn.disabled = historyIndex < 0;
+    }
 }
 
 function restoreCanvasState() {

@@ -359,7 +359,27 @@ async function decryptMessage(payloadBase64, ivBase64) {
         
         // Convert to string
         const decoder = new TextDecoder();
-        return decoder.decode(plaintext);
+        const decoded = decoder.decode(plaintext);
+        
+        // Remove PKCS7 padding
+        if (decoded.length > 0) {
+            const padValue = decoded.charCodeAt(decoded.length - 1);
+            if (padValue > 0 && padValue <= 16) {
+                // Verify padding is valid
+                let validPadding = true;
+                for (let i = decoded.length - padValue; i < decoded.length; i++) {
+                    if (decoded.charCodeAt(i) !== padValue) {
+                        validPadding = false;
+                        break;
+                    }
+                }
+                if (validPadding) {
+                    return decoded.substring(0, decoded.length - padValue);
+                }
+            }
+        }
+        
+        return decoded;
     } catch (e) {
         console.error('Decryption error:', e);
         return null;

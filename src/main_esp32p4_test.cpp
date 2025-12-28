@@ -5265,23 +5265,31 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     }
     
     // For other commands, parse JSON normally (they're small)
+    // Use messageToProcess (decrypted) not jsonMessage (encrypted)
     StaticJsonDocument<4096> doc;
-    DeserializationError error = deserializeJson(doc, jsonMessage);
+    DeserializationError error = deserializeJson(doc, messageToProcess);
     
     if (error) {
         Serial.printf("ERROR: Failed to parse JSON command: %s\n", error.c_str());
+        Serial.printf("  Attempted to parse messageToProcess (length: %d): %s\n", 
+                     messageToProcess.length(), messageToProcess.substring(0, 100).c_str());
         return false;
     }
     
     if (!doc.containsKey("command")) {
         Serial.println("ERROR: JSON command missing 'command' field");
+        Serial.printf("  Parsed JSON keys: ");
+        for (JsonPair kv : doc) {
+            Serial.printf("%s ", kv.key().c_str());
+        }
+        Serial.println();
         return false;
     }
     
     command = doc["command"].as<String>();
     command.toLowerCase();
     
-    Serial.printf("Web interface command: %s\n", command.c_str());
+    Serial.printf("Web interface command: %s (from JSON parse)\n", command.c_str());
     
     // Route commands
     if (command == "text_display") {

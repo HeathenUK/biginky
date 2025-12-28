@@ -71,7 +71,7 @@ window.addEventListener('load', function() {
         if (!checkPahoLoaded()) {
             loadPahoFallback();
         }
-        // Load password from localStorage (after functions are defined)
+        // Load password from sessionStorage (after functions are defined)
         if (typeof loadPassword === 'function') {
             loadPassword();
         } else {
@@ -605,7 +605,7 @@ async function verifyPasswordByDecryption(password) {
     });
 }
 
-// Save password to localStorage and verify it by decrypting status message
+// Save password to sessionStorage (encrypted) and verify it by decrypting status message
 async function savePassword() {
     const password = document.getElementById('webUIPassword').value.trim();
     const passwordStatusEl = document.getElementById('passwordStatus');
@@ -723,9 +723,10 @@ async function savePassword() {
             }
         }, 5000);
     } else {
-        // Not connected - just save password, verify later
+        // Not connected - just save password (encrypted), verify later
         try {
-            localStorage.setItem('biginky_webui_password', btoa(password));
+            const encryptedPassword = await encryptPasswordForStorage(password);
+            sessionStorage.setItem('biginky_webui_password', encryptedPassword);
             webUIPassword = password;
             passwordStatusEl.innerHTML = '<div class="info" style="margin-top:10px;">Password saved. Will verify when connected to MQTT and status message is received.</div>';
             updatePasswordStatus();

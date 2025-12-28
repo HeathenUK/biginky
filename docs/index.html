@@ -62,12 +62,20 @@ function loadPahoFallback() {
 
 // Verify Paho library loaded after page load
 window.addEventListener('load', function() {
-    // Load password from localStorage
-    loadPassword();
-    
     setTimeout(function() {
         if (!checkPahoLoaded()) {
             loadPahoFallback();
+        }
+        // Load password from localStorage (after functions are defined)
+        if (typeof loadPassword === 'function') {
+            loadPassword();
+        } else {
+            // Functions not loaded yet, wait a bit
+            setTimeout(function() {
+                if (typeof loadPassword === 'function') {
+                    loadPassword();
+                }
+            }, 100);
         }
     }, 100);
 });

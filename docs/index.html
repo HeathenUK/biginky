@@ -387,10 +387,8 @@ async function decryptMessage(payloadBase64, ivBase64) {
         
         // Validate padding (must be between 1 and 16)
         if (padValue < 1 || padValue > 16) {
-            console.error('Invalid padding value:', padValue, '(expected 1-16)');
-            console.error('This usually means the encryption key is incorrect or the ciphertext is corrupted');
-            console.error('Plaintext length:', plaintextArray.length);
-            console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+            // Don't log as error yet - we'll try fallbacks first
+            console.log('Padding value invalid:', padValue, '(expected 1-16), attempting fallback methods...');
             // Try to find valid padding by checking if any of the last 16 bytes could be padding
             // Check from the end backwards - look for consecutive bytes with the same value
             let foundValidPadding = false;
@@ -441,7 +439,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
                         const decoded = decoder.decode(potentialJson);
                         try {
                             JSON.parse(decoded); // Validate it's valid JSON
-                            console.log('Successfully decoded as valid JSON');
+                            console.log('Successfully decoded as valid JSON (padding issue recovered)');
                             return decoded;
                         } catch (e) {
                             console.log('Decoded data is not valid JSON:', e);
@@ -450,6 +448,10 @@ async function decryptMessage(payloadBase64, ivBase64) {
                 }
             }
             if (!foundValidPadding) {
+                console.error('Invalid padding value:', padValue, '(expected 1-16)');
+                console.error('This usually means the encryption key is incorrect or the ciphertext is corrupted');
+                console.error('Plaintext length:', plaintextArray.length);
+                console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
                 console.error('Could not find valid padding or decode as JSON');
                 return null;
             }

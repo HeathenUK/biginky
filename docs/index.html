@@ -131,7 +131,8 @@ window.addEventListener('load', function() {
 </div>
 <h1>BigInky Remote Control</h1>
 <div class="section">
-<h2>Authentication (Required)</h2>
+<h2 onclick="toggleSection(this)">Authentication (Required)</h2>
+<div class="section-content" id="section-auth">
 <p style="color:#888;font-size:14px;margin-bottom:15px;"><strong>Password is required to use this interface.</strong> Enter the password configured on the device (via local WiFi UI) to enable HMAC authentication. All functionality is disabled until a password is set.</p>
 <div class="flex-row">
 <div class="flex-item">
@@ -2141,14 +2142,146 @@ canvas.addEventListener('touchend', (e) => { e.preventDefault(); stopDraw(); });
 
 clearCanvas();
 
+// Auto-reconnect functionality
+function scheduleReconnect() {
+    if (reconnectTimeoutId) {
+        clearTimeout(reconnectTimeoutId);
+    }
+    
+    reconnectAttempts++;
+    const delay = Math.min(INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1), 30000); // Exponential backoff, max 30s
+    
+    updateConnectionStatus('reconnecting', `Reconnecting in ${(delay/1000).toFixed(1)}s... (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+    
+    reconnectTimeoutId = setTimeout(function() {
+        console.log(`Auto-reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+        connectMQTT();
+    }, delay);
+}
+
+function cancelReconnect() {
+    if (reconnectTimeoutId) {
+        clearTimeout(reconnectTimeoutId);
+        reconnectTimeoutId = null;
+    }
+    reconnectAttempts = 0;
+}
+
+// Collapsible sections
+function toggleSection(h2Element) {
+    const section = h2Element.closest('.section');
+    const content = section.querySelector('.section-content');
+    if (!content) return;
+    
+    const isCollapsed = h2Element.classList.contains('collapsed');
+    
+    if (isCollapsed) {
+        h2Element.classList.remove('collapsed');
+        content.classList.remove('collapsed');
+        localStorage.setItem('section_' + content.id, 'expanded');
+    } else {
+        h2Element.classList.add('collapsed');
+        content.classList.add('collapsed');
+        localStorage.setItem('section_' + content.id, 'collapsed');
+    }
+}
+
+// Restore section states on page load
+function restoreSectionStates() {
+    document.querySelectorAll('.section-content').forEach(function(content) {
+        const state = localStorage.getItem('section_' + content.id);
+        const h2 = content.previousElementSibling;
+        if (state === 'collapsed' && h2) {
+            h2.classList.add('collapsed');
+            content.classList.add('collapsed');
+        }
+    });
+}
+
+// Keyboard shortcuts
+function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', function(e) {
+        // Ctrl/Cmd + Enter to send text display
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            const textInput = document.getElementById('textInput');
+            if (textInput && document.activeElement === textInput) {
+                e.preventDefault();
+                const textDisplayBtn = document.getElementById('textDisplayBtn');
+                if (textDisplayBtn && !textDisplayBtn.disabled) {
+                    sendTextDisplay();
+                }
+            }
+        }
+        
+        // Ctrl/Cmd + K to focus search (if we add search later)
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            e.preventDefault();
+            // Future: focus search input
+        }
+        
+        // Esc to close modals (if we add modals later)
+        if (e.key === 'Escape') {
+            // Future: close any open modals
+        }
+    });
+}
+
 // Load password on page load (after all functions are defined)
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
         loadPassword();
+        restoreSectionStates();
+        setupKeyboardShortcuts();
+        
+        // Load auto-reconnect preference
+        const autoReconnectPref = localStorage.getItem('autoReconnectEnabled');
+        if (autoReconnectPref !== null) {
+            autoReconnectEnabled = autoReconnectPref === 'true';
+            const checkbox = document.getElementById('autoReconnect');
+            if (checkbox) {
+                checkbox.checked = autoReconnectEnabled;
+            }
+        }
+        
+        // Setup auto-reconnect checkbox handler
+        const autoReconnectCheckbox = document.getElementById('autoReconnect');
+        if (autoReconnectCheckbox) {
+            autoReconnectCheckbox.addEventListener('change', function() {
+                autoReconnectEnabled = this.checked;
+                localStorage.setItem('autoReconnectEnabled', String(autoReconnectEnabled));
+                if (!autoReconnectEnabled) {
+                    cancelReconnect();
+                }
+            });
+        }
     });
 } else {
     // DOM already loaded
     loadPassword();
+    restoreSectionStates();
+    setupKeyboardShortcuts();
+    
+    // Load auto-reconnect preference
+    const autoReconnectPref = localStorage.getItem('autoReconnectEnabled');
+    if (autoReconnectPref !== null) {
+        autoReconnectEnabled = autoReconnectPref === 'true';
+        const checkbox = document.getElementById('autoReconnect');
+        if (checkbox) {
+            checkbox.checked = autoReconnectEnabled;
+        }
+    }
+    
+    // Setup auto-reconnect checkbox handler
+    const autoReconnectCheckbox = document.getElementById('autoReconnect');
+    if (autoReconnectCheckbox) {
+        autoReconnectCheckbox.addEventListener('change', function() {
+            autoReconnectEnabled = this.checked;
+            localStorage.setItem('autoReconnectEnabled', String(autoReconnectEnabled));
+            if (!autoReconnectEnabled) {
+                cancelReconnect();
+            }
+        });
+    }
 }
 </script>
 </body>

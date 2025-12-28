@@ -18,29 +18,18 @@ def generate_web_header(source, target, env):
     web_dir = os.path.join(project_dir, "web")
     header_file = os.path.join(project_dir, "src", "web_assets.h")
     
-    # Create web directory if it doesn't exist
-    os.makedirs(web_dir, exist_ok=True)
+    # Ensure web directory exists
+    if not os.path.exists(web_dir):
+        print(f"ERROR: web directory does not exist: {web_dir}")
+        sys.exit(1)
     
-    # Default HTML file if it doesn't exist
+    # Read HTML file - must exist, no fallback
     html_file = os.path.join(web_dir, "index.html")
     if not os.path.exists(html_file):
-        print("WARNING: web/index.html not found, creating default...")
-        # Create a minimal default HTML file
-        with open(html_file, 'w') as f:
-            f.write("""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <title>Device Management</title>
-</head>
-<body>
-    <h1>Device Management Interface</h1>
-    <p>Please create web/index.html with your HTML content.</p>
-</body>
-</html>""")
+        print(f"ERROR: web/index.html not found at {html_file}")
+        print("  The WiFi web interface HTML file is required for the build.")
+        sys.exit(1)
     
-    # Read HTML file
     print(f"Reading HTML file: {html_file}")
     try:
         with open(html_file, 'r', encoding='utf-8') as f:

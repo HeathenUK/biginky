@@ -62,6 +62,9 @@ function loadPahoFallback() {
 
 // Verify Paho library loaded after page load
 window.addEventListener('load', function() {
+    // Load password from localStorage
+    loadPassword();
+    
     setTimeout(function() {
         if (!checkPahoLoaded()) {
             loadPahoFallback();

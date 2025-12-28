@@ -1526,6 +1526,25 @@ function connectMQTT() {
                 // Display status
                 updateDeviceStatus(status);
                 
+                // Store next wake time for busy state countdown
+                if (status.next_wake) {
+                    // Parse next_wake time (format: "YYYY-MM-DD HH:MM:SS" or similar)
+                    try {
+                        nextWakeTime = new Date(status.next_wake);
+                        // If parsing fails, try alternative formats
+                        if (isNaN(nextWakeTime.getTime())) {
+                            // Try parsing as ISO string or other formats
+                            nextWakeTime = new Date(status.next_wake.replace(' ', 'T'));
+                        }
+                        if (isNaN(nextWakeTime.getTime())) {
+                            nextWakeTime = null;
+                        }
+                    } catch (e) {
+                        console.warn('Failed to parse next_wake time:', status.next_wake, e);
+                        nextWakeTime = null;
+                    }
+                }
+                
                 // Check for pending_action and update busy state
                 if (status.pending_action) {
                     setBusyState(true, 'Device is processing: ' + status.pending_action);
@@ -1533,6 +1552,11 @@ function connectMQTT() {
                     // No pending action means command completed
                     clearTimeout(busyTimeoutId);
                     busyTimeoutId = null;
+                    if (busyCountdownInterval) {
+                        clearInterval(busyCountdownInterval);
+                        busyCountdownInterval = null;
+                    }
+                    nextWakeTime = null;
                     setBusyState(false);
                 }
             } catch (e) {

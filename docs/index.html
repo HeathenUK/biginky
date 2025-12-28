@@ -1030,40 +1030,40 @@ function updatePasswordStatus() {
 function logCommand(action, data) {
     const logEl = document.getElementById('commandLog');
     const timestamp = new Date().toLocaleTimeString();
-    let logEntry = `[${timestamp}] ${action}: `;
+    let logEntry = `[${timestamp}] `;
     
-    // Summarize commands instead of dumping full payload (especially for large canvas commands)
+    // Simplify log messages
     if (action === 'PUBLISH' && data && data.command) {
         const command = data.command;
-        let summary = `command="${command}"`;
-        
-        if (command === 'canvas_display') {
-            const size = data.pixelData ? data.pixelData.length : 0;
-            summary += `, width=${data.width || '?'}, height=${data.height || '?'}, pixelData=${(size / 1024).toFixed(1)}KB`;
-        } else if (command === 'text_display') {
-            const text = data.text || '';
-            const preview = text.length > 50 ? text.substring(0, 50) + '...' : text;
-            summary += `, text="${preview}"`;
+        // Map command names to user-friendly messages
+        const commandMessages = {
+            'text_display': 'Text display command sent',
+            'canvas_display': 'Canvas display command sent',
+            'clear': 'Clear display command sent',
+            'next': 'Next media item command sent',
+            'go': 'Show media item command sent'
+        };
+        logEntry += commandMessages[command] || `Command "${command}" sent`;
+    } else if (action === 'MESSAGE_RECEIVED' && data && data.topic) {
+        // Map topic to user-friendly messages
+        if (data.topic === MQTT_TOPIC_STATUS) {
+            logEntry += 'Status update received';
+        } else if (data.topic === MQTT_TOPIC_THUMB) {
+            logEntry += 'Thumbnail update received';
+        } else if (data.topic === MQTT_TOPIC_MEDIA) {
+            logEntry += 'Media mappings update received';
         } else {
-            // For other commands, show a brief summary
-            summary += ` (${Object.keys(data).length} fields)`;
+            logEntry += 'Message received';
         }
-        
-        logEntry += summary;
+    } else if (action === 'CONNECTED') {
+        logEntry += 'Connected to MQTT broker';
+    } else if (action === 'DISCONNECTED') {
+        logEntry += 'Disconnected from MQTT broker';
+    } else if (action === 'CONNECTION_FAILED') {
+        logEntry += 'Connection failed';
     } else {
-        // For non-PUBLISH actions, show a brief summary
-        if (data && typeof data === 'object') {
-            const keys = Object.keys(data);
-            if (keys.length <= 3) {
-                // Small objects - show them
-                logEntry += JSON.stringify(data);
-            } else {
-                // Large objects - just show keys
-                logEntry += `{${keys.join(', ')}}`;
-            }
-        } else {
-            logEntry += data;
-        }
+        // Fallback for unknown actions
+        logEntry += action;
     }
     
     logEntry += '\n';
@@ -1363,7 +1363,7 @@ function connectMQTT() {
     
     mqttClient.onMessageArrived = async function(message) {
         console.log('Message received:', message);
-        logCommand('MESSAGE_RECEIVED', { topic: message.destinationName, payload: message.payloadString.substring(0, 100) + '...' });
+        logCommand('MESSAGE_RECEIVED', { topic: message.destinationName });
         
         // Handle status messages
         if (message.destinationName === MQTT_TOPIC_STATUS) {

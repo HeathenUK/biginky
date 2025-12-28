@@ -145,33 +145,40 @@ def ensure_cert_header(source, target, env):
     print("=" * 60)
     print("Running generate_cert_header pre-build script...")
     print("=" * 60)
-    try:
-        result = generate_cert_header(source, target, env)
-        if not result:
-            print("WARNING: generate_cert_header returned False, creating stub...")
-            raise Exception("Generation failed")
-    except Exception as e:
-        print(f"ERROR in generate_cert_header: {e}")
-        import traceback
-        traceback.print_exc()
-        # Even if generation fails, create a minimal stub so compilation can proceed
-        project_dir = env.subst("$PROJECT_DIR")
-        header_file = os.path.join(project_dir, "src", "certificates.h")
-        if not os.path.exists(header_file):
-            print("Creating minimal stub certificates.h due to generation error...")
-            stub_content = """// Stub certificates.h - generation failed
+    
+    project_dir = env.subst("$PROJECT_DIR")
+    header_file = os.path.join(project_dir, "src", "certificates.h")
+    
+    # Always ensure file exists - create stub first, then try to generate proper one
+    stub_content = """// Stub certificates.h - will be replaced if generation succeeds
 #ifndef CERTIFICATES_H
 #define CERTIFICATES_H
 const char server_cert[] = "-----BEGIN CERTIFICATE-----\\n-----END CERTIFICATE-----\\n";
 const char server_key[] = "-----BEGIN PRIVATE KEY-----\\n-----END PRIVATE KEY-----\\n";
 #endif
 """
-            try:
-                with open(header_file, 'w') as f:
-                    f.write(stub_content)
-                print(f"✓ Created stub header: {header_file}")
-            except Exception as e2:
-                print(f"ERROR: Failed to create stub header: {e2}")
+    
+    # Create stub immediately so compilation can proceed
+    if not os.path.exists(header_file):
+        try:
+            with open(header_file, 'w') as f:
+                f.write(stub_content)
+            print(f"✓ Created initial stub header: {header_file}")
+        except Exception as e:
+            print(f"ERROR: Failed to create stub header: {e}")
+    
+    # Now try to generate proper certificate
+    try:
+        result = generate_cert_header(source, target, env)
+        if result:
+            print("✓ Certificate header generated successfully")
+        else:
+            print("WARNING: generate_cert_header returned False, keeping stub...")
+    except Exception as e:
+        print(f"ERROR in generate_cert_header: {e}")
+        import traceback
+        traceback.print_exc()
+        print("Keeping stub header for compilation...")
     print("=" * 60)
 
 # Register the function to run before building (only when called from PlatformIO)

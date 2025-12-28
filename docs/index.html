@@ -168,22 +168,19 @@ window.addEventListener('load', function() {
 </div>
 <div id="connectionStatusMsg" style="margin-top:10px;"></div>
 </div>
-</div>
-<div class="section">
-<h2 onclick="toggleSection(this)">Device Status</h2>
-<div class="section-content" id="section-status">
+<div style="margin-top:20px;border-top:1px solid #444;padding-top:20px;">
+<h3 style="color:#4CAF50;margin-top:0;font-size:18px;">Device Status</h3>
 <div id="deviceStatus" style="font-family:monospace;font-size:12px;color:#e0e0e0;">
 <p>Not connected - status appears when connected</p>
 </div>
 </div>
-</div>
-<div class="section">
-<h2 onclick="toggleSection(this)">Display Preview</h2>
-<div class="section-content" id="section-preview">
-<p>Latest display content (updated on refresh):</p>
+<div style="margin-top:20px;border-top:1px solid #444;padding-top:20px;">
+<h3 style="color:#4CAF50;margin-top:0;font-size:18px;">Display Preview</h3>
+<p style="color:#888;margin-bottom:10px;">Latest display content (updated on refresh):</p>
 <div id="thumbnailContainer" style="text-align:center;margin:20px 0;">
-<canvas id="thumbnailCanvas" width="400" height="300" style="border:2px solid #666;background:#fff;max-width:100%;height:auto;display:none;"></canvas>
+<canvas id="thumbnailCanvas" width="400" height="300" style="border:2px solid #666;background:#fff;max-width:100%;height:auto;display:none;margin:0 auto;"></canvas>
 <p id="thumbnailStatus" style="color:#888;">No preview available yet</p>
+</div>
 </div>
 </div>
 </div>
@@ -2717,13 +2714,13 @@ function toggleSection(h2Element) {
     }
 }
 
-// Restore section states on page load (default to collapsed, except Authentication)
+// Restore section states on page load (default to collapsed, except Authentication and Connection)
 function restoreSectionStates() {
     document.querySelectorAll('.section-content').forEach(function(content) {
         const state = localStorage.getItem('section_' + content.id);
         const h2 = content.previousElementSibling;
-        // Keep Authentication section open by default (it's required)
-        if (content.id === 'section-auth') {
+        // Keep Authentication and Connection sections open by default
+        if (content.id === 'section-auth' || content.id === 'section-connection') {
             // Only collapse if explicitly saved as collapsed
             if (state === 'collapsed' && h2) {
                 h2.classList.add('collapsed');

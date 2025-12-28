@@ -281,7 +281,12 @@ async function encryptPasswordForStorage(password) {
     combined.set(iv, 0);
     combined.set(new Uint8Array(encrypted), iv.length);
     
-    return btoa(String.fromCharCode(...combined));
+    // Convert to base64 (avoid spread operator for large arrays)
+    let binaryString = '';
+    for (let i = 0; i < combined.length; i++) {
+        binaryString += String.fromCharCode(combined[i]);
+    }
+    return btoa(binaryString);
 }
 
 // Decrypt password from storage

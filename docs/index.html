@@ -2269,27 +2269,137 @@ function getCanvasCoordinates(e) {
     };
 }
 
+// Compress ImageData for storage (reduces memory by ~70-90% for e-ink images)
+async function compressImageData(imageData) {
+    if (typeof CompressionStream === 'undefined') {
+        return null; // Compression not available
+    }
+    
+    try {
+        const data = new Uint8Array(imageData.data);
+        const stream = new CompressionStream('deflate');
+        const writer = stream.writable.getWriter();
+        const reader = stream.readable.getReader();
+        
+        writer.write(data).then(() => writer.close());
+        
+        const compressedChunks = [];
+        function pump() {
+            return reader.read().then(({done, value}) => {
+                if (done) return;
+                compressedChunks.push(value);
+                return pump();
+            });
+        }
+        
+        await pump();
+        
+        const compressedLength = compressedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const compressed = new Uint8Array(compressedLength);
+        let offset = 0;
+        compressedChunks.forEach(chunk => {
+            compressed.set(chunk, offset);
+            offset += chunk.length;
+        });
+        
+        return {
+            compressed: compressed,
+            width: imageData.width,
+            height: imageData.height
+        };
+    } catch (e) {
+        console.warn('Failed to compress canvas state:', e);
+        return null;
+    }
+}
+
+// Decompress ImageData from storage
+async function decompressImageData(compressedState) {
+    if (!compressedState || !compressedState.compressed) {
+        return compressedState; // Already uncompressed ImageData
+    }
+    
+    try {
+        const stream = new DecompressionStream('deflate');
+        const writer = stream.writable.getWriter();
+        const reader = stream.readable.getReader();
+        
+        writer.write(compressedState.compressed).then(() => writer.close());
+        
+        const decompressedChunks = [];
+        function pump() {
+            return reader.read().then(({done, value}) => {
+                if (done) return;
+                decompressedChunks.push(value);
+                return pump();
+            });
+        }
+        
+        await pump();
+        
+        const decompressedLength = decompressedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const decompressed = new Uint8Array(decompressedLength);
+        let offset = 0;
+        decompressedChunks.forEach(chunk => {
+            decompressed.set(chunk, offset);
+            offset += chunk.length;
+        });
+        
+        // Reconstruct ImageData
+        const imageData = ctx.createImageData(compressedState.width, compressedState.height);
+        imageData.data.set(decompressed);
+        return imageData;
+    } catch (e) {
+        console.error('Failed to decompress canvas state:', e);
+        throw e;
+    }
+}
+
 function saveCanvasState() {
     // Save current canvas state for undo
+    // Store uncompressed initially for fast undo, compress in background to save memory
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
     historyIndex++;
     canvasHistory = canvasHistory.slice(0, historyIndex);
-    canvasHistory.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
-    // Limit to 10 states to manage memory (~77MB max vs ~154MB)
-    if (canvasHistory.length > 10) {
+    canvasHistory.push(imageData); // Store uncompressed for now
+    
+    // Compress in background and replace (saves ~70-90% memory for e-ink images)
+    compressImageData(imageData).then(compressed => {
+        if (compressed) {
+            // Find and replace this state with compressed version
+            const idx = canvasHistory.indexOf(imageData);
+            if (idx >= 0) {
+                canvasHistory[idx] = compressed;
+            }
+        }
+    }).catch(e => {
+        console.warn('Background compression failed, keeping uncompressed:', e);
+    });
+    
+    // Increased limit to 20 states since compressed versions use much less memory
+    if (canvasHistory.length > 20) {
         canvasHistory.shift();
         historyIndex--;
     }
+    
     const undoBtn = document.getElementById('undoBtn');
     if (undoBtn) {
         undoBtn.disabled = historyIndex < 0;
     }
 }
 
-function restoreCanvasState() {
+async function restoreCanvasState() {
     if (historyIndex >= 0) {
-        ctx.putImageData(canvasHistory[historyIndex], 0, 0);
+        const state = canvasHistory[historyIndex];
+        // Decompress if needed, otherwise use directly
+        const imageData = await decompressImageData(state);
+        ctx.putImageData(imageData, 0, 0);
         historyIndex--;
-        document.getElementById('undoBtn').disabled = historyIndex < 0;
+        const undoBtn = document.getElementById('undoBtn');
+        if (undoBtn) {
+            undoBtn.disabled = historyIndex < 0;
+        }
     }
 }
 

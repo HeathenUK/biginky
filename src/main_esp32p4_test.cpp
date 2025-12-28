@@ -4970,7 +4970,13 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     }
     
     if (command.length() == 0) {
-        Serial.println("ERROR: JSON command missing 'command' field");
+        Serial.printf("ERROR: JSON command missing 'command' field\n");
+        Serial.printf("  Decrypted message content: '%s' (length: %d)\n", messageToProcess.c_str(), messageToProcess.length());
+        Serial.printf("  Message hex dump (first 100 bytes): ");
+        for (int i = 0; i < messageToProcess.length() && i < 100; i++) {
+            Serial.printf("%02x ", (unsigned char)messageToProcess.charAt(i));
+        }
+        Serial.println();
         return false;
     }
     

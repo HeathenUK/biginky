@@ -19,10 +19,17 @@ button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
 .status{color:#4CAF50;margin:10px 0;font-weight:bold;}
 .error{color:#f44336;}
 .info{color:#2196F3;margin:10px 0;padding:10px;background:#1a1a1a;border-radius:4px;border-left:3px solid #2196F3;}
-.connection-status{display:inline-block;padding:5px 10px;border-radius:4px;font-weight:bold;margin-left:10px;}
+.connection-status{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border-radius:4px;font-weight:bold;margin-left:10px;}
+.connection-status::before{font-size:16px;}
 .connected{background:#4CAF50;color:white;}
+.connected::before{content:'✓';}
 .disconnected{background:#f44336;color:white;}
+.disconnected::before{content:'✗';}
 .connecting{background:#ff9800;color:white;}
+.connecting::before{content:'⟳';animation:spin 1s linear infinite;}
+.reconnecting{background:#ff9800;color:white;}
+.reconnecting::before{content:'⟳';animation:spin 1s linear infinite;}
+.status-timestamp{font-size:11px;opacity:0.7;margin-left:10px;font-weight:normal;}
 .flex-row{display:flex;flex-wrap:wrap;gap:15px;align-items:flex-end;margin-top:15px;}
 .flex-item{flex:1;min-width:150px;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
@@ -139,8 +146,10 @@ window.addEventListener('load', function() {
 <div id="passwordStatus" style="margin-top:10px;"></div>
 <p style="color:#888;font-size:12px;margin-top:10px;font-style:italic;">Note: HMAC provides authentication and integrity verification. Encryption (for confidentiality) is a separate feature that can be added later.</p>
 </div>
+</div>
 <div class="section">
-<h2>Connection</h2>
+<h2 onclick="toggleSection(this)">Connection</h2>
+<div class="section-content" id="section-connection">
 <div style="text-align:center;">
 <button onclick="connectMQTT()" id="connectBtn">Connect</button>
 <button onclick="disconnectMQTT()" id="disconnectBtn" disabled>Disconnect</button>
@@ -164,8 +173,10 @@ window.addEventListener('load', function() {
 <p id="thumbnailStatus" style="color:#888;">No preview available yet</p>
 </div>
 </div>
+</div>
 <div class="section">
-<h2>Media Mappings</h2>
+<h2 onclick="toggleSection(this)">Media Mappings</h2>
+<div class="section-content" id="section-media">
 <p>Available media files from media.txt (with thumbnails):</p>
 <div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded yet - will appear when connected to MQTT</div>
 <div class="table-wrapper">
@@ -174,8 +185,10 @@ window.addEventListener('load', function() {
 </div>
 </div>
 </div>
+</div>
 <div class="section">
-<h2>Text Display</h2>
+<h2 onclick="toggleSection(this)">Text Display</h2>
+<div class="section-content" id="section-text">
 <p>Enter text to display on the panel. Select text colour, background colour, and outline colour.</p>
 <label>Text:</label>
 <textarea id="textInput" placeholder="Enter text to display..."></textarea>
@@ -235,15 +248,20 @@ window.addEventListener('load', function() {
 <canvas id="drawCanvas" width="800" height="600"></canvas>
 <div id="canvasStatus"></div>
 </div>
+</div>
 <div class="section">
-<h2>Other Commands</h2>
+<h2 onclick="toggleSection(this)">Other Commands</h2>
+<div class="section-content" id="section-commands">
 <button onclick="sendCommand('clear')" id="clearBtn" disabled>Clear Display</button>
 <button onclick="sendCommand('next')" id="nextBtn" disabled>Next Media Item</button>
 <div id="commandStatus"></div>
 </div>
+</div>
 <div class="section">
-<h2>Command Log</h2>
+<h2 onclick="toggleSection(this)">Command Log</h2>
+<div class="section-content" id="section-log">
 <div id="commandLog" style="max-height:300px;overflow-y:auto;background:#1a1a1a;padding:10px;border:1px solid #444;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#e0e0e0;"></div>
+</div>
 </div>
 <script>
 const MQTT_BROKER = 'mqtt.flespi.io';
@@ -261,6 +279,11 @@ let webUIPassword = null;  // Stored password for HMAC computation
 let sessionEncryptionKey = null;  // Session key for encrypting stored password
 let isBusy = false;  // Busy state for command processing
 let busyTimeoutId = null;  // Timeout ID for busy state
+let autoReconnectEnabled = true;
+let reconnectAttempts = 0;
+let reconnectTimeoutId = null;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const INITIAL_RECONNECT_DELAY = 1000; // 1 second
 
 // Initialize session encryption key (derived from session ID)
 async function initSessionEncryptionKey() {
@@ -942,12 +965,19 @@ async function verifyHMAC(message, providedHMAC) {
 
 function updateConnectionStatus(status, message) {
     const statusEl = document.getElementById('connectionStatus');
+    const timestampEl = document.getElementById('connectionTimestamp');
     const msgEl = document.getElementById('connectionStatusMsg');
     const connectBtn = document.getElementById('connectBtn');
     const disconnectBtn = document.getElementById('disconnectBtn');
     
     statusEl.className = 'connection-status ' + status;
     statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    
+    // Update timestamp
+    if (timestampEl) {
+        const now = new Date();
+        timestampEl.textContent = now.toLocaleTimeString();
+    }
     
     if (message) {
         msgEl.innerHTML = '<div class="' + (status === 'connected' ? 'status' : 'error') + '">' + message + '</div>';
@@ -957,12 +987,15 @@ function updateConnectionStatus(status, message) {
     
     // Update button states based on connection AND password
     const hasPassword = (webUIPassword && webUIPassword.length > 0);
-    connectBtn.disabled = (status === 'connected' || status === 'connecting' || !hasPassword);
+    connectBtn.disabled = (status === 'connected' || status === 'connecting' || status === 'reconnecting' || !hasPassword);
     disconnectBtn.disabled = (status === 'disconnected');
     
     const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn'];
     buttons.forEach(id => {
-        document.getElementById(id).disabled = (status !== 'connected' || !hasPassword);
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.disabled = (status !== 'connected' || !hasPassword);
+        }
     });
 }
 
@@ -1320,6 +1353,11 @@ function connectMQTT() {
         updateConnectionStatus('disconnected', 'Connection lost: ' + (responseObject.errorMessage || 'Unknown error'));
         updatePasswordStatus();  // Update button states
         logCommand('DISCONNECTED', { reason: responseObject.errorMessage });
+        
+        // Auto-reconnect if enabled
+        if (autoReconnectEnabled && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            scheduleReconnect();
+        }
     };
     
     mqttClient.onMessageArrived = async function(message) {
@@ -1651,6 +1689,8 @@ function connectMQTT() {
         onSuccess: function() {
             console.log('Connection successful!');
             isConnected = true;
+            cancelReconnect(); // Reset reconnect attempts on successful connection
+            reconnectAttempts = 0;
             updateConnectionStatus('connected', 'Connected successfully!');
             updatePasswordStatus();  // Update button states
             logCommand('CONNECTED', { broker: MQTT_BROKER, topic: MQTT_TOPIC });

@@ -575,6 +575,24 @@ async function savePassword() {
     }
 }
 
+// Clear password from localStorage and reset UI
+function clearPassword() {
+    if (confirm('Are you sure you want to clear the saved password? You will need to re-enter it to use the web UI.')) {
+        localStorage.removeItem('biginky_webui_password');
+        webUIPassword = null;
+        document.getElementById('webUIPassword').value = '';
+        document.getElementById('passwordStatus').innerHTML = '<div class="info" style="margin-top:10px;">Password cleared. Please enter a new password and click Save Password.</div>';
+        updatePasswordStatus();
+        
+        // Disconnect from MQTT if connected
+        if (mqttClient && isConnected) {
+            mqttClient.disconnect();
+            isConnected = false;
+            updateConnectionStatus('disconnected', 'Disconnected after password cleared');
+        }
+    }
+}
+
 // Derive HMAC key from password using HMAC-SHA256 with salt
 async function deriveHMACKey(password) {
     const encoder = new TextEncoder();

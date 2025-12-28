@@ -216,6 +216,7 @@ const EMBEDDED_TOKEN = 'WdTjkCQjNXodmMWLSDWhAvrE6dDmcoQY1V47HSd3M7mb9P4HI3Ph8nTn
 let mqttClient = null;
 let isConnected = false;
 let webUIPassword = null;  // Stored password for HMAC computation
+let sessionEncryptionKey = null;  // Session key for encrypting stored password
 
 // Initialize session encryption key (derived from session ID)
 async function initSessionEncryptionKey() {

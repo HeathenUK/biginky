@@ -32,6 +32,37 @@ canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;
 .busy-overlay .message{color:#fff;font-size:18px;margin-top:20px;text-align:center;}
 .spinner{border:4px solid rgba(255,255,255,0.3);border-top:4px solid #4CAF50;border-radius:50%;width:50px;height:50px;animation:spin 1s linear infinite;}
 @keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
+/* Responsive design for mobile devices */
+@media (max-width:768px){
+body{padding:10px;}
+.section{padding:15px;margin:15px 0;}
+h1{font-size:24px;}
+h2{font-size:20px;}
+button{font-size:14px;padding:8px 16px;margin:3px;}
+.flex-row{gap:10px;}
+.flex-item{min-width:100%;}
+/* Make tables horizontally scrollable on mobile */
+.table-wrapper{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+table{min-width:600px;font-size:14px;}
+table th,table td{padding:8px;font-size:13px;}
+/* Responsive thumbnails - scale down on mobile */
+.media-thumbnail{max-width:150px!important;max-height:112px!important;width:auto;height:auto;}
+/* Stack form elements vertically on mobile */
+.flex-row{flex-direction:column;}
+.flex-item{width:100%;}
+button.flex-shrink{width:100%;margin-top:10px;}
+}
+@media (max-width:480px){
+body{padding:8px;}
+.section{padding:12px;margin:12px 0;}
+h1{font-size:20px;}
+h2{font-size:18px;}
+button{font-size:13px;padding:8px 12px;}
+table{min-width:500px;font-size:12px;}
+table th,table td{padding:6px;font-size:12px;}
+.media-thumbnail{max-width:120px!important;max-height:90px!important;}
+.busy-overlay .message{font-size:16px;padding:0 20px;}
+}
 </style>
 <script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js" onerror="loadPahoFallback()"></script>
 <script>
@@ -137,8 +168,10 @@ window.addEventListener('load', function() {
 <h2>Media Mappings</h2>
 <p>Available media files from media.txt (with thumbnails):</p>
 <div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded yet - will appear when connected to MQTT</div>
-<div id="mediaMappingsTable" style="overflow-x:auto;">
+<div class="table-wrapper">
+<div id="mediaMappingsTable">
 <!-- Table will be populated here -->
+</div>
 </div>
 </div>
 <div class="section">
@@ -1087,7 +1120,7 @@ function updateMediaMappingsTable(mappings) {
         // Thumbnail column
         html += '<td style="padding:10px;border:1px solid #555;text-align:center;">';
         if (mapping.thumbnail) {
-            html += `<img src="data:image/jpeg;base64,${mapping.thumbnail}" style="max-width:200px;max-height:150px;border:1px solid #666;" alt="Thumbnail" />`;
+            html += `<img src="data:image/jpeg;base64,${mapping.thumbnail}" class="media-thumbnail" style="max-width:200px;max-height:150px;width:auto;height:auto;border:1px solid #666;" alt="Thumbnail" />`;
         } else {
             html += '<span style="color:#888;">No thumbnail</span>';
         }

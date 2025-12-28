@@ -999,36 +999,85 @@ function connectMQTT() {
         if (message.destinationName === MQTT_TOPIC_STATUS) {
             console.log('Status message received, parsing...');
             try {
-                const status = JSON.parse(message.payloadString);
-                console.log('Parsed status:', status);
+                const payload = JSON.parse(message.payloadString);
+                console.log('Parsed status:', payload);
                 
-                // Verify HMAC if password is configured
-                if (webUIPassword && status.hmac) {
-                    // Extract hmac and verify
-                    const providedHMAC = status.hmac;
-                    delete status.hmac;  // Remove hmac for verification
-                    const messageForHMAC = JSON.stringify(status);
+                // Check if message is encrypted
+                let status = payload;
+                
+                if (payload.encrypted && payload.payload) {
+                    // Validate encrypted message structure
+                    if (!payload.iv || !payload.payload) {
+                        console.error('Invalid encrypted message structure - missing iv or payload');
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Invalid encrypted message structure. Message may be incomplete.</p>';
+                        return;
+                    }
                     
-                    verifyHMAC(messageForHMAC, providedHMAC).then(valid => {
-                        if (valid) {
-                            console.log('Status message HMAC verified successfully');
-                            updateDeviceStatus(status);
-                        } else {
+                    // Verify HMAC first (on encrypted message)
+                    if (webUIPassword && payload.hmac) {
+                        const providedHMAC = payload.hmac;
+                        const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
+                        
+                        const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                        if (!hmacValid) {
                             console.error('Status message HMAC verification failed');
                             document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
+                            return;
                         }
-                        // Restore hmac field for display
-                        status.hmac = providedHMAC;
-                    });
+                    }
+                    
+                    // Decrypt the payload
+                    let decrypted;
+                    try {
+                        decrypted = await decryptMessage(payload.payload, payload.iv);
+                    } catch (decryptError) {
+                        console.error('Failed to decrypt status message:', decryptError);
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Failed to decrypt status message. Password may be incorrect or message corrupted.</p>';
+                        return;
+                    }
+                    
+                    if (!decrypted || decrypted.length === 0) {
+                        console.error('Decryption returned empty result');
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Decryption failed - empty result. Message may be corrupted.</p>';
+                        return;
+                    }
+                    
+                    // Parse decrypted JSON
+                    try {
+                        status = JSON.parse(decrypted);
+                    } catch (parseError) {
+                        console.error('Failed to parse decrypted status JSON:', parseError);
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Invalid status data after decryption. Message may be incomplete or corrupted.</p>';
+                        return;
+                    }
+                    
+                    console.log('Decrypted status:', status);
+                } else if (webUIPassword && payload.hmac) {
+                    // Unencrypted but has HMAC - verify it
+                    const providedHMAC = payload.hmac;
+                    delete payload.hmac;
+                    const messageForHMAC = JSON.stringify(payload);
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Status message HMAC verification failed');
+                        document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
+                        return;
+                    }
+                    status = payload;
+                    console.log('Status message HMAC verified successfully (unencrypted)');
                 } else {
-                    // No password configured or no HMAC - just display (for backward compatibility during transition)
+                    // No password configured or no HMAC - just display (for backward compatibility)
                     if (!webUIPassword) {
                         console.warn('No password configured - cannot verify HMAC');
                     }
-                    updateDeviceStatus(status);
+                    status = payload;
                 }
+                
+                // Display status
+                updateDeviceStatus(status);
             } catch (e) {
-                console.error('Failed to parse status message:', e);
+                console.error('Failed to parse/decrypt status message:', e);
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error parsing status message: ' + e.message + '</p>';
             }
         } else if (message.destinationName === MQTT_TOPIC_THUMB) {

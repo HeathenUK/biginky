@@ -7,7 +7,6 @@ This script:
 3. Can be used with PsychicHttp or other HTTPS libraries
 """
 
-Import("env")
 import os
 import subprocess
 import sys
@@ -175,5 +174,16 @@ const char server_key[] = "-----BEGIN PRIVATE KEY-----\\n-----END PRIVATE KEY---
                 print(f"ERROR: Failed to create stub header: {e2}")
     print("=" * 60)
 
-env.AddPreAction("buildprog", ensure_cert_header)
+# Register the function to run before building (only when called from PlatformIO)
+# Use "buildprog" instead of file-specific target to ensure it runs every build
+try:
+    Import("env")
+    env.AddPreAction("buildprog", ensure_cert_header)
+except:
+    # Called directly (for testing) - run the function manually
+    class FakeEnv:
+        def subst(self, s):
+            return os.path.dirname(os.path.dirname(__file__))
+    fake_env = FakeEnv()
+    ensure_cert_header(None, None, fake_env)
 

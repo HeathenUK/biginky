@@ -84,14 +84,7 @@
 #if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
 #include "driver/jpeg_encode.h"
 #endif
-// zlib/miniz for canvas compression decompression
-// ESP-IDF includes miniz, try to access it
-#if __has_include("miniz.h")
-#include "miniz.h"
-#elif __has_include("miniz/miniz.h")
-#include "miniz/miniz.h"
-#endif
-// zlib for canvas compression - using ArduinoMiniz library
+// miniz for canvas compression decompression
 extern "C" {
 #include "miniz.h"
 }
@@ -4933,35 +4926,26 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
                 return false;
             }
             
-            // Decompress using zlib (deflate format from browser's CompressionStream)
-            // Check if miniz functions are available
-            #if defined(MINIZ_VERSION) || defined(tinfl_decompress_mem_to_heap)
-                // Use miniz for decompression
-                size_t decompressedSize = 0;
-                void* decompressed = tinfl_decompress_mem_to_heap(compressedData, compressedSize, &decompressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
-                if (decompressed == nullptr || decompressedSize != expectedSize) {
-                    Serial.printf("ERROR: miniz decompression failed (got %zu, expected %zu)\n", decompressedSize, expectedSize);
-                    free(compressedData);
-                    free(pixelData);
-                    if (decompressed) mz_free(decompressed);
-                    return false;
-                }
-                memcpy(pixelData, decompressed, expectedSize);
-                mz_free(decompressed);
-                actualLen = expectedSize;
-                float compressionRatio = (100.0f * compressedSize) / actualLen;
-                float sizeReduction = 100.0f - compressionRatio;
-                Serial.printf("  Decompressed: %zu bytes (%.1f KB)\n", actualLen, actualLen / 1024.0f);
-                Serial.printf("  Compression ratio: %.1f%% (%.1f%% size reduction)\n", compressionRatio, sizeReduction);
-                Serial.printf("  Space saved: %zu bytes (%.1f KB)\n", 
-                             actualLen - compressedSize, (actualLen - compressedSize) / 1024.0f);
-            #else
-                // Fallback: miniz not available, return error
-                Serial.println("ERROR: zlib/miniz decompression not available - compression support not compiled in");
+            // Decompress using miniz (deflate format from browser's CompressionStream)
+            // miniz is available via pngle library
+            size_t decompressedSize = 0;
+            void* decompressed = tinfl_decompress_mem_to_heap(compressedData, compressedSize, &decompressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+            if (decompressed == nullptr || decompressedSize != expectedSize) {
+                Serial.printf("ERROR: miniz decompression failed (got %zu, expected %zu)\n", decompressedSize, expectedSize);
                 free(compressedData);
                 free(pixelData);
+                if (decompressed) mz_free(decompressed);
                 return false;
-            #endif
+            }
+            memcpy(pixelData, decompressed, expectedSize);
+            mz_free(decompressed);
+            actualLen = expectedSize;
+            float compressionRatio = (100.0f * compressedSize) / actualLen;
+            float sizeReduction = 100.0f - compressionRatio;
+            Serial.printf("  Decompressed: %zu bytes (%.1f KB)\n", actualLen, actualLen / 1024.0f);
+            Serial.printf("  Compression ratio: %.1f%% (%.1f%% size reduction)\n", compressionRatio, sizeReduction);
+            Serial.printf("  Space saved: %zu bytes (%.1f KB)\n", 
+                         actualLen - compressedSize, (actualLen - compressedSize) / 1024.0f);
             free(compressedData);
         } else {
             // Not compressed, use directly

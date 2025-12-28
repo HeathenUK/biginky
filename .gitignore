@@ -53,5 +53,8 @@ __pycache__/
 # Uncomment if you don't want to commit generated files:
 # src/web_assets.h
 
-# ESLint configuration (development tool)
+# ESLint configuration and Node.js dependencies (development tools)
 docs/eslint.config.js
+node_modules/
+package.json
+package-lock.json

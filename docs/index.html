@@ -228,9 +228,9 @@ let webUIPassword = null;  // Stored password for HMAC computation
 let isBusy = false;  // Track if a command is being processed
 let busyTimeoutId = null;  // Timeout ID for busy state (in case device is asleep)
 
-// Load password from localStorage on page load
+// Load password from sessionStorage on page load
 function loadPassword() {
-    const stored = localStorage.getItem('biginky_webui_password');
+    const stored = sessionStorage.getItem('biginky_webui_password');
     if (stored) {
         try {
             // Simple obfuscation (not real encryption, but better than plaintext)
@@ -555,7 +555,7 @@ async function savePassword() {
                                 
                                 // Save password
                                 try {
-                                    localStorage.setItem('biginky_webui_password', btoa(password));
+                                    sessionStorage.setItem('biginky_webui_password', btoa(password));
                                     passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password verified and saved successfully!</div>';
                                     updatePasswordStatus();
                                 } catch (e) {
@@ -574,7 +574,7 @@ async function savePassword() {
                         mqttClient.onMessageArrived = originalHandler;
                         
                         try {
-                            localStorage.setItem('biginky_webui_password', btoa(password));
+                            sessionStorage.setItem('biginky_webui_password', btoa(password));
                             passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password saved (unencrypted message received - will verify on encrypted message)</div>';
                             updatePasswordStatus();
                         } catch (e) {
@@ -613,7 +613,7 @@ async function savePassword() {
                 passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">✗ Password verification timeout: No status message received. Password saved but not verified. Will verify on next status message.</div>';
                 // Still save the password
                 try {
-                    localStorage.setItem('biginky_webui_password', btoa(password));
+                    sessionStorage.setItem('biginky_webui_password', btoa(password));
                     updatePasswordStatus();
                 } catch (e) {
                     console.error('Failed to save password:', e);
@@ -639,7 +639,7 @@ async function savePassword() {
 // Clear password from localStorage and reset UI
 function clearPassword() {
     if (confirm('Are you sure you want to clear the saved password? You will need to re-enter it to use the web UI.')) {
-        localStorage.removeItem('biginky_webui_password');
+        sessionStorage.removeItem('biginky_webui_password');
         webUIPassword = null;
         document.getElementById('webUIPassword').value = '';
         document.getElementById('passwordStatus').innerHTML = '<div class="info" style="margin-top:10px;">Password cleared. Please enter a new password and click Save Password.</div>';

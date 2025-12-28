@@ -373,26 +373,14 @@ async function decryptMessage(payloadBase64, ivBase64) {
             return null;
         }
         
-        // Debug: log first few bytes of decrypted data
-        const debugBytes = Array.from(plaintextArray.slice(0, Math.min(20, plaintextArray.length)));
-        console.log('Decrypted bytes (first 20):', debugBytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-        
-        // Debug: log last 20 bytes to see padding
-        const last20Bytes = Array.from(plaintextArray.slice(-20));
-        console.log('Decrypted bytes (last 20):', last20Bytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-        console.log('Decrypted bytes (last 20 as ASCII):', last20Bytes.map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join(''));
-        
         // Get padding value (last byte)
         const padValue = plaintextArray[plaintextArray.length - 1];
         
         // Validate padding (must be between 1 and 16)
         if (padValue < 1 || padValue > 16) {
-            // Don't log as error yet - we'll try fallbacks first
-            console.log('Padding value invalid:', padValue, '(expected 1-16), attempting fallback methods...');
             // Try to find valid padding by checking if any of the last 16 bytes could be padding
             // Check from the end backwards - look for consecutive bytes with the same value
             let foundValidPadding = false;
-            console.log('Attempting to find valid padding in last 16 bytes...');
             for (let testPad = 1; testPad <= 16 && testPad <= plaintextArray.length; testPad++) {
                 const testStart = plaintextArray.length - testPad;
                 if (testStart < 0) continue;
@@ -405,14 +393,11 @@ async function decryptMessage(payloadBase64, ivBase64) {
                     }
                 }
                 if (allMatch) {
-                    console.log(`Found valid padding: ${testPad} bytes (value ${padValue}) at position ${testStart}`);
                     foundValidPadding = true;
                     // Try using this padding value
                     const unpaddedArray = plaintextArray.slice(0, testStart);
                     const decoder = new TextDecoder('utf-8', { fatal: false });
                     const decoded = decoder.decode(unpaddedArray);
-                    console.log('Successfully decoded with alternative padding detection');
-                    console.log('Decoded message (first 200 chars):', decoded.substring(0, 200));
                     return decoded;
                 }
             }
@@ -420,11 +405,9 @@ async function decryptMessage(payloadBase64, ivBase64) {
             // Look for the JSON structure and assume the data is valid
             // Check if the data looks like valid JSON (starts with { and ends with })
             if (!foundValidPadding) {
-                console.log('No valid padding found, checking if data is valid JSON...');
                 const firstByte = plaintextArray[0];
                 const lastByte = plaintextArray[plaintextArray.length - 1];
                 if (firstByte === 0x7b && lastByte === 0x7d) { // { and }
-                    console.log('Data appears to be valid JSON (starts with { and ends with }), attempting to decode...');
                     // Try removing potential padding by looking for the JSON structure
                     // Find the last } that could be the end of JSON
                     let jsonEnd = plaintextArray.length - 1;
@@ -439,10 +422,9 @@ async function decryptMessage(payloadBase64, ivBase64) {
                         const decoded = decoder.decode(potentialJson);
                         try {
                             JSON.parse(decoded); // Validate it's valid JSON
-                            console.log('Successfully decoded as valid JSON (padding issue recovered)');
                             return decoded;
                         } catch (e) {
-                            console.log('Decoded data is not valid JSON:', e);
+                            // Not valid JSON, continue to error
                         }
                     }
                 }

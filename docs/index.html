@@ -858,7 +858,7 @@ function connectMQTT() {
         logCommand('DISCONNECTED', { reason: responseObject.errorMessage });
     };
     
-    mqttClient.onMessageArrived = function(message) {
+    mqttClient.onMessageArrived = async function(message) {
         console.log('Message received:', message);
         logCommand('MESSAGE_RECEIVED', { topic: message.destinationName, payload: message.payloadString.substring(0, 100) + '...' });
         

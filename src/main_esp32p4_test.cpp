@@ -2951,17 +2951,9 @@ static void auto_cycle_task(void* arg) {
     
     Serial.println("Updating display (e-ink refresh - non-blocking, will take 20-30s on panel)...");
     uint32_t refreshStart = millis();
+    // Thumbnail publishing happens automatically in update() from the framebuffer
     display.update();  // Now non-blocking - returns immediately
     Serial.println("Display update started (refresh happening on panel, ESP32 can continue)");
-    
-    // Publish thumbnail while display is updating (non-blocking operation)
-    // This can happen in parallel with the panel refresh
-#if WIFI_ENABLED
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("Publishing thumbnail while display updates...");
-        publishMQTTThumbnailIfConnected();
-    }
-#endif
 
     // Wait for display update to complete before playing audio
     // Audio should only play after the display refresh is done
@@ -5045,18 +5037,11 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         hal_psram_free(pixelData);
         
         // Update display (non-blocking - returns immediately, refresh happens on panel)
+        // Update display (e-ink refresh - non-blocking, panel will take 20-30s)
+        // Thumbnail publishing happens automatically in update() from the framebuffer
         Serial.println("Updating display (e-ink refresh - non-blocking, panel will take 20-30s)...");
         display.update();  // Non-blocking - returns immediately
         Serial.println("Display update started (can continue with other tasks or sleep)");
-        
-        // Publish thumbnail while display is updating (non-blocking operation)
-        // This can happen in parallel with the panel refresh
-#if WIFI_ENABLED
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("Publishing thumbnail while display updates...");
-            publishMQTTThumbnailIfConnected();
-        }
-#endif
         
         return true;
     }

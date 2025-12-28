@@ -1348,6 +1348,13 @@ void EL133UF1::updateAsync(bool skipInit) {
     // Send buffer data
     _sendBuffer();
 
+    // Publish thumbnail automatically (from framebuffer, before refresh starts)
+    // This is non-blocking and happens for all display updates
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+    extern void publishMQTTThumbnailIfConnected();
+    publishMQTTThumbnailIfConnected();
+#endif
+
     // Power on
     _sendCommand(CMD_PON, CS_BOTH_SEL);
     _busyWait(200);

@@ -52,3 +52,6 @@ __pycache__/
 # Generated web assets (not sensitive, but generated)
 # Uncomment if you don't want to commit generated files:
 # src/web_assets.h
+
+# ESLint configuration (development tool)
+docs/eslint.config.js

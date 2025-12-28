@@ -197,6 +197,112 @@ const MQTT_TOPIC_THUMB = 'devices/web-ui/thumb';
 const EMBEDDED_TOKEN = 'WdTjkCQjNXodmMWLSDWhAvrE6dDmcoQY1V47HSd3M7mb9P4HI3Ph8nTnA18MioBn';
 let mqttClient = null;
 let isConnected = false;
+let webUIPassword = null;  // Stored password for HMAC computation
+
+// Load password from localStorage on page load
+function loadPassword() {
+    const stored = localStorage.getItem('biginky_webui_password');
+    if (stored) {
+        try {
+            // Simple obfuscation (not real encryption, but better than plaintext)
+            webUIPassword = atob(stored);
+            document.getElementById('webUIPassword').value = webUIPassword;
+            showStatus('passwordStatus', 'Password loaded from storage', false);
+        } catch (e) {
+            console.error('Failed to load password:', e);
+            webUIPassword = null;
+        }
+    } else {
+        webUIPassword = null;
+    }
+    updatePasswordStatus();
+}
+
+// Save password to localStorage
+function savePassword() {
+    const password = document.getElementById('webUIPassword').value.trim();
+    if (password.length === 0) {
+        showStatus('passwordStatus', 'Error: Password cannot be empty', true);
+        updatePasswordStatus();
+        return;
+    }
+    if (password.length < 8) {
+        showStatus('passwordStatus', 'Error: Password must be at least 8 characters', true);
+        updatePasswordStatus();
+        return;
+    }
+    
+    try {
+        // Simple obfuscation (not real encryption, but better than plaintext)
+        localStorage.setItem('biginky_webui_password', btoa(password));
+        webUIPassword = password;
+        showStatus('passwordStatus', 'Password saved successfully', false);
+        updatePasswordStatus();
+    } catch (e) {
+        console.error('Failed to save password:', e);
+        showStatus('passwordStatus', 'Error: Failed to save password: ' + e.message, true);
+        updatePasswordStatus();
+    }
+}
+
+// Compute HMAC-SHA256 of a message using the stored password
+async function computeHMAC(message) {
+    if (!webUIPassword) {
+        console.error('No password configured for HMAC computation');
+        return null;
+    }
+    
+    try {
+        // Convert password and message to Uint8Array
+        const encoder = new TextEncoder();
+        const keyData = encoder.encode(webUIPassword);
+        const messageData = encoder.encode(message);
+        
+        // Import password as HMAC key
+        const key = await crypto.subtle.importKey(
+            'raw',
+            keyData,
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+        
+        // Sign the message
+        const signature = await crypto.subtle.sign('HMAC', key, messageData);
+        
+        // Convert to hex string
+        const hashArray = Array.from(new Uint8Array(signature));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        return hashHex;
+    } catch (e) {
+        console.error('HMAC computation error:', e);
+        return null;
+    }
+}
+
+// Verify HMAC signature of a message
+async function verifyHMAC(message, providedHMAC) {
+    if (!webUIPassword) {
+        console.warn('No password configured for HMAC verification');
+        return false;
+    }
+    
+    const computedHMAC = await computeHMAC(message);
+    if (!computedHMAC) {
+        return false;
+    }
+    
+    // Constant-time comparison
+    if (computedHMAC.length !== providedHMAC.length) {
+        return false;
+    }
+    
+    let result = 0;
+    for (let i = 0; i < computedHMAC.length; i++) {
+        result |= computedHMAC.charCodeAt(i) ^ providedHMAC.charCodeAt(i);
+    }
+    return result === 0;
+}
 
 function updateConnectionStatus(status, message) {
     const statusEl = document.getElementById('connectionStatus');

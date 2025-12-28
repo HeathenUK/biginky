@@ -2714,6 +2714,7 @@ if (document.readyState === 'loading') {
     });
 } else {
     // DOM already loaded
+    initializeCanvasTools(); // Ensure canvas tools are initialized
     loadPassword();
     restoreSectionStates();
     setupKeyboardShortcuts();

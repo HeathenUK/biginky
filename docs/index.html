@@ -33,6 +33,11 @@ button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
 .flex-row{display:flex;flex-wrap:wrap;gap:15px;align-items:flex-end;margin-top:15px;}
 .flex-item{flex:1;min-width:150px;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
+h2{cursor:pointer;user-select:none;position:relative;padding-right:20px;}
+h2::after{content:'▼';position:absolute;right:0;font-size:14px;opacity:0.7;transition:transform 0.2s;}
+h2.collapsed::after{transform:rotate(-90deg);}
+.section-content{overflow:hidden;transition:max-height 0.3s ease-out;}
+.section-content.collapsed{display:none;}
 canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;}
 .busy-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;z-index:10000;flex-direction:column;}
 .busy-overlay.active{display:flex;}
@@ -133,15 +138,15 @@ window.addEventListener('load', function() {
 <div class="section">
 <h2 onclick="toggleSection(this)">Authentication (Required)</h2>
 <div class="section-content" id="section-auth">
-<p style="color:#888;font-size:14px;margin-bottom:15px;"><strong>Password is required to use this interface.</strong> Enter the password configured on the device (via local WiFi UI) to enable HMAC authentication. All functionality is disabled until a password is set.</p>
-<div class="flex-row">
-<div class="flex-item">
+<p style="color:#888;font-size:14px;margin-bottom:15px;"><strong>Password required.</strong> Enter the device password (set via local WiFi UI) to enable HMAC authentication. All functionality is disabled until a password is set.</p>
+<div class="flex-row" style="align-items:flex-end;">
+<div class="flex-item" style="flex:1 1 auto;">
 <label>Web UI Password:</label>
 <input type="password" id="webUIPassword" placeholder="Enter password (min 8 characters)..." style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-family:monospace;">
 </div>
-<div class="flex-item" style="flex:0 0 auto;">
-<button onclick="savePassword()" style="margin-top:0;">Save Password</button>
-<button onclick="clearPassword()" style="margin-top:0;background:#f44336;">Clear Password</button>
+<div class="flex-item" style="flex:0 0 auto;display:flex;gap:10px;align-items:flex-end;padding-bottom:0;">
+<button onclick="savePassword()" style="margin-top:0;height:38px;">Save Password</button>
+<button onclick="clearPassword()" style="margin-top:0;background:#f44336;height:38px;">Clear Password</button>
 </div>
 </div>
 <div id="passwordStatus" style="margin-top:10px;"></div>
@@ -161,25 +166,29 @@ window.addEventListener('load', function() {
 </div>
 </div>
 <div class="section">
-<h2>Device Status</h2>
+<h2 onclick="toggleSection(this)">Device Status</h2>
+<div class="section-content" id="section-status">
 <div id="deviceStatus" style="font-family:monospace;font-size:12px;color:#e0e0e0;">
-<p>Not connected - status will appear when connected to MQTT</p>
+<p>Not connected - status appears when connected</p>
+</div>
 </div>
 </div>
 <div class="section">
-<h2>Display Preview</h2>
-<p>Latest display content (updated whenever the display is refreshed):</p>
+<h2 onclick="toggleSection(this)">Display Preview</h2>
+<div class="section-content" id="section-preview">
+<p>Latest display content (updated on refresh):</p>
 <div id="thumbnailContainer" style="text-align:center;margin:20px 0;">
 <canvas id="thumbnailCanvas" width="400" height="300" style="border:2px solid #666;background:#fff;max-width:100%;height:auto;display:none;"></canvas>
 <p id="thumbnailStatus" style="color:#888;">No preview available yet</p>
 </div>
 </div>
 </div>
+</div>
 <div class="section">
 <h2 onclick="toggleSection(this)">Media Mappings</h2>
 <div class="section-content" id="section-media">
-<p>Available media files from media.txt (with thumbnails):</p>
-<div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded yet - will appear when connected to MQTT</div>
+<p>Available media files from media.txt:</p>
+<div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded - appears when connected</div>
 <div class="table-wrapper">
 <div id="mediaMappingsTable">
 <!-- Table will be populated here -->
@@ -190,7 +199,7 @@ window.addEventListener('load', function() {
 <div class="section">
 <h2 onclick="toggleSection(this)">Text Display</h2>
 <div class="section-content" id="section-text">
-<p>Enter text to display on the panel. Select text colour, background colour, and outline colour.</p>
+<p>Enter text to display. Select text, background, and outline colours.</p>
 <label>Text:</label>
 <textarea id="textInput" placeholder="Enter text to display..."></textarea>
 <div class="flex-row">
@@ -1786,7 +1795,7 @@ function disconnectMQTT() {
         logCommand('DISCONNECTED', { reason: 'User requested' });
         
         // Clear device status
-        document.getElementById('deviceStatus').innerHTML = '<p>Not connected - status will appear when connected to MQTT</p>';
+        document.getElementById('deviceStatus').innerHTML = '<p>Not connected - status appears when connected</p>';
     }
 }
 
@@ -2448,14 +2457,17 @@ function toggleSection(h2Element) {
     }
 }
 
-// Restore section states on page load
+// Restore section states on page load (default to collapsed)
 function restoreSectionStates() {
     document.querySelectorAll('.section-content').forEach(function(content) {
         const state = localStorage.getItem('section_' + content.id);
         const h2 = content.previousElementSibling;
-        if (state === 'collapsed' && h2) {
-            h2.classList.add('collapsed');
-            content.classList.add('collapsed');
+        // Default to collapsed if no saved state, or use saved state
+        if (!state || state === 'collapsed') {
+            if (h2) {
+                h2.classList.add('collapsed');
+                content.classList.add('collapsed');
+            }
         }
     });
 }

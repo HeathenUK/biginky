@@ -2949,11 +2949,26 @@ static void auto_cycle_task(void* arg) {
         // The display controller should still be in a valid state from previous use
     }
     
-    Serial.println("Updating display (e-ink refresh)...");
+    Serial.println("Updating display (e-ink refresh - non-blocking, will take 20-30s on panel)...");
     uint32_t refreshStart = millis();
-    display.update();
+    display.update();  // Now non-blocking - returns immediately
+    Serial.println("Display update started (refresh happening on panel, ESP32 can continue)");
+    
+    // Publish thumbnail while display is updating (non-blocking operation)
+    // This can happen in parallel with the panel refresh
+#if WIFI_ENABLED
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Publishing thumbnail while display updates...");
+        publishMQTTThumbnailIfConnected();
+    }
+#endif
+
+    // Wait for display update to complete before playing audio
+    // Audio should only play after the display refresh is done
+    Serial.println("Waiting for display refresh to complete before audio playback...");
+    display.waitForUpdate();
     uint32_t refreshMs = millis() - refreshStart;
-    Serial.printf("Display refresh: %lu ms\n", (unsigned long)refreshMs);
+    Serial.printf("Display refresh complete: %lu ms\n", (unsigned long)refreshMs);
 
     // ================================================================
     // AUDIO - Play WAV file for this image (or fallback to beep)
@@ -2985,28 +3000,8 @@ static void auto_cycle_task(void* arg) {
     Serial.println("SD card not available, no audio");
 #endif
 
-    // Publish thumbnail after display update (if WiFi/MQTT available)
-    // The thumbnail was either published during display.update() (if MQTT was connected)
-    // or saved to SD card (if MQTT was not connected)
-    // If saved to SD, we should try to publish it now
-#if WIFI_ENABLED
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("WiFi connected - attempting to publish thumbnail...");
-        mqttLoadConfig();
-        if (mqttConnect()) {
-            delay(1000);  // Wait for connection and subscriptions
-            // publishMQTTThumbnailIfConnected() will check if there's a pending thumbnail
-            // and publish it (either from SD card or regenerate from framebuffer)
-            publishMQTTThumbnailIfConnected();
-            delay(200);  // Allow time for thumbnail publish to complete
-            mqttDisconnect();
-        } else {
-            Serial.println("WARNING: Failed to connect to MQTT for thumbnail publish");
-        }
-    } else {
-        Serial.println("WiFi not connected - thumbnail saved to SD card for later publish");
-    }
-#endif
+    // Thumbnail was already published above while display was updating (non-blocking)
+    // If WiFi wasn't connected, it was saved to SD card and will be published on next MQTT connect
 
     if (time_ok) {
         Serial.println("Time is valid, calculating sleep until next minute...");
@@ -5049,10 +5044,10 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         
         hal_psram_free(pixelData);
         
-        // Update display
-        Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
-        display.update();
-        Serial.println("Display updated");
+        // Update display (non-blocking - returns immediately, refresh happens on panel)
+        Serial.println("Updating display (e-ink refresh - non-blocking, panel will take 20-30s)...");
+        display.update();  // Non-blocking - returns immediately
+        Serial.println("Display update started (can continue with other tasks or sleep)");
         
         return true;
     }

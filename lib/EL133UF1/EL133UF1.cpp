@@ -1326,76 +1326,14 @@ void EL133UF1::_sendBuffer() {
 }
 
 void EL133UF1::update(bool skipInit) {
-    Serial.printf("EL133UF1::update(skipInit=%d) - _initialized=%d, _buffer=%p\n", 
-                  skipInit, _initialized, _buffer);
-    Serial.flush();
+    // Make update() non-blocking - it now calls updateAsync() and returns immediately
+    // The display refresh happens asynchronously on the panel itself
+    // Use waitForUpdate() or isUpdateComplete() if you need to wait for completion
+    Serial.printf("EL133UF1::update(skipInit=%d) - starting async update\n", skipInit);
+    updateAsync(skipInit);
     
-    if (!_initialized) {
-        Serial.println("EL133UF1: Not initialized!");
-        return;
-    }
-    
-    if (_buffer == nullptr) {
-        Serial.println("EL133UF1: No buffer allocated!");
-        return;
-    }
-
-    Serial.println("\n=== EL133UF1: Display Update ===");
-    uint32_t totalStart = millis();
-    uint32_t stepStart;
-    
-    // Run init sequence only if not already done this boot session
-    if (!_initDone) {
-        stepStart = millis();
-        _initSequence();
-        _initDone = true;
-        Serial.printf("  Init sequence:    %4lu ms\n", millis() - stepStart);
-    } else {
-        Serial.println("  Init sequence:    skipped (already done)");
-    }
-    
-    // Send buffer data
-    stepStart = millis();
-    _sendBuffer();
-    Serial.printf("  Send buffer:      %4lu ms\n", millis() - stepStart);
-
-    // Power on
-    Serial.println("  Powering on...");
-    Serial.flush();
-    stepStart = millis();
-    _sendCommand(CMD_PON, CS_BOTH_SEL);
-    bool ponOk = _busyWait(200);
-    Serial.printf("  Power on:         %4lu ms (busy=%d)\n", millis() - stepStart, ponOk);
-    Serial.flush();
-
-    // Display refresh
-    Serial.println("  Starting refresh (this takes 20-30s)...");
-    Serial.flush();
-    stepStart = millis();
-    const uint8_t drf[] = {0x00};
-    _sendCommand(CMD_DRF, CS_BOTH_SEL, drf, sizeof(drf));
-    bool drfOk = _busyWait(32000);
-    Serial.printf("  Panel refresh:    %4lu ms (busy=%d)\n", millis() - stepStart, drfOk);
-    Serial.flush();
-
-    // Power off
-    Serial.println("  Powering off...");
-    Serial.flush();
-    stepStart = millis();
-    const uint8_t pof[] = {0x00};
-    _sendCommand(CMD_POF, CS_BOTH_SEL, pof, sizeof(pof));
-    bool pofOk = _busyWait(200);
-    Serial.printf("  Power off:        %4lu ms (busy=%d)\n", millis() - stepStart, pofOk);
-    Serial.flush();
-
-    Serial.printf("  TOTAL:            %4lu ms (%.1f sec)\n", 
-                  millis() - totalStart, (millis() - totalStart) / 1000.0);
-    
-    // Publish thumbnail after display update (if MQTT is connected)
-    // This is called automatically whenever the display is updated
-#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
-    publishMQTTThumbnailIfConnected();
-#endif
+    // Note: Thumbnail publishing should be done by the caller after checking isUpdateComplete()
+    // or after waitForUpdate(), not here, since update is now non-blocking
 }
 
 void EL133UF1::updateAsync(bool skipInit) {

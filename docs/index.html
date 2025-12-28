@@ -1924,6 +1924,39 @@ async function sendCommand(cmd) {
     }
 }
 
+function setBusyState(busy, message) {
+    // Clear any existing timeout
+    if (busyTimeoutId) {
+        clearTimeout(busyTimeoutId);
+        busyTimeoutId = null;
+    }
+    
+    isBusy = busy;
+    const overlay = document.getElementById('busyOverlay');
+    if (overlay) {
+        if (busy) {
+            overlay.classList.add('active');
+            const msgEl = overlay.querySelector('.message');
+            if (msgEl && message) {
+                msgEl.textContent = message;
+            }
+            
+            // Set timeout: if no status message arrives within 10 seconds, assume device might be asleep
+            busyTimeoutId = setTimeout(() => {
+                if (isBusy) {
+                    // Device might be asleep - update message but keep busy state
+                    const msgEl = overlay.querySelector('.message');
+                    if (msgEl) {
+                        msgEl.textContent = 'Device may be asleep. Command will be processed when device wakes. Waiting for status...';
+                    }
+                }
+            }, 10000);  // 10 seconds
+        } else {
+            overlay.classList.remove('active');
+        }
+    }
+}
+
 function showStatus(id, msg, isError) {
     const el = document.getElementById(id);
     el.textContent = msg;

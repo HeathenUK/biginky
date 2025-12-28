@@ -4979,6 +4979,12 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
                  messageToProcess.length(), messageToProcess.length() / 1024.0f,
                  isEncrypted ? " (decrypted)" : "");
     
+    // Debug: print first 200 chars of decrypted message to verify it's valid JSON
+    if (isEncrypted && messageToProcess.length() > 0) {
+        String preview = messageToProcess.substring(0, messageToProcess.length() < 200 ? messageToProcess.length() : 200);
+        Serial.printf("  Decrypted message preview: %s\n", preview.c_str());
+    }
+    
     // For canvas_display commands, extract fields directly without full JSON parsing (too large)
     // With increased MQTT task stack size (16KB), we can now process these directly in the MQTT task
     if (command == "canvas_display") {

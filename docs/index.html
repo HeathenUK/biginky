@@ -227,15 +227,114 @@ let isConnected = false;
 let webUIPassword = null;  // Stored password for HMAC computation
 let isBusy = false;  // Track if a command is being processed
 let busyTimeoutId = null;  // Timeout ID for busy state (in case device is asleep)
+let sessionEncryptionKey = null;  // Session key for encrypting stored password
+
+// Initialize session encryption key (derived from session ID)
+async function initSessionEncryptionKey() {
+    if (sessionEncryptionKey) return sessionEncryptionKey;
+    
+    // Generate a session-specific key from a random value stored in sessionStorage
+    let sessionId = sessionStorage.getItem('biginky_session_id');
+    if (!sessionId) {
+        // Generate new session ID
+        sessionId = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+        sessionStorage.setItem('biginky_session_id', sessionId);
+    }
+    
+    // Derive encryption key from session ID using PBKDF2
+    const encoder = new TextEncoder();
+    const sessionIdData = encoder.encode(sessionId);
+    const salt = encoder.encode('biginky_session_salt_v1');
+    
+    const keyMaterial = await crypto.subtle.importKey(
+        'raw',
+        sessionIdData,
+        { name: 'PBKDF2' },
+        false,
+        ['deriveBits', 'deriveKey']
+    );
+    
+    sessionEncryptionKey = await crypto.subtle.deriveKey(
+        {
+            name: 'PBKDF2',
+            salt: salt,
+            iterations: 100000,
+            hash: 'SHA-256'
+        },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+    );
+    
+    return sessionEncryptionKey;
+}
+
+// Encrypt password for storage
+async function encryptPasswordForStorage(password) {
+    const key = await initSessionEncryptionKey();
+    const encoder = new TextEncoder();
+    const passwordData = encoder.encode(password);
+    
+    // Generate random IV for GCM
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    
+    // Encrypt
+    const encrypted = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv },
+        key,
+        passwordData
+    );
+    
+    // Combine IV + ciphertext and base64 encode
+    const combined = new Uint8Array(iv.length + encrypted.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(encrypted), iv.length);
+    
+    return btoa(String.fromCharCode(...combined));
+}
+
+// Decrypt password from storage
+async function decryptPasswordFromStorage(encryptedBase64) {
+    try {
+        const key = await initSessionEncryptionKey();
+        
+        // Decode base64
+        const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
+        
+        // Extract IV and ciphertext
+        const iv = combined.slice(0, 12);
+        const ciphertext = combined.slice(12);
+        
+        // Decrypt
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: iv },
+            key,
+            ciphertext
+        );
+        
+        // Convert to string
+        const decoder = new TextDecoder();
+        return decoder.decode(decrypted);
+    } catch (e) {
+        console.error('Failed to decrypt password:', e);
+        return null;
+    }
+}
 
 // Load password from sessionStorage on page load
-function loadPassword() {
+async function loadPassword() {
     const stored = sessionStorage.getItem('biginky_webui_password');
     if (stored) {
         try {
-            // Simple obfuscation (not real encryption, but better than plaintext)
-            webUIPassword = atob(stored);
-            document.getElementById('webUIPassword').value = webUIPassword;
+            // Decrypt the stored password
+            webUIPassword = await decryptPasswordFromStorage(stored);
+            if (webUIPassword) {
+                document.getElementById('webUIPassword').value = webUIPassword;
+            } else {
+                webUIPassword = null;
+            }
         } catch (e) {
             console.error('Failed to load password:', e);
             webUIPassword = null;
@@ -553,9 +652,10 @@ async function savePassword() {
                                 mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
                                 mqttClient.onMessageArrived = originalHandler;
                                 
-                                // Save password
+                                // Save password (encrypted)
                                 try {
-                                    sessionStorage.setItem('biginky_webui_password', btoa(password));
+                                    const encryptedPassword = await encryptPasswordForStorage(password);
+                                    sessionStorage.setItem('biginky_webui_password', encryptedPassword);
                                     passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password verified and saved successfully!</div>';
                                     updatePasswordStatus();
                                 } catch (e) {
@@ -574,7 +674,8 @@ async function savePassword() {
                         mqttClient.onMessageArrived = originalHandler;
                         
                         try {
-                            sessionStorage.setItem('biginky_webui_password', btoa(password));
+                            const encryptedPassword = await encryptPasswordForStorage(password);
+                            sessionStorage.setItem('biginky_webui_password', encryptedPassword);
                             passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password saved (unencrypted message received - will verify on encrypted message)</div>';
                             updatePasswordStatus();
                         } catch (e) {
@@ -611,9 +712,10 @@ async function savePassword() {
                 mqttClient.onMessageArrived = originalHandler;
                 webUIPassword = oldPassword;
                 passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">✗ Password verification timeout: No status message received. Password saved but not verified. Will verify on next status message.</div>';
-                // Still save the password
+                // Still save the password (encrypted)
                 try {
-                    sessionStorage.setItem('biginky_webui_password', btoa(password));
+                    const encryptedPassword = await encryptPasswordForStorage(password);
+                    sessionStorage.setItem('biginky_webui_password', encryptedPassword);
                     updatePasswordStatus();
                 } catch (e) {
                     console.error('Failed to save password:', e);

@@ -4902,9 +4902,10 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         
         // Decode base64
         size_t decodedLen = (base64Data.length() * 3) / 4;
-        uint8_t* compressedData = (uint8_t*)malloc(decodedLen);
+        // Allocate compressed data buffer in PSRAM (can be large for 800x600 images)
+        uint8_t* compressedData = (uint8_t*)hal_psram_malloc(decodedLen);
         if (!compressedData) {
-            Serial.println("ERROR: Failed to allocate memory for compressed data");
+            Serial.println("ERROR: Failed to allocate PSRAM for compressed data");
             return false;
         }
         
@@ -4948,10 +4949,11 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         if (isCompressed) {
             // Expected decompressed size: 800 * 600 = 480,000 bytes
             size_t expectedSize = width * height;
-            pixelData = (uint8_t*)malloc(expectedSize);
+            // Allocate decompressed pixel data buffer in PSRAM (480KB for 800x600)
+            pixelData = (uint8_t*)hal_psram_malloc(expectedSize);
             if (!pixelData) {
-                Serial.println("ERROR: Failed to allocate memory for decompressed pixel data");
-                free(compressedData);
+                Serial.println("ERROR: Failed to allocate PSRAM for decompressed pixel data");
+                hal_psram_free(compressedData);
                 return false;
             }
             
@@ -4978,8 +4980,8 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
                 decompressedSize = tinfl_decompress_mem_to_mem(pixelData, expectedSize, compressedData, compressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
                 if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
                     Serial.println("  Zlib header flag also failed");
-                    free(compressedData);
-                    free(pixelData);
+                    hal_psram_free(compressedData);
+                    hal_psram_free(pixelData);
                     return false;
                 }
                 Serial.println("  Zlib header flag succeeded!");
@@ -4987,8 +4989,8 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
             
             if (decompressedSize != expectedSize) {
                 Serial.printf("ERROR: Decompressed size mismatch: got %zu, expected %zu\n", decompressedSize, expectedSize);
-                free(compressedData);
-                free(pixelData);
+                hal_psram_free(compressedData);
+                hal_psram_free(pixelData);
                 return false;
             }
             
@@ -4999,11 +5001,13 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
             Serial.printf("  Compression ratio: %.1f%% (%.1f%% size reduction)\n", compressionRatio, sizeReduction);
             Serial.printf("  Space saved: %zu bytes (%.1f KB)\n", 
                          actualLen - compressedSize, (actualLen - compressedSize) / 1024.0f);
-            free(compressedData);
+            hal_psram_free(compressedData);
         } else {
-            // Not compressed, use directly
+            // Not compressed, use directly (compressedData is already in PSRAM)
             pixelData = compressedData;
             actualLen = compressedSize;
+            // Don't free compressedData here - it's now pixelData
+            compressedData = nullptr;  // Prevent double-free
         }
         
         // Ensure display is initialized
@@ -5013,7 +5017,7 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
             
             if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
                 Serial.println("ERROR: Display initialization failed!");
-                free(pixelData);
+                hal_psram_free(pixelData);
                 return false;
             }
             Serial.println("Display initialized");
@@ -5043,7 +5047,7 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
             }
         }
         
-        free(pixelData);
+        hal_psram_free(pixelData);
         
         // Update display
         Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");

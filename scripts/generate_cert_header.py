@@ -85,12 +85,12 @@ def generate_cert_header(source, target, env):
         except subprocess.CalledProcessError as e:
             print(f"ERROR: Failed to generate certificate: {e}")
             print("Make sure OpenSSL is installed and available in PATH")
-            sys.exit(1)
+            return False
         except FileNotFoundError:
             print("ERROR: OpenSSL not found. Please install OpenSSL.")
             print("On Ubuntu/Debian: sudo apt-get install openssl")
             print("On macOS: brew install openssl")
-            sys.exit(1)
+            return False
     
     # Read certificate and key files (either newly generated or existing)
     try:
@@ -100,7 +100,7 @@ def generate_cert_header(source, target, env):
             key_content = f.read().strip()
     except IOError as e:
         print(f"ERROR: Failed to read certificate files: {e}")
-        sys.exit(1)
+        return False
     
     # Generate header file
     header_content = f"""// HTTPS Certificate and Private Key
@@ -143,10 +143,18 @@ const char* server_key = R"EOF(
 # Also ensure it runs even if there are errors - always generate the file
 def ensure_cert_header(source, target, env):
     """Wrapper to ensure certificate header is always generated."""
+    print("=" * 60)
+    print("Running generate_cert_header pre-build script...")
+    print("=" * 60)
     try:
-        generate_cert_header(source, target, env)
+        result = generate_cert_header(source, target, env)
+        if not result:
+            print("WARNING: generate_cert_header returned False, creating stub...")
+            raise Exception("Generation failed")
     except Exception as e:
         print(f"ERROR in generate_cert_header: {e}")
+        import traceback
+        traceback.print_exc()
         # Even if generation fails, create a minimal stub so compilation can proceed
         project_dir = env.subst("$PROJECT_DIR")
         header_file = os.path.join(project_dir, "src", "certificates.h")
@@ -162,9 +170,10 @@ const char server_key[] = "-----BEGIN PRIVATE KEY-----\\n-----END PRIVATE KEY---
             try:
                 with open(header_file, 'w') as f:
                     f.write(stub_content)
-                print(f"Created stub header: {header_file}")
+                print(f"✓ Created stub header: {header_file}")
             except Exception as e2:
                 print(f"ERROR: Failed to create stub header: {e2}")
+    print("=" * 60)
 
 env.AddPreAction("buildprog", ensure_cert_header)
 

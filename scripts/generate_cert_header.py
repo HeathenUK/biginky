@@ -1,200 +1,174 @@
+#!/usr/bin/env python3
 """
-PlatformIO pre-build script to generate self-signed certificate and create header file.
+Generate certificates.h header file from PEM certificate files.
 
 This script:
-1. Generates a self-signed certificate if it doesn't exist or is older than 30 days
-2. Creates a header file with the certificate and key embedded as strings
-3. Can be used with PsychicHttp or other HTTPS libraries
+1. Checks if certificates/server_cert.pem and certificates/server_key.pem exist
+2. If not, generates them using openssl
+3. Converts the PEM files to C header format with const char arrays
+4. Writes src/certificates.h
+
+This is a PlatformIO pre-build script that runs before compilation.
 """
 
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta
 
-def generate_cert_header(source, target, env):
-    """Generate certificate and create header file if needed."""
-    
-    project_dir = env.subst("$PROJECT_DIR")
-    cert_dir = os.path.join(project_dir, "certificates")
+def ensure_certificates_exist(cert_dir):
+    """Ensure certificate PEM files exist, generate if needed."""
     cert_file = os.path.join(cert_dir, "server_cert.pem")
     key_file = os.path.join(cert_dir, "server_key.pem")
-    header_file = os.path.join(project_dir, "src", "certificates.h")
     
-    # Create certificates directory if it doesn't exist
-    os.makedirs(cert_dir, exist_ok=True)
-    
-    # Check if certificates exist and are valid
-    cert_exists = os.path.exists(cert_file) and os.path.exists(key_file)
-    header_exists = os.path.exists(header_file)
-    
-    if cert_exists:
-        # Verify certificate files are not empty and are valid PEM format
+    # Check if both files exist and are valid
+    need_generate = False
+    if not os.path.exists(cert_file) or not os.path.exists(key_file):
+        need_generate = True
+        print("Certificate files not found, generating...")
+    else:
+        # Verify files are not empty and contain valid PEM data
         try:
             with open(cert_file, 'r') as f:
-                cert_content = f.read().strip()
+                cert_content = f.read()
+                if not cert_content.strip() or 'BEGIN CERTIFICATE' not in cert_content:
+                    need_generate = True
+                    print("Certificate file is invalid, regenerating...")
+            
             with open(key_file, 'r') as f:
-                key_content = f.read().strip()
-            
-            # Check if files contain valid PEM markers
-            if "-----BEGIN CERTIFICATE-----" in cert_content and "-----END CERTIFICATE-----" in cert_content:
-                if "-----BEGIN" in key_content and "-----END" in key_content:
-                    # Check if header file exists and is newer than certificates
-                    if header_exists:
-                        header_mtime = os.path.getmtime(header_file)
-                        cert_mtime = os.path.getmtime(cert_file)
-                    if header_mtime >= cert_mtime:
-                        # Header is up to date, skip regeneration
-                        print("Certificate and header file are up to date, skipping generation.")
-                        return True
-                    else:
-                        # Header is older than certificate, regenerate
-                        print("Header file is older than certificate, regenerating...")
-                        regenerate_cert = False  # Don't regenerate cert, just header
-                    
-                    # Certificates exist and are valid, just need to regenerate header
-                    print("Valid certificates found, generating header file...")
-                    regenerate_cert = False
-                else:
-                    print("Key file appears invalid, regenerating certificates...")
-                    regenerate_cert = True
-            else:
-                print("Certificate file appears invalid, regenerating...")
-                regenerate_cert = True
-        except IOError as e:
-            print(f"Error reading certificate files: {e}, regenerating...")
-            regenerate_cert = True
-    else:
-        print("Certificate files not found, generating...")
-        regenerate_cert = True
+                key_content = f.read()
+                if not key_content.strip() or 'BEGIN PRIVATE KEY' not in key_content and 'BEGIN RSA PRIVATE KEY' not in key_content:
+                    need_generate = True
+                    print("Key file is invalid, regenerating...")
+        except Exception as e:
+            print(f"Error checking certificate files: {e}, regenerating...")
+            need_generate = True
     
-    # Generate certificates if needed
-    if regenerate_cert:
-        print("Generating self-signed certificate...")
+    if need_generate:
+        # Ensure certificates directory exists
+        os.makedirs(cert_dir, exist_ok=True)
+        
+        # Generate private key
+        print("Generating 2048-bit RSA private key...")
         try:
-            # Generate private key (2048-bit RSA)
-            subprocess.run([
-                "openssl", "genrsa", "-out", key_file, "2048"
-            ], check=True, capture_output=True)
-            
-            # Generate self-signed certificate (valid for 10 years)
-            subprocess.run([
-                "openssl", "req", "-new", "-x509", "-key", key_file,
-                "-out", cert_file, "-days", "3650",
-                "-subj", "/C=US/ST=State/L=City/O=ESP32-P4/CN=esp32.local"
-            ], check=True, capture_output=True)
-            
-            print("Certificate generated successfully!")
+            subprocess.run(
+                ["openssl", "genrsa", "-out", key_file, "2048"],
+                check=True,
+                capture_output=True
+            )
+            print("Private key generated successfully")
         except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to generate certificate: {e}")
-            print("Make sure OpenSSL is installed and available in PATH")
+            print(f"ERROR: Failed to generate private key: {e.stderr.decode()}")
             return False
         except FileNotFoundError:
-            print("ERROR: OpenSSL not found. Please install OpenSSL.")
-            print("On Ubuntu/Debian: sudo apt-get install openssl")
-            print("On macOS: brew install openssl")
+            print("ERROR: openssl not found. Please install OpenSSL.")
+            return False
+        
+        # Generate self-signed certificate (valid for 10 years)
+        print("Generating self-signed certificate...")
+        try:
+            subprocess.run(
+                ["openssl", "req", "-new", "-x509", "-key", key_file, 
+                 "-out", cert_file, "-days", "3650",
+                 "-subj", "/C=US/ST=State/L=City/O=ESP32-P4/CN=esp32.local"],
+                check=True,
+                capture_output=True
+            )
+            print("Certificate generated successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Failed to generate certificate: {e.stderr.decode()}")
             return False
     
-    # Read certificate and key files (either newly generated or existing)
+    return True
+
+def pem_to_c_string(pem_content):
+    """Convert PEM content to C string format, preserving full PEM structure."""
+    # Keep the full PEM content but escape it for C string
+    # Replace newlines with \n and escape quotes
+    pem_escaped = pem_content.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+    return pem_escaped
+
+def generate_cert_header(cert_file, key_file, output_file):
+    """Generate certificates.h from PEM files."""
     try:
+        # Read certificate
         with open(cert_file, 'r') as f:
-            cert_content = f.read().strip()
+            cert_pem = f.read()
+        
+        # Read private key
         with open(key_file, 'r') as f:
-            key_content = f.read().strip()
-    except IOError as e:
-        print(f"ERROR: Failed to read certificate files: {e}")
-        return False
-    
-    # Generate header file
-    header_content = f"""// HTTPS Certificate and Private Key
-// 
-// Auto-generated by scripts/generate_cert_header.py
-// Certificate is valid for 10 years and regenerated if older than 30 days
-// 
-// NOTE: For production, use a proper CA-signed certificate. Self-signed certificates
-// will trigger browser security warnings (users can click "Advanced" -> "Proceed").
-//
-// The certificate and key are embedded as strings for use with HTTPS libraries.
+            key_pem = f.read()
+        
+        # Convert to C strings
+        cert_data = pem_to_c_string(cert_pem)
+        key_data = pem_to_c_string(key_pem)
+        
+        # Generate header file
+        header_content = f"""/**
+ * @file certificates.h
+ * @brief SSL/TLS certificates for ESP32-P4 HTTPS server
+ * 
+ * AUTO-GENERATED FILE - DO NOT EDIT MANUALLY
+ * Generated by: scripts/generate_cert_header.py
+ * 
+ * This file contains self-signed certificate and private key
+ * for the HTTPS server. These are embedded as const char arrays
+ * in full PEM format.
+ */
 
 #ifndef CERTIFICATES_H
 #define CERTIFICATES_H
 
-// Self-signed certificate (PEM format)
-const char* server_cert = R"EOF(
-{cert_content}
-)EOF";
+// Server certificate (full PEM format)
+static const char server_cert_pem[] = "{cert_data}";
 
-// Private key (PEM format) - KEEP SECRET!
-const char* server_key = R"EOF(
-{key_content}
-)EOF";
+// Server private key (full PEM format)
+static const char server_key_pem[] = "{key_data}";
 
 #endif // CERTIFICATES_H
 """
-    
-    # Write header file
-    try:
-        with open(header_file, 'w') as f:
+        
+        # Write header file
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        with open(output_file, 'w') as f:
             f.write(header_content)
-        print(f"Certificate header generated: {header_file}")
-    except IOError as e:
-        print(f"ERROR: Failed to write header file: {e}")
-        sys.exit(1)
-
-# Register the function to run before building
-# Use "buildprog" instead of file-specific target to ensure it runs every build
-# Also ensure it runs even if there are errors - always generate the file
-def ensure_cert_header(source, target, env):
-    """Wrapper to ensure certificate header is always generated."""
-    print("=" * 60)
-    print("Running generate_cert_header pre-build script...")
-    print("=" * 60)
-    
-    project_dir = env.subst("$PROJECT_DIR")
-    header_file = os.path.join(project_dir, "src", "certificates.h")
-    
-    # Always ensure file exists - create stub first, then try to generate proper one
-    stub_content = """// Stub certificates.h - will be replaced if generation succeeds
-#ifndef CERTIFICATES_H
-#define CERTIFICATES_H
-const char server_cert[] = "-----BEGIN CERTIFICATE-----\\n-----END CERTIFICATE-----\\n";
-const char server_key[] = "-----BEGIN PRIVATE KEY-----\\n-----END PRIVATE KEY-----\\n";
-#endif
-"""
-    
-    # Create stub immediately so compilation can proceed
-    if not os.path.exists(header_file):
-        try:
-            with open(header_file, 'w') as f:
-                f.write(stub_content)
-            print(f"✓ Created initial stub header: {header_file}")
-        except Exception as e:
-            print(f"ERROR: Failed to create stub header: {e}")
-    
-    # Now try to generate proper certificate
-    try:
-        result = generate_cert_header(source, target, env)
-        if result:
-            print("✓ Certificate header generated successfully")
-        else:
-            print("WARNING: generate_cert_header returned False, keeping stub...")
+        
+        print(f"Generated {output_file} successfully")
+        return True
+        
     except Exception as e:
-        print(f"ERROR in generate_cert_header: {e}")
-        import traceback
-        traceback.print_exc()
-        print("Keeping stub header for compilation...")
-    print("=" * 60)
+        print(f"ERROR: Failed to generate certificate header: {e}")
+        return False
 
-# Register the function to run before building (only when called from PlatformIO)
-# Use "buildprog" instead of file-specific target to ensure it runs every build
-try:
-    Import("env")
-    env.AddPreAction("buildprog", ensure_cert_header)
-except:
-    # Called directly (for testing) - run the function manually
-    class FakeEnv:
-        def subst(self, s):
-            return os.path.dirname(os.path.dirname(__file__))
-    fake_env = FakeEnv()
-    ensure_cert_header(None, None, fake_env)
+def main():
+    """Main function for PlatformIO pre-build script."""
+    # Get project directory
+    if len(sys.argv) > 1:
+        project_dir = sys.argv[1]
+    else:
+        # Try to get from environment (PlatformIO sets this)
+        project_dir = os.getenv('PROJECT_DIR', os.getcwd())
+    
+    cert_dir = os.path.join(project_dir, "certificates")
+    cert_file = os.path.join(cert_dir, "server_cert.pem")
+    key_file = os.path.join(cert_dir, "server_key.pem")
+    output_file = os.path.join(project_dir, "src", "certificates.h")
+    
+    # Ensure certificates exist
+    if not ensure_certificates_exist(cert_dir):
+        print("ERROR: Failed to ensure certificates exist")
+        sys.exit(1)
+    
+    # Generate header file
+    if not generate_cert_header(cert_file, key_file, output_file):
+        print("ERROR: Failed to generate certificate header")
+        sys.exit(1)
+    
+    print("Certificate generation completed successfully")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
 

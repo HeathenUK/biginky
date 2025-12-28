@@ -81,7 +81,10 @@ table th,table td{padding:6px;font-size:12px;}
 </style>
 <script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js" onerror="loadPahoFallback()"></script>
 <!-- Load custom MQTT configuration if available, otherwise defaults will be used -->
-<script src="js/mqtt-config.js" onerror="console.log('No custom mqtt-config.js found, using defaults')"></script>
+<!-- Note: mqtt-config.js is optional - if it doesn't exist, defaults from config.js will be used -->
+<script src="js/mqtt-config.js" onerror="console.log('No custom mqtt-config.js found, using defaults from config.js')"></script>
+<!-- Load main configuration (must come after mqtt-config.js if it exists) -->
+<script src="js/config.js"></script>
 <script>
 let pahoLibraryLoaded = false;
 
@@ -339,26 +342,12 @@ window.addEventListener('load', function() {
 </div>
 </div>
 <script>
-const MQTT_BROKER = 'mqtt.flespi.io';
-const MQTT_PORT = 443;
-const MQTT_TOPIC = 'devices/web-ui/cmd';
-const MQTT_TOPIC_STATUS = 'devices/web-ui/status';
-const MQTT_TOPIC_THUMB = 'devices/web-ui/thumb';
-const MQTT_TOPIC_MEDIA = 'devices/web-ui/media';
-// Embedded restricted token for web UI (publish-only to devices/web-ui/cmd)
-// TODO: Replace with your actual restricted Flespi.io token
-const EMBEDDED_TOKEN = 'WdTjkCQjNXodmMWLSDWhAvrE6dDmcoQY1V47HSd3M7mb9P4HI3Ph8nTnA18MioBn';
-let mqttClient = null;
-let isConnected = false;
-let webUIPassword = null;  // Stored password for HMAC computation
-let sessionEncryptionKey = null;  // Session key for encrypting stored password
-let isBusy = false;  // Busy state for command processing
-let busyTimeoutId = null;  // Timeout ID for busy state
-let autoReconnectEnabled = true;
-let reconnectAttempts = 0;
-let reconnectTimeoutId = null;
-const MAX_RECONNECT_ATTEMPTS = 10;
-const INITIAL_RECONNECT_DELAY = 1000; // 1 second
+// Configuration is now loaded from js/config.js
+// The following constants are defined in config.js:
+// - MQTT_BROKER, MQTT_PORT, MQTT_TOPIC, MQTT_TOPIC_STATUS, MQTT_TOPIC_THUMB, MQTT_TOPIC_MEDIA
+// - EMBEDDED_TOKEN (now from MQTT_CONFIG.auth.token)
+// - MAX_RECONNECT_ATTEMPTS, INITIAL_RECONNECT_DELAY
+// - Global state variables (mqttClient, isConnected, webUIPassword, etc.)
 
 // Initialize session encryption key (derived from session ID)
 async function initSessionEncryptionKey() {

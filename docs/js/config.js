@@ -47,15 +47,13 @@ function mergeConfig(defaultConfig, customConfig) {
 }
 
 // Check for custom config (loaded via script tag before this file)
-// Use setTimeout to ensure mqtt-config.js has loaded if it exists
-setTimeout(function() {
-    if (typeof window !== 'undefined' && window.MQTT_CONFIG) {
-        MQTT_CONFIG = mergeConfig(DEFAULT_MQTT_CONFIG, window.MQTT_CONFIG);
-        console.log('Loaded custom MQTT configuration from mqtt-config.js');
-    } else {
-        console.log('Using default MQTT configuration. To customize, create mqtt-config.js from mqtt-config.example.js');
-    }
-}, 0);
+// mqtt-config.js should be loaded before this file, so window.MQTT_CONFIG should be available if it exists
+if (typeof window !== 'undefined' && window.MQTT_CONFIG) {
+    MQTT_CONFIG = mergeConfig(DEFAULT_MQTT_CONFIG, window.MQTT_CONFIG);
+    console.log('Loaded custom MQTT configuration from mqtt-config.js');
+} else {
+    console.log('Using default MQTT configuration. To customize, create mqtt-config.js from mqtt-config.example.js');
+}
 
 // Export configuration constants for backward compatibility
 const MQTT_BROKER = MQTT_CONFIG.broker;

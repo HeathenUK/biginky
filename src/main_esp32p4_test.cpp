@@ -4833,6 +4833,7 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
  */
 static bool handleWebInterfaceCommand(const String& jsonMessage) {
     // Check if message is encrypted
+    // Note: If this is a deferred command that was already decrypted, it won't have "encrypted" field
     bool isEncrypted = false;
     int encryptedPos = jsonMessage.indexOf("\"encrypted\"");
     if (encryptedPos >= 0) {

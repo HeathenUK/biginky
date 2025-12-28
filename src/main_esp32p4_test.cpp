@@ -4003,10 +4003,10 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                         }
                     }
                     
-                    // Defer heavy commands (like "next") to be processed after MQTT disconnects
+                    // Defer heavy commands (like "next" and "canvas_display") to be processed after MQTT disconnects
                     // This prevents stack overflow in the MQTT task context
-                    if (command == "next") {
-                        Serial.println("Deferring heavy 'next' command to process after MQTT disconnect");
+                    if (command == "next" || command == "canvas_display") {
+                        Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
                         webUICommandPending = true;
                         pendingWebUICommand = jsonMessage;
                     } else {
@@ -4047,7 +4047,34 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 // Check if it's a JSON command from web interface (must be on web UI topic)
                 String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
                 Serial.printf("Received non-retained JSON message from web UI: %d bytes\n", mqttMessageBufferUsed);
-                handleWebInterfaceCommand(jsonMessage);
+                
+                // Extract command to check if it's heavy
+                String command = "";
+                int commandPos = jsonMessage.indexOf("\"command\"");
+                if (commandPos >= 0) {
+                    int colonPos = jsonMessage.indexOf(':', commandPos);
+                    if (colonPos >= 0) {
+                        int quoteStart = jsonMessage.indexOf('"', colonPos);
+                        if (quoteStart >= 0) {
+                            int quoteEnd = jsonMessage.indexOf('"', quoteStart + 1);
+                            if (quoteEnd >= 0) {
+                                command = jsonMessage.substring(quoteStart + 1, quoteEnd);
+                                command.toLowerCase();
+                            }
+                        }
+                    }
+                }
+                
+                // Defer heavy commands (like "next" and "canvas_display") to be processed after MQTT disconnects
+                // This prevents stack overflow in the MQTT task context
+                if (command == "next" || command == "canvas_display") {
+                    Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
+                    webUICommandPending = true;
+                    pendingWebUICommand = jsonMessage;
+                } else {
+                    // Process lightweight commands immediately
+                    handleWebInterfaceCommand(jsonMessage);
+                }
             }
             
             // Free buffer after processing complete message

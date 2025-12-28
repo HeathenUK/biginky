@@ -2160,9 +2160,40 @@ let historyIndex = -1;
 
 const colorMap = {0:'#000000',1:'#FFFFFF',2:'#FFFF00',3:'#FF0000',5:'#0000FF',6:'#00FF00'};
 
+const colorMap = {
+    0: '#000000',  // Black
+    1: '#FFFFFF',  // White
+    2: '#FFFF00',  // Yellow
+    3: '#FF0000',  // Red
+    5: '#0000FF',  // Blue
+    6: '#00FF00'   // Green
+};
+
 function getDrawColor() {
     const val = parseInt(document.getElementById('drawColor').value);
     return colorMap[val] || '#000000';
+}
+
+function getFillColor() {
+    const val = parseInt(document.getElementById('fillColor').value);
+    return colorMap[val] || '#FFFFFF';
+}
+
+function getOutlineColor() {
+    const val = parseInt(document.getElementById('outlineColor').value);
+    return colorMap[val] || '#000000';
+}
+
+function setTool(tool) {
+    document.getElementById('drawTool').value = tool;
+    // Update active button
+    document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+    const toolBtn = document.getElementById('tool-' + tool);
+    if (toolBtn) {
+        toolBtn.classList.add('active');
+    }
+    // Trigger change event to update UI
+    document.getElementById('drawTool').dispatchEvent(new Event('change'));
 }
 
 function getCurrentTool() {
@@ -2260,6 +2291,85 @@ function getPixelColor(data, x, y, width) {
         b: data[idx + 2],
         a: data[idx + 3]
     };
+}
+
+// Posterize image to match e-ink colors using Floyd-Steinberg dithering
+function posterizeImage(x, y, width, height) {
+    const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+    
+    function findClosestColorIdx(r, g, b) {
+        let minDist = Infinity;
+        let closestIdx = 0;
+        for (let i = 0; i < einkColors.length; i++) {
+            const ec = einkColors[i];
+            const dist = Math.pow(r-ec[0],2) + Math.pow(g-ec[1],2) + Math.pow(b-ec[2],2);
+            if (dist < minDist) {
+                minDist = dist;
+                closestIdx = i;
+            }
+        }
+        return closestIdx;
+    }
+    
+    const imageData = ctx.getImageData(x, y, width, height);
+    const data = imageData.data;
+    
+    // Floyd-Steinberg dithering
+    for (let py = 0; py < height; py++) {
+        for (let px = 0; px < width; px++) {
+            const idx = (py * width + px) * 4;
+            let r = data[idx];
+            let g = data[idx + 1];
+            let b = data[idx + 2];
+            
+            // Find closest e-ink color
+            const closestIdx = findClosestColorIdx(r, g, b);
+            const targetColor = einkColors[closestIdx];
+            
+            // Calculate error
+            const errorR = r - targetColor[0];
+            const errorG = g - targetColor[1];
+            const errorB = b - targetColor[2];
+            
+            // Set pixel to target color
+            data[idx] = targetColor[0];
+            data[idx + 1] = targetColor[1];
+            data[idx + 2] = targetColor[2];
+            
+            // Distribute error to neighboring pixels (Floyd-Steinberg)
+            if (px < width - 1) {
+                // Right
+                const rightIdx = idx + 4;
+                data[rightIdx] = Math.max(0, Math.min(255, data[rightIdx] + errorR * 7/16));
+                data[rightIdx + 1] = Math.max(0, Math.min(255, data[rightIdx + 1] + errorG * 7/16));
+                data[rightIdx + 2] = Math.max(0, Math.min(255, data[rightIdx + 2] + errorB * 7/16));
+            }
+            if (py < height - 1) {
+                // Bottom
+                const bottomIdx = idx + width * 4;
+                data[bottomIdx] = Math.max(0, Math.min(255, data[bottomIdx] + errorR * 5/16));
+                data[bottomIdx + 1] = Math.max(0, Math.min(255, data[bottomIdx + 1] + errorG * 5/16));
+                data[bottomIdx + 2] = Math.max(0, Math.min(255, data[bottomIdx + 2] + errorB * 5/16));
+                
+                if (px > 0) {
+                    // Bottom-left
+                    const bottomLeftIdx = bottomIdx - 4;
+                    data[bottomLeftIdx] = Math.max(0, Math.min(255, data[bottomLeftIdx] + errorR * 3/16));
+                    data[bottomLeftIdx + 1] = Math.max(0, Math.min(255, data[bottomLeftIdx + 1] + errorG * 3/16));
+                    data[bottomLeftIdx + 2] = Math.max(0, Math.min(255, data[bottomLeftIdx + 2] + errorB * 3/16));
+                }
+                if (px < width - 1) {
+                    // Bottom-right
+                    const bottomRightIdx = bottomIdx + 4;
+                    data[bottomRightIdx] = Math.max(0, Math.min(255, data[bottomRightIdx] + errorR * 1/16));
+                    data[bottomRightIdx + 1] = Math.max(0, Math.min(255, data[bottomRightIdx + 1] + errorG * 1/16));
+                    data[bottomRightIdx + 2] = Math.max(0, Math.min(255, data[bottomRightIdx + 2] + errorB * 1/16));
+                }
+            }
+        }
+    }
+    
+    ctx.putImageData(imageData, x, y);
 }
 
 function startDraw(e) {

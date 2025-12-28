@@ -27,11 +27,6 @@ button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
 .flex-item{flex:1;min-width:150px;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
 canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;}
-.busy-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;display:none;align-items:center;justify-content:center;flex-direction:column;color:#fff;font-size:18px;}
-.busy-overlay.active{display:flex;}
-.busy-overlay .spinner{border:4px solid #444;border-top:4px solid #4CAF50;border-radius:50%;width:50px;height:50px;animation:spin 1s linear infinite;margin-bottom:20px;}
-@keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
-.busy-overlay .message{margin-top:10px;text-align:center;}
 </style>
 <script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js" onerror="loadPahoFallback()"></script>
 <script>
@@ -73,7 +68,7 @@ window.addEventListener('load', function() {
         }
         // Load password from sessionStorage (after functions are defined)
         if (typeof loadPassword === 'function') {
-            loadPassword();
+            loadPassword();  // loadPassword is async but we don't await it here
         } else {
             // Functions not loaded yet, wait a bit
             setTimeout(function() {
@@ -87,10 +82,6 @@ window.addEventListener('load', function() {
 </script>
 </head>
 <body>
-<div id="busyOverlay" class="busy-overlay">
-<div class="spinner"></div>
-<div class="message">Processing command... Please wait for device to respond.</div>
-</div>
 <h1>BigInky Remote Control</h1>
 <div class="section">
 <h2>Authentication (Required)</h2>
@@ -225,9 +216,6 @@ const EMBEDDED_TOKEN = 'WdTjkCQjNXodmMWLSDWhAvrE6dDmcoQY1V47HSd3M7mb9P4HI3Ph8nTn
 let mqttClient = null;
 let isConnected = false;
 let webUIPassword = null;  // Stored password for HMAC computation
-let isBusy = false;  // Track if a command is being processed
-let busyTimeoutId = null;  // Timeout ID for busy state (in case device is asleep)
-let sessionEncryptionKey = null;  // Session key for encrypting stored password
 
 // Initialize session encryption key (derived from session ID)
 async function initSessionEncryptionKey() {
@@ -328,12 +316,19 @@ async function loadPassword() {
     const stored = sessionStorage.getItem('biginky_webui_password');
     if (stored) {
         try {
-            // Decrypt the stored password
+            // Try to decrypt (new encrypted format)
             webUIPassword = await decryptPasswordFromStorage(stored);
+            if (!webUIPassword) {
+                // If decryption fails, try legacy base64 format (for migration)
+                try {
+                    webUIPassword = atob(stored);
+                } catch (e) {
+                    console.error('Failed to load password (both encrypted and legacy formats failed):', e);
+                    webUIPassword = null;
+                }
+            }
             if (webUIPassword) {
                 document.getElementById('webUIPassword').value = webUIPassword;
-            } else {
-                webUIPassword = null;
             }
         } catch (e) {
             console.error('Failed to load password:', e);
@@ -483,70 +478,20 @@ async function decryptMessage(payloadBase64, ivBase64) {
             return null;
         }
         
+        // Debug: log first few bytes of decrypted data
+        const debugBytes = Array.from(plaintextArray.slice(0, Math.min(20, plaintextArray.length)));
+        console.log('Decrypted bytes (first 20):', debugBytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        
         // Get padding value (last byte)
         const padValue = plaintextArray[plaintextArray.length - 1];
         
         // Validate padding (must be between 1 and 16)
         if (padValue < 1 || padValue > 16) {
-            // Try to find valid padding by checking if any of the last 16 bytes could be padding
-            // Check from the end backwards - look for consecutive bytes with the same value
-            let foundValidPadding = false;
-            for (let testPad = 1; testPad <= 16 && testPad <= plaintextArray.length; testPad++) {
-                const testStart = plaintextArray.length - testPad;
-                if (testStart < 0) continue;
-                let allMatch = true;
-                const padValue = testPad;
-                for (let i = testStart; i < plaintextArray.length; i++) {
-                    if (plaintextArray[i] !== padValue) {
-                        allMatch = false;
-                        break;
-                    }
-                }
-                if (allMatch) {
-                    foundValidPadding = true;
-                    // Try using this padding value
-                    const unpaddedArray = plaintextArray.slice(0, testStart);
-                    const decoder = new TextDecoder('utf-8', { fatal: false });
-                    const decoded = decoder.decode(unpaddedArray);
-                    return decoded;
-                }
-            }
-            // If no valid padding found, try a different approach:
-            // Look for the JSON structure and assume the data is valid
-            // Check if the data looks like valid JSON (starts with { and ends with })
-            if (!foundValidPadding) {
-                const firstByte = plaintextArray[0];
-                const lastByte = plaintextArray[plaintextArray.length - 1];
-                if (firstByte === 0x7b && lastByte === 0x7d) { // { and }
-                    // Try removing potential padding by looking for the JSON structure
-                    // Find the last } that could be the end of JSON
-                    let jsonEnd = plaintextArray.length - 1;
-                    // Look backwards for the closing brace
-                    while (jsonEnd > 0 && plaintextArray[jsonEnd] !== 0x7d) {
-                        jsonEnd--;
-                    }
-                    if (jsonEnd > 0 && plaintextArray[jsonEnd] === 0x7d) {
-                        // Try decoding up to this point
-                        const potentialJson = plaintextArray.slice(0, jsonEnd + 1);
-                        const decoder = new TextDecoder('utf-8', { fatal: false });
-                        const decoded = decoder.decode(potentialJson);
-                        try {
-                            JSON.parse(decoded); // Validate it's valid JSON
-                            return decoded;
-                        } catch (e) {
-                            // Not valid JSON, continue to error
-                        }
-                    }
-                }
-            }
-            if (!foundValidPadding) {
-                console.error('Invalid padding value:', padValue, '(expected 1-16)');
-                console.error('This usually means the encryption key is incorrect or the ciphertext is corrupted');
-                console.error('Plaintext length:', plaintextArray.length);
-                console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-                console.error('Could not find valid padding or decode as JSON');
-                return null;
-            }
+            console.error('Invalid padding value:', padValue, '(expected 1-16)');
+            console.error('This usually means the encryption key is incorrect or the ciphertext is corrupted');
+            console.error('Plaintext length:', plaintextArray.length);
+            console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+            return null;
         }
         
         // Verify all padding bytes are the same
@@ -605,7 +550,7 @@ async function verifyPasswordByDecryption(password) {
     });
 }
 
-// Save password to sessionStorage (encrypted) and verify it by decrypting status message
+// Save password to localStorage and verify it by decrypting status message
 async function savePassword() {
     const password = document.getElementById('webUIPassword').value.trim();
     const passwordStatusEl = document.getElementById('passwordStatus');
@@ -652,10 +597,9 @@ async function savePassword() {
                                 mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
                                 mqttClient.onMessageArrived = originalHandler;
                                 
-                                // Save password (encrypted)
+                                // Save password
                                 try {
-                                    const encryptedPassword = await encryptPasswordForStorage(password);
-                                    sessionStorage.setItem('biginky_webui_password', encryptedPassword);
+                                    localStorage.setItem('biginky_webui_password', btoa(password));
                                     passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password verified and saved successfully!</div>';
                                     updatePasswordStatus();
                                 } catch (e) {
@@ -674,8 +618,7 @@ async function savePassword() {
                         mqttClient.onMessageArrived = originalHandler;
                         
                         try {
-                            const encryptedPassword = await encryptPasswordForStorage(password);
-                            sessionStorage.setItem('biginky_webui_password', encryptedPassword);
+                            localStorage.setItem('biginky_webui_password', btoa(password));
                             passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password saved (unencrypted message received - will verify on encrypted message)</div>';
                             updatePasswordStatus();
                         } catch (e) {
@@ -712,10 +655,9 @@ async function savePassword() {
                 mqttClient.onMessageArrived = originalHandler;
                 webUIPassword = oldPassword;
                 passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">✗ Password verification timeout: No status message received. Password saved but not verified. Will verify on next status message.</div>';
-                // Still save the password (encrypted)
+                // Still save the password
                 try {
-                    const encryptedPassword = await encryptPasswordForStorage(password);
-                    sessionStorage.setItem('biginky_webui_password', encryptedPassword);
+                    localStorage.setItem('biginky_webui_password', btoa(password));
                     updatePasswordStatus();
                 } catch (e) {
                     console.error('Failed to save password:', e);
@@ -723,10 +665,9 @@ async function savePassword() {
             }
         }, 5000);
     } else {
-        // Not connected - just save password (encrypted), verify later
+        // Not connected - just save password, verify later
         try {
-            const encryptedPassword = await encryptPasswordForStorage(password);
-            sessionStorage.setItem('biginky_webui_password', encryptedPassword);
+            localStorage.setItem('biginky_webui_password', btoa(password));
             webUIPassword = password;
             passwordStatusEl.innerHTML = '<div class="info" style="margin-top:10px;">Password saved. Will verify when connected to MQTT and status message is received.</div>';
             updatePasswordStatus();
@@ -742,7 +683,7 @@ async function savePassword() {
 // Clear password from localStorage and reset UI
 function clearPassword() {
     if (confirm('Are you sure you want to clear the saved password? You will need to re-enter it to use the web UI.')) {
-        sessionStorage.removeItem('biginky_webui_password');
+        localStorage.removeItem('biginky_webui_password');
         webUIPassword = null;
         document.getElementById('webUIPassword').value = '';
         document.getElementById('passwordStatus').innerHTML = '<div class="info" style="margin-top:10px;">Password cleared. Please enter a new password and click Save Password.</div>';
@@ -783,6 +724,11 @@ async function deriveEncryptionKey(password) {
     const salt = encoder.encode('biginky_enc_key_v1');
     const passwordData = encoder.encode(password);
     
+    // Debug: log password length and first few bytes
+    console.log('deriveEncryptionKey: password length =', password.length);
+    console.log('deriveEncryptionKey: password bytes (first 20) =', Array.from(passwordData.slice(0, 20)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    console.log('deriveEncryptionKey: salt =', Array.from(salt).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    
     // Import password as HMAC key
     const key = await crypto.subtle.importKey(
         'raw',
@@ -795,6 +741,9 @@ async function deriveEncryptionKey(password) {
     // Compute HMAC(password, salt) to derive key
     const derivedKey = await crypto.subtle.sign('HMAC', key, salt);
     const keyArray = new Uint8Array(derivedKey);
+    
+    // Debug: log derived key (first 16 bytes)
+    console.log('deriveEncryptionKey: derived key (first 16 bytes) =', Array.from(keyArray.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
     
     return keyArray;
 }
@@ -1301,14 +1250,6 @@ function connectMQTT() {
                     }
                     
                     console.log('Decrypted status:', status);
-                    
-                    // Check for pending_action and update busy state
-                    if (status.pending_action) {
-                        setBusyState(true, 'Device is processing: ' + status.pending_action);
-                    } else if (isBusy) {
-                        // No pending action means command completed
-                        setBusyState(false);
-                    }
                 } else if (webUIPassword && payload.hmac) {
                     // Unencrypted but has HMAC - verify it
                     const providedHMAC = payload.hmac;
@@ -1323,27 +1264,12 @@ function connectMQTT() {
                     }
                     status = payload;
                     console.log('Status message HMAC verified successfully (unencrypted)');
-                    
-                    // Check for pending_action and update busy state
-                    if (status.pending_action) {
-                        setBusyState(true, 'Device is processing: ' + status.pending_action);
-                    } else if (isBusy) {
-                        // No pending action means command completed
-                        setBusyState(false);
-                    }
                 } else {
                     // No password configured or no HMAC - just display (for backward compatibility)
                     if (!webUIPassword) {
                         console.warn('No password configured - cannot verify HMAC');
                     }
                     status = payload;
-                    
-                    // Check for pending_action even without password
-                    if (status.pending_action) {
-                        setBusyState(true, 'Device is processing: ' + status.pending_action);
-                    } else if (isBusy) {
-                        setBusyState(false);
-                    }
                 }
                 
                 // Display status
@@ -1898,42 +1824,8 @@ async function sendCommand(cmd) {
     
     if (await publishMessage(payload)) {
         showStatus('commandStatus', cmd + ' command sent successfully!', false);
-        setBusyState(true, 'Command sent, waiting for device response...');
     } else {
         showStatus('commandStatus', 'Failed to send command', true);
-    }
-}
-
-function setBusyState(busy, message) {
-    // Clear any existing timeout
-    if (busyTimeoutId) {
-        clearTimeout(busyTimeoutId);
-        busyTimeoutId = null;
-    }
-    
-    isBusy = busy;
-    const overlay = document.getElementById('busyOverlay');
-    if (overlay) {
-        if (busy) {
-            overlay.classList.add('active');
-            const msgEl = overlay.querySelector('.message');
-            if (msgEl && message) {
-                msgEl.textContent = message;
-            }
-            
-            // Set timeout: if no status message arrives within 10 seconds, assume device might be asleep
-            busyTimeoutId = setTimeout(() => {
-                if (isBusy) {
-                    // Device might be asleep - update message but keep busy state
-                    const msgEl = overlay.querySelector('.message');
-                    if (msgEl) {
-                        msgEl.textContent = 'Device may be asleep. Command will be processed when device wakes. Waiting for status...';
-                    }
-                }
-            }, 10000);  // 10 seconds
-        } else {
-            overlay.classList.remove('active');
-        }
     }
 }
 

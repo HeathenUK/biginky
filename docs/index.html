@@ -251,7 +251,7 @@ window.addEventListener('load', function() {
 <div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
-<p>Draw on the canvas (1600x1200) - matches the display panel size. Images can be loaded and will be automatically posterized to match e-ink colors.</p>
+<p>Draw on the canvas (1600x1200) - matches the display panel size. Images can be loaded and will be automatically posterized to match e-ink colors using Atkinson dithering.</p>
 <div style="margin-bottom:15px;">
 <label style="display:block;margin-bottom:8px;">Tool:</label>
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">
@@ -2587,7 +2587,7 @@ function getPixelColor(data, x, y, width) {
     };
 }
 
-// Posterize image to match e-ink colors using Floyd-Steinberg dithering
+// Posterize image to match e-ink colors using Atkinson dithering
 function posterizeImage(x, y, width, height) {
     const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
     
@@ -2608,7 +2608,7 @@ function posterizeImage(x, y, width, height) {
     const imageData = ctx.getImageData(x, y, width, height);
     const data = imageData.data;
     
-    // Floyd-Steinberg dithering
+    // Atkinson dithering (distributes 75% of error to 6 neighbors, 1/8 each)
     for (let py = 0; py < height; py++) {
         for (let px = 0; px < width; px++) {
             const idx = (py * width + px) * 4;
@@ -2630,35 +2630,56 @@ function posterizeImage(x, y, width, height) {
             data[idx + 1] = targetColor[1];
             data[idx + 2] = targetColor[2];
             
-            // Distribute error to neighboring pixels (Floyd-Steinberg)
+            // Distribute error to neighboring pixels (Atkinson: 1/8 to each of 6 neighbors = 75% total)
+            const errorFraction = 1/8;
+            
+            // Right
             if (px < width - 1) {
-                // Right
                 const rightIdx = idx + 4;
-                data[rightIdx] = Math.max(0, Math.min(255, data[rightIdx] + errorR * 7/16));
-                data[rightIdx + 1] = Math.max(0, Math.min(255, data[rightIdx + 1] + errorG * 7/16));
-                data[rightIdx + 2] = Math.max(0, Math.min(255, data[rightIdx + 2] + errorB * 7/16));
+                data[rightIdx] = Math.max(0, Math.min(255, data[rightIdx] + errorR * errorFraction));
+                data[rightIdx + 1] = Math.max(0, Math.min(255, data[rightIdx + 1] + errorG * errorFraction));
+                data[rightIdx + 2] = Math.max(0, Math.min(255, data[rightIdx + 2] + errorB * errorFraction));
             }
+            
+            // Right+1 (two positions to the right)
+            if (px < width - 2) {
+                const right2Idx = idx + 8;
+                data[right2Idx] = Math.max(0, Math.min(255, data[right2Idx] + errorR * errorFraction));
+                data[right2Idx + 1] = Math.max(0, Math.min(255, data[right2Idx + 1] + errorG * errorFraction));
+                data[right2Idx + 2] = Math.max(0, Math.min(255, data[right2Idx + 2] + errorB * errorFraction));
+            }
+            
             if (py < height - 1) {
-                // Bottom
                 const bottomIdx = idx + width * 4;
-                data[bottomIdx] = Math.max(0, Math.min(255, data[bottomIdx] + errorR * 5/16));
-                data[bottomIdx + 1] = Math.max(0, Math.min(255, data[bottomIdx + 1] + errorG * 5/16));
-                data[bottomIdx + 2] = Math.max(0, Math.min(255, data[bottomIdx + 2] + errorB * 5/16));
                 
+                // Bottom-left
                 if (px > 0) {
-                    // Bottom-left
                     const bottomLeftIdx = bottomIdx - 4;
-                    data[bottomLeftIdx] = Math.max(0, Math.min(255, data[bottomLeftIdx] + errorR * 3/16));
-                    data[bottomLeftIdx + 1] = Math.max(0, Math.min(255, data[bottomLeftIdx + 1] + errorG * 3/16));
-                    data[bottomLeftIdx + 2] = Math.max(0, Math.min(255, data[bottomLeftIdx + 2] + errorB * 3/16));
+                    data[bottomLeftIdx] = Math.max(0, Math.min(255, data[bottomLeftIdx] + errorR * errorFraction));
+                    data[bottomLeftIdx + 1] = Math.max(0, Math.min(255, data[bottomLeftIdx + 1] + errorG * errorFraction));
+                    data[bottomLeftIdx + 2] = Math.max(0, Math.min(255, data[bottomLeftIdx + 2] + errorB * errorFraction));
                 }
+                
+                // Bottom
+                data[bottomIdx] = Math.max(0, Math.min(255, data[bottomIdx] + errorR * errorFraction));
+                data[bottomIdx + 1] = Math.max(0, Math.min(255, data[bottomIdx + 1] + errorG * errorFraction));
+                data[bottomIdx + 2] = Math.max(0, Math.min(255, data[bottomIdx + 2] + errorB * errorFraction));
+                
+                // Bottom-right
                 if (px < width - 1) {
-                    // Bottom-right
                     const bottomRightIdx = bottomIdx + 4;
-                    data[bottomRightIdx] = Math.max(0, Math.min(255, data[bottomRightIdx] + errorR * 1/16));
-                    data[bottomRightIdx + 1] = Math.max(0, Math.min(255, data[bottomRightIdx + 1] + errorG * 1/16));
-                    data[bottomRightIdx + 2] = Math.max(0, Math.min(255, data[bottomRightIdx + 2] + errorB * 1/16));
+                    data[bottomRightIdx] = Math.max(0, Math.min(255, data[bottomRightIdx] + errorR * errorFraction));
+                    data[bottomRightIdx + 1] = Math.max(0, Math.min(255, data[bottomRightIdx + 1] + errorG * errorFraction));
+                    data[bottomRightIdx + 2] = Math.max(0, Math.min(255, data[bottomRightIdx + 2] + errorB * errorFraction));
                 }
+            }
+            
+            // Bottom+1 (two rows below)
+            if (py < height - 2) {
+                const bottom2Idx = idx + width * 8;
+                data[bottom2Idx] = Math.max(0, Math.min(255, data[bottom2Idx] + errorR * errorFraction));
+                data[bottom2Idx + 1] = Math.max(0, Math.min(255, data[bottom2Idx + 1] + errorG * errorFraction));
+                data[bottom2Idx + 2] = Math.max(0, Math.min(255, data[bottom2Idx + 2] + errorB * errorFraction));
             }
         }
     }

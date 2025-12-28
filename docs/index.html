@@ -406,6 +406,10 @@ async function decryptMessage(payloadBase64, ivBase64) {
     try {
         let iv, ciphertext;
         
+        // Diagnostic: Log payload base64 length
+        console.log('decryptMessage: payloadBase64 length:', payloadBase64 ? payloadBase64.length : 0);
+        console.log('decryptMessage: ivBase64 length:', ivBase64 ? ivBase64.length : 0);
+        
         if (ivBase64) {
             // New format: IV and payload are separate
             const ivBinaryString = atob(ivBase64);
@@ -432,9 +436,14 @@ async function decryptMessage(payloadBase64, ivBase64) {
             ciphertext = combined.slice(16);
         }
         
+        // Diagnostic: Log decoded lengths
+        console.log('decryptMessage: IV length (decoded):', iv.length);
+        console.log('decryptMessage: ciphertext length (decoded):', ciphertext.length);
+        console.log('decryptMessage: ciphertext length % 16:', ciphertext.length % 16);
+        
         // Validate IV length
         if (iv.length !== 16) {
-            console.error('Invalid IV length:', iv.length);
+            console.error('Invalid IV length:', iv.length, '(expected 16)');
             return null;
         }
         
@@ -446,7 +455,8 @@ async function decryptMessage(payloadBase64, ivBase64) {
         
         // Validate ciphertext length is multiple of 16 (AES block size)
         if (ciphertext.length % 16 !== 0) {
-            console.error('Invalid ciphertext length (not multiple of 16):', ciphertext.length);
+            console.error('Invalid ciphertext length (not multiple of 16):', ciphertext.length, 'remainder:', ciphertext.length % 16);
+            console.error('This will cause Web Crypto API to fail. Ciphertext may be truncated or corrupted.');
             return null;
         }
         

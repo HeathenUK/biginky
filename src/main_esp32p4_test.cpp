@@ -13561,7 +13561,9 @@ static String decryptMessage(const String& ciphertext) {
     
     // Base64 decode
     size_t ciphertextLen = ciphertext.length();
-    size_t decodedLen = (ciphertextLen * 3) / 4;
+    // Base64 encoding: 4 chars -> 3 bytes, but we need to account for padding
+    // Calculate max possible decoded length
+    size_t decodedLen = ((ciphertextLen + 3) / 4) * 3;
     uint8_t* decoded = (uint8_t*)malloc(decodedLen);
     if (!decoded) {
         Serial.println("ERROR: Failed to allocate memory for decoded data");
@@ -13569,11 +13571,16 @@ static String decryptMessage(const String& ciphertext) {
     }
     
     size_t decodedIdx = 0;
-    for (size_t i = 0; i < ciphertextLen && decodedIdx < decodedLen; i += 4) {
+    for (size_t i = 0; i < ciphertextLen; i += 4) {
+        if (i + 4 > ciphertextLen) {
+            // Handle incomplete last group
+            break;
+        }
+        
         uint32_t value = 0;
         int padding = 0;
         
-        for (int j = 0; j < 4 && (i + j) < ciphertextLen; j++) {
+        for (int j = 0; j < 4; j++) {
             char c = ciphertext.charAt(i + j);
             if (c == '=') {
                 padding++;
@@ -13588,6 +13595,11 @@ static String decryptMessage(const String& ciphertext) {
                 value = (value << 6) | 62;
             } else if (c == '/') {
                 value = (value << 6) | 63;
+            } else {
+                // Invalid character - skip this group
+                Serial.printf("ERROR: Invalid base64 character at position %d: '%c' (0x%02x)\n", i + j, c, c);
+                free(decoded);
+                return "";
             }
         }
         
@@ -13597,8 +13609,10 @@ static String decryptMessage(const String& ciphertext) {
         }
     }
     
+    Serial.printf("Base64 decoded: %d bytes input -> %d bytes output\n", ciphertextLen, decodedIdx);
+    
     if (decodedIdx < 16) {
-        Serial.println("ERROR: Decoded data too short (need at least 16 bytes for IV)");
+        Serial.printf("ERROR: Decoded data too short (need at least 16 bytes for IV, got %d)\n", decodedIdx);
         free(decoded);
         return "";
     }
@@ -13608,8 +13622,11 @@ static String decryptMessage(const String& ciphertext) {
     memcpy(iv, decoded, 16);
     
     size_t ciphertextDataLen = decodedIdx - 16;
+    Serial.printf("Ciphertext data length: %d bytes (after removing 16-byte IV)\n", ciphertextDataLen);
+    
     if (ciphertextDataLen % 16 != 0) {
-        Serial.println("ERROR: Ciphertext length not multiple of 16 bytes");
+        Serial.printf("ERROR: Ciphertext length not multiple of 16 bytes (got %d bytes, remainder: %d)\n", 
+                     ciphertextDataLen, ciphertextDataLen % 16);
         free(decoded);
         return "";
     }

@@ -5049,6 +5049,15 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         display.update();  // Non-blocking - returns immediately
         Serial.println("Display update started (can continue with other tasks or sleep)");
         
+        // Publish thumbnail while display is updating (non-blocking operation)
+        // This can happen in parallel with the panel refresh
+#if WIFI_ENABLED
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("Publishing thumbnail while display updates...");
+            publishMQTTThumbnailIfConnected();
+        }
+#endif
+        
         return true;
     }
     

@@ -1377,13 +1377,26 @@ bool EL133UF1::isUpdateComplete() {
 void EL133UF1::waitForUpdate() {
     if (!_asyncInProgress) return;
     
-    // Wait for refresh to complete
-    _busyWait(32000);
+    // Poll isUpdateComplete() which checks the busy pin and handles power-off
+    // This is more reliable than just calling _busyWait() once
+    uint32_t startTime = millis();
+    const uint32_t timeout = 35000;  // 35 second timeout (refresh takes 20-30s)
     
-    // Power off
-    const uint8_t pof[] = {0x00};
-    _sendCommand(CMD_POF, CS_BOTH_SEL, pof, sizeof(pof));
-    _busyWait(200);
+    while (_asyncInProgress && (millis() - startTime) < timeout) {
+        if (isUpdateComplete()) {
+            // isUpdateComplete() already handled power-off and cleared _asyncInProgress
+            return;
+        }
+        delay(100);  // Poll every 100ms
+    }
     
-    _asyncInProgress = false;
+    // Timeout - force completion
+    if (_asyncInProgress) {
+        Serial.println("WARNING: Display update timeout, forcing completion");
+        // Power off anyway
+        const uint8_t pof[] = {0x00};
+        _sendCommand(CMD_POF, CS_BOTH_SEL, pof, sizeof(pof));
+        _busyWait(200);
+        _asyncInProgress = false;
+    }
 }

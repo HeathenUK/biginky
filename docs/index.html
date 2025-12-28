@@ -1369,6 +1369,16 @@ function connectMQTT() {
                 
                 // Display status
                 updateDeviceStatus(status);
+                
+                // Check for pending_action and update busy state
+                if (status.pending_action) {
+                    setBusyState(true, 'Device is processing: ' + status.pending_action);
+                } else if (isBusy) {
+                    // No pending action means command completed
+                    clearTimeout(busyTimeoutId);
+                    busyTimeoutId = null;
+                    setBusyState(false);
+                }
             } catch (e) {
                 console.error('Failed to parse/decrypt status message:', e);
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error parsing status message: ' + e.message + '</p>';

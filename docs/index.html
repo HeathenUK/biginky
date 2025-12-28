@@ -1947,6 +1947,21 @@ async function sendCommand(cmd) {
     }
 }
 
+async function showMediaItem(index) {
+    // Send go command with parameter (1-based index)
+    const payload = {
+        command: 'go',
+        parameter: String(index)  // Convert to string as firmware expects string parameter
+    };
+    
+    if (await publishMessage(payload)) {
+        showStatus('mediaMappingsStatus', `Show command sent for item ${index}. Display will update in 20-30 seconds...`, false);
+        setBusyState(true, 'Displaying media item ' + index + '... Please wait for device to respond.');
+    } else {
+        showStatus('mediaMappingsStatus', 'Failed to send show command', true);
+    }
+}
+
 function setBusyState(busy, message) {
     // Clear any existing timeout
     if (busyTimeoutId) {

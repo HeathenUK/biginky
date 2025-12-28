@@ -124,6 +124,14 @@ window.addEventListener('load', function() {
 </div>
 </div>
 <div class="section">
+<h2>Media Mappings</h2>
+<p>Available media files from media.txt (with thumbnails):</p>
+<div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded yet - will appear when connected to MQTT</div>
+<div id="mediaMappingsTable" style="overflow-x:auto;">
+<!-- Table will be populated here -->
+</div>
+</div>
+<div class="section">
 <h2>Text Display</h2>
 <p>Enter text to display on the panel. Select text colour, background colour, and outline colour.</p>
 <label>Text:</label>
@@ -200,6 +208,7 @@ const MQTT_PORT = 443;
 const MQTT_TOPIC = 'devices/web-ui/cmd';
 const MQTT_TOPIC_STATUS = 'devices/web-ui/status';
 const MQTT_TOPIC_THUMB = 'devices/web-ui/thumb';
+const MQTT_TOPIC_MEDIA = 'devices/web-ui/media';
 // Embedded restricted token for web UI (publish-only to devices/web-ui/cmd)
 // TODO: Replace with your actual restricted Flespi.io token
 const EMBEDDED_TOKEN = 'WdTjkCQjNXodmMWLSDWhAvrE6dDmcoQY1V47HSd3M7mb9P4HI3Ph8nTnA18MioBn';

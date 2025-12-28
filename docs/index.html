@@ -2024,15 +2024,15 @@ async function sendCanvasToDisplay() {
         }
         const base64Data = btoa(binaryString);
         const base64SizeKB = (base64Data.length / 1024).toFixed(1);
-        const jsonSize = JSON.stringify({pixelData: base64Data, width: 800, height: 600, compressed: false}).length;
+        const jsonSize = JSON.stringify({pixelData: base64Data, width: canvas.width, height: canvas.height, compressed: false}).length;
         const jsonSizeKB = (jsonSize / 1024).toFixed(1);
         showStatus('canvasStatus', 'Uncompressed: ' + rawSizeKB + ' KB raw (' + base64SizeKB + ' KB base64). Total JSON: ' + jsonSizeKB + ' KB (compression not available)', false);
         
         const payload = {
             command: 'canvas_display',
             pixelData: base64Data,
-            width: 800,
-            height: 600,
+            width: canvas.width,
+            height: canvas.height,
             compressed: false
         };
         

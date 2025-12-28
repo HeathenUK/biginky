@@ -13560,7 +13560,16 @@ static String decryptMessage(const String& ciphertext) {
     }
     
     // Base64 decode
-    size_t ciphertextLen = ciphertext.length();
+    // Remove any whitespace/newlines from base64 string
+    String cleanCiphertext = ciphertext;
+    cleanCiphertext.replace("\n", "");
+    cleanCiphertext.replace("\r", "");
+    cleanCiphertext.replace(" ", "");
+    cleanCiphertext.trim();
+    
+    size_t ciphertextLen = cleanCiphertext.length();
+    Serial.printf("Base64 input length: %d bytes (after cleaning)\n", ciphertextLen);
+    
     // Base64 encoding: 4 chars -> 3 bytes, but we need to account for padding
     // Calculate max possible decoded length
     size_t decodedLen = ((ciphertextLen + 3) / 4) * 3;
@@ -13581,7 +13590,7 @@ static String decryptMessage(const String& ciphertext) {
         int padding = 0;
         
         for (int j = 0; j < 4; j++) {
-            char c = ciphertext.charAt(i + j);
+            char c = cleanCiphertext.charAt(i + j);
             if (c == '=') {
                 padding++;
                 value <<= 6;

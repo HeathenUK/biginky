@@ -260,6 +260,7 @@ window.addEventListener('load', function() {
 <button onclick="setTool('line')" id="tool-line" class="tool-btn" title="Line" style="width:44px;height:44px;padding:8px;font-size:20px;">/</button>
 <button onclick="setTool('eraser')" id="tool-eraser" class="tool-btn" title="Eraser" style="width:44px;height:44px;padding:8px;font-size:20px;">🧹</button>
 </div>
+<input type="hidden" id="drawTool" value="brush">
 </div>
 <div class="flex-row" style="margin-bottom:15px;">
 <div class="flex-item" style="min-width:120px;">
@@ -2184,7 +2185,10 @@ function getOutlineColor() {
 }
 
 function setTool(tool) {
-    document.getElementById('drawTool').value = tool;
+    const drawToolEl = document.getElementById('drawTool');
+    if (drawToolEl) {
+        drawToolEl.value = tool;
+    }
     // Update active button
     document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
     const toolBtn = document.getElementById('tool-' + tool);
@@ -2192,11 +2196,49 @@ function setTool(tool) {
         toolBtn.classList.add('active');
     }
     // Trigger change event to update UI
-    document.getElementById('drawTool').dispatchEvent(new Event('change'));
+    if (drawToolEl) {
+        drawToolEl.dispatchEvent(new Event('change'));
+    } else {
+        // Fallback: manually update UI if element doesn't exist yet
+        updateToolOptions(tool);
+    }
 }
 
 function getCurrentTool() {
-    return document.getElementById('drawTool').value || 'brush';
+    const drawToolEl = document.getElementById('drawTool');
+    return drawToolEl ? drawToolEl.value || 'brush' : 'brush';
+}
+
+function updateToolOptions(tool) {
+    const textOptions = document.getElementById('textToolOptions');
+    const textInput = document.getElementById('textInputContainer');
+    const fillColorContainer = document.getElementById('fillColorContainer');
+    const outlineColorContainer = document.getElementById('outlineColorContainer');
+    const colorLabel = document.getElementById('colorLabel');
+    
+    // Show/hide text options
+    if (textOptions && textInput) {
+        if (tool === 'text') {
+            textOptions.style.display = 'block';
+            textInput.style.display = 'block';
+        } else {
+            textOptions.style.display = 'none';
+            textInput.style.display = 'none';
+        }
+    }
+    
+    // Show/hide fill and outline for shapes
+    if (fillColorContainer && outlineColorContainer && colorLabel) {
+        if (tool === 'rectangle' || tool === 'circle') {
+            fillColorContainer.style.display = 'block';
+            outlineColorContainer.style.display = 'block';
+            colorLabel.textContent = 'Colour:';
+        } else {
+            fillColorContainer.style.display = 'none';
+            outlineColorContainer.style.display = 'none';
+            colorLabel.textContent = 'Colour:';
+        }
+    }
 }
 
 // Initialize tool on page load (defer until DOM is ready)
@@ -2478,34 +2520,21 @@ function undoCanvas() {
 }
 
 // Update tool options visibility
-document.getElementById('drawTool').addEventListener('change', function() {
-    const tool = this.value;
-    const textOptions = document.getElementById('textToolOptions');
-    const textInput = document.getElementById('textInputContainer');
-    const fillColorContainer = document.getElementById('fillColorContainer');
-    const outlineColorContainer = document.getElementById('outlineColorContainer');
-    const colorLabel = document.getElementById('colorLabel');
-    
-    // Show/hide text options
-    if (tool === 'text') {
-        textOptions.style.display = 'block';
-        textInput.style.display = 'block';
-    } else {
-        textOptions.style.display = 'none';
-        textInput.style.display = 'none';
+function setupToolChangeListener() {
+    const drawToolEl = document.getElementById('drawTool');
+    if (drawToolEl) {
+        drawToolEl.addEventListener('change', function() {
+            updateToolOptions(this.value);
+        });
     }
-    
-    // Show/hide fill and outline for shapes
-    if (tool === 'rectangle' || tool === 'circle') {
-        fillColorContainer.style.display = 'block';
-        outlineColorContainer.style.display = 'block';
-        colorLabel.textContent = 'Colour:';
-    } else {
-        fillColorContainer.style.display = 'none';
-        outlineColorContainer.style.display = 'none';
-        colorLabel.textContent = 'Colour:';
-    }
-});
+}
+
+// Setup listener when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupToolChangeListener);
+} else {
+    setupToolChangeListener();
+}
 
 function clearCanvas() {
     saveCanvasState();

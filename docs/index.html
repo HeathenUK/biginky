@@ -2274,7 +2274,8 @@ function saveCanvasState() {
     historyIndex++;
     canvasHistory = canvasHistory.slice(0, historyIndex);
     canvasHistory.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
-    if (canvasHistory.length > 20) {
+    // Limit to 10 states to manage memory (~77MB max vs ~154MB)
+    if (canvasHistory.length > 10) {
         canvasHistory.shift();
         historyIndex--;
     }

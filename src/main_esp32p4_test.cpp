@@ -2005,6 +2005,7 @@ bool mqttCheckMessages(uint32_t timeoutMs);
 String mqttGetLastMessage();  // Get the last received message
 static void publishMQTTStatus();  // Publish device status to devices/web-ui/status
 static void publishMQTTThumbnail();  // Publish display thumbnail to devices/web-ui/thumb
+static void publishMQTTMediaMappings();  // Publish media.txt mappings with thumbnails to devices/web-ui/media
 void publishMQTTThumbnailIfConnected();  // Called from EL133UF1 library after display updates
 static bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize);  // Save JPEG thumbnail to SD card
 static char* loadThumbnailFromSD();  // Load JPEG thumbnail from SD card and return JSON (caller must free)
@@ -2368,7 +2369,14 @@ static void auto_cycle_task(void* arg) {
                 if (mqttConnect()) {
                     delay(1000);  // Wait for connection and subscriptions
                     publishMQTTStatus();
-                    delay(200);  // Allow time for status publish to complete
+                    
+                    // On cold boot, also publish media mappings
+                    if (g_is_cold_boot) {
+                        Serial.println("=== COLD BOOT: Publishing media mappings ===");
+                        publishMQTTMediaMappings();
+                    }
+                    
+                    delay(200);  // Allow time for publishes to complete
                     mqttDisconnect();
                 } else {
                     Serial.println("WARNING: Failed to reconnect to MQTT for status publish");
@@ -3084,6 +3092,7 @@ static void auto_cycle_task(void* arg) {
 #define MQTT_TOPIC_PUBLISH "devices/twilio_sms_bridge/outbox"            // Topic to publish to
 #define MQTT_TOPIC_STATUS "devices/web-ui/status"                   // Topic to publish device status
 #define MQTT_TOPIC_THUMB "devices/web-ui/thumb"                    // Topic to publish display thumbnail
+#define MQTT_TOPIC_MEDIA "devices/web-ui/media"                    // Topic to publish media.txt mappings with thumbnails
 
 // MQTT runtime state
 static char mqttBroker[128] = MQTT_BROKER_HOSTNAME;
@@ -3096,6 +3105,7 @@ static char mqttTopicWebUI[128] = MQTT_TOPIC_WEBUI;
 static char mqttTopicPublish[128] = MQTT_TOPIC_PUBLISH;
 static char mqttTopicStatus[128] = MQTT_TOPIC_STATUS;
 static char mqttTopicThumb[128] = MQTT_TOPIC_THUMB;
+static char mqttTopicMedia[128] = MQTT_TOPIC_MEDIA;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
 // Buffer for multi-chunk MQTT messages (heap-allocated for large messages)
@@ -3903,6 +3913,344 @@ static char* loadThumbnailFromSD() {
     Serial.println("SD card not enabled, cannot load thumbnail");
     return nullptr;
 #endif
+}
+
+/**
+ * Generate a quarter-size JPEG thumbnail from an image file on SD card
+ * Returns base64-encoded JPEG string, or empty string on error
+ * Quarter size: 200x150 for 800x600 images, or 400x300 for 1600x1200 images
+ */
+static String generateThumbnailFromImageFile(const String& imagePath) {
+#if SDMMC_ENABLED && defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.printf("ERROR: SD card not mounted, cannot generate thumbnail for %s\n", imagePath.c_str());
+        return "";
+    }
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("ERROR: Display buffer is nullptr, cannot generate thumbnail");
+        return "";
+    }
+    
+    // Clear display buffer
+    display.clear(EL133UF1_WHITE);
+    
+    // Load and draw the image to display buffer
+    uint32_t sd_ms = 0, dec_ms = 0;
+    bool loaded = false;
+    
+    // Load image file from SD into memory
+    String fullPath = "0:/" + imagePath;
+    
+    FILINFO fno;
+    FRESULT res = f_stat(fullPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Image file not found: %s\n", fullPath.c_str());
+        return "";
+    }
+    size_t fileSize = fno.fsize;
+    
+    FIL imageFile;
+    res = f_open(&imageFile, fullPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open image file: %s (res=%d)\n", fullPath.c_str(), res);
+        return "";
+    }
+    
+    uint8_t* imageData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!imageData) {
+        Serial.println("ERROR: Failed to allocate PSRAM for image data");
+        f_close(&imageFile);
+        return "";
+    }
+    
+    UINT bytesRead = 0;
+    res = f_read(&imageFile, imageData, fileSize, &bytesRead);
+    f_close(&imageFile);
+    
+    if (res != FR_OK || bytesRead != fileSize) {
+        Serial.printf("ERROR: Failed to read image file: res=%d, read=%u/%u\n", res, bytesRead, fileSize);
+        hal_psram_free(imageData);
+        return "";
+    }
+    
+    // Try to load as PNG first
+    PNGResult pngResult = pngLoader.drawFullscreen(imageData, fileSize);
+    if (pngResult == PNG_OK) {
+        loaded = true;
+    } else {
+        // Try BMP as fallback
+        BMPResult bmpResult = bmpLoader.drawFullscreen(imageData, fileSize);
+        if (bmpResult == BMP_OK) {
+            loaded = true;
+        }
+    }
+    
+    hal_psram_free(imageData);
+    
+    if (!loaded) {
+        Serial.printf("ERROR: Failed to load image %s for thumbnail generation\n", imagePath.c_str());
+        return "";
+    }
+    
+    // Generate quarter-size thumbnail from display buffer
+    // Quarter size: 200x150 for 800x600, or 400x300 for 1600x1200
+    const int srcWidth = display.width();
+    const int srcHeight = display.height();
+    const int thumbWidth = srcWidth / 4;   // Quarter width
+    const int thumbHeight = srcHeight / 4;  // Quarter height
+    const int scale = 4;
+    
+    bool isARGBMode = false;
+#if EL133UF1_USE_ARGB8888
+    isARGBMode = display.isARGBMode();
+#endif
+    
+    size_t thumbSize = thumbWidth * thumbHeight * 3;
+    uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
+    if (thumbBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate thumbnail buffer");
+        return "";
+    }
+    
+    // Color mapping (same as main thumbnail)
+    uint8_t colorMap[8][3] = {
+        {10, 10, 10},        // 0: Black
+        {245, 245, 235},     // 1: White
+        {245, 210, 50},      // 2: Yellow
+        {190, 60, 55},       // 3: Red
+        {128, 128, 128},     // 4: (unused)
+        {45, 75, 160},       // 5: Blue
+        {55, 140, 85},       // 6: Green
+        {128, 128, 128},     // 7: (unused)
+    };
+    
+    // Scale down by averaging 4x4 blocks
+    for (int ty = 0; ty < thumbHeight; ty++) {
+        for (int tx = 0; tx < thumbWidth; tx++) {
+            int sx = tx * scale;
+            int sy = ty * scale;
+            
+            uint32_t rSum = 0, gSum = 0, bSum = 0;
+            int count = 0;
+            
+            for (int dy = 0; dy < scale && (sy + dy) < srcHeight; dy++) {
+                for (int dx = 0; dx < scale && (sx + dx) < srcWidth; dx++) {
+                    uint8_t einkColor = 1;  // Default to white
+                    
+                    if (isARGBMode) {
+#if EL133UF1_USE_ARGB8888
+                        uint32_t* argbBuffer = display.getBufferARGB();
+                        if (argbBuffer != nullptr) {
+                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                            uint32_t argb = argbBuffer[srcIdx];
+                            einkColor = EL133UF1::argbToColor(argb);
+                        }
+#endif
+                    } else {
+                        uint8_t* framebuffer = display.getBuffer();
+                        if (framebuffer != nullptr) {
+                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                            einkColor = framebuffer[srcIdx] & 0x07;
+                            if (einkColor > 7) einkColor = 1;
+                        }
+                    }
+                    
+                    rSum += colorMap[einkColor][0];
+                    gSum += colorMap[einkColor][1];
+                    bSum += colorMap[einkColor][2];
+                    count++;
+                }
+            }
+            
+            if (count > 0) {
+                int thumbIdx = (ty * thumbWidth + tx) * 3;
+                // JPEG encoder expects RGB888 format (R, G, B order)
+                // R and B channels are swapped based on user feedback
+                thumbBuffer[thumbIdx + 0] = bSum / count;  // R (swapped from B)
+                thumbBuffer[thumbIdx + 1] = gSum / count;  // G (unchanged)
+                thumbBuffer[thumbIdx + 2] = rSum / count;  // B (swapped from R)
+            }
+        }
+    }
+    
+    // Encode to JPEG
+    jpeg_encoder_handle_t jpeg_handle = nullptr;
+    jpeg_encode_engine_cfg_t encode_eng_cfg = {
+        .timeout_ms = 1000,
+    };
+    
+    esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: Failed to create JPEG encoder engine: %d\n", ret);
+        free(thumbBuffer);
+        return "";
+    }
+    
+    size_t estimated_jpeg_size = 50 * 1024;  // 50KB should be enough for quarter-size thumbnail
+    jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = {
+        .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
+    };
+    size_t rx_buffer_size = 0;
+    uint8_t* jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);
+    if (jpegBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JPEG output buffer");
+        jpeg_del_encoder_engine(jpeg_handle);
+        free(thumbBuffer);
+        return "";
+    }
+    
+    jpeg_encode_cfg_t enc_config;
+    enc_config.width = thumbWidth;
+    enc_config.height = thumbHeight;
+    enc_config.src_type = JPEG_ENCODE_IN_FORMAT_RGB888;
+    enc_config.sub_sample = JPEG_DOWN_SAMPLING_YUV422;
+    enc_config.image_quality = 75;
+    
+    uint32_t jpeg_size_u32 = 0;
+    ret = jpeg_encoder_process(jpeg_handle, &enc_config, thumbBuffer, thumbSize, 
+                                jpegBuffer, rx_buffer_size, &jpeg_size_u32);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
+        free(jpegBuffer);
+        jpeg_del_encoder_engine(jpeg_handle);
+        free(thumbBuffer);
+        return "";
+    }
+    
+    jpeg_del_encoder_engine(jpeg_handle);
+    free(thumbBuffer);
+    
+    // Base64 encode the JPEG
+    size_t base64Size = ((jpeg_size_u32 + 2) / 3) * 4 + 1;
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        free(jpegBuffer);
+        return "";
+    }
+    
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < jpeg_size_u32; i += 3) {
+        uint32_t b0 = jpegBuffer[i];
+        uint32_t b1 = (i + 1 < jpeg_size_u32) ? jpegBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < jpeg_size_u32) ? jpegBuffer[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < jpeg_size_u32) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < jpeg_size_u32) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    
+    free(jpegBuffer);
+    String result = String(base64Buffer);
+    free(base64Buffer);
+    
+    return result;
+#else
+    Serial.println("ERROR: JPEG encoder or SD card not available for thumbnail generation");
+    return "";
+#endif
+}
+
+/**
+ * Publish media.txt mappings with thumbnails to devices/web-ui/media
+ * This is called at cold boot and when media mappings change
+ */
+static void publishMQTTMediaMappings() {
+    if (mqttClient == nullptr || !mqttConnected) {
+        Serial.println("ERROR: MQTT not connected, cannot publish media mappings");
+        return;
+    }
+    
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        Serial.println("WARNING: No media mappings loaded, cannot publish media mappings");
+        return;
+    }
+    
+    Serial.printf("Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
+    
+    // Build JSON array of media mappings
+    // Format: {"mappings":[{"index":0,"image":"image.png","audio":"audio.wav","thumbnail":"base64..."},...]}
+    String jsonStr = "{\"mappings\":[";
+    
+    for (size_t i = 0; i < g_media_mappings.size(); i++) {
+        if (i > 0) {
+            jsonStr += ",";
+        }
+        
+        const MediaMapping& mm = g_media_mappings[i];
+        
+        // Generate thumbnail for this image
+        Serial.printf("Generating thumbnail for [%zu] %s...\n", i, mm.imageName.c_str());
+        String thumbnailBase64 = generateThumbnailFromImageFile(mm.imageName);
+        
+        if (thumbnailBase64.length() == 0) {
+            Serial.printf("WARNING: Failed to generate thumbnail for %s, skipping\n", mm.imageName.c_str());
+            // Continue without thumbnail - include entry but with empty thumbnail
+        }
+        
+        // Build entry JSON
+        jsonStr += "{\"index\":";
+        jsonStr += String(i);
+        jsonStr += ",\"image\":\"";
+        jsonStr += mm.imageName;
+        jsonStr += "\"";
+        
+        if (mm.audioFile.length() > 0) {
+            jsonStr += ",\"audio\":\"";
+            jsonStr += mm.audioFile;
+            jsonStr += "\"";
+        }
+        
+        if (thumbnailBase64.length() > 0) {
+            jsonStr += ",\"thumbnail\":\"";
+            jsonStr += thumbnailBase64;
+            jsonStr += "\"";
+        }
+        
+        jsonStr += "}";
+        
+        Serial.printf("Completed [%zu] %s (thumbnail: %d bytes base64)\n", i, mm.imageName.c_str(), thumbnailBase64.length());
+    }
+    
+    jsonStr += "]}";
+    
+    // Encrypt and format the JSON
+    String encryptedJson = encryptAndFormatMessage(jsonStr);
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt media mappings - publishing without encryption");
+        return;
+    }
+    
+    // Allocate buffer for encrypted JSON
+    size_t encryptedLen = encryptedJson.length();
+    char* jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted media mappings JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    
+    // Publish as retained message
+    Serial.printf("Publishing encrypted media mappings JSON (%d bytes) to %s...\n", encryptedLen, mqttTopicMedia);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, jsonBuffer, encryptedLen, 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published media mappings to %s (msg_id: %d)\n", mqttTopicMedia, msg_id);
+    } else {
+        Serial.printf("Failed to publish media mappings to %s (msg_id: %d)\n", mqttTopicMedia, msg_id);
+    }
+    
+    free(jsonBuffer);
 }
 
 // MQTT event handler

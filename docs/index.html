@@ -357,27 +357,49 @@ async function decryptMessage(payloadBase64, ivBase64) {
             ciphertext
         );
         
-        // Convert to string
-        const decoder = new TextDecoder();
-        const decoded = decoder.decode(plaintext);
+        // Remove PKCS7 padding from ArrayBuffer BEFORE converting to string
+        // Padding bytes might not be valid UTF-8, so we must remove them first
+        const plaintextArray = new Uint8Array(plaintext);
+        if (plaintextArray.length === 0) {
+            console.error('Decrypted plaintext is empty');
+            return null;
+        }
         
-        // Remove PKCS7 padding
-        if (decoded.length > 0) {
-            const padValue = decoded.charCodeAt(decoded.length - 1);
-            if (padValue > 0 && padValue <= 16) {
-                // Verify padding is valid
-                let validPadding = true;
-                for (let i = decoded.length - padValue; i < decoded.length; i++) {
-                    if (decoded.charCodeAt(i) !== padValue) {
-                        validPadding = false;
-                        break;
-                    }
-                }
-                if (validPadding) {
-                    return decoded.substring(0, decoded.length - padValue);
-                }
+        // Get padding value (last byte)
+        const padValue = plaintextArray[plaintextArray.length - 1];
+        
+        // Validate padding (must be between 1 and 16)
+        if (padValue < 1 || padValue > 16) {
+            console.error('Invalid padding value:', padValue);
+            return null;
+        }
+        
+        // Verify all padding bytes are the same
+        let validPadding = true;
+        const paddingStart = plaintextArray.length - padValue;
+        if (paddingStart < 0) {
+            console.error('Padding length exceeds plaintext length');
+            return null;
+        }
+        
+        for (let i = paddingStart; i < plaintextArray.length; i++) {
+            if (plaintextArray[i] !== padValue) {
+                validPadding = false;
+                break;
             }
         }
+        
+        if (!validPadding) {
+            console.error('Invalid PKCS7 padding - bytes are not all the same');
+            return null;
+        }
+        
+        // Remove padding by slicing the array
+        const unpaddedArray = plaintextArray.slice(0, paddingStart);
+        
+        // Convert to string
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        const decoded = decoder.decode(unpaddedArray);
         
         return decoded;
     } catch (e) {

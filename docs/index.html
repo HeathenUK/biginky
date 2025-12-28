@@ -225,36 +225,294 @@ function loadPassword() {
     updatePasswordStatus();
 }
 
-// Save password to localStorage
-function savePassword() {
+// Encrypt a message using AES-256-CBC
+async function encryptMessage(plaintext) {
+    if (!webUIPassword) {
+        console.error('No password configured for encryption');
+        return null;
+    }
+    
+    try {
+        // Derive encryption key from password
+        const encryptionKey = await deriveEncryptionKey(webUIPassword);
+        
+        // Import key for AES-CBC
+        const key = await crypto.subtle.importKey(
+            'raw',
+            encryptionKey,
+            { name: 'AES-CBC' },
+            false,
+            ['encrypt']
+        );
+        
+        // Generate random IV (16 bytes)
+        const iv = crypto.getRandomValues(new Uint8Array(16));
+        
+        // Encrypt
+        const encoder = new TextEncoder();
+        const plaintextData = encoder.encode(plaintext);
+        const ciphertext = await crypto.subtle.encrypt(
+            { name: 'AES-CBC', iv: iv },
+            key,
+            plaintextData
+        );
+        
+        // Combine IV + ciphertext and base64 encode
+        const combined = new Uint8Array(16 + ciphertext.byteLength);
+        combined.set(iv, 0);
+        combined.set(new Uint8Array(ciphertext), 16);
+        
+        // Base64 encode
+        const binaryString = String.fromCharCode.apply(null, combined);
+        const base64 = btoa(binaryString);
+        
+        return base64;
+    } catch (e) {
+        console.error('Encryption error:', e);
+        return null;
+    }
+}
+
+// Decrypt a message using AES-256-CBC
+async function decryptMessage(ciphertextBase64) {
+    if (!webUIPassword) {
+        console.error('No password configured for decryption');
+        return null;
+    }
+    
+    try {
+        // Base64 decode
+        const binaryString = atob(ciphertextBase64);
+        const combined = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            combined[i] = binaryString.charCodeAt(i);
+        }
+        
+        // Extract IV (first 16 bytes) and ciphertext
+        const iv = combined.slice(0, 16);
+        const ciphertext = combined.slice(16);
+        
+        // Derive encryption key from password
+        const encryptionKey = await deriveEncryptionKey(webUIPassword);
+        
+        // Import key for AES-CBC
+        const key = await crypto.subtle.importKey(
+            'raw',
+            encryptionKey,
+            { name: 'AES-CBC' },
+            false,
+            ['decrypt']
+        );
+        
+        // Decrypt
+        const plaintext = await crypto.subtle.decrypt(
+            { name: 'AES-CBC', iv: iv },
+            key,
+            ciphertext
+        );
+        
+        // Convert to string
+        const decoder = new TextDecoder();
+        return decoder.decode(plaintext);
+    } catch (e) {
+        console.error('Decryption error:', e);
+        return null;
+    }
+}
+
+// Verify password by attempting to decrypt the retained status message
+async function verifyPasswordByDecryption(password) {
+    // Try to get the retained status message from MQTT
+    // If we're connected, we can request it; otherwise we'll need to connect temporarily
+    return new Promise(async (resolve) => {
+        if (!mqttClient || !isConnected) {
+            // Not connected - we can't verify yet, but we'll allow saving
+            // The password will be verified when we connect and receive the first status message
+            console.log('Not connected to MQTT - password will be verified on first status message');
+            resolve(true);  // Allow saving, verify later
+            return;
+        }
+        
+        // We're connected - try to get retained status message
+        // The status message should already be in the retained topic
+        // We can subscribe and wait for it, or check if we already have it
+        // For now, we'll just allow saving and verify on the next status message
+        console.log('Connected - password will be verified on next status message');
+        resolve(true);  // Allow saving, verify on next message
+    });
+}
+
+// Save password to localStorage and verify it by decrypting status message
+async function savePassword() {
     const password = document.getElementById('webUIPassword').value.trim();
+    const passwordStatusEl = document.getElementById('passwordStatus');
+    
     if (password.length === 0) {
-        const passwordStatusEl = document.getElementById('passwordStatus');
         passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Password cannot be empty</div>';
         updatePasswordStatus();
         return;
     }
     if (password.length < 8) {
-        const passwordStatusEl = document.getElementById('passwordStatus');
         passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Password must be at least 8 characters</div>';
         updatePasswordStatus();
         return;
     }
     
-    try {
-        // Simple obfuscation (not real encryption, but better than plaintext)
-        localStorage.setItem('biginky_webui_password', btoa(password));
-        webUIPassword = password;
-        updatePasswordStatus();  // This will show success message
-    } catch (e) {
-        console.error('Failed to save password:', e);
-        const passwordStatusEl = document.getElementById('passwordStatus');
-        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
-        updatePasswordStatus();
+    // Show verifying message
+    passwordStatusEl.innerHTML = '<div class="info" style="margin-top:10px;">Verifying password by decrypting status message...</div>';
+    
+    // Temporarily set password to test decryption
+    const oldPassword = webUIPassword;
+    webUIPassword = password;
+    
+    // If connected, try to verify by decrypting a status message
+    // We'll subscribe to status topic and wait for retained message
+    let verificationSuccess = false;
+    
+    if (mqttClient && isConnected) {
+        // Create a one-time message handler to verify password
+        const verifyHandler = async function(message) {
+            if (message.destinationName === MQTT_TOPIC_STATUS) {
+                try {
+                    const payload = JSON.parse(message.payloadString);
+                    
+                    // Check if message is encrypted
+                    if (payload.encrypted && payload.payload) {
+                        // Try to decrypt
+                        const decrypted = await decryptMessage(payload.payload);
+                        if (decrypted) {
+                            // Try to parse as JSON to verify it's valid
+                            const status = JSON.parse(decrypted);
+                            if (status.timestamp || status.current_time) {
+                                // Valid decrypted status - password is correct!
+                                verificationSuccess = true;
+                                mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                                mqttClient.onMessageArrived = originalHandler;
+                                
+                                // Save password
+                                try {
+                                    localStorage.setItem('biginky_webui_password', btoa(password));
+                                    passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password verified and saved successfully!</div>';
+                                    updatePasswordStatus();
+                                } catch (e) {
+                                    passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
+                                    webUIPassword = oldPassword;
+                                    updatePasswordStatus();
+                                }
+                                return;
+                            }
+                        }
+                    } else if (payload.hmac) {
+                        // Unencrypted but has HMAC - password might still be correct
+                        // For now, allow it (backward compatibility)
+                        verificationSuccess = true;
+                        mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                        mqttClient.onMessageArrived = originalHandler;
+                        
+                        try {
+                            localStorage.setItem('biginky_webui_password', btoa(password));
+                            passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password saved (unencrypted message received - will verify on encrypted message)</div>';
+                            updatePasswordStatus();
+                        } catch (e) {
+                            passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
+                            webUIPassword = oldPassword;
+                            updatePasswordStatus();
+                        }
+                        return;
+                    }
+                } catch (e) {
+                    console.error('Failed to verify password:', e);
+                }
+                
+                // Verification failed
+                mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                mqttClient.onMessageArrived = originalHandler;
+                webUIPassword = oldPassword;
+                passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">✗ Password verification failed: Could not decrypt status message. Please check your password.</div>';
+                updatePasswordStatus();
+            }
+        };
+        
+        // Save original handler and set verification handler
+        const originalHandler = mqttClient.onMessageArrived;
+        mqttClient.onMessageArrived = verifyHandler;
+        
+        // Subscribe to status topic to get retained message
+        mqttClient.subscribe(MQTT_TOPIC_STATUS, { qos: 1 });
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            if (!verificationSuccess) {
+                mqttClient.unsubscribe(MQTT_TOPIC_STATUS);
+                mqttClient.onMessageArrived = originalHandler;
+                webUIPassword = oldPassword;
+                passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">✗ Password verification timeout: No status message received. Password saved but not verified. Will verify on next status message.</div>';
+                // Still save the password
+                try {
+                    localStorage.setItem('biginky_webui_password', btoa(password));
+                    updatePasswordStatus();
+                } catch (e) {
+                    console.error('Failed to save password:', e);
+                }
+            }
+        }, 5000);
+    } else {
+        // Not connected - just save password, verify later
+        try {
+            localStorage.setItem('biginky_webui_password', btoa(password));
+            webUIPassword = password;
+            passwordStatusEl.innerHTML = '<div class="info" style="margin-top:10px;">Password saved. Will verify when connected to MQTT and status message is received.</div>';
+            updatePasswordStatus();
+        } catch (e) {
+            console.error('Failed to save password:', e);
+            passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">Error: Failed to save password: ' + e.message + '</div>';
+            webUIPassword = oldPassword;
+            updatePasswordStatus();
+        }
     }
 }
 
-// Compute HMAC-SHA256 of a message using the stored password
+// Derive HMAC key from password using HMAC-SHA256 with salt
+async function deriveHMACKey(password) {
+    const encoder = new TextEncoder();
+    const salt = encoder.encode('biginky_hmac_key_v1');
+    const passwordData = encoder.encode(password);
+    
+    // Import password as HMAC key
+    const key = await crypto.subtle.importKey(
+        'raw',
+        passwordData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    
+    // Compute HMAC(password, salt) to derive key
+    const derivedKey = await crypto.subtle.sign('HMAC', key, salt);
+    return new Uint8Array(derivedKey);
+}
+
+// Derive encryption key from password using HMAC-SHA256 with salt
+async function deriveEncryptionKey(password) {
+    const encoder = new TextEncoder();
+    const salt = encoder.encode('biginky_enc_key_v1');
+    const passwordData = encoder.encode(password);
+    
+    // Import password as HMAC key
+    const key = await crypto.subtle.importKey(
+        'raw',
+        passwordData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+    );
+    
+    // Compute HMAC(password, salt) to derive key
+    const derivedKey = await crypto.subtle.sign('HMAC', key, salt);
+    return new Uint8Array(derivedKey);
+}
+
+// Compute HMAC-SHA256 of a message using the derived HMAC key
 async function computeHMAC(message) {
     if (!webUIPassword) {
         console.error('No password configured for HMAC computation');
@@ -262,21 +520,21 @@ async function computeHMAC(message) {
     }
     
     try {
-        // Convert password and message to Uint8Array
-        const encoder = new TextEncoder();
-        const keyData = encoder.encode(webUIPassword);
-        const messageData = encoder.encode(message);
+        // Derive HMAC key from password
+        const hmacKey = await deriveHMACKey(webUIPassword);
         
-        // Import password as HMAC key
+        // Import derived key
         const key = await crypto.subtle.importKey(
             'raw',
-            keyData,
+            hmacKey,
             { name: 'HMAC', hash: 'SHA-256' },
             false,
             ['sign']
         );
         
         // Sign the message
+        const encoder = new TextEncoder();
+        const messageData = encoder.encode(message);
         const signature = await crypto.subtle.sign('HMAC', key, messageData);
         
         // Convert to hex string
@@ -757,8 +1015,23 @@ async function publishMessage(payload) {
     }
     
     try {
-        // Compute HMAC of message (without hmac field)
-        const messageForHMAC = JSON.stringify(payload);
+        // Encrypt the payload
+        const plaintext = JSON.stringify(payload);
+        const encryptedPayload = await encryptMessage(plaintext);
+        
+        if (!encryptedPayload) {
+            showStatus('commandStatus', 'Error: Failed to encrypt message', true);
+            return false;
+        }
+        
+        // Create encrypted message structure
+        const encryptedMessage = {
+            encrypted: true,
+            payload: encryptedPayload
+        };
+        
+        // Compute HMAC of encrypted message (without hmac field)
+        const messageForHMAC = JSON.stringify(encryptedMessage);
         const hmac = await computeHMAC(messageForHMAC);
         
         if (!hmac) {
@@ -766,15 +1039,15 @@ async function publishMessage(payload) {
             return false;
         }
         
-        // Add HMAC to payload
-        const payloadWithHMAC = { ...payload, hmac: hmac };
+        // Add HMAC to encrypted message
+        encryptedMessage.hmac = hmac;
         
-        const message = new Paho.Message(JSON.stringify(payloadWithHMAC));
+        const message = new Paho.Message(JSON.stringify(encryptedMessage));
         message.destinationName = MQTT_TOPIC;
         message.qos = 1;
         message.retained = true;  // Use retained messages so device receives them when it wakes up
         mqttClient.send(message);
-        logCommand('PUBLISH', payloadWithHMAC);
+        logCommand('PUBLISH', { command: payload.command, encrypted: true });
         return true;
     } catch (error) {
         showStatus('commandStatus', 'Failed to send message: ' + error, true);

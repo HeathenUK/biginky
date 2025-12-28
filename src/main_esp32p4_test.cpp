@@ -5278,11 +5278,7 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     
     if (!doc.containsKey("command")) {
         Serial.println("ERROR: JSON command missing 'command' field");
-        Serial.printf("  Parsed JSON keys: ");
-        for (JsonPair kv : doc) {
-            Serial.printf("%s ", kv.key().c_str());
-        }
-        Serial.println();
+        Serial.printf("  Parsed JSON (first 200 chars): %s\n", messageToProcess.substring(0, 200).c_str());
         return false;
     }
     

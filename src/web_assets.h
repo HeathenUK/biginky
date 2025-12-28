@@ -168,6 +168,20 @@ td{padding:8px 4px;}
 <button onclick="loadSettings()">Load from Device</button>
 <button onclick="saveSettings()">Save to Device</button>
 <div id="settingsStatus"></div></div>
+<div class="section"><h2>GitHub Pages Web UI Password</h2>
+<p>Set a password for the GitHub Pages web UI (MQTT-based interface). This password is used to generate HMAC signatures for secure authentication. The password is never transmitted - only HMAC signatures are sent.</p>
+<div class="form-group">
+<label>Password (minimum 8 characters):</label>
+<input type="password" id="webUIPassword" style="width:300px;padding:8px;border:1px solid #444;border-radius:4px;background:#1a1a1a;color:#e0e0e0;font-family:monospace;" placeholder="Enter password...">
+</div>
+<div class="form-group">
+<label>Confirm Password:</label>
+<input type="password" id="webUIPasswordConfirm" style="width:300px;padding:8px;border:1px solid #444;border-radius:4px;background:#1a1a1a;color:#e0e0e0;font-family:monospace;" placeholder="Confirm password...">
+</div>
+<div id="passwordStatus" style="margin:10px 0;"></div>
+<button onclick="checkPasswordStatus()">Check Status</button>
+<button onclick="setWebUIPassword()">Set Password</button>
+<div id="webUIPasswordStatus"></div></div>
 <div class="section"><h2>System Log</h2>
 <p>View the current system log file (read-only).</p>
 <button onclick="loadLog()">Load Current Log</button>
@@ -200,6 +214,8 @@ function selectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=
 function deselectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=false);}
 function selectNightHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=6&&hour<23);});}
 function selectDayHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=23||hour<6);});}
+function checkPasswordStatus(){fetch('/api/auth/status').then(r=>r.json()).then(d=>{const status=d.password_configured?'Password is configured':'Password is NOT configured';showStatus('webUIPasswordStatus',status,d.password_configured?false:true);}).catch(e=>showStatus('webUIPasswordStatus','Error: '+e,true));}
+function setWebUIPassword(){const password=document.getElementById('webUIPassword').value;const confirm=document.getElementById('webUIPasswordConfirm').value;if(password.length===0){showStatus('webUIPasswordStatus','Error: Password cannot be empty',true);return;}if(password.length<8){showStatus('webUIPasswordStatus','Error: Password must be at least 8 characters',true);return;}if(password!==confirm){showStatus('webUIPasswordStatus','Error: Passwords do not match',true);return;}fetch('/api/auth/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:password})}).then(r=>r.json()).then(d=>{showStatus('webUIPasswordStatus',d.success?d.message||'Password set successfully':'Error: '+d.error,d.success?false:true);if(d.success){document.getElementById('webUIPassword').value='';document.getElementById('webUIPasswordConfirm').value='';checkPasswordStatus();}}).catch(e=>showStatus('webUIPasswordStatus','Error: '+e,true));}
 let fileListData=[];let fileListSortCol='name';let fileListSortDir=1;
 function formatDate(timestamp){if(!timestamp||timestamp===0)return'N/A';const d=new Date(timestamp);return d.toLocaleString();}
 function sortFileList(col){if(fileListSortCol===col){fileListSortDir*=-1;}else{fileListSortCol=col;fileListSortDir=1;}renderFileList();}
@@ -233,7 +249,7 @@ function quantizeToEinkColors(imageData){const data=imageData.data;const einkCol
 function sendCanvasToDisplay(){showStatus('canvasStatus','Preparing pixel data...',false);const ctx=canvas.getContext('2d');const imageData=ctx.getImageData(0,0,800,600);const data=imageData.data;const einkColors=[[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];const einkColorValues=[0,1,2,3,5,6];function findClosestColorIdx(r,g,b){let minDist=Infinity;let closestIdx=0;for(let i=0;i<einkColors.length;i++){const ec=einkColors[i];const dist=Math.pow(r-ec[0],2)+Math.pow(g-ec[1],2)+Math.pow(b-ec[2],2);if(dist<minDist){minDist=dist;closestIdx=i;}}return closestIdx;}const pixelData=[];for(let i=0;i<data.length;i+=4){const r=data[i];const g=data[i+1];const b=data[i+2];const arrayIdx=findClosestColorIdx(r,g,b);const einkColorValue=einkColorValues[arrayIdx];pixelData.push(einkColorValue);}const pixelBytes=new Uint8Array(pixelData);const base64Data=btoa(String.fromCharCode.apply(null,pixelBytes));const sizeKB=(pixelBytes.length/1024).toFixed(1);showStatus('canvasStatus','Sending pixel data ('+sizeKB+' KB)...',false);fetch('/api/canvas/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pixelData:base64Data,width:800,height:600})}).then(r=>r.json()).then(d=>{showStatus('canvasStatus',d.success?'Drawing displayed successfully!':'Error: '+d.error,d.success?false:true);}).catch(e=>{showStatus('canvasStatus','Error: '+e,true);});}
 let lastActivityPing=0;const ACTIVITY_PING_INTERVAL=30000;function pingActivity(){const now=Date.now();if(now-lastActivityPing<ACTIVITY_PING_INTERVAL)return;lastActivityPing=now;fetch('/api/activity',{method:'POST'}).catch(()=>{});}
 document.addEventListener('click',pingActivity);document.addEventListener('keydown',pingActivity);document.addEventListener('mousemove',()=>{if(Date.now()-lastActivityPing>5000)pingActivity();});document.addEventListener('touchstart',pingActivity);document.addEventListener('scroll',()=>{if(Date.now()-lastActivityPing>5000)pingActivity();});
-window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFileList();clearCanvas();pingActivity();for(let i=0;i<24;i++){const cb=document.createElement('input');cb.type='checkbox';cb.className='hourCheckbox';cb.dataset.hour=i;const label=document.createElement('label');label.appendChild(cb);label.appendChild(document.createTextNode(' '+String(i).padStart(2,'0')+':00'));label.style.marginRight='10px';label.style.color='#e0e0e0';document.getElementById('hourSchedule').appendChild(label);}};
+window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFileList();clearCanvas();pingActivity();checkPasswordStatus();for(let i=0;i<24;i++){const cb=document.createElement('input');cb.type='checkbox';cb.className='hourCheckbox';cb.dataset.hour=i;const label=document.createElement('label');label.appendChild(cb);label.appendChild(document.createTextNode(' '+String(i).padStart(2,'0')+':00'));label.style.marginRight='10px';label.style.color='#e0e0e0';document.getElementById('hourSchedule').appendChild(label);}};
 </script>
 </body>
 </html>
@@ -241,6 +257,6 @@ window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFile
 )HTML";
 
 // Length of HTML content (for reference, not needed for null-terminated string)
-const size_t WEB_HTML_CONTENT_LEN = 35025;
+const size_t WEB_HTML_CONTENT_LEN = 37386;
 
 #endif // WEB_ASSETS_H

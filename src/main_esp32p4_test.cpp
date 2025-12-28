@@ -3211,40 +3211,33 @@ static void publishMQTTStatus() {
         return;
     }
     
-    // Compute HMAC signature for the message (before adding hmac field)
-    String messageForHMAC = String(jsonBuffer);
-    String hmac = computeHMAC(messageForHMAC);
+    // Encrypt and format the status JSON (like thumbnails and commands)
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);  // Free original JSON buffer
     
-    if (hmac.length() == 0) {
-        Serial.println("WARNING: Failed to compute HMAC for status - publishing without HMAC");
-    } else {
-        // Add HMAC to JSON (reallocate buffer if needed)
-        size_t jsonSizeWithHMAC = written + 80;  // Extra space for HMAC field
-        char* jsonBufferWithHMAC = (char*)malloc(jsonSizeWithHMAC);
-        if (jsonBufferWithHMAC != nullptr) {
-            // Remove closing brace, add HMAC, then close
-            jsonBuffer[written - 1] = '\0';  // Remove '}'
-            int writtenWithHMAC = snprintf(jsonBufferWithHMAC, jsonSizeWithHMAC,
-                                          "%s,\"hmac\":\"%s\"}", jsonBuffer, hmac.c_str());
-            if (writtenWithHMAC > 0 && writtenWithHMAC < (int)jsonSizeWithHMAC) {
-                free(jsonBuffer);
-                jsonBuffer = jsonBufferWithHMAC;
-                written = writtenWithHMAC;
-            } else {
-                // HMAC addition failed, use original
-                free(jsonBufferWithHMAC);
-                Serial.println("WARNING: Failed to add HMAC to status JSON - publishing without HMAC");
-            }
-        } else {
-            Serial.println("WARNING: Failed to allocate buffer for HMAC - publishing without HMAC");
-        }
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt status - publishing without encryption");
+        return;
     }
     
+    // Allocate buffer for encrypted JSON
+    size_t encryptedLen = encryptedJson.length();
+    jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted status JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    written = encryptedLen;
+    
     // Publish as retained message
-    Serial.printf("Publishing status JSON (%d bytes) to %s...\n", written, mqttTopicStatus);
+    Serial.printf("Publishing encrypted status JSON (%d bytes) to %s...\n", written, mqttTopicStatus);
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("Published status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+        Serial.printf("Published encrypted status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     } else {
         Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     }

@@ -514,8 +514,14 @@ async function encryptMessage(plaintext) {
         combined.set(iv, 0);
         combined.set(new Uint8Array(ciphertext), 16);
         
-        // Base64 encode
-        const binaryString = String.fromCharCode.apply(null, combined);
+        // Base64 encode - convert to string in chunks to avoid "too many arguments" error
+        // JavaScript has a limit on function arguments (~65k), so we process in chunks
+        let binaryString = '';
+        const chunkSize = 8192; // Process 8KB at a time
+        for (let i = 0; i < combined.length; i += chunkSize) {
+            const chunk = combined.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode.apply(null, Array.from(chunk));
+        }
         const base64 = btoa(binaryString);
         
         return base64;

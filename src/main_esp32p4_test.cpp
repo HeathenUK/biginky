@@ -74,6 +74,7 @@
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
 #include "mbedtls/md.h"  // ESP32 built-in HMAC support
 #include "mbedtls/aes.h"  // ESP32 built-in AES encryption support
+#include "mbedtls/base64.h"  // ESP32 built-in base64 encoding support
 #define WIFI_ENABLED 1
 #else
 #define WIFI_ENABLED 0
@@ -14158,23 +14159,16 @@ static String encryptAndFormatMessage(const String& plaintext) {
     mbedtls_aes_free(&aes);
     free(paddedPlaintext);
     
-    // Base64 encode IV and ciphertext separately
-    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    
-    // Encode IV (16 bytes -> 24 base64 chars)
+    // Base64 encode IV and ciphertext separately using mbedTLS
+    // Encode IV (16 bytes -> 24 base64 chars + null terminator)
     char ivBase64[25];
-    size_t ivIdx = 0;
-    for (size_t i = 0; i < 16; i += 3) {
-        uint32_t b0 = iv[i];
-        uint32_t b1 = (i + 1 < 16) ? iv[i + 1] : 0;
-        uint32_t b2 = (i + 2 < 16) ? iv[i + 2] : 0;
-        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
-        if (ivIdx < 24) ivBase64[ivIdx++] = base64_chars[(value >> 18) & 0x3F];
-        if (ivIdx < 24) ivBase64[ivIdx++] = base64_chars[(value >> 12) & 0x3F];
-        if (ivIdx < 24) ivBase64[ivIdx++] = (i + 1 < 16) ? base64_chars[(value >> 6) & 0x3F] : '=';
-        if (ivIdx < 24) ivBase64[ivIdx++] = (i + 2 < 16) ? base64_chars[value & 0x3F] : '=';
+    size_t ivBase64Len = 0;
+    if (mbedtls_base64_encode((unsigned char*)ivBase64, 25, &ivBase64Len, iv, 16) != 0) {
+        Serial.println("ERROR: Failed to base64 encode IV");
+        free(ciphertext);
+        return "";
     }
-    ivBase64[24] = '\0';
+    ivBase64[ivBase64Len] = '\0';
     
     // Encode ciphertext
     size_t ciphertextBase64Len = ((paddedLen + 2) / 3) * 4 + 1;
@@ -14185,20 +14179,14 @@ static String encryptAndFormatMessage(const String& plaintext) {
         return "";
     }
     
-    size_t ctIdx = 0;
-    for (size_t i = 0; i < paddedLen; i += 3) {
-        uint32_t b0 = ciphertext[i];
-        uint32_t b1 = (i + 1 < paddedLen) ? ciphertext[i + 1] : 0;
-        uint32_t b2 = (i + 2 < paddedLen) ? ciphertext[i + 2] : 0;
-        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
-        if (ctIdx + 4 < ciphertextBase64Len) {
-            ciphertextBase64[ctIdx++] = base64_chars[(value >> 18) & 0x3F];
-            ciphertextBase64[ctIdx++] = base64_chars[(value >> 12) & 0x3F];
-            ciphertextBase64[ctIdx++] = (i + 1 < paddedLen) ? base64_chars[(value >> 6) & 0x3F] : '=';
-            ciphertextBase64[ctIdx++] = (i + 2 < paddedLen) ? base64_chars[value & 0x3F] : '=';
-        }
+    size_t ciphertextBase64ActualLen = 0;
+    if (mbedtls_base64_encode((unsigned char*)ciphertextBase64, ciphertextBase64Len, &ciphertextBase64ActualLen, ciphertext, paddedLen) != 0) {
+        Serial.println("ERROR: Failed to base64 encode ciphertext");
+        free(ciphertext);
+        free(ciphertextBase64);
+        return "";
     }
-    ciphertextBase64[ctIdx] = '\0';
+    ciphertextBase64[ciphertextBase64ActualLen] = '\0';
     
     free(ciphertext);
     

@@ -274,6 +274,7 @@ static bool mqttConnected = false;
 RTC_DATA_ATTR uint32_t lastSleepDurationSeconds = 0;  // How long we intended to sleep
 RTC_DATA_ATTR uint8_t targetWakeHour = 255;  // Target wake hour (255 = not set)
 RTC_DATA_ATTR uint8_t targetWakeMinute = 255;  // Target wake minute (255 = not set)
+RTC_DATA_ATTR bool thumbnailPendingPublish = false;  // Flag to indicate thumbnail needs to be published
 
 // Structure for passing data to show media task
 struct ShowMediaTaskData {
@@ -1997,6 +1998,8 @@ String mqttGetLastMessage();  // Get the last received message
 static void publishMQTTStatus();  // Publish device status to devices/web-ui/status
 static void publishMQTTThumbnail();  // Publish display thumbnail to devices/web-ui/thumb
 void publishMQTTThumbnailIfConnected();  // Called from EL133UF1 library after display updates
+static bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize);  // Save JPEG thumbnail to SD card
+static char* loadThumbnailFromSD();  // Load JPEG thumbnail from SD card and return JSON (caller must free)
 
 // MQTT command handling
 static String extractCommandFromMessage(const String& msg);
@@ -2041,6 +2044,10 @@ void numbersLoadFromNVS();  // Load allowed numbers from NVS (called on startup)
 void mqttDisconnect();
 bool wifiConnectPersistent(int maxRetries = 10, uint32_t timeoutPerAttemptMs = 30000, bool required = true);
 #endif // WIFI_ENABLED
+
+// Deferred web UI command (for heavy commands that need to run outside MQTT task context)
+static bool webUICommandPending = false;
+static String pendingWebUICommand = "";
 
 static void auto_cycle_task(void* arg) {
     (void)arg;
@@ -2323,6 +2330,15 @@ static void auto_cycle_task(void* arg) {
                     // We'll handle the "unknown command" message inside handleMqttCommand itself
                     // to distinguish between unrecognized commands and command execution failures
                     handleMqttCommand(commandToProcess, originalMessageForCommand);
+                }
+                
+                // Process deferred web UI command (if any) after MQTT is fully disconnected
+                // This prevents stack overflow in the MQTT task context for heavy commands
+                if (webUICommandPending && pendingWebUICommand.length() > 0) {
+                    Serial.println("Processing deferred web UI command after MQTT disconnect");
+                    handleWebInterfaceCommand(pendingWebUICommand);
+                    webUICommandPending = false;
+                    pendingWebUICommand = "";
                 }
             }
             
@@ -3020,10 +3036,20 @@ static void publishMQTTStatus() {
     }
     Serial.println("MQTT client and connection OK, building status JSON...");
     
-    // Build JSON status object
-    String statusJson = "{";
+    // Build JSON status object using heap-allocated buffer to avoid stack overflow
+    // Estimate: ~512 bytes should be enough for status JSON
+    size_t jsonSize = 512;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer for status");
+        return;
+    }
+    
     time_t now = time(nullptr);
-    statusJson += "\"timestamp\":" + String(now) + ",";
+    int written = 0;
+    
+    // Start JSON object
+    written = snprintf(jsonBuffer, jsonSize, "{\"timestamp\":%ld", (long)now);
     
     // Current time (if valid)
     if (now > 1577836800) {  // After 2020-01-01
@@ -3031,19 +3057,24 @@ static void publishMQTTStatus() {
         gmtime_r(&now, &tm_utc);
         char timeStr[32];
         snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
-        statusJson += "\"current_time\":\"" + String(timeStr) + "\",";
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"current_time\":\"%s\"", timeStr);
     }
     
     // Next media item from media.txt
     if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
         uint32_t nextIndex = (lastMediaIndex + 1) % g_media_mappings.size();
-        statusJson += "\"next_media\":{";
-        statusJson += "\"index\":" + String(nextIndex) + ",";
-        statusJson += "\"image\":\"" + g_media_mappings[nextIndex].imageName + "\"";
-        if (g_media_mappings[nextIndex].audioFile.length() > 0) {
-            statusJson += ",\"audio\":\"" + g_media_mappings[nextIndex].audioFile + "\"";
+        const char* imageName = g_media_mappings[nextIndex].imageName.c_str();
+        const char* audioFile = g_media_mappings[nextIndex].audioFile.c_str();
+        
+        if (audioFile[0] != '\0') {
+            written += snprintf(jsonBuffer + written, jsonSize - written,
+                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\",\"audio\":\"%s\"}",
+                               (unsigned long)nextIndex, imageName, audioFile);
+        } else {
+            written += snprintf(jsonBuffer + written, jsonSize - written,
+                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\"}",
+                               (unsigned long)nextIndex, imageName);
         }
-        statusJson += "},";
     }
     
     // Next wake time (if we can calculate it)
@@ -3079,23 +3110,33 @@ static void publishMQTTStatus() {
         
         char wakeTimeStr[16];
         snprintf(wakeTimeStr, sizeof(wakeTimeStr), "%02d:%02d", wake_hour, wake_min);
-        statusJson += "\"next_wake\":\"" + String(wakeTimeStr) + "\",";
-        statusJson += "\"sleep_interval_minutes\":" + String(interval_minutes) + ",";
+        written += snprintf(jsonBuffer + written, jsonSize - written,
+                           ",\"next_wake\":\"%s\",\"sleep_interval_minutes\":%lu",
+                           wakeTimeStr, (unsigned long)interval_minutes);
     }
     
     // Connection status (without sensitive details)
-    statusJson += "\"connected\":true";  // If we're publishing, we're connected
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
     
-    statusJson += "}";
+    // Close JSON object
+    written += snprintf(jsonBuffer + written, jsonSize - written, "}");
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: Status JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        return;
+    }
     
     // Publish as retained message
-    Serial.printf("Publishing status JSON (%d bytes) to %s...\n", statusJson.length(), mqttTopicStatus);
-    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, statusJson.c_str(), statusJson.length(), 1, 1);
+    Serial.printf("Publishing status JSON (%d bytes) to %s...\n", written, mqttTopicStatus);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
         Serial.printf("Published status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     } else {
         Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     }
+    
+    free(jsonBuffer);  // Free JSON buffer after publishing
 }
 
 /**
@@ -3105,6 +3146,143 @@ static void publishMQTTStatus() {
 void publishMQTTThumbnailIfConnected() {
     if (mqttConnected) {
         publishMQTTThumbnail();
+    } else {
+        // MQTT is not connected - generate thumbnail and save to SD card
+        // This ensures it persists through deep sleep and can be published on next connect
+        Serial.println("MQTT not connected - generating thumbnail and saving to SD card...");
+        
+        // Generate JPEG thumbnail (reuse logic from publishMQTTThumbnail)
+        // Check if display is initialized
+        if (display.getBuffer() == nullptr) {
+            Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
+            thumbnailPendingPublish = true;  // Set flag anyway, might be able to load from SD later
+            return;
+        }
+        
+        const int srcWidth = 1600;
+        const int srcHeight = 1200;
+        const int thumbWidth = 400;
+        const int thumbHeight = 300;
+        const int scale = 4;
+        
+        bool isARGBMode = false;
+#if EL133UF1_USE_ARGB8888
+        isARGBMode = display.isARGBMode();
+#endif
+        
+        size_t thumbSize = thumbWidth * thumbHeight * 3;
+        uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
+        if (thumbBuffer == nullptr) {
+            Serial.println("ERROR: Failed to allocate thumbnail buffer");
+            thumbnailPendingPublish = true;
+            return;
+        }
+        
+        // Color mapping
+        uint8_t colorMap[8][3] = {
+            {10, 10, 10}, {245, 245, 235}, {245, 210, 50}, {190, 60, 55},
+            {128, 128, 128}, {45, 75, 160}, {55, 140, 85}, {128, 128, 128},
+        };
+        
+        // Scale down by averaging 4x4 blocks
+        for (int ty = 0; ty < thumbHeight; ty++) {
+            for (int tx = 0; tx < thumbWidth; tx++) {
+                int sx = tx * scale;
+                int sy = ty * scale;
+                uint32_t rSum = 0, gSum = 0, bSum = 0;
+                int count = 0;
+                
+                for (int dy = 0; dy < scale && (sy + dy) < srcHeight; dy++) {
+                    for (int dx = 0; dx < scale && (sx + dx) < srcWidth; dx++) {
+                        uint8_t einkColor = 1;
+                        if (isARGBMode) {
+#if EL133UF1_USE_ARGB8888
+                            uint32_t* argbBuffer = display.getBufferARGB();
+                            if (argbBuffer != nullptr) {
+                                int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                                einkColor = EL133UF1::argbToColor(argbBuffer[srcIdx]);
+                            }
+#endif
+                        } else {
+                            uint8_t* framebuffer = display.getBuffer();
+                            if (framebuffer != nullptr) {
+                                int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                                einkColor = framebuffer[srcIdx] & 0x07;
+                                if (einkColor > 7) einkColor = 1;
+                            }
+                        }
+                        rSum += colorMap[einkColor][0];
+                        gSum += colorMap[einkColor][1];
+                        bSum += colorMap[einkColor][2];
+                        count++;
+                    }
+                }
+                
+                if (count > 0) {
+                    int thumbIdx = (ty * thumbWidth + tx) * 3;
+                    thumbBuffer[thumbIdx + 0] = bSum / count;
+                    thumbBuffer[thumbIdx + 1] = gSum / count;
+                    thumbBuffer[thumbIdx + 2] = rSum / count;
+                }
+            }
+        }
+        
+        // Encode to JPEG
+        uint8_t* jpegBuffer = nullptr;
+        size_t jpegSize = 0;
+        
+#if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
+        jpeg_encoder_handle_t jpeg_handle = nullptr;
+        jpeg_encode_engine_cfg_t encode_eng_cfg = { .timeout_ms = 1000 };
+        esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
+        if (ret == ESP_OK) {
+            size_t estimated_jpeg_size = thumbSize / 10;
+            jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
+            size_t rx_buffer_size = 0;
+            jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);
+            if (jpegBuffer != nullptr) {
+                jpeg_encode_cfg_t enc_config;
+                enc_config.width = thumbWidth;
+                enc_config.height = thumbHeight;
+                enc_config.src_type = JPEG_ENCODE_IN_FORMAT_RGB888;
+                enc_config.sub_sample = JPEG_DOWN_SAMPLING_YUV422;
+                enc_config.image_quality = 75;
+                
+                uint32_t jpeg_size_u32 = 0;
+                ret = jpeg_encoder_process(jpeg_handle, &enc_config, thumbBuffer, thumbSize, 
+                                          jpegBuffer, rx_buffer_size, &jpeg_size_u32);
+                if (ret == ESP_OK) {
+                    jpegSize = jpeg_size_u32;
+                    Serial.printf("JPEG encoded: %d bytes for SD storage\n", jpegSize);
+                } else {
+                    Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
+                    free(jpegBuffer);
+                    jpegBuffer = nullptr;
+                }
+                jpeg_del_encoder_engine(jpeg_handle);
+            }
+        }
+        free(thumbBuffer);
+        
+        if (jpegBuffer != nullptr && jpegSize > 0) {
+            // Save to SD card
+            if (saveThumbnailToSD(jpegBuffer, jpegSize)) {
+                Serial.println("Thumbnail saved to SD card successfully");
+                thumbnailPendingPublish = true;
+            } else {
+                Serial.println("ERROR: Failed to save thumbnail to SD card");
+                thumbnailPendingPublish = true;  // Set flag anyway, might regenerate on connect
+            }
+            free(jpegBuffer);
+        } else {
+            Serial.println("ERROR: Failed to generate JPEG thumbnail");
+            thumbnailPendingPublish = true;
+        }
+#else
+        free(thumbBuffer);
+        Serial.println("ERROR: JPEG encoder not available");
+        thumbnailPendingPublish = true;
+#endif
     }
 }
 
@@ -3172,15 +3350,16 @@ static void publishMQTTThumbnail() {
     
     // Color mapping from e-ink 3-bit color to RGB
     // EL133UF1 colors: 0=black, 1=white, 2=yellow, 3=red, 5=blue, 6=green
+    // Using calibrated e-ink colors from EL133UF1_Color.cpp
     uint8_t colorMap[8][3] = {
-        {0, 0, 0},       // 0: Black -> RGB(0,0,0)
-        {255, 255, 255}, // 1: White -> RGB(255,255,255)
-        {255, 255, 0},   // 2: Yellow -> RGB(255,255,0)
-        {255, 0, 0},     // 3: Red -> RGB(255,0,0)
-        {128, 128, 128}, // 4: (unused, gray)
-        {0, 0, 255},     // 5: Blue -> RGB(0,0,255)
-        {0, 255, 0},     // 6: Green -> RGB(0,255,0)
-        {128, 128, 128}, // 7: (unused, gray)
+        {10, 10, 10},        // 0: Black -> RGB(10,10,10) - quite dark but not pure black
+        {245, 245, 235},     // 1: White -> RGB(245,245,235) - slightly warm off-white
+        {245, 210, 50},      // 2: Yellow -> RGB(245,210,50) - fairly saturated, warm yellow
+        {190, 60, 55},       // 3: Red -> RGB(190,60,55) - brick/tomato red
+        {128, 128, 128},     // 4: (unused, gray)
+        {45, 75, 160},       // 5: Blue -> RGB(45,75,160) - deep navy blue
+        {55, 140, 85},       // 6: Green -> RGB(55,140,85) - teal/forest green
+        {128, 128, 128},     // 7: (unused, gray)
     };
     
     // Scale down by averaging 4x4 blocks
@@ -3227,9 +3406,11 @@ static void publishMQTTThumbnail() {
             
             if (count > 0) {
                 int thumbIdx = (ty * thumbWidth + tx) * 3;
-                thumbBuffer[thumbIdx + 0] = rSum / count;  // R
-                thumbBuffer[thumbIdx + 1] = gSum / count;    // G
-                thumbBuffer[thumbIdx + 2] = bSum / count;    // B
+                // JPEG encoder expects RGB888 format (R, G, B order)
+                // Based on user feedback, R and B channels appear swapped, so swap them
+                thumbBuffer[thumbIdx + 0] = bSum / count;  // R (swapped from B)
+                thumbBuffer[thumbIdx + 1] = gSum / count;  // G (unchanged)
+                thumbBuffer[thumbIdx + 2] = rSum / count;  // B (swapped from R)
             }
         }
     }
@@ -3332,14 +3513,31 @@ static void publishMQTTThumbnail() {
     free(jpegBuffer);  // Free JPEG buffer, keep base64
     
     // Create JSON payload with JPEG thumbnail data
-    String thumbJson = "{";
-    thumbJson += "\"width\":" + String(thumbWidth) + ",";
-    thumbJson += "\"height\":" + String(thumbHeight) + ",";
-    thumbJson += "\"format\":\"jpeg\",";
-    thumbJson += "\"data\":\"" + String(base64Buffer) + "\"";
-    thumbJson += "}";
+    // Use heap-allocated buffer instead of String to avoid stack overflow
+    // JSON format: {"width":400,"height":300,"format":"jpeg","data":"base64..."}
+    // Structure: {"width":X,"height":Y,"format":"jpeg","data":"...base64..."}
+    // Estimate: ~55 bytes for JSON structure + base64 length + closing + null terminator
+    size_t jsonSize = 55 + base64Idx + 1;  // +1 for null terminator, +5 extra safety margin
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer");
+        free(base64Buffer);
+        return;
+    }
     
-    free(base64Buffer);
+    // Build JSON using snprintf to avoid stack usage
+    int written = snprintf(jsonBuffer, jsonSize, 
+                          "{\"width\":%d,\"height\":%d,\"format\":\"jpeg\",\"data\":\"%s\"}",
+                          thumbWidth, thumbHeight, base64Buffer);
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        free(base64Buffer);
+        return;
+    }
+    
+    free(base64Buffer);  // Free base64 buffer, keep JSON
 #else
     // Fallback: Base64 encode raw RGB if JPEG encoder not available
     Serial.println("WARNING: JPEG encoder not available, using raw RGB base64");
@@ -3372,25 +3570,182 @@ static void publishMQTTThumbnail() {
     
     free(thumbBuffer);
     
-    String thumbJson = "{";
-    thumbJson += "\"width\":" + String(thumbWidth) + ",";
-    thumbJson += "\"height\":" + String(thumbHeight) + ",";
-    thumbJson += "\"format\":\"rgb888\",";
-    thumbJson += "\"data\":\"" + String(base64Buffer) + "\"";
-    thumbJson += "}";
+    // Create JSON payload using heap-allocated buffer to avoid stack overflow
+    // JSON format: {"width":400,"height":300,"format":"rgb888","data":"base64..."}
+    // Structure: {"width":X,"height":Y,"format":"rgb888","data":"...base64..."}
+    // Estimate: ~60 bytes for JSON structure + base64 length + closing + null terminator
+    size_t jsonSize = 60 + base64Idx + 1;  // +1 for null terminator, +10 extra safety margin
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer");
+        free(base64Buffer);
+        return;
+    }
+    
+    int written = snprintf(jsonBuffer, jsonSize,
+                          "{\"width\":%d,\"height\":%d,\"format\":\"rgb888\",\"data\":\"%s\"}",
+                          thumbWidth, thumbHeight, base64Buffer);
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        free(base64Buffer);
+        return;
+    }
     
     free(base64Buffer);
 #endif
     
-    Serial.printf("Publishing thumbnail JSON (%d bytes) to %s...\n", thumbJson.length(), mqttTopicThumb);
+    Serial.printf("Publishing thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
     
     // Publish as retained message so web UI gets it immediately on connect
-    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, thumbJson.c_str(), thumbJson.length(), 1, 1);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
         Serial.printf("Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     } else {
         Serial.printf("Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     }
+    
+    free(jsonBuffer);  // Free JSON buffer after publishing
+}
+
+/**
+ * Save JPEG thumbnail to SD card
+ * Returns true if successful, false otherwise
+ */
+static bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize) {
+#if SDMMC_ENABLED
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted, cannot save thumbnail");
+        return false;
+    }
+    
+    const char* thumbPath = "0:/thumbnail.jpg";
+    FIL thumbFile;
+    FRESULT res = f_open(&thumbFile, thumbPath, FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open thumbnail file for writing: %d\n", res);
+        return false;
+    }
+    
+    UINT bytesWritten = 0;
+    res = f_write(&thumbFile, jpegData, jpegSize, &bytesWritten);
+    f_close(&thumbFile);
+    
+    if (res != FR_OK || bytesWritten != jpegSize) {
+        Serial.printf("ERROR: Failed to write thumbnail to SD: res=%d, written=%d/%d\n", res, bytesWritten, jpegSize);
+        return false;
+    }
+    
+    Serial.printf("Saved thumbnail to SD: %d bytes to %s\n", bytesWritten, thumbPath);
+    return true;
+#else
+    Serial.println("SD card not enabled, cannot save thumbnail");
+    return false;
+#endif
+}
+
+/**
+ * Load JPEG thumbnail from SD card and return JSON string
+ * Caller must free the returned pointer
+ * Returns nullptr on error
+ */
+static char* loadThumbnailFromSD() {
+#if SDMMC_ENABLED
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("SD card not mounted, cannot load thumbnail");
+        return nullptr;
+    }
+    
+    const char* thumbPath = "0:/thumbnail.jpg";
+    FILINFO fno;
+    FRESULT res = f_stat(thumbPath, &fno);
+    if (res != FR_OK) {
+        Serial.println("Thumbnail file not found on SD card");
+        return nullptr;
+    }
+    
+    FIL thumbFile;
+    res = f_open(&thumbFile, thumbPath, FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open thumbnail file for reading: %d\n", res);
+        return nullptr;
+    }
+    
+    size_t fileSize = fno.fsize;
+    uint8_t* jpegData = (uint8_t*)malloc(fileSize);
+    if (jpegData == nullptr) {
+        Serial.println("ERROR: Failed to allocate memory for thumbnail");
+        f_close(&thumbFile);
+        return nullptr;
+    }
+    
+    UINT bytesRead = 0;
+    res = f_read(&thumbFile, jpegData, fileSize, &bytesRead);
+    f_close(&thumbFile);
+    
+    if (res != FR_OK || bytesRead != fileSize) {
+        Serial.printf("ERROR: Failed to read thumbnail from SD: res=%d, read=%d/%d\n", res, bytesRead, fileSize);
+        free(jpegData);
+        return nullptr;
+    }
+    
+    // Base64 encode the JPEG
+    size_t base64Size = ((fileSize + 2) / 3) * 4 + 1;
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        free(jpegData);
+        return nullptr;
+    }
+    
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < fileSize; i += 3) {
+        uint32_t b0 = jpegData[i];
+        uint32_t b1 = (i + 1 < fileSize) ? jpegData[i + 1] : 0;
+        uint32_t b2 = (i + 2 < fileSize) ? jpegData[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < fileSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < fileSize) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    free(jpegData);
+    
+    // Create JSON payload
+    size_t jsonSize = 55 + base64Idx + 1;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer");
+        free(base64Buffer);
+        return nullptr;
+    }
+    
+    int written = snprintf(jsonBuffer, jsonSize, 
+                          "{\"width\":400,\"height\":300,\"format\":\"jpeg\",\"data\":\"%s\"}",
+                          base64Buffer);
+    free(base64Buffer);
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        return nullptr;
+    }
+    
+    // Delete the file after loading
+    f_unlink(thumbPath);
+    Serial.printf("Loaded thumbnail from SD and created JSON (%d bytes)\n", written);
+    return jsonBuffer;
+#else
+    Serial.println("SD card not enabled, cannot load thumbnail");
+    return nullptr;
+#endif
 }
 
 // MQTT event handler
@@ -3412,6 +3767,37 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 // Subscribe to web UI topic with QoS 1
                 int msg_id = esp_mqtt_client_subscribe(client, mqttTopicWebUI, 1);
                 Serial.printf("Subscribed to %s (msg_id: %d)\n", mqttTopicWebUI, msg_id);
+            }
+            
+            // Check if there's a pending thumbnail to publish
+            if (thumbnailPendingPublish) {
+                Serial.println("Publishing pending thumbnail after MQTT reconnect...");
+                // Small delay to ensure subscriptions are complete
+                delay(500);
+                
+                // Try to load from SD card first (persists through deep sleep)
+                char* jsonFromSD = loadThumbnailFromSD();
+                if (jsonFromSD != nullptr) {
+                    Serial.println("Loaded thumbnail from SD card, publishing...");
+                    int msg_id = esp_mqtt_client_publish(client, mqttTopicThumb, jsonFromSD, strlen(jsonFromSD), 1, 1);
+                    if (msg_id > 0) {
+                        Serial.printf("Published thumbnail from SD to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+                        thumbnailPendingPublish = false;
+                    } else {
+                        Serial.printf("Failed to publish thumbnail from SD (msg_id: %d), will try regenerating\n", msg_id);
+                    }
+                    free(jsonFromSD);
+                }
+                
+                // If SD load failed or framebuffer is still intact, try regenerating
+                if (thumbnailPendingPublish && display.getBuffer() != nullptr) {
+                    Serial.println("Regenerating thumbnail from framebuffer...");
+                    publishMQTTThumbnail();
+                    thumbnailPendingPublish = false;
+                } else if (thumbnailPendingPublish) {
+                    Serial.println("WARNING: Cannot publish thumbnail - SD file missing and framebuffer lost");
+                    thumbnailPendingPublish = false;  // Clear flag to prevent retry loop
+                }
             }
             break;
             
@@ -3544,8 +3930,32 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 if ((strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 || strcmp(topic, mqttTopicWebUI) == 0) && message[0] == '{') {
                     String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
                     Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", mqttMessageTopic, mqttMessageBufferUsed);
-                    // Process the command (may fail if display not initialized, but we'll clear anyway)
-                    handleWebInterfaceCommand(jsonMessage);
+                    
+                    // Extract command to check if it's a heavy command that should be deferred
+                    String command = "";
+                    int commandPos = jsonMessage.indexOf("\"command\"");
+                    if (commandPos >= 0) {
+                        int colonPos = jsonMessage.indexOf(':', commandPos);
+                        int quoteStart = jsonMessage.indexOf('"', colonPos);
+                        if (quoteStart >= 0) {
+                            int quoteEnd = jsonMessage.indexOf('"', quoteStart + 1);
+                            if (quoteEnd > quoteStart) {
+                                command = jsonMessage.substring(quoteStart + 1, quoteEnd);
+                                command.toLowerCase();
+                            }
+                        }
+                    }
+                    
+                    // Defer heavy commands (like "next") to be processed after MQTT disconnects
+                    // This prevents stack overflow in the MQTT task context
+                    if (command == "next") {
+                        Serial.println("Deferring heavy 'next' command to process after MQTT disconnect");
+                        webUICommandPending = true;
+                        pendingWebUICommand = jsonMessage;
+                    } else {
+                        // Process lightweight commands immediately
+                        handleWebInterfaceCommand(jsonMessage);
+                    }
                 }
                 // Check if it's from SMS bridge topic - these can be text or JSON (with "text" field, not "command")
                 else if (strcmp(mqttMessageTopic, mqttTopicSubscribe) == 0 || strcmp(topic, mqttTopicSubscribe) == 0) {

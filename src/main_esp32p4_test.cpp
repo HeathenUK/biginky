@@ -4873,10 +4873,16 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     }
     
     // Validate HMAC (all-or-nothing: if password is set, HMAC is required)
+    if (providedHMAC.length() > 0) {
+        Serial.printf("Validating HMAC: message length=%d, HMAC provided (length=%d)\n", messageForHMAC.length(), providedHMAC.length());
+    } else {
+        Serial.println("WARNING: No HMAC provided in message");
+    }
     if (!validateWebUIHMAC(messageForHMAC, providedHMAC)) {
         Serial.println("ERROR: Web UI command rejected - HMAC validation failed");
         return false;
     }
+    Serial.println("HMAC validation successful - command authenticated");
     
     // For large messages (like canvas_display with 640KB pixelData), we can't parse the entire JSON
     // So we first check the command type using string operations, then parse only if needed

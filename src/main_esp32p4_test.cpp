@@ -84,6 +84,17 @@
 #if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
 #include "driver/jpeg_encode.h"
 #endif
+// zlib/miniz for canvas compression decompression
+// ESP-IDF includes miniz, try to access it
+#if __has_include("miniz.h")
+#include "miniz.h"
+#elif __has_include("miniz/miniz.h")
+#include "miniz/miniz.h"
+#endif
+// zlib for canvas compression - using ArduinoMiniz library
+extern "C" {
+#include "miniz.h"
+}
 // OTA update support - custom implementation with SD card buffering
 #include <WiFiServer.h>
 #include <WiFiClient.h>
@@ -2310,36 +2321,49 @@ static void auto_cycle_task(void* arg) {
                     Serial.println("No retained messages");
                 }
                 
-                // Publish device status (while still connected to MQTT)
-                Serial.println("About to call publishMQTTStatus()...");
-                Serial.flush();
-                publishMQTTStatus();
-                Serial.println("Returned from publishMQTTStatus()");
-                Serial.flush();
-                delay(200);  // Allow time for status publish to complete
-                
                 // Disconnect from MQTT immediately after checking for messages
                 // This prevents connection issues during long-running commands (like display updates)
+                // Do this BEFORE processing commands to ensure we're not in MQTT task context
                 mqttDisconnect();
                 // OPTIMIZED: reduced from 200ms to 100ms - mqttDisconnect() already has internal delays
                 delay(100);
                     
-                // Now process the command (if any) after MQTT is fully disconnected
+                // Process SMS bridge commands FIRST (before deferred web UI commands)
+                // This ensures critical commands like !ota can be executed even if web UI commands cause boot loops
                 if (commandToProcess.length() > 0) {
+                    Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
                     // handleMqttCommand returns false for both "command not recognized" and "command failed"
                     // We'll handle the "unknown command" message inside handleMqttCommand itself
                     // to distinguish between unrecognized commands and command execution failures
                     handleMqttCommand(commandToProcess, originalMessageForCommand);
                 }
                 
-                // Process deferred web UI command (if any) after MQTT is fully disconnected
+                // Process deferred web UI command (if any) AFTER SMS bridge commands
                 // This prevents stack overflow in the MQTT task context for heavy commands
+                // But we process it after SMS bridge commands so critical commands like !ota can run first
                 if (webUICommandPending && pendingWebUICommand.length() > 0) {
                     Serial.println("Processing deferred web UI command after MQTT disconnect");
                     handleWebInterfaceCommand(pendingWebUICommand);
                     webUICommandPending = false;
                     pendingWebUICommand = "";
                 }
+                
+                // Publish device status AFTER processing commands (and after MQTT disconnect)
+                // This ensures we're not in MQTT task context and have more stack space
+                // We'll reconnect to MQTT just for status publish
+                Serial.println("About to call publishMQTTStatus()...");
+                Serial.flush();
+                // Reconnect to MQTT for status publish
+                if (mqttConnect()) {
+                    delay(1000);  // Wait for connection and subscriptions
+                    publishMQTTStatus();
+                    delay(200);  // Allow time for status publish to complete
+                    mqttDisconnect();
+                } else {
+                    Serial.println("WARNING: Failed to reconnect to MQTT for status publish");
+                }
+                Serial.println("Returned from publishMQTTStatus()");
+                Serial.flush();
             }
             
             // Disconnect WiFi immediately after MQTT check to save power
@@ -2968,6 +2992,29 @@ static void auto_cycle_task(void* arg) {
     Serial.println("SD card not available, no audio");
 #endif
 
+    // Publish thumbnail after display update (if WiFi/MQTT available)
+    // The thumbnail was either published during display.update() (if MQTT was connected)
+    // or saved to SD card (if MQTT was not connected)
+    // If saved to SD, we should try to publish it now
+#if WIFI_ENABLED
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WiFi connected - attempting to publish thumbnail...");
+        mqttLoadConfig();
+        if (mqttConnect()) {
+            delay(1000);  // Wait for connection and subscriptions
+            // publishMQTTThumbnailIfConnected() will check if there's a pending thumbnail
+            // and publish it (either from SD card or regenerate from framebuffer)
+            publishMQTTThumbnailIfConnected();
+            delay(200);  // Allow time for thumbnail publish to complete
+            mqttDisconnect();
+        } else {
+            Serial.println("WARNING: Failed to connect to MQTT for thumbnail publish");
+        }
+    } else {
+        Serial.println("WiFi not connected - thumbnail saved to SD card for later publish");
+    }
+#endif
+
     if (time_ok) {
         Serial.println("Time is valid, calculating sleep until next minute...");
         sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -3236,7 +3283,9 @@ void publishMQTTThumbnailIfConnected() {
         jpeg_encode_engine_cfg_t encode_eng_cfg = { .timeout_ms = 1000 };
         esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
         if (ret == ESP_OK) {
-            size_t estimated_jpeg_size = thumbSize / 10;
+            // Use larger buffer to handle worst-case scenarios (high detail images)
+            // 400x300 RGB = 360KB, so 100KB should be safe for JPEG at quality 75
+            size_t estimated_jpeg_size = 100 * 1024;  // 100KB
             jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
             size_t rx_buffer_size = 0;
             jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);
@@ -3439,8 +3488,9 @@ static void publishMQTTThumbnail() {
     }
     
     // Allocate memory for JPEG output (using encoder's memory allocator)
-    // Estimate: JPEG typically compresses to 10-20% of original size
-    size_t estimated_jpeg_size = thumbSize / 10;  // Conservative estimate
+    // Estimate: JPEG typically compresses to 10-20% of original size, but use larger buffer
+    // to handle worst-case scenarios (high detail images). 400x300 RGB = 360KB, so 100KB should be safe
+    size_t estimated_jpeg_size = 100 * 1024;  // 100KB - more than enough for 400x300 JPEG at quality 75
     jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = {
         .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
     };
@@ -3770,33 +3820,47 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             }
             
             // Check if there's a pending thumbnail to publish
+            // Only publish once per display update - clear flag immediately to prevent repeated publishing
             if (thumbnailPendingPublish) {
                 Serial.println("Publishing pending thumbnail after MQTT reconnect...");
                 // Small delay to ensure subscriptions are complete
                 delay(500);
                 
-                // Try to load from SD card first (persists through deep sleep)
-                char* jsonFromSD = loadThumbnailFromSD();
-                if (jsonFromSD != nullptr) {
-                    Serial.println("Loaded thumbnail from SD card, publishing...");
-                    int msg_id = esp_mqtt_client_publish(client, mqttTopicThumb, jsonFromSD, strlen(jsonFromSD), 1, 1);
-                    if (msg_id > 0) {
-                        Serial.printf("Published thumbnail from SD to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
-                        thumbnailPendingPublish = false;
-                    } else {
-                        Serial.printf("Failed to publish thumbnail from SD (msg_id: %d), will try regenerating\n", msg_id);
-                    }
-                    free(jsonFromSD);
-                }
+                // Clear flag immediately to prevent repeated publishing on subsequent connects
+                thumbnailPendingPublish = false;
                 
-                // If SD load failed or framebuffer is still intact, try regenerating
-                if (thumbnailPendingPublish && display.getBuffer() != nullptr) {
-                    Serial.println("Regenerating thumbnail from framebuffer...");
+                // Prefer regenerating from framebuffer if it's still intact (fresher than SD)
+                // Only load from SD if framebuffer is lost (after deep sleep)
+                if (display.getBuffer() != nullptr) {
+                    Serial.println("Regenerating thumbnail from current framebuffer...");
                     publishMQTTThumbnail();
-                    thumbnailPendingPublish = false;
-                } else if (thumbnailPendingPublish) {
-                    Serial.println("WARNING: Cannot publish thumbnail - SD file missing and framebuffer lost");
-                    thumbnailPendingPublish = false;  // Clear flag to prevent retry loop
+                } else {
+                    // Framebuffer lost - try to load from SD card (persists through deep sleep)
+                    // CRITICAL: Mount SD card first if not already mounted (needed for non-top-of-hour wakes)
+                    Serial.println("Framebuffer lost, loading thumbnail from SD card...");
+#if SDMMC_ENABLED
+                    if (!sdCardMounted && sd_card == nullptr) {
+                        Serial.println("SD card not mounted - mounting now to load thumbnail...");
+                        if (!sdInitDirect(false)) {
+                            Serial.println("ERROR: Failed to mount SD card for thumbnail load");
+                        } else {
+                            Serial.println("SD card mounted successfully");
+                        }
+                    }
+#endif
+                    char* jsonFromSD = loadThumbnailFromSD();
+                    if (jsonFromSD != nullptr) {
+                        Serial.println("Loaded thumbnail from SD card, publishing...");
+                        int msg_id = esp_mqtt_client_publish(client, mqttTopicThumb, jsonFromSD, strlen(jsonFromSD), 1, 1);
+                        if (msg_id > 0) {
+                            Serial.printf("Published thumbnail from SD to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+                        } else {
+                            Serial.printf("Failed to publish thumbnail from SD (msg_id: %d)\n", msg_id);
+                        }
+                        free(jsonFromSD);
+                    } else {
+                        Serial.println("WARNING: Cannot publish thumbnail - SD file missing and framebuffer lost");
+                    }
                 }
             }
             break;
@@ -4718,7 +4782,8 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
         return false;
     }
     
-    Serial.printf("Web interface command: %s (message size: %d bytes)\n", command.c_str(), jsonMessage.length());
+    Serial.printf("Web interface command: %s\n", command.c_str());
+    Serial.printf("  Total JSON message size: %d bytes (%.1f KB)\n", jsonMessage.length(), jsonMessage.length() / 1024.0f);
     
     // For canvas_display commands, extract fields directly without full JSON parsing (too large)
     if (command == "canvas_display") {
@@ -4784,25 +4849,46 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
             }
         }
         
+        // Check if data is compressed
+        bool isCompressed = false;
+        int compressedPos = jsonMessage.indexOf("\"compressed\"");
+        if (compressedPos >= 0) {
+            int colonPos = jsonMessage.indexOf(':', compressedPos);
+            if (colonPos >= 0) {
+                // Check for "true" after the colon
+                int truePos = jsonMessage.indexOf("true", colonPos);
+                if (truePos >= 0 && truePos < colonPos + 10) {
+                    isCompressed = true;
+                }
+            }
+        }
+        
         if (width == 0 || height == 0 || base64Data.length() == 0) {
             Serial.printf("ERROR: canvas_display command missing required fields (width=%d, height=%d, pixelData_len=%d)\n", 
                          width, height, base64Data.length());
             return false;
         }
         
-        Serial.printf("Canvas display: width=%d, height=%d, pixelData length=%d\n", width, height, base64Data.length());
+        // Calculate sizes for comparison
+        size_t base64Size = base64Data.length();
+        size_t expectedRawSize = width * height;  // 480,000 bytes for 800x600
         
-        // Decode base64 and process canvas (reuse existing code)
+        Serial.printf("Canvas display: width=%d, height=%d\n", width, height);
+        Serial.printf("  Base64 payload size: %zu bytes (%.1f KB)\n", base64Size, base64Size / 1024.0f);
+        Serial.printf("  Compressed: %s\n", isCompressed ? "yes" : "no");
+        Serial.printf("  Expected raw pixel size: %zu bytes (%.1f KB)\n", expectedRawSize, expectedRawSize / 1024.0f);
+        
+        // Decode base64
         size_t decodedLen = (base64Data.length() * 3) / 4;
-        uint8_t* pixelData = (uint8_t*)malloc(decodedLen);
-        if (!pixelData) {
-            Serial.println("ERROR: Failed to allocate memory for pixel data");
+        uint8_t* compressedData = (uint8_t*)malloc(decodedLen);
+        if (!compressedData) {
+            Serial.println("ERROR: Failed to allocate memory for compressed data");
             return false;
         }
         
         // Simple base64 decode
-        size_t actualLen = 0;
-        for (size_t i = 0; i < base64Data.length() && actualLen < decodedLen; i += 4) {
+        size_t compressedSize = 0;
+        for (size_t i = 0; i < base64Data.length() && compressedSize < decodedLen; i += 4) {
             uint32_t value = 0;
             int padding = 0;
             
@@ -4825,12 +4911,63 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
             }
             
             int bytes = 3 - padding;
-            for (int j = 0; j < bytes && actualLen < decodedLen; j++) {
-                pixelData[actualLen++] = (value >> (8 * (2 - j))) & 0xFF;
+            for (int j = 0; j < bytes && compressedSize < decodedLen; j++) {
+                compressedData[compressedSize++] = (value >> (8 * (2 - j))) & 0xFF;
             }
         }
         
-        Serial.printf("Decoded %zu bytes of pixel data\n", actualLen);
+        Serial.printf("  Decoded binary size: %zu bytes (%.1f KB) - %s\n", 
+                     compressedSize, compressedSize / 1024.0f, isCompressed ? "compressed" : "uncompressed");
+        
+        // Decompress if needed
+        uint8_t* pixelData = nullptr;
+        size_t actualLen = 0;
+        
+        if (isCompressed) {
+            // Expected decompressed size: 800 * 600 = 480,000 bytes
+            size_t expectedSize = width * height;
+            pixelData = (uint8_t*)malloc(expectedSize);
+            if (!pixelData) {
+                Serial.println("ERROR: Failed to allocate memory for decompressed pixel data");
+                free(compressedData);
+                return false;
+            }
+            
+            // Decompress using zlib (deflate format from browser's CompressionStream)
+            // Check if miniz functions are available
+            #if defined(MINIZ_VERSION) || defined(tinfl_decompress_mem_to_heap)
+                // Use miniz for decompression
+                size_t decompressedSize = 0;
+                void* decompressed = tinfl_decompress_mem_to_heap(compressedData, compressedSize, &decompressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+                if (decompressed == nullptr || decompressedSize != expectedSize) {
+                    Serial.printf("ERROR: miniz decompression failed (got %zu, expected %zu)\n", decompressedSize, expectedSize);
+                    free(compressedData);
+                    free(pixelData);
+                    if (decompressed) mz_free(decompressed);
+                    return false;
+                }
+                memcpy(pixelData, decompressed, expectedSize);
+                mz_free(decompressed);
+                actualLen = expectedSize;
+                float compressionRatio = (100.0f * compressedSize) / actualLen;
+                float sizeReduction = 100.0f - compressionRatio;
+                Serial.printf("  Decompressed: %zu bytes (%.1f KB)\n", actualLen, actualLen / 1024.0f);
+                Serial.printf("  Compression ratio: %.1f%% (%.1f%% size reduction)\n", compressionRatio, sizeReduction);
+                Serial.printf("  Space saved: %zu bytes (%.1f KB)\n", 
+                             actualLen - compressedSize, (actualLen - compressedSize) / 1024.0f);
+            #else
+                // Fallback: miniz not available, return error
+                Serial.println("ERROR: zlib/miniz decompression not available - compression support not compiled in");
+                free(compressedData);
+                free(pixelData);
+                return false;
+            #endif
+            free(compressedData);
+        } else {
+            // Not compressed, use directly
+            pixelData = compressedData;
+            actualLen = compressedSize;
+        }
         
         // Ensure display is initialized
         if (display.getBuffer() == nullptr) {

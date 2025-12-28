@@ -108,7 +108,7 @@ extern "C" {
 // #define this to enable SSL at build (or switch to the 'ssl' build target in vscode)
 #ifdef PSY_ENABLE_SSL
   #include <PsychicHttpsServer.h>
-  #include "certificates.h"
+#include "certificates.h"
 #endif
 #include "web_assets.h"
 // Keep ESP-IDF OTA includes for OTA operations
@@ -4497,7 +4497,7 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 // Check if it's from SMS bridge topic - these can be text or JSON (with "text" field, not "command")
                 else if (strcmp(mqttMessageTopic, mqttTopicSubscribe) == 0 || strcmp(topic, mqttTopicSubscribe) == 0) {
                     lastMqttMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);  // Use the complete buffered message
-                    mqttMessageReceived = true;
+                mqttMessageReceived = true;
                 }
                 // If it's a retained message but doesn't match any known topic, still mark for clearing
                 else {
@@ -4511,7 +4511,7 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             if (shouldClearRetained && strlen(topicToClear) > 0 && client != nullptr) {
                 Serial.printf("Clearing retained message on topic %s (safety measure)...\n", topicToClear);
                 int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
-                if (msg_id > 0) {
+                    if (msg_id > 0) {
                     Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
                 } else {
                     Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 

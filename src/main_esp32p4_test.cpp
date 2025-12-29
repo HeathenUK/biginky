@@ -10616,7 +10616,9 @@ void volumeLoadFromNVS() {
     if (savedVolume > 100) savedVolume = 100;
     
     g_audio_volume_pct = savedVolume;
-    Serial.printf("Loaded volume from NVS: %d%%\n", g_audio_volume_pct);
+    if (g_is_cold_boot) {
+        Serial.printf("Loaded volume from NVS: %d%%\n", g_audio_volume_pct);
+    }
 }
 
 /**
@@ -10650,7 +10652,9 @@ void mediaIndexLoadFromNVS() {
     mediaPrefs.end();
     
     lastMediaIndex = savedIndex;
-    Serial.printf("Loaded media index from NVS: %lu\n", (unsigned long)lastMediaIndex);
+    if (g_is_cold_boot) {
+        Serial.printf("Loaded media index from NVS: %lu\n", (unsigned long)lastMediaIndex);
+    }
 }
 
 /**
@@ -10689,7 +10693,9 @@ void sleepDurationLoadFromNVS() {
         g_sleep_interval_minutes = 1;
     } else {
         g_sleep_interval_minutes = savedInterval;
-        Serial.printf("Loaded sleep interval from NVS: %d minutes\n", g_sleep_interval_minutes);
+        if (g_is_cold_boot) {
+            Serial.printf("Loaded sleep interval from NVS: %d minutes\n", g_sleep_interval_minutes);
+        }
     }
 }
 
@@ -10733,12 +10739,16 @@ void hourScheduleLoadFromNVS() {
         for (int i = 0; i < 24; i++) {
             g_hour_schedule[i] = (scheduleStr.charAt(i) == '1');
         }
-        Serial.println("Loaded hour schedule from NVS:");
-        for (int i = 0; i < 24; i++) {
-            Serial.printf("  Hour %02d: %s\n", i, g_hour_schedule[i] ? "ENABLED" : "DISABLED");
+        if (g_is_cold_boot) {
+            Serial.println("Loaded hour schedule from NVS:");
+            for (int i = 0; i < 24; i++) {
+                Serial.printf("  Hour %02d: %s\n", i, g_hour_schedule[i] ? "ENABLED" : "DISABLED");
+            }
         }
     } else {
-        Serial.println("No hour schedule in NVS - using default (all hours enabled)");
+        if (g_is_cold_boot) {
+            Serial.println("No hour schedule in NVS - using default (all hours enabled)");
+        }
     }
 }
 
@@ -10954,18 +10964,22 @@ void numbersLoadFromNVS() {
     
     int count = numbersPrefs.getInt("count", 0);
     if (count == 0) {
-        Serial.println("No additional allowed numbers in NVS (only hardcoded number)");
+        if (g_is_cold_boot) {
+            Serial.println("No additional allowed numbers in NVS (only hardcoded number)");
+        }
         numbersPrefs.end();
         return;
     }
     
-    Serial.printf("Loaded %d allowed number(s) from NVS:\n", count);
-    for (int i = 0; i < count && i < 100; i++) {
-        char key[16];
-        snprintf(key, sizeof(key), "num%d", i);
-        String number = numbersPrefs.getString(key, "");
-        if (number.length() > 0) {
-            Serial.printf("  [%d] %s\n", i + 1, number.c_str());
+    if (g_is_cold_boot) {
+        Serial.printf("Loaded %d allowed number(s) from NVS:\n", count);
+        for (int i = 0; i < count && i < 100; i++) {
+            char key[16];
+            snprintf(key, sizeof(key), "num%d", i);
+            String number = numbersPrefs.getString(key, "");
+            if (number.length() > 0) {
+                Serial.printf("  [%d] %s\n", i + 1, number.c_str());
+            }
         }
     }
     
@@ -11880,11 +11894,15 @@ void sdDiagnostics() {
 // Note: ldo_vo4_handle is declared earlier in the file
 bool enableLdoVO4() {
     if (ldo_vo4_handle != nullptr) {
-        Serial.println("LDO_VO4 already enabled");
+        if (g_is_cold_boot) {
+            Serial.println("LDO_VO4 already enabled");
+        }
         return true;
     }
     
-    Serial.println("Enabling LDO_VO4 (3.3V for SD pull-ups)...");
+    if (g_is_cold_boot) {
+        Serial.println("Enabling LDO_VO4 (3.3V for SD pull-ups)...");
+    }
     
     esp_ldo_channel_config_t ldo_config = {
         .chan_id = 4,
@@ -11898,11 +11916,15 @@ bool enableLdoVO4() {
     esp_err_t ret = esp_ldo_acquire_channel(&ldo_config, &ldo_vo4_handle);
     if (ret != ESP_OK) {
         Serial.printf("Failed to acquire LDO_VO4: %s (0x%x)\n", esp_err_to_name(ret), ret);
-        esp_ldo_dump(stdout);
+        if (g_is_cold_boot) {
+            esp_ldo_dump(stdout);
+        }
         return false;
     }
     
-    Serial.println("LDO_VO4 enabled at 3.3V");
+    if (g_is_cold_boot) {
+        Serial.println("LDO_VO4 enabled at 3.3V");
+    }
     return true;
 }
 
@@ -11937,23 +11959,36 @@ void sdPowerCycle() {
 // Direct ESP-IDF SD card initialization with internal pull-ups
 bool sdInitDirect(bool mode1bit) {
     if (sd_card != nullptr) {
-        Serial.println("SD card already mounted (direct)");
+        if (g_is_cold_boot) {
+            Serial.println("SD card already mounted (direct)");
+        }
         return true;
     }
     
-    Serial.println("\n=== Initializing SD Card (ESP-IDF Direct) ===");
-    Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
-                  PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
-    Serial.printf("Power control: GPIO%d (active LOW)\n", PIN_SD_POWER);
+    // Only print SD init details on cold boot
+    if (g_is_cold_boot) {
+        Serial.println("\n=== Initializing SD Card (ESP-IDF Direct) ===");
+        Serial.printf("Pins: CLK=%d, CMD=%d, D0=%d, D1=%d, D2=%d, D3=%d\n",
+                      PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0, PIN_SD_D1, PIN_SD_D2, PIN_SD_D3);
+        Serial.printf("Power control: GPIO%d (active LOW)\n", PIN_SD_POWER);
+    }
     
     // Step 1: Enable LDO_VO4 for external pull-up resistors (5.1K to LDO_VO4)
     if (!enableLdoVO4()) {
-        Serial.println("Warning: LDO_VO4 not enabled, relying on internal pull-ups only");
+        if (g_is_cold_boot) {
+            Serial.println("Warning: LDO_VO4 not enabled, relying on internal pull-ups only");
+        }
     }
     
     // Step 2: Enable SD card power via GPIO45 -> MOSFET Q1
     // GPIO45 LOW = MOSFET ON = SD card VDD powered from ESP_3V3
     sdPowerOn();
+    if (g_is_cold_boot) {
+        Serial.println("Enabling LDO_VO4 (3.3V for SD pull-ups)...");
+        Serial.println("LDO_VO4 enabled at 3.3V");
+        Serial.println("Enabling SD card power (GPIO45 LOW)...");
+        Serial.println("SD card power enabled");
+    }
     
     // Configure SDMMC host
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -11974,8 +12009,10 @@ bool sdInitDirect(bool mode1bit) {
     slot_config.d3 = (gpio_num_t)PIN_SD_D3;
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;  // KEY: Enable internal pull-ups!
     
-    Serial.println("Internal pull-ups ENABLED via SDMMC_SLOT_FLAG_INTERNAL_PULLUP");
-    Serial.printf("Trying %s mode at %d kHz...\n", mode1bit ? "1-bit" : "4-bit", host.max_freq_khz);
+    if (g_is_cold_boot) {
+        Serial.println("Internal pull-ups ENABLED via SDMMC_SLOT_FLAG_INTERNAL_PULLUP");
+        Serial.printf("Trying %s mode at %d kHz...\n", mode1bit ? "1-bit" : "4-bit", host.max_freq_khz);
+    }
     
     // Mount filesystem
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
@@ -11995,10 +12032,12 @@ bool sdInitDirect(bool mode1bit) {
         return false;
     }
     
-    // Print card info
-    Serial.println("\nSD card mounted successfully!");
-    sdmmc_card_print_info(stdout, sd_card);
-    Serial.println("==================================\n");
+    // Print card info only on cold boot
+    if (g_is_cold_boot) {
+        Serial.println("\nSD card mounted successfully!");
+        sdmmc_card_print_info(stdout, sd_card);
+        Serial.println("==================================\n");
+    }
     
     sdCardMounted = true;
     return true;
@@ -13387,22 +13426,28 @@ void setup() {
     Serial.begin(115200);
     
     // Print chip information at boot
-    esp_chip_info_t chip_info;
-    esp_chip_info(&chip_info);
-    Serial.println("\n=== Chip Information ===");
-    Serial.printf("  Model: ESP32-P4\n");
-    Serial.printf("  Cores: %d\n", chip_info.cores);
-    Serial.printf("  Revision: r%d.%d\n", chip_info.revision / 100, chip_info.revision % 100);
-    Serial.printf("  Features: %s%s%s%s\n",
-                  (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "Embedded-Flash " : "",
-                  (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi " : "",
-                  (chip_info.features & CHIP_FEATURE_BT) ? "BT " : "",
-                  (chip_info.features & CHIP_FEATURE_BLE) ? "BLE " : "");
-    uint32_t flash_size = 0;
-    esp_flash_get_size(NULL, &flash_size);
-    Serial.printf("  Flash: %dMB %s\n", flash_size / (1024 * 1024),
-                  (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
-    Serial.println("=======================\n");
+    // Check if we woke from deep sleep (non-switch-D wake) - set global flag early
+    g_is_cold_boot = (wakeCause == ESP_SLEEP_WAKEUP_UNDEFINED);  // Set global flag early for use in print statements
+    
+    // Only print chip info on cold boot
+    if (g_is_cold_boot) {
+        esp_chip_info_t chip_info;
+        esp_chip_info(&chip_info);
+        Serial.println("\n=== Chip Information ===");
+        Serial.printf("  Model: ESP32-P4\n");
+        Serial.printf("  Cores: %d\n", chip_info.cores);
+        Serial.printf("  Revision: r%d.%d\n", chip_info.revision / 100, chip_info.revision % 100);
+        Serial.printf("  Features: %s%s%s%s\n",
+                      (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "Embedded-Flash " : "",
+                      (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi " : "",
+                      (chip_info.features & CHIP_FEATURE_BT) ? "BT " : "",
+                      (chip_info.features & CHIP_FEATURE_BLE) ? "BLE " : "");
+        uint32_t flash_size = 0;
+        esp_flash_get_size(NULL, &flash_size);
+        Serial.printf("  Flash: %dMB %s\n", flash_size / (1024 * 1024),
+                      (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
+        Serial.println("=======================\n");
+    }
 
 #if SDMMC_ENABLED
     // Mount SD card as early as possible for logging
@@ -13538,21 +13583,23 @@ void setup() {
         }
     }
     
-    // Print platform info
-    hal_print_info();
+    // Print platform info and pin configuration only on cold boot
+    if (g_is_cold_boot) {
+        hal_print_info();
+        
+        // Print pin configuration
+        Serial.println("\nPin Configuration:");
+        Serial.printf("  SPI SCK:  GPIO%d\n", PIN_SPI_SCK);
+        Serial.printf("  SPI MOSI: GPIO%d\n", PIN_SPI_MOSI);
+        Serial.printf("  CS0:      GPIO%d\n", PIN_CS0);
+        Serial.printf("  CS1:      GPIO%d\n", PIN_CS1);
+        Serial.printf("  DC:       GPIO%d\n", PIN_DC);
+        Serial.printf("  RESET:    GPIO%d\n", PIN_RESET);
+        Serial.printf("  BUSY:     GPIO%d\n", PIN_BUSY);
+        Serial.println();
+    }
     
-    // Print pin configuration
-    Serial.println("\nPin Configuration:");
-    Serial.printf("  SPI SCK:  GPIO%d\n", PIN_SPI_SCK);
-    Serial.printf("  SPI MOSI: GPIO%d\n", PIN_SPI_MOSI);
-    Serial.printf("  CS0:      GPIO%d\n", PIN_CS0);
-    Serial.printf("  CS1:      GPIO%d\n", PIN_CS1);
-    Serial.printf("  DC:       GPIO%d\n", PIN_DC);
-    Serial.printf("  RESET:    GPIO%d\n", PIN_RESET);
-    Serial.printf("  BUSY:     GPIO%d\n", PIN_BUSY);
-    Serial.println();
-    
-    // Check PSRAM
+    // Check PSRAM (always check, but only print on cold boot)
     if (!hal_psram_available()) {
         Serial.println("ERROR: PSRAM not detected!");
         Serial.println("This display requires ~2MB PSRAM for the frame buffer.");
@@ -13565,7 +13612,9 @@ void setup() {
         }
     }
     
-    Serial.printf("PSRAM OK: %lu KB available\n", (unsigned long)(hal_psram_get_size() / 1024));
+    if (g_is_cold_boot) {
+        Serial.printf("PSRAM OK: %lu KB available\n", (unsigned long)(hal_psram_get_size() / 1024));
+    }
     
     // Initialize SPI (always needed - ESP32 peripherals reset after deep sleep)
     displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
@@ -13582,7 +13631,11 @@ void setup() {
     // Load font once (clock overlay uses it)
     if (!ttf.fontLoaded()) {
         if (!ttf.loadFont(dancing_otf, dancing_otf_len)) {
-            Serial.println("WARNING: Failed to load TTF font");
+            if (g_is_cold_boot) {
+                Serial.println("WARNING: Failed to load TTF font");
+            }
+        } else if (g_is_cold_boot) {
+            Serial.println("TTF: Font loaded successfully");
         }
     }
 
@@ -14429,7 +14482,9 @@ static void requireWebUIPasswordSetup() {
         Serial.println("  5. Password is NEVER transmitted - only HMAC signatures are sent");
         Serial.println("========================================\n");
     } else {
-        Serial.println("Web UI password is configured - GitHub Pages UI is enabled");
+        if (g_is_cold_boot) {
+            Serial.println("Web UI password is configured - GitHub Pages UI is enabled");
+        }
     }
 }
 

@@ -194,10 +194,20 @@ function updateBusyMessage() {
     
     const timeUntilWake = formatTimeUntilWake();
     if (timeUntilWake && nextWakeTime) {
-        const wakeTimeStr = nextWakeTime.toLocaleTimeString();
-        msgEl.textContent = `Device is asleep. Command will be processed at ${wakeTimeStr} (in ${timeUntilWake})`;
+        const now = new Date();
+        const diff = nextWakeTime.getTime() - now.getTime();
+        
+        if (diff <= 0) {
+            // Device should be awake now
+            msgEl.textContent = 'Device should be awake. Command will be processed shortly...';
+        } else {
+            // Device is asleep - show precise countdown
+            const wakeTimeStr = nextWakeTime.toLocaleTimeString();
+            msgEl.textContent = `Device is asleep. Command will be processed at ${wakeTimeStr} (in ${timeUntilWake})`;
+        }
     } else {
-        msgEl.textContent = 'Device may be asleep. Command will be processed when device wakes. Waiting for status...';
+        // No next_wake time available - show generic message
+        msgEl.textContent = 'Command sent. Waiting for device response...';
     }
 }
 
@@ -218,32 +228,51 @@ function setBusyState(busy, message) {
         if (busy) {
             overlay.classList.add('active');
             const msgEl = overlay.querySelector('.message');
-            if (msgEl && message) {
-                msgEl.textContent = message;
-            }
             
-            // Set timeout: if no status message arrives within 10 seconds, assume device might be asleep
-            busyTimeoutId = setTimeout(() => {
-                if (isBusy) {
-                    // Device might be asleep - update message with countdown if we have next_wake time
-                    updateBusyMessage();
-                    
-                    // Start countdown interval to update message every second
-                    if (nextWakeTime) {
-                        busyCountdownInterval = setInterval(() => {
-                            if (isBusy) {
-                                updateBusyMessage();
-                            } else {
-                                clearInterval(busyCountdownInterval);
-                                busyCountdownInterval = null;
-                            }
-                        }, 1000);
+            // Immediately check if we have next_wake time and show appropriate message
+            if (nextWakeTime) {
+                // We have next_wake time - show countdown immediately
+                updateBusyMessage();
+                
+                // Start countdown interval to update message every second
+                busyCountdownInterval = setInterval(() => {
+                    if (isBusy) {
+                        updateBusyMessage();
+                    } else {
+                        clearInterval(busyCountdownInterval);
+                        busyCountdownInterval = null;
                     }
+                }, 1000);
+            } else if (message) {
+                // No next_wake time yet - use provided message
+                // Will be updated when status message arrives with next_wake
+                if (msgEl) {
+                    msgEl.textContent = message;
                 }
-            }, 10000);  // 10 seconds
+                
+                // Set timeout: if no status message arrives within 5 seconds, check again
+                busyTimeoutId = setTimeout(() => {
+                    if (isBusy) {
+                        // Status message should have arrived by now - update with countdown if available
+                        updateBusyMessage();
+                        
+                        // Start countdown interval if we now have next_wake time
+                        if (nextWakeTime && !busyCountdownInterval) {
+                            busyCountdownInterval = setInterval(() => {
+                                if (isBusy) {
+                                    updateBusyMessage();
+                                } else {
+                                    clearInterval(busyCountdownInterval);
+                                    busyCountdownInterval = null;
+                                }
+                            }, 1000);
+                        }
+                    }
+                }, 5000);  // 5 seconds - status should arrive quickly if device is awake
+            }
         } else {
             overlay.classList.remove('active');
-            nextWakeTime = null;
+            // Don't clear nextWakeTime - we want to keep it for next command
         }
     }
 }

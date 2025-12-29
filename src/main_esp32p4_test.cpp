@@ -70,6 +70,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include "nvs_guard.h"  // RAII wrapper for Preferences
 #include <ArduinoJson.h>
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
 #include "mbedtls/md.h"  // ESP32 built-in HMAC support
@@ -986,9 +987,8 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
 
     // Load creds (if any) directly from NVS and try NTP.
     // (Don't call wifiLoadCredentials() here since it's defined later in this file.)
-    Preferences p;
-    bool nvsOpened = p.begin("wifi", true);
-    if (!nvsOpened) {
+    NVSGuard guard("wifi", true);  // read-only
+    if (!guard.isOpen()) {
         Serial.println("\n========================================");
         Serial.println("ERROR: Failed to open NVS for WiFi credentials!");
         Serial.println("NVS may be corrupted or not initialized.");
@@ -1002,9 +1002,9 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
         return false;
     }
     
-    String ssid = p.getString("ssid", "");
-    String psk = p.getString("psk", "");
-    p.end();
+    String ssid = guard.get().getString("ssid", "");
+    String psk = guard.get().getString("psk", "");
+    // guard automatically calls end() in destructor
 
     if (ssid.length() == 0) {
         Serial.println("\n========================================");
@@ -2112,12 +2112,14 @@ static void auto_cycle_task(void* arg) {
         time_ok = ensureTimeValid(60000);  // 60 second max timeout
         if (!time_ok) {
             // Check if we have WiFi credentials - if we do, this is a network issue, not a config issue
-            Preferences p;
             bool hasCredentials = false;
-            if (p.begin("wifi", true)) {
-                String ssid = p.getString("ssid", "");
-                p.end();
-                hasCredentials = (ssid.length() > 0);
+            {
+                NVSGuard guard("wifi", true);  // read-only
+                if (guard.isOpen()) {
+                    String ssid = guard.get().getString("ssid", "");
+                    hasCredentials = (ssid.length() > 0);
+                }
+                // guard automatically calls end() in destructor
             }
             
             if (hasCredentials) {
@@ -2459,11 +2461,16 @@ static void auto_cycle_task(void* arg) {
         ntpSyncCounter = 0;  // Reset counter
         
         // Load WiFi credentials
-        Preferences p;
-        p.begin("wifi", true);
-        String ssid = p.getString("ssid", "");
-        String psk = p.getString("psk", "");
-        p.end();
+        String ssid = "";
+        String psk = "";
+        {
+            NVSGuard guard("wifi", true);  // read-only
+            if (guard.isOpen()) {
+                ssid = guard.get().getString("ssid", "");
+                psk = guard.get().getString("psk", "");
+            }
+            // guard automatically calls end() in destructor
+        }
         
         if (ssid.length() > 0) {
             // Load credentials into global variables for wifiConnectPersistent
@@ -4877,13 +4884,13 @@ void checkAndNotifyOTAUpdate() {
     
     // Read stored build ID from NVS
     // Try read-write mode first (will create namespace if it doesn't exist)
-    bool nvsOpened = otaPrefs.begin("ota", false);
-    if (!nvsOpened) {
+    NVSGuard guard(otaPrefs, "ota", false);  // read-write
+    if (!guard.isOpen()) {
         Serial.println("WARNING: Cannot open NVS for OTA version check");
         return;
     }
     
-    String storedBuildId = otaPrefs.getString("build_id", "");
+    String storedBuildId = guard.get().getString("build_id", "");
     
     // Debug output
     Serial.printf("Current build ID: '%s'\n", currentBuildId.c_str());
@@ -4895,8 +4902,8 @@ void checkAndNotifyOTAUpdate() {
         Serial.println("First boot detected (no stored build ID) - storing current firmware info");
         Serial.printf("Current firmware: %s %s (build: %s)\n", 
                      current_app_info.project_name, current_app_info.version, currentBuildId.c_str());
-        otaPrefs.putString("build_id", currentBuildId);
-        otaPrefs.end();
+        guard.get().putString("build_id", currentBuildId);
+        // guard automatically calls end() in destructor
         return;
     }
     
@@ -4905,7 +4912,7 @@ void checkAndNotifyOTAUpdate() {
     Serial.printf("Stored build ID:  '%s'\n", storedBuildId.c_str());
     Serial.printf("Build IDs match: %s\n", (currentBuildId == storedBuildId) ? "YES" : "NO");
     
-    otaPrefs.end();
+    // guard automatically calls end() in destructor
     
     if (currentBuildId != storedBuildId) {
         // Firmware changed! New firmware successfully booted - notify user
@@ -4928,16 +4935,20 @@ void checkAndNotifyOTAUpdate() {
 #endif
         
         // Update stored build ID
-        if (!otaPrefs.begin("ota", false)) {  // Read-write
-            Serial.println("WARNING: Cannot open NVS for writing");
-            return;
+        bool mqttTriggered = false;
+        {
+            NVSGuard guard(otaPrefs, "ota", false);  // read-write
+            if (!guard.isOpen()) {
+                Serial.println("WARNING: Cannot open NVS for writing");
+                return;
+            }
+            guard.get().putString("build_id", currentBuildId);
+            
+            // Check if OTA was triggered via MQTT (only send notification in that case)
+            mqttTriggered = guard.get().getBool("mqtt_triggered", false);
+            guard.get().putBool("mqtt_triggered", false);  // Clear the flag
+            // guard automatically calls end() in destructor
         }
-        otaPrefs.putString("build_id", currentBuildId);
-        
-        // Check if OTA was triggered via MQTT (only send notification in that case)
-        bool mqttTriggered = otaPrefs.getBool("mqtt_triggered", false);
-        otaPrefs.putBool("mqtt_triggered", false);  // Clear the flag
-        otaPrefs.end();
         
         // Only send notification if OTA was triggered via MQTT (!ota command)
         if (!mqttTriggered) {
@@ -5340,11 +5351,13 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
             return false;
         }
         // Mark that OTA was triggered via MQTT (so we send notification on next boot)
-        Preferences otaPrefs;
-        if (otaPrefs.begin("ota", false)) {
-            otaPrefs.putBool("mqtt_triggered", true);
-            otaPrefs.end();
-            Serial.println("OTA triggered via MQTT - notification will be sent after update");
+        {
+            NVSGuard guard(otaPrefs, "ota", false);  // read-write
+            if (guard.isOpen()) {
+                guard.get().putBool("mqtt_triggered", true);
+                Serial.println("OTA triggered via MQTT - notification will be sent after update");
+            }
+            // guard automatically calls end() in destructor
         }
         // Create task with sufficient stack to avoid stack protection fault
         TaskHandle_t otaTaskHandle = nullptr;
@@ -10692,14 +10705,15 @@ static bool handleVolumeCommand(const String& parameter) {
  * Called on startup to restore saved volume setting
  */
 void volumeLoadFromNVS() {
-    if (!volumePrefs.begin("audio", true)) {  // Read-only
+    NVSGuard guard(volumePrefs, "audio", true);  // read-only
+    if (!guard.isOpen()) {
         Serial.println("WARNING: Failed to open NVS for volume - using default (50%)");
         g_audio_volume_pct = 50;
         return;
     }
     
-    int savedVolume = volumePrefs.getInt("volume", 50);  // Default to 50 if not set
-    volumePrefs.end();
+    int savedVolume = guard.get().getInt("volume", 50);  // Default to 50 if not set
+    // guard automatically calls end() in destructor
     
     // Clamp to valid range
     if (savedVolume < 0) savedVolume = 0;

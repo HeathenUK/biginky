@@ -1,265 +1,492 @@
-# Refactoring Plan for main_esp32p4_test.cpp
+# Firmware Refactoring Plan - Prioritized To-Do List
 
-**Current State:** 10,293 lines in a single file with 241+ functions/classes/structs
+## Executive Summary
 
-**Goal:** Break into logical modules while maintaining 100% functionality and zero breaking changes.
+The firmware codebase (`src/main_esp32p4_test.cpp`) is **14,491 lines** in a single file, containing 295+ function declarations. This analysis identifies critical maintainability, performance, and potential bug issues, prioritized by impact and risk.
 
----
-
-## Priority 1: Low-Risk, High-Impact Extractions (Start Here)
-
-### 1.1 **NVS Storage Module** (Priority: HIGHEST)
-**Location:** Lines ~7175-7712, ~7246-7319, ~7423-7712
-**Size:** ~600 lines
-**Risk:** Very Low - Well-isolated, minimal dependencies
-**Files to create:**
-- `src/storage/NVSStorage.h` / `.cpp`
-- Functions: `volumeLoadFromNVS()`, `volumeSaveToNVS()`, `mediaIndexLoadFromNVS()`, `mediaIndexSaveToNVS()`, `sleepDurationLoadFromNVS()`, `sleepDurationSaveToNVS()`, `hourScheduleLoadFromNVS()`, `hourScheduleSaveToNVS()`, `numbersLoadFromNVS()`, `isNumberAllowed()`, `addAllowedNumber()`, `removeAllowedNumber()`
-- **Why first:** Foundation for other modules, clear boundaries, no side effects
-
-### 1.2 **Logging System** (Priority: HIGH)
-**Location:** Lines ~317-430, ~329-417 (LogSerial class)
-**Size:** ~150 lines
-**Risk:** Very Low - Self-contained, only depends on SD card
-**Files to create:**
-- `src/logging/Logging.h` / `.cpp`
-- Classes: `LogSerial`, functions: `logPrint()`, `logPrintf()`, `logRotate()`, `logInit()`, `logFlush()`, `logClose()`
-- **Why second:** Used everywhere but isolated, easy to extract
-
-### 1.3 **Pin Definitions & Hardware Config** (Priority: HIGH)
-**Location:** Lines ~108-216
-**Size:** ~110 lines
-**Risk:** Very Low - Pure definitions
-**Files to create:**
-- `src/config/HardwareConfig.h` (header-only)
-- All pin definitions, hardware constants
-- **Why third:** Referenced everywhere but never changes, easy to extract
+**Highest Priority**: Maintainability (file size, function complexity)  
+**Medium Priority**: Performance (String operations, code duplication)  
+**Lower Priority**: Potential bugs (memory leaks, error handling)
 
 ---
 
-## Priority 2: Medium-Risk, Well-Isolated Modules
+## Priority 1: CRITICAL - Split Monolithic File
 
-### 2.1 **Audio System** (Priority: HIGH)
-**Location:** Lines ~261-712, ~1237-1315 (AudioFileSourceFatFs)
-**Size:** ~500 lines
-**Risk:** Low-Medium - Well-isolated but has some global state
-**Files to create:**
-- `src/audio/AudioSystem.h` / `.cpp`
-- Classes: `AudioFileSourceFatFs`, functions: `audio_i2s_init()`, `audio_start()`, `audio_beep()`, `audio_stop()`, `audio_task()`, `playWavFile()`
-- **Dependencies:** ES8311 codec, I2S, SD card
-- **Why:** Large, self-contained, clear interface
+### Issue
+- **File size**: 14,491 lines in single file
+- **Function count**: 295+ function declarations
+- **Main function**: `auto_cycle_task()` is ~1000 lines (2085-3086)
+- **Mixed concerns**: MQTT, WiFi, display, audio, SD card, NVS, commands, encryption all in one file
 
-### 2.2 **SD Card Operations** (Priority: HIGH)
-**Location:** Lines ~1225-1942, ~4312-4350
-**Size:** ~800 lines
-**Risk:** Medium - Core functionality, many dependencies
-**Files to create:**
-- `src/storage/SDCardManager.h` / `.cpp`
-- Functions: `sdInitDirect()`, `loadQuotesFromSD()`, `loadMediaMappingsFromSD()`, `getAudioForImage()`, `listImageFiles()`, `listAudioFiles()`, `listAllFiles()`, file read/write helpers
-- **Dependencies:** FatFs, SDMMC driver
-- **Why:** Large block, clear responsibilities
+### Evidence
+```bash
+$ wc -l src/main_esp32p4_test.cpp
+14491 src/main_esp32p4_test.cpp
 
-### 2.3 **Sleep & Power Management** (Priority: MEDIUM-HIGH)
-**Location:** Lines ~715-907, ~791-797
-**Size:** ~200 lines
-**Risk:** Medium - Critical for operation, but well-defined
-**Files to create:**
-- `src/power/SleepManager.h` / `.cpp`
-- Functions: `sleepNowSeconds()`, `sleepUntilNextMinuteOrFallback()`, `isHourEnabled()`
-- **Dependencies:** ESP sleep APIs, hour schedule
-- **Why:** Critical but isolated, clear interface
+$ grep -c "^static\|^bool\|^void\|^int\|^String\|^struct\|^class" src/main_esp32p4_test.cpp
+295
+```
 
----
+### Protection Strategy
+1. **Create separate modules**:
+   - `mqtt_handler.cpp/h` - MQTT connection, publishing, message handling
+   - `wifi_manager.cpp/h` - WiFi connection, NTP sync, credentials
+   - `command_dispatcher.cpp/h` - Command routing and handlers
+   - `nvs_manager.cpp/h` - NVS operations wrapper
+   - `display_controller.cpp/h` - Display update cycle logic
+   - `audio_manager.cpp/h` - Audio playback
+   - `sd_manager.cpp/h` - SD card operations
 
-## Priority 3: Network & Communication Modules
+2. **Maintain exact compatibility**:
+   - Use forward declarations and header files
+   - Keep all global state variables in same locations (or move to shared header)
+   - Preserve exact function signatures
+   - Maintain same compilation order and linking
 
-### 3.1 **WiFi Management** (Priority: MEDIUM)
-**Location:** Lines ~1955-1956, ~7956-7970, ~928-1224 (ensureTimeValid)
-**Size:** ~400 lines
-**Risk:** Medium - Network code can be tricky
-**Files to create:**
-- `src/network/WiFiManager.h` / `.cpp`
-- Functions: `wifiLoadCredentials()`, `wifiConnectPersistent()`, `wifiClearCredentials()`, `enterConfigMode()`, `ensureTimeValid()`
-- **Dependencies:** WiFi library, NVS
-- **Why:** Self-contained networking logic
+3. **Incremental approach**:
+   - Extract one module at a time
+   - Compile and test after each extraction
+   - Use git commits per module - can revert individual extractions
+   - No logic changes - pure code movement only
 
-### 3.2 **MQTT Client** (Priority: MEDIUM)
-**Location:** Lines ~2806-3058, ~7886-7955
-**Size:** ~400 lines
-**Risk:** Medium - Complex state machine, event-driven
-**Files to create:**
-- `src/network/MQTTClient.h` / `.cpp`
-- Functions: `mqttLoadConfig()`, `mqttSaveConfig()`, `mqttSetConfig()`, `mqttStatus()`, `mqttConnect()`, `mqttCheckMessages()`, `mqttGetLastMessage()`, `mqttDisconnect()`, `mqttEventHandler()`
-- **Dependencies:** ESP-IDF MQTT, WiFi
-- **Why:** Large, complex, but well-defined interface
-
-### 3.3 **MQTT Command Handlers** (Priority: MEDIUM)
-**Location:** Lines ~3307-4698, ~1964-1985 (forward decls)
-**Size:** ~1400 lines
-**Risk:** Medium-High - Many commands, complex logic
-**Files to create:**
-- `src/network/MQTTCommands.h` / `.cpp`
-- Functions: `handleMqttCommand()`, `extractCommandFromMessage()`, all `handle*Command()` functions
-- **Dependencies:** MQTT, Display, Audio, Storage
-- **Why:** Largest single block, but command-based so naturally modular
+4. **Testing requirements**:
+   - Verify all functionality works identically
+   - Test deep sleep wake cycles
+   - Test MQTT command processing
+   - Test display updates
+   - Test audio playback
 
 ---
 
-## Priority 4: Web Interface & OTA
+## Priority 2: HIGH - Extract auto_cycle_task() into Smaller Functions
 
-### 4.1 **Web Management Interface** (Priority: MEDIUM-LOW)
-**Location:** Lines ~4300-4698, ~3771-4202 (ota_server_task)
-**Size:** ~1000 lines
-**Risk:** Medium-High - Complex HTML generation, many endpoints
-**Files to create:**
-- `src/web/WebServer.h` / `.cpp`
-- Functions: `generateManagementHTML()`, `handleManageCommand()`, `ota_server_task()`, all API endpoint handlers
-- **Dependencies:** WebServer, Storage, Display, Audio
-- **Why:** Large but self-contained, clear HTTP interface
+### Issue
+- **Function size**: ~1000 lines (2085-3086)
+- **Complexity**: Deeply nested conditionals, multiple responsibilities
+- **Responsibilities**: Time sync, hour scheduling, MQTT checks, display updates, NTP resync, media loading
 
-### 4.2 **OTA Update System** (Priority: LOW-MEDIUM)
-**Location:** Lines ~3199-3770, ~1986-1987
-**Size:** ~600 lines
-**Risk:** Medium - Critical functionality, complex flash operations
-**Files to create:**
-- `src/ota/OTAManager.h` / `.cpp`
-- Functions: `checkAndNotifyOTAUpdate()`, `startSdBufferedOTA()`, OTA download/flash logic
-- **Dependencies:** HTTP, SD card, ESP OTA APIs
-- **Why:** Complex but isolated, clear responsibilities
+### Evidence
+```cpp
+static void auto_cycle_task(void* arg) {
+    // Lines 2085-2424: Time sync, hour schedule checking, MQTT check cycle
+    // Lines 2426-3086: Display update cycle, media loading, thumbnail publish
+}
+```
 
----
+### Protection Strategy
+1. **Extract functions**:
+   - `checkAndSyncTime()` - Time validation and NTP sync
+   - `checkHourSchedule()` - Hour enablement checking
+   - `doMqttCheckCycle()` - MQTT connection and command processing
+   - `doDisplayUpdateCycle()` - Display initialization and update
+   - `loadMediaForDisplay()` - Media.txt loading and image selection
 
-## Priority 5: Display & Media Operations
+2. **Preserve execution flow**:
+   - Keep exact same execution order
+   - Preserve all early returns and goto statements
+   - Maintain same state transitions
+   - Keep same variable names and scoping
 
-### 5.1 **Media Management** (Priority: LOW-MEDIUM)
-**Location:** Lines ~1370-1760, ~4699-5943 (show_media_task)
-**Size:** ~800 lines
-**Risk:** Medium - Display operations, complex state
-**Files to create:**
-- `src/media/MediaManager.h` / `.cpp`
-- Functions: `pngDrawFromMediaMappings()`, `pngDrawRandomToBuffer()`, `show_media_task()`, media loading/display logic
-- **Dependencies:** Display, SD card, Audio, Text placement
-- **Why:** Large block but clear purpose
-
-### 5.2 **Display Operations** (Priority: LOW)
-**Location:** Scattered throughout, but mainly in command handlers
-**Size:** ~500 lines (estimated)
-**Risk:** Low-Medium - Display is already abstracted via EL133UF1
-**Files to create:**
-- `src/display/DisplayOps.h` / `.cpp`
-- Helper functions for common display operations, text rendering, image drawing
-- **Dependencies:** EL133UF1 library
-- **Why:** Can be extracted incrementally
+3. **Test critical paths**:
+   - Time sync behavior (RTC drift compensation, NTP retries)
+   - Hour schedule logic (disabled hours, wrap-around at midnight)
+   - MQTT check timing (top-of-hour vs non-top-of-hour)
+   - Display update cycle (media loading, thumbnail generation)
 
 ---
 
-## Priority 6: Main Application Logic
+## Priority 3: HIGH - Consolidate Duplicate JSON Parsing Code
 
-### 6.1 **Main Setup & Loop** (Priority: LOWEST - Keep Last)
-**Location:** Lines ~9766-10293
-**Size:** ~500 lines
-**Risk:** Very High - Core application flow
-**Files to create:**
-- Keep in main file, but simplify by calling module functions
-- **Why:** Central orchestration, should stay in main file
+### Issue
+- **Duplication**: Manual string parsing duplicated in 3+ places
+- **Inconsistency**: ArduinoJson used in some places, manual parsing in others
+- **Error handling**: Inconsistent between approaches
 
-### 6.2 **Auto Cycle Task** (Priority: LOW)
-**Location:** Lines ~2006-2805
-**Size:** ~800 lines
-**Risk:** High - Core application logic, complex state
-**Files to create:**
-- Consider: `src/core/AutoCycle.h` / `.cpp`
-- **Why:** Complex but could be extracted if other modules are clean
+### Evidence
+```cpp
+// Pattern repeated in:
+// 1. extractCommandFromMessage() - lines 5004-5028
+// 2. extractFromFieldFromMessage() - lines 5054-5075
+// 3. handleWebInterfaceCommand() - lines 5450-5480, 5500-5540
 
----
+int textStart = command.indexOf("\"text\"");
+int colonPos = command.indexOf(':', textStart);
+int quoteStart = command.indexOf('"', colonPos);
+int quoteEnd = command.indexOf('"', quoteStart + 1);
+command = command.substring(quoteStart + 1, quoteEnd);
+```
 
-## Implementation Strategy
+### Protection Strategy
+1. **Create helper functions**:
+   - `extractJsonField(message, fieldName)` - Generic JSON field extraction
+   - `extractJsonString(message, fieldName)` - String field extraction
+   - `extractJsonBool(message, fieldName)` - Boolean field extraction
 
-### Phase 1: Foundation (Week 1)
-1. Extract NVS Storage Module
-2. Extract Logging System
-3. Extract Hardware Config
-4. **Test thoroughly** - These are foundational
+2. **Hybrid approach**:
+   - Use ArduinoJson for small messages (<4KB)
+   - Keep manual parsing for large messages (canvas_display) - intentional for memory efficiency
 
-### Phase 2: Core Systems (Week 2)
-1. Extract Audio System
-2. Extract SD Card Operations
-3. Extract Sleep & Power Management
-4. **Test thoroughly** - Core functionality
-
-### Phase 3: Networking (Week 3)
-1. Extract WiFi Management
-2. Extract MQTT Client
-3. Extract MQTT Command Handlers
-4. **Test thoroughly** - Network operations
-
-### Phase 4: Web & OTA (Week 4)
-1. Extract Web Management Interface
-2. Extract OTA Update System
-3. **Test thoroughly** - Critical for management
-
-### Phase 5: Media & Display (Week 5)
-1. Extract Media Management
-2. Extract Display Operations (incremental)
-3. **Test thoroughly** - Visual functionality
-
-### Phase 6: Cleanup (Week 6)
-1. Simplify main setup/loop
-2. Review and optimize module interfaces
-3. Final testing and documentation
+3. **Test all parsing paths**:
+   - SMS bridge commands: `!ping`, `!text`, `!get`, etc.
+   - Web UI commands: `text_display`, `canvas_display`, `clear`, `next`
+   - Verify JSON field extraction matches exactly (case sensitivity, whitespace)
+   - Test edge cases: missing fields, malformed JSON, escaped quotes
 
 ---
 
-## Key Principles
+## Priority 4: MEDIUM - Optimize String Operations
 
-1. **Zero Breaking Changes:** Each extraction must maintain exact same behavior
-2. **Incremental:** One module at a time, test after each
-3. **Preserve Functionality:** Don't optimize or "improve" during extraction
-4. **Clear Interfaces:** Each module should have minimal, well-defined public API
-5. **Dependency Management:** Extract low-level modules first (NVS, Logging, Config)
-6. **Testing:** After each extraction, verify:
-   - Compiles successfully
-   - All features work identically
-   - No performance regressions
-   - Memory usage unchanged
+### Issue
+- **Heap fragmentation**: 49+ String operations found
+- **Inefficiency**: Repeated `.c_str()` calls, String concatenation in loops
+- **Memory pressure**: String objects cause heap fragmentation on ESP32
+
+### Evidence
+```cpp
+// Found 49+ instances of:
+String formResponse = "To=";
+formResponse += senderNumber;  // Heap allocation
+formResponse += "&From=+447401492609";
+formResponse += "&Body=Pong";
+// Multiple .c_str() conversions
+```
+
+### Protection Strategy
+1. **Use char buffers for fixed-size strings**:
+   - MQTT responses (formResponse in handlePingCommand)
+   - JSON building (status JSON, thumbnail JSON)
+   - Pre-allocate buffers where size is known
+
+2. **Keep String for dynamic content**:
+   - Command parameters (unknown size)
+   - File paths (variable length)
+   - User-provided text
+
+3. **Testing**:
+   - Test all String-dependent paths: command parsing, MQTT publishing, file paths
+   - Verify memory usage doesn't increase (monitor heap fragmentation)
+   - Test with long command parameters, large file paths
+   - Keep backward compatibility - same function signatures
 
 ---
 
-## Risk Assessment
+## Priority 5: MEDIUM - Consolidate Preferences.begin()/end() Patterns
 
-**Low Risk (Start Here):**
-- NVS Storage
-- Logging System
-- Hardware Config
-- Audio System (well-isolated)
+### Issue
+- **Repetition**: 127 Preferences.begin()/end() calls found
+- **Risk**: Forgetting `.end()` causes NVS lock
+- **Global objects**: Multiple global Preferences objects may not need to be global
 
-**Medium Risk:**
-- SD Card Operations
-- Sleep Management
-- WiFi Management
-- MQTT Client
+### Evidence
+```cpp
+// Pattern repeated 127 times:
+Preferences p;
+p.begin("namespace", readOnly);
+// ... operations ...
+p.end();
 
-**High Risk (Do Last):**
-- MQTT Command Handlers (many dependencies)
-- Web Interface (complex state)
-- Auto Cycle Task (core logic)
-- Main Setup/Loop (orchestration)
+// Global Preferences objects:
+static Preferences volumePrefs;
+static Preferences numbersPrefs;
+static Preferences sleepPrefs;
+// ... 7 total global Preferences objects
+```
+
+### Protection Strategy
+1. **Create RAII wrapper**:
+   ```cpp
+   class NVSGuard {
+       Preferences& prefs;
+       bool opened;
+   public:
+       NVSGuard(const char* namespace, bool readOnly);
+       ~NVSGuard() { if (opened) prefs.end(); }
+       Preferences& get() { return prefs; }
+   };
+   ```
+
+2. **Replace manual begin/end**:
+   ```cpp
+   // Before:
+   Preferences p;
+   p.begin("volume", true);
+   int vol = p.getInt("volume", 50);
+   p.end();
+   
+   // After:
+   NVSGuard guard("volume", true);
+   int vol = guard.get().getInt("volume", 50);
+   // Auto-closes in destructor
+   ```
+
+3. **Test all NVS operations**:
+   - Volume, sleep interval, hour schedule, media index
+   - Allowed numbers, authentication
+   - Verify no NVS locks (test rapid operations)
+   - Test error paths (NVS full, corrupted)
+   - Test persistence across deep sleep
 
 ---
 
-## Estimated Impact
+## Priority 6: MEDIUM - Extract MQTT Connection/Disconnection Patterns
 
-**Before:** 10,293 lines in 1 file
-**After:** ~10,293 lines across ~15-20 files
-- Main file: ~1,500 lines (setup, loop, auto_cycle, orchestration)
-- Module files: ~500-800 lines each
-- Headers: ~100-200 lines each
+### Issue
+- **Repetition**: mqttConnect()/mqttDisconnect() called 30+ times
+- **Pattern duplication**: Connection pattern repeated in multiple places
+- **Error handling**: Inconsistent error handling
 
-**Benefits:**
-- Easier navigation
-- Better code organization
-- Reduced merge conflicts
-- Clearer module boundaries
-- Easier testing of individual components
-- Better maintainability
+### Evidence
+```cpp
+// Pattern repeated in:
+// - auto_cycle_task() - lines 2318-2391
+// - handlePingCommand() - lines 9233-9265
+// - publishMQTTStatus() - lines 2379-2391
+// - Top-of-hour - lines 3050-3072
 
+if (mqttConnect()) {
+    delay(1000);  // Wait for connection
+    // ... do work ...
+    mqttDisconnect();
+    delay(100);
+}
+```
+
+### Protection Strategy
+1. **Create RAII wrapper**:
+   ```cpp
+   template<typename Func>
+   bool withMqttConnection(Func callback) {
+       if (!mqttConnect()) return false;
+       delay(1000);
+       bool result = callback();
+       mqttDisconnect();
+       delay(100);
+       return result;
+   }
+   ```
+
+2. **Test all MQTT operations**:
+   - Status publish, thumbnail publish
+   - Command processing (SMS bridge, web UI)
+   - Media mappings publish
+   - Verify connection state management (mqttConnected flag)
+   - Test error paths (connection failures, timeouts)
+   - Test reconnection behavior
+
+---
+
+## Priority 7: MEDIUM - Fix Potential Memory Leaks
+
+### Issue
+- **Memory management**: Some malloc/hal_psram_malloc calls may not have corresponding free() in error paths
+- **Complex error paths**: canvas_display handler has multiple allocations with complex error handling
+
+### Evidence
+```cpp
+// Potential leak in publishMQTTStatus() - line 3292:
+if (encryptedJson.length() == 0) {
+    Serial.println("ERROR: Failed to encrypt status");
+    return;  // jsonBuffer already freed at line 3290, but this is OK
+}
+
+// But if malloc fails at line 3299, we return without issue
+// However, if encryptAndFormatMessage() fails, we've already freed first buffer
+// This appears safe, but needs audit
+
+// canvas_display has complex error paths with multiple allocations
+```
+
+### Protection Strategy
+1. **Audit all allocations**:
+   - Find all `malloc()`, `hal_psram_malloc()` calls
+   - Verify `free()`, `hal_psram_free()` in ALL code paths (including error paths)
+   - Use RAII wrappers where possible
+
+2. **Add memory leak detection**:
+   - Track allocations in debug builds
+   - Log allocation/deallocation pairs
+   - Detect leaks on deep sleep cycles
+
+3. **Test error injection**:
+   - Simulate malloc failures
+   - Simulate network failures during MQTT operations
+   - Test with memory pressure (fill PSRAM, then try operations)
+   - Verify no double-free errors
+
+---
+
+## Priority 8: LOW - Extract Command Handler Registration System
+
+### Issue
+- **Large if chains**: handleMqttCommand() has 20+ if statements (lines 5123-5361)
+- **Duplication**: Similar routing in handleWebInterfaceCommand()
+- **Maintainability**: Adding new commands requires modifying large if chains
+
+### Evidence
+```cpp
+// handleMqttCommand() - 20+ command checks:
+if (command == "!clear") return handleClearCommand();
+if (command == "!ping") return handlePingCommand(originalMessage);
+if (command == "!ip") return handleIpCommand(originalMessage);
+// ... 17 more commands ...
+```
+
+### Protection Strategy
+1. **Create CommandRegistry**:
+   ```cpp
+   struct CommandHandler {
+       const char* name;
+       bool (*handler)(const String&, const String&);
+       bool requiresAuth;
+   };
+   
+   static CommandHandler mqttCommands[] = {
+       {"!ping", handlePingCommand, true},
+       {"!clear", handleClearCommand, true},
+       // ...
+   };
+   ```
+
+2. **Maintain exact matching**:
+   - Case-insensitive matching
+   - Prefix matching for commands like `!text`, `!yellow_text`
+   - Same error messages and return values
+
+3. **Test all commands**:
+   - Verify all existing commands work identically
+   - Test command priority (SMS bridge vs web UI)
+   - Test unknown command handling
+
+---
+
+## Priority 9: LOW - Consolidate WiFi Connection Patterns
+
+### Issue
+- **Repetition**: wifiConnectPersistent() called with different parameters
+- **Duplication**: WiFi.disconnect() called 6+ times with varying delays
+- **NTP sync**: Code duplicated in auto_cycle_task and top-of-hour path
+
+### Evidence
+```cpp
+// WiFi connection patterns:
+wifiConnectPersistent(10, 30000, true);  // MQTT check
+wifiConnectPersistent(8, 30000, true);   // NTP resync
+wifiConnectPersistent(5, 20000, false);  // Thumbnail publish
+
+// WiFi disconnect:
+WiFi.disconnect(); delay(100);
+WiFi.disconnect(true); delay(500);
+```
+
+### Protection Strategy
+1. **Create withWiFiConnection() wrapper**:
+   - Similar to MQTT wrapper
+   - Handles connect, retry, disconnect automatically
+
+2. **Consolidate NTP sync**:
+   - Single function for NTP sync with retries
+   - Used by both auto_cycle_task and top-of-hour
+
+3. **Test WiFi operations**:
+   - MQTT checks, thumbnail publish, OTA
+   - Verify retry behavior (10 retries, 30s timeout)
+   - Test WiFi disconnect timing (power saving)
+   - Test NTP sync behavior (5-cycle counter, retry logic)
+
+---
+
+## Priority 10: LOW - Optimize handleWebInterfaceCommand()
+
+### Issue
+- **Function size**: 500+ lines
+- **Complexity**: Handles decryption, HMAC validation, JSON parsing, command routing
+- **Duplication**: Manual JSON field extraction for canvas_display (100+ lines)
+
+### Evidence
+```cpp
+// handleWebInterfaceCommand() - lines 5380-5900+
+// - Decryption logic: ~50 lines
+// - HMAC validation: ~50 lines  
+// - Command extraction: ~50 lines
+// - canvas_display handling: ~250 lines
+// - Other command routing: ~100 lines
+```
+
+### Protection Strategy
+1. **Extract functions**:
+   - `decryptAndValidateMessage()` - Decryption and HMAC validation
+   - `extractWebUICommand()` - Command extraction from JSON
+   - `handleCanvasDisplayCommand()` - Large canvas_display handler
+
+2. **Test all web UI commands**:
+   - text_display, canvas_display, clear, next, go
+   - Verify encryption/decryption matches exactly
+   - Test HMAC validation (valid, invalid, missing)
+   - Test large canvas_display messages (400KB+)
+   - Verify command priority and deferral logic
+
+---
+
+## Testing Strategy for All Refactoring
+
+### Functional Testing
+1. **Command processing**: Test all SMS bridge and web UI commands
+2. **Display updates**: Verify hourly updates, media cycling, thumbnails
+3. **MQTT operations**: Status publish, thumbnail publish, command processing
+4. **Deep sleep**: Test wake cycles, RTC drift compensation, hour scheduling
+5. **Audio playback**: Test WAV/MP3 playback with media mappings
+6. **Error handling**: Test network failures, memory pressure, corrupted data
+
+### Performance Testing
+1. **Memory usage**: Monitor heap fragmentation, PSRAM usage
+2. **Boot time**: Verify no regression in startup time
+3. **MQTT latency**: Verify command processing time unchanged
+4. **Display update time**: Verify no regression in update cycle time
+
+### Regression Testing
+1. **Compare behavior**: Before/after refactoring - same inputs produce same outputs
+2. **Serial logs**: Compare serial output for identical behavior
+3. **MQTT messages**: Verify published messages are identical
+4. **State persistence**: Verify NVS data persists correctly
+
+---
+
+## Implementation Order
+
+1. **Phase 1** (Low risk, high value):
+   - Priority 5: Preferences RAII wrapper
+   - Priority 6: MQTT connection wrapper
+   - Priority 9: WiFi connection wrapper
+
+2. **Phase 2** (Medium risk, high value):
+   - Priority 3: JSON parsing consolidation
+   - Priority 4: String optimization
+   - Priority 7: Memory leak fixes
+
+3. **Phase 3** (Higher risk, critical value):
+   - Priority 2: Extract auto_cycle_task functions
+   - Priority 10: Optimize handleWebInterfaceCommand
+
+4. **Phase 4** (Highest risk, critical value):
+   - Priority 1: Split monolithic file into modules
+   - Priority 8: Command registration system
+
+---
+
+## Risk Mitigation
+
+1. **Git workflow**: Commit after each small change, can revert individually
+2. **Incremental testing**: Test after each refactoring step
+3. **Behavior preservation**: No logic changes, only code organization
+4. **Serial logging**: Compare logs before/after to verify identical behavior
+5. **Functional equivalence**: Same inputs → same outputs, same side effects
+
+---
+
+## Notes
+
+- All refactoring should maintain **exact functional equivalence**
+- No changes to algorithms, timing, or behavior
+- Focus on code organization and maintainability
+- Performance improvements are secondary to correctness
+- Test thoroughly after each change before proceeding

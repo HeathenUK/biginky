@@ -2147,17 +2147,42 @@ bool wifiConnectPersistent(int maxRetries = 10, uint32_t timeoutPerAttemptMs = 2
 static bool webUICommandPending = false;
 static String pendingWebUICommand = "";
 
-static void auto_cycle_task(void* arg) {
-    (void)arg;
-    g_cycle_count++;
-    Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
+// Schedule action types (extensible for future cron-like system)
+// Currently only ENABLED/DISABLED, but can be extended to CYCLE_MEDIA, PLAY_SOUND, etc.
+// Note: Using SCHEDULE_ prefix to avoid conflict with ESP32 HAL GPIO macros (DISABLED/ENABLED)
+enum class ScheduleAction {
+    SCHEDULE_DISABLED,   // Hour is disabled - sleep until next enabled hour
+    SCHEDULE_ENABLED     // Hour is enabled - proceed with normal operations
+    // Future: CYCLE_MEDIA, PLAY_SOUND, etc.
+};
 
-    // Increment NTP sync counter
-    ntpSyncCounter++;
-    
+// ============================================================================
+// Extracted functions from auto_cycle_task() for better maintainability
+// ============================================================================
+
+/**
+ * Get schedule action for a given hour and minute
+ * Extensible for future cron-like system (different actions at different times)
+ * Currently only checks hour enablement, but can be extended to minute-level scheduling
+ */
+static ScheduleAction getScheduleAction(int hour, int minute) {
+    // For now, only check hour-level enablement
+    // Future: Can check minute-level actions (e.g., CYCLE_MEDIA at :00, PLAY_SOUND at :15)
+    if (!isHourEnabled(hour)) {
+        return ScheduleAction::SCHEDULE_DISABLED;
+    }
+    return ScheduleAction::SCHEDULE_ENABLED;
+}
+
+/**
+ * Check and sync time if needed
+ * Returns true if time is valid, false otherwise
+ * Updates now and tm_utc if time becomes valid
+ */
+static bool checkAndSyncTime(time_t& now, struct tm& tm_utc, bool& time_ok) {
     // Check if time is valid first (quick check)
-    bool time_ok = false;
-    time_t now = time(nullptr);
+    time_ok = false;
+    now = time(nullptr);
     if (now > 1577836800) {  // Time is valid
         time_ok = true;
         
@@ -2206,24 +2231,32 @@ static void auto_cycle_task(void* arg) {
                 // Set flag and exit task - let main loop handle config mode
                 g_config_mode_needed = true;
                 vTaskDelete(NULL);  // Delete this task - main loop will handle config
-                return;  // Should never reach here, but satisfy compiler
+                return false;  // Should never reach here, but satisfy compiler
             }
         }
         // Re-check time after sync attempt
         now = time(nullptr);
     }
     
-    // Get current time to check if it's the top of the hour
-    struct tm tm_utc;
-    gmtime_r(&now, &tm_utc);
-    bool isTopOfHour = (tm_utc.tm_min == 0);
-    int currentHour = tm_utc.tm_hour;
+    // Update tm_utc if time is valid
+    if (time_ok && now > 1577836800) {
+        gmtime_r(&now, &tm_utc);
+    }
     
+    return time_ok;
+}
+
+/**
+ * Check for RTC drift and compensate if needed
+ * If we woke early (before target wake time), sleep additional time
+ */
+static void checkRtcDriftCompensation(time_t now, struct tm& tm_utc, bool time_ok) {
     // RTC drift compensation: Check if we woke early and need to sleep more
     // Only check if we have a target wake time set and slept for > 45 minutes
     if (targetWakeHour != 255 && targetWakeMinute != 255 && lastSleepDurationSeconds > 45 * 60 && time_ok) {
         int currentMinute = tm_utc.tm_min;
         int currentSecond = tm_utc.tm_sec;
+        int currentHour = tm_utc.tm_hour;
         
         // Calculate if we're early (before target wake time)
         bool wokeEarly = false;
@@ -2275,6 +2308,215 @@ static void auto_cycle_task(void* arg) {
         targetWakeHour = 255;
         targetWakeMinute = 255;
     }
+}
+
+/**
+ * Handle disabled hour - sleep until next enabled hour
+ */
+static void handleDisabledHour(int currentHour, struct tm& tm_utc) {
+    Serial.printf("Hour %02d is DISABLED - sleeping until next enabled hour\n", currentHour);
+    
+    // Find next enabled hour
+    int nextEnabledHour = -1;
+    for (int i = 1; i <= 24; i++) {
+        int checkHour = (currentHour + i) % 24;
+        if (isHourEnabled(checkHour)) {
+            nextEnabledHour = checkHour;
+            break;
+        }
+    }
+    
+    if (nextEnabledHour < 0) {
+        // All hours disabled (shouldn't happen, but handle gracefully)
+        Serial.println("WARNING: All hours disabled - sleeping for 1 hour");
+        sleepNowSeconds(3600);
+        return;
+    }
+    
+    // Calculate seconds until next enabled hour
+    int hoursToAdd = 0;
+    if (nextEnabledHour > currentHour) {
+        hoursToAdd = nextEnabledHour - currentHour;
+    } else {
+        // Wraps around midnight
+        hoursToAdd = (24 - currentHour) + nextEnabledHour;
+    }
+    
+    // Calculate sleep duration: seconds remaining in current hour + full hours until next enabled hour
+    uint32_t secondsRemainingInHour = (60 - tm_utc.tm_min) * 60 - tm_utc.tm_sec;
+    uint32_t sleepSeconds = secondsRemainingInHour + (hoursToAdd - 1) * 3600;
+    
+    Serial.printf("Sleeping %lu seconds until hour %02d:00 (next enabled hour)\n", 
+                 (unsigned long)sleepSeconds, nextEnabledHour);
+    
+    // Store sleep duration and target wake time in RTC memory for drift compensation
+    lastSleepDurationSeconds = sleepSeconds;
+    targetWakeHour = (uint8_t)nextEnabledHour;
+    targetWakeMinute = 0;
+    
+    sleepNowSeconds(sleepSeconds);
+    // Never returns
+}
+
+/**
+ * Perform MQTT check cycle (non-top-of-hour)
+ * Handles WiFi connection, MQTT message checking, command processing, and status publishing
+ */
+static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
+    (void)isTopOfHour;  // Not used in MQTT check cycle
+    (void)currentHour;  // Not used in MQTT check cycle
+    
+    Serial.println("=== MQTT Check Cycle (not top of hour) ===");
+    
+#if WIFI_ENABLED
+    // Load WiFi and MQTT credentials
+    // If WiFi credentials fail to load, stop and wait for user configuration
+    if (!wifiLoadCredentials()) {
+        Serial.println("\n>>> CRITICAL: WiFi credentials not available <<<");
+        Serial.println("Cannot proceed with MQTT check without WiFi credentials.");
+        Serial.println("Configuration mode needed - exiting task to allow main loop to handle it.");
+        // Set flag and exit task - let main loop handle config mode
+        g_config_mode_needed = true;
+        vTaskDelete(NULL);  // Delete this task - main loop will handle config
+        return;  // Should never reach here, but satisfy compiler
+    }
+    
+    mqttLoadConfig();
+    
+    // Connect to WiFi - REQUIRED for MQTT, so be persistent (keep robust retry logic)
+    if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
+        // WiFi connected - check for OTA update notification ONLY on cold boot
+        // This saves 2-5 seconds on every non-top-of-hour cycle
+        if (g_is_cold_boot) {
+            Serial.println("\n=== Checking for OTA firmware update (cold boot) ===");
+            checkAndNotifyOTAUpdate();
+            Serial.println("=== OTA check complete ===\n");
+        }
+        
+        // WiFi connected - proceed with MQTT
+        // Connect to MQTT and check for retained messages
+        if (mqttConnect()) {
+            // Wait for subscription and any retained messages - OPTIMIZED: reduced to 500ms
+            // Retained messages should arrive almost immediately after subscription completes
+            // Reduced from 1000ms to 500ms - saves 500ms per cycle without impacting functionality
+            delay(500);
+            
+            // Check if we received a retained message (mqttCheckMessages checks connection state internally)
+            String commandToProcess = "";
+            String originalMessageForCommand = "";
+            if (mqttCheckMessages(100)) {
+                String msg = mqttGetLastMessage();
+                Serial.printf("New command received: %s\n", msg.c_str());
+                
+                // Extract command (but don't process yet - disconnect first)
+                String command = extractCommandFromMessage(msg);
+                if (command.length() > 0) {
+                    commandToProcess = command;  // Store for processing after disconnect
+                    originalMessageForCommand = msg;  // Store original message for commands that need it
+                }
+                
+                // Message already processed and cleared in event handler
+                // The blank retained message was published in the event handler
+                // Reduced delay - publish completes quickly, 100ms is sufficient
+                delay(100);  // Allow time for blank retained message publish to complete
+            } else {
+                Serial.println("No retained messages");
+            }
+            
+            // Disconnect from MQTT immediately after checking for messages
+            // This prevents connection issues during long-running commands (like display updates)
+            // Do this BEFORE processing commands to ensure we're not in MQTT task context
+            mqttDisconnect();
+            // Reduced delay - mqttDisconnect() already has internal delays, 50ms is sufficient
+            delay(50);
+                
+            // Process SMS bridge commands FIRST (before deferred web UI commands)
+            // This ensures critical commands like !ota can be executed even if web UI commands cause boot loops
+            if (commandToProcess.length() > 0) {
+                Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
+                // handleMqttCommand returns false for both "command not recognized" and "command failed"
+                // We'll handle the "unknown command" message inside handleMqttCommand itself
+                // to distinguish between unrecognized commands and command execution failures
+                handleMqttCommand(commandToProcess, originalMessageForCommand);
+            }
+            
+            // Process deferred web UI command (if any) AFTER SMS bridge commands
+            // This prevents stack overflow in the MQTT task context for heavy commands
+            // But we process it after SMS bridge commands so critical commands like !ota can run first
+            if (webUICommandPending && pendingWebUICommand.length() > 0) {
+                Serial.println("Processing deferred web UI command after MQTT disconnect");
+                handleWebInterfaceCommand(pendingWebUICommand);
+                webUICommandPending = false;
+                pendingWebUICommand = "";
+            }
+            
+            // Publish device status AFTER processing commands (and after MQTT disconnect)
+            // This ensures we're not in MQTT task context and have more stack space
+            // We'll reconnect to MQTT just for status publish
+            Serial.println("About to call publishMQTTStatus()...");
+            Serial.flush();
+            // Reconnect to MQTT for status publish
+            {
+                MQTTGuard guard;
+                if (guard.isConnected()) {
+                    publishMQTTStatus();
+                    
+                    // On cold boot, also publish media mappings (ONLY on cold boot, not deep sleep wake)
+                    if (g_is_cold_boot) {
+                        Serial.println("=== COLD BOOT: Publishing media mappings ===");
+                        publishMQTTMediaMappings();
+                        g_is_cold_boot = false;  // Clear flag after publishing media mappings
+                    }
+                    // guard automatically handles delays and disconnect in destructor
+                } else {
+                    Serial.println("WARNING: Failed to reconnect to MQTT for status publish");
+                    // Clear cold boot flag even if MQTT failed (don't retry on next cycle)
+                    if (g_is_cold_boot) {
+                        g_is_cold_boot = false;
+                    }
+                }
+            }
+            Serial.println("Returned from publishMQTTStatus()");
+            Serial.flush();
+        }
+        
+        // Disconnect WiFi immediately after MQTT check to save power
+        // No need to keep it connected - we'll reconnect on next cycle if needed
+        Serial.println("Disconnecting WiFi to save power...");
+        WiFi.disconnect();
+        // Reduced delay - WiFi disconnect is fast, 50ms is sufficient before sleep
+        delay(50);  // Brief delay for disconnect to complete
+    } else {
+        Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
+    }
+#else
+    Serial.println("WiFi disabled - cannot check MQTT");
+#endif
+}
+
+static void auto_cycle_task(void* arg) {
+    (void)arg;
+    g_cycle_count++;
+    Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
+
+    // Increment NTP sync counter
+    ntpSyncCounter++;
+    
+    // Check and sync time if needed
+    bool time_ok = false;
+    time_t now = time(nullptr);
+    struct tm tm_utc;
+    if (!checkAndSyncTime(now, tm_utc, time_ok)) {
+        return;  // checkAndSyncTime may have deleted the task or entered config mode
+    }
+    
+    // Get current time to check if it's the top of the hour
+    bool isTopOfHour = (tm_utc.tm_min == 0);
+    int currentHour = tm_utc.tm_hour;
+    int currentMinute = tm_utc.tm_min;
+    
+    // Check for RTC drift compensation (may sleep and return)
+    checkRtcDriftCompensation(now, tm_utc, time_ok);
     
     Serial.printf("Current time: %02d:%02d:%02d (isTopOfHour: %s, hour enabled: %s)\n", 
                   tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
@@ -2299,189 +2541,35 @@ static void auto_cycle_task(void* arg) {
                 gmtime_r(&now, &tm_utc);
                 isTopOfHour = (tm_utc.tm_min == 0);
                 currentHour = tm_utc.tm_hour;
+                currentMinute = tm_utc.tm_min;
             }
         }
         
         // Force MQTT check regardless of hour schedule or top-of-hour status
         // This gives us a window to receive !manage commands
-        goto force_mqtt_check;
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
     }
     
-    // Check if current hour is enabled - if not, sleep until next enabled hour
-    if (!isHourEnabled(currentHour)) {
-        Serial.printf("Hour %02d is DISABLED - sleeping until next enabled hour\n", currentHour);
-        
-        // Find next enabled hour
-        int nextEnabledHour = -1;
-        for (int i = 1; i <= 24; i++) {
-            int checkHour = (currentHour + i) % 24;
-            if (isHourEnabled(checkHour)) {
-                nextEnabledHour = checkHour;
-                break;
-            }
-        }
-        
-        if (nextEnabledHour < 0) {
-            // All hours disabled (shouldn't happen, but handle gracefully)
-            Serial.println("WARNING: All hours disabled - sleeping for 1 hour");
-            sleepNowSeconds(3600);
-            return;
-        }
-        
-        // Calculate seconds until next enabled hour
-        int hoursToAdd = 0;
-        if (nextEnabledHour > currentHour) {
-            hoursToAdd = nextEnabledHour - currentHour;
-        } else {
-            // Wraps around midnight
-            hoursToAdd = (24 - currentHour) + nextEnabledHour;
-        }
-        
-        // Calculate sleep duration: seconds remaining in current hour + full hours until next enabled hour
-        uint32_t secondsRemainingInHour = (60 - tm_utc.tm_min) * 60 - tm_utc.tm_sec;
-        uint32_t sleepSeconds = secondsRemainingInHour + (hoursToAdd - 1) * 3600;
-        
-        Serial.printf("Sleeping %lu seconds until hour %02d:00 (next enabled hour)\n", 
-                     (unsigned long)sleepSeconds, nextEnabledHour);
-        
-        // Store sleep duration and target wake time in RTC memory for drift compensation
-        lastSleepDurationSeconds = sleepSeconds;
-        targetWakeHour = (uint8_t)nextEnabledHour;
-        targetWakeMinute = 0;
-        
-        sleepNowSeconds(sleepSeconds);
+    // Check schedule action (extensible for future cron-like system)
+    ScheduleAction action = getScheduleAction(currentHour, currentMinute);
+    if (action == ScheduleAction::SCHEDULE_DISABLED) {
+        handleDisabledHour(currentHour, tm_utc);
         return;  // Never returns
     }
     
     // If NOT top of hour, do MQTT check instead of display update
     if (!isTopOfHour && time_ok) {
-        force_mqtt_check:
-        Serial.println("=== MQTT Check Cycle (not top of hour) ===");
-        
-#if WIFI_ENABLED
-        // Load WiFi and MQTT credentials
-        // If WiFi credentials fail to load, stop and wait for user configuration
-        if (!wifiLoadCredentials()) {
-            Serial.println("\n>>> CRITICAL: WiFi credentials not available <<<");
-            Serial.println("Cannot proceed with MQTT check without WiFi credentials.");
-            Serial.println("Configuration mode needed - exiting task to allow main loop to handle it.");
-            // Set flag and exit task - let main loop handle config mode
-            g_config_mode_needed = true;
-            vTaskDelete(NULL);  // Delete this task - main loop will handle config
-            return;  // Should never reach here, but satisfy compiler
-        }
-        
-        mqttLoadConfig();
-        
-        // Connect to WiFi - REQUIRED for MQTT, so be persistent (keep robust retry logic)
-        if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
-            // WiFi connected - check for OTA update notification ONLY on cold boot
-            // This saves 2-5 seconds on every non-top-of-hour cycle
-            if (g_is_cold_boot) {
-                Serial.println("\n=== Checking for OTA firmware update (cold boot) ===");
-                checkAndNotifyOTAUpdate();
-                Serial.println("=== OTA check complete ===\n");
-            }
-            
-            // WiFi connected - proceed with MQTT
-            // Connect to MQTT and check for retained messages
-            if (mqttConnect()) {
-                // Wait for subscription and any retained messages - OPTIMIZED: reduced to 500ms
-                // Retained messages should arrive almost immediately after subscription completes
-                // Reduced from 1000ms to 500ms - saves 500ms per cycle without impacting functionality
-                delay(500);
-                
-                // Check if we received a retained message (mqttCheckMessages checks connection state internally)
-                String commandToProcess = "";
-                String originalMessageForCommand = "";
-                if (mqttCheckMessages(100)) {
-                    String msg = mqttGetLastMessage();
-                    Serial.printf("New command received: %s\n", msg.c_str());
-                    
-                    // Extract command (but don't process yet - disconnect first)
-                    String command = extractCommandFromMessage(msg);
-                    if (command.length() > 0) {
-                        commandToProcess = command;  // Store for processing after disconnect
-                        originalMessageForCommand = msg;  // Store original message for commands that need it
-                    }
-                    
-                    // Message already processed and cleared in event handler
-                    // The blank retained message was published in the event handler
-                    // Reduced delay - publish completes quickly, 100ms is sufficient
-                    delay(100);  // Allow time for blank retained message publish to complete
-                } else {
-                    Serial.println("No retained messages");
-                }
-                
-                // Disconnect from MQTT immediately after checking for messages
-                // This prevents connection issues during long-running commands (like display updates)
-                // Do this BEFORE processing commands to ensure we're not in MQTT task context
-                mqttDisconnect();
-                // Reduced delay - mqttDisconnect() already has internal delays, 50ms is sufficient
-                delay(50);
-                    
-                // Process SMS bridge commands FIRST (before deferred web UI commands)
-                // This ensures critical commands like !ota can be executed even if web UI commands cause boot loops
-                if (commandToProcess.length() > 0) {
-                    Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
-                    // handleMqttCommand returns false for both "command not recognized" and "command failed"
-                    // We'll handle the "unknown command" message inside handleMqttCommand itself
-                    // to distinguish between unrecognized commands and command execution failures
-                    handleMqttCommand(commandToProcess, originalMessageForCommand);
-                }
-                
-                // Process deferred web UI command (if any) AFTER SMS bridge commands
-                // This prevents stack overflow in the MQTT task context for heavy commands
-                // But we process it after SMS bridge commands so critical commands like !ota can run first
-                if (webUICommandPending && pendingWebUICommand.length() > 0) {
-                    Serial.println("Processing deferred web UI command after MQTT disconnect");
-                    handleWebInterfaceCommand(pendingWebUICommand);
-                    webUICommandPending = false;
-                    pendingWebUICommand = "";
-                }
-                
-                // Publish device status AFTER processing commands (and after MQTT disconnect)
-                // This ensures we're not in MQTT task context and have more stack space
-                // We'll reconnect to MQTT just for status publish
-                Serial.println("About to call publishMQTTStatus()...");
-                Serial.flush();
-                // Reconnect to MQTT for status publish
-                {
-                    MQTTGuard guard;
-                    if (guard.isConnected()) {
-                        publishMQTTStatus();
-                        
-                        // On cold boot, also publish media mappings (ONLY on cold boot, not deep sleep wake)
-                        if (g_is_cold_boot) {
-                            Serial.println("=== COLD BOOT: Publishing media mappings ===");
-                            publishMQTTMediaMappings();
-                            g_is_cold_boot = false;  // Clear flag after publishing media mappings
-                        }
-                        // guard automatically handles delays and disconnect in destructor
-                    } else {
-                        Serial.println("WARNING: Failed to reconnect to MQTT for status publish");
-                        // Clear cold boot flag even if MQTT failed (don't retry on next cycle)
-                        if (g_is_cold_boot) {
-                            g_is_cold_boot = false;
-                        }
-                    }
-                }
-                Serial.println("Returned from publishMQTTStatus()");
-                Serial.flush();
-            }
-            
-            // Disconnect WiFi immediately after MQTT check to save power
-            // No need to keep it connected - we'll reconnect on next cycle if needed
-            Serial.println("Disconnecting WiFi to save power...");
-            WiFi.disconnect();
-            // Reduced delay - WiFi disconnect is fast, 50ms is sufficient before sleep
-            delay(50);  // Brief delay for disconnect to complete
-        } else {
-            Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
-        }
-#else
-        Serial.println("WiFi disabled - cannot check MQTT");
-#endif
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
         
         // Sleep until next minute
         Serial.println("Sleeping until next minute...");

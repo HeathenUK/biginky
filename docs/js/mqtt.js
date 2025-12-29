@@ -350,15 +350,21 @@ async function handleThumbnailMessage(message) {
             // For legacy format: pass payload only (IV is prepended)
             let decrypted;
             try {
+                console.log('Thumbnail: Attempting decryption, message retained:', message.retained);
+                console.log('Thumbnail: IV base64:', payload.iv);
+                console.log('Thumbnail: Payload base64 length:', payload.payload ? payload.payload.length : 0);
+                console.log('Thumbnail: Payload base64 (first 50 chars):', payload.payload ? payload.payload.substring(0, 50) : 'null');
                 decrypted = await decryptMessage(payload.payload, payload.iv);
             } catch (decryptError) {
                 console.error('Failed to decrypt thumbnail message:', decryptError);
+                console.error('Thumbnail decryption failed for retained message:', message.retained);
                 document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect or message corrupted.';
                 return;
             }
             
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
+                console.error('Thumbnail decryption returned empty for retained message:', message.retained);
                 document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
                 return;
             }

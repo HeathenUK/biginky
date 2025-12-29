@@ -3055,8 +3055,36 @@ static void auto_cycle_task(void* arg) {
                 publishMQTTThumbnail();
                 delay(200);  // Allow time for publish to complete
                 
+                // Check for SMS bridge commands after thumbnail publish (top-of-hour MQTT check)
+                Serial.println("=== Checking for SMS bridge commands (top-of-hour) ===");
+                String commandToProcess = "";
+                String originalMessageForCommand = "";
+                if (mqttCheckMessages(100)) {
+                    String msg = mqttGetLastMessage();
+                    Serial.printf("New command received: %s\n", msg.c_str());
+                    
+                    // Extract command (but don't process yet - disconnect first)
+                    String command = extractCommandFromMessage(msg);
+                    if (command.length() > 0) {
+                        commandToProcess = command;  // Store for processing after disconnect
+                        originalMessageForCommand = msg;  // Store original message for commands that need it
+                    }
+                    
+                    // Message already processed and cleared in event handler
+                    // The blank retained message was published in the event handler
+                    delay(200);  // Allow time for blank retained message publish to complete
+                } else {
+                    Serial.println("No retained messages");
+                }
+                
                 mqttDisconnect();
-                Serial.println("Thumbnail published, MQTT disconnected");
+                Serial.println("MQTT disconnected");
+                
+                // Process SMS bridge commands AFTER MQTT disconnect (to avoid stack issues)
+                if (commandToProcess.length() > 0) {
+                    Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
+                    handleMqttCommand(commandToProcess, originalMessageForCommand);
+                }
             } else {
                 Serial.println("WARNING: Failed to connect to MQTT for thumbnail publish");
             }

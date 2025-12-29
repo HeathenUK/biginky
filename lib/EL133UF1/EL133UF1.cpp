@@ -22,11 +22,7 @@ extern void publishMQTTThumbnailIfConnected();
 #include "image_hal.h"
 #endif
 
-// Platform-specific DMA includes
-#ifdef PLATFORM_RP2350
-#include "hardware/dma.h"
-#include "hardware/sync.h"
-#endif
+// Platform-specific includes (ESP32-P4 only)
 
 // Simple 8x8 bitmap font (ASCII 32-127)
 // Each character is 8 bytes, each byte is one row (MSB = leftmost pixel)
@@ -1272,7 +1268,7 @@ void EL133UF1::_sendBuffer() {
         Serial.printf("    Rotate/pack:    %4lu ms (DMA+SIMD single)\n", millis() - stepStart);
     }
 
-    // SPI transmission - already uses DMA internally via Arduino-Pico
+    // SPI transmission - uses ESP32 SPI DMA internally
     stepStart = millis();
     _sendCommand(CMD_DTM, CS0_SEL, bufA, SEND_HALF_SIZE);
     uint32_t spiA = millis() - stepStart;

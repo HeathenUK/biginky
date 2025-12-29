@@ -59,7 +59,6 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms);
  * @brief Prepare for deep sleep (ESP32 compatibility stub)
  * 
  * On ESP32, this is not needed as the RTC handles timing.
- * Provided for API compatibility with RP2350.
  */
 static inline void sleep_run_from_lposc(void) {
     // No-op on ESP32 - RTC handles this automatically

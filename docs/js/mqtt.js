@@ -5,7 +5,7 @@ function connectMQTT() {
     
     // Require password before connecting
     if (!webUIPassword || webUIPassword.length === 0) {
-        updateConnectionStatus('disconnected', 'Error: Password required. Please set password in Authentication section above.');
+        updateConnectionStatus('disconnected', 'Error: Password required');
         return;
     }
     
@@ -629,7 +629,7 @@ function disconnectMQTT() {
 async function publishMessage(payload) {
     // Check if password is configured FIRST (before connection check)
     if (!webUIPassword || webUIPassword.length === 0) {
-        showStatus('commandStatus', 'Error: Password required. Please set password in Authentication section above.', true);
+        showStatus('commandStatus', 'Error: Password required', true);
         return false;
     }
     

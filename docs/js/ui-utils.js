@@ -57,9 +57,9 @@ function updatePasswordStatus() {
     // Show warning if no password
     const passwordStatusEl = document.getElementById('passwordStatus');
     if (!hasPassword) {
-        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">⚠️ Password required: All functionality is disabled until a password is set.</div>';
+        passwordStatusEl.innerHTML = '<div class="error" style="margin-top:10px;">⚠️ Password required</div>';
     } else {
-        passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password configured - interface enabled</div>';
+        passwordStatusEl.innerHTML = '<div class="status" style="margin-top:10px;">✓ Password configured</div>';
     }
 }
 

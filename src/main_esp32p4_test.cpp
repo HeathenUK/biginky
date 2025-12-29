@@ -2662,11 +2662,85 @@ static void auto_cycle_task(void* arg) {
         
         // ALWAYS sync NTP on cold boot (regardless of time validity)
         // This ensures we have accurate time even if RTC drifted during power-off
+        // We need to load WiFi credentials and connect before we can sync NTP
         Serial.println("Cold boot - syncing NTP (always sync on cold boot)...");
-        time_ok = ensureTimeValid(60000);
-        if (!time_ok) {
-            Serial.println("WARNING: NTP sync failed on cold boot, but continuing...");
+        
+#if WIFI_ENABLED
+        // Load WiFi credentials first (required for NTP sync)
+        if (!wifiLoadCredentials()) {
+            Serial.println("\n>>> CRITICAL: WiFi credentials not available <<<");
+            Serial.println("Cannot sync NTP without WiFi credentials.");
+            Serial.println("Configuration mode needed - exiting task to allow main loop to handle it.");
+            g_config_mode_needed = true;
+            vTaskDelete(NULL);  // Delete this task - main loop will handle config
+            return;  // Should never reach here, but satisfy compiler
         }
+        
+        // Connect to WiFi (required for NTP sync)
+        if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
+            Serial.println("WiFi connected for NTP sync");
+            
+            // Force NTP sync regardless of time validity (always sync on cold boot)
+            // Use the same NTP sync logic as ensureTimeValid() but force it
+            configTime(0, 0, "pool.ntp.org", "time.google.com");
+            
+            Serial.print("Syncing NTP");
+            const int maxNtpRetries = 5;
+            const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
+            bool ntpSynced = false;
+            time_t now_ntp = time(nullptr);
+            
+            for (int retry = 0; retry < maxNtpRetries && !ntpSynced; retry++) {
+                if (retry > 0) {
+                    Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
+                    delay(2000);
+                }
+                
+                uint32_t start = millis();
+                while ((millis() - start < ntpTimeoutPerAttempt)) {
+                    delay(500);
+                    if ((millis() - start) % 5000 == 0) {
+                        Serial.print(".");
+                    }
+                    now_ntp = time(nullptr);
+                    if (now_ntp > 1577836800) {
+                        break;  // Time is valid, exit loop
+                    }
+                }
+                
+                if (now_ntp > 1577836800) {
+                    Serial.println(" OK!");
+                    struct tm tm_utc_ntp;
+                    gmtime_r(&now_ntp, &tm_utc_ntp);
+                    char buf[32];
+                    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc_ntp);
+                    Serial.printf("Time synced: %s\n", buf);
+                    time_ok = true;
+                    ntpSynced = true;
+                } else {
+                    Serial.println(" FAILED!");
+                    if (retry < maxNtpRetries - 1) {
+                        Serial.println("Will retry NTP sync...");
+                    }
+                }
+            }
+            
+            if (!ntpSynced) {
+                Serial.println("WARNING: NTP sync failed after all retries on cold boot, but continuing...");
+                time_ok = false;
+            }
+            
+            // Don't disconnect WiFi here - doMqttCheckCycle() will use it
+        } else {
+            Serial.println("WARNING: WiFi connection failed on cold boot - cannot sync NTP");
+            time_ok = false;
+        }
+#else
+        Serial.println("WiFi disabled - cannot sync NTP on cold boot");
+        time_ok = false;
+#endif
+        
+        // Update time variables after NTP sync
         now = time(nullptr);
         if (now > 1577836800) {
             gmtime_r(&now, &tm_utc);

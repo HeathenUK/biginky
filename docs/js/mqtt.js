@@ -410,8 +410,12 @@ async function handleThumbnailMessage(message) {
                 
                 // If this is a retained message and decryption fails, it may have been encrypted
                 // with a different key/method. Since new messages work, we'll just skip this one.
+                // Optionally, we could request a fresh thumbnail by sending a command, but that
+                // might be too aggressive - better to wait for the next automatic update.
                 if (message.retained) {
                     console.warn('Skipping retained thumbnail message that failed to decrypt - will wait for new message');
+                    console.warn('This usually means the retained message was encrypted with a different key/method');
+                    console.warn('New thumbnails will work fine - trigger a canvas draw or wait for next automatic update');
                     document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message encrypted with different key)';
                     return;
                 }

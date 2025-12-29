@@ -4884,6 +4884,7 @@ void checkAndNotifyOTAUpdate() {
     
     // Read stored build ID from NVS
     // Try read-write mode first (will create namespace if it doesn't exist)
+    // Keep guard open for entire function to ensure we can update build_id if needed
     NVSGuard guard(otaPrefs, "ota", false);  // read-write
     if (!guard.isOpen()) {
         Serial.println("WARNING: Cannot open NVS for OTA version check");
@@ -4912,8 +4913,6 @@ void checkAndNotifyOTAUpdate() {
     Serial.printf("Stored build ID:  '%s'\n", storedBuildId.c_str());
     Serial.printf("Build IDs match: %s\n", (currentBuildId == storedBuildId) ? "YES" : "NO");
     
-    // guard automatically calls end() in destructor
-    
     if (currentBuildId != storedBuildId) {
         // Firmware changed! New firmware successfully booted - notify user
         Serial.println("\n========================================");
@@ -4934,21 +4933,12 @@ void checkAndNotifyOTAUpdate() {
         logFlush();
 #endif
         
-        // Update stored build ID
-        bool mqttTriggered = false;
-        {
-            NVSGuard guard(otaPrefs, "ota", false);  // read-write
-            if (!guard.isOpen()) {
-                Serial.println("WARNING: Cannot open NVS for writing");
-                return;
-            }
-            guard.get().putString("build_id", currentBuildId);
-            
-            // Check if OTA was triggered via MQTT (only send notification in that case)
-            mqttTriggered = guard.get().getBool("mqtt_triggered", false);
-            guard.get().putBool("mqtt_triggered", false);  // Clear the flag
-            // guard automatically calls end() in destructor
-        }
+        // Update stored build ID (using same guard that's still open)
+        guard.get().putString("build_id", currentBuildId);
+        
+        // Check if OTA was triggered via MQTT (only send notification in that case)
+        bool mqttTriggered = guard.get().getBool("mqtt_triggered", false);
+        guard.get().putBool("mqtt_triggered", false);  // Clear the flag
         
         // Only send notification if OTA was triggered via MQTT (!ota command)
         if (!mqttTriggered) {

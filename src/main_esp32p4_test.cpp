@@ -2091,22 +2091,23 @@ static void auto_cycle_task(void* arg) {
     // Increment NTP sync counter
     ntpSyncCounter++;
     
-    // RTC drift compensation: If we slept for > 45 minutes, sync NTP before checking time
-    // This ensures accurate time after long sleeps where RTC may have drifted
-    bool needsNtpSync = false;
-    if (lastSleepDurationSeconds > 45 * 60) {  // > 45 minutes
-        Serial.printf("Long sleep detected (%lu seconds, %.1f minutes) - will sync NTP to compensate for RTC drift\n",
-                     (unsigned long)lastSleepDurationSeconds, lastSleepDurationSeconds / 60.0f);
-        needsNtpSync = true;
-    }
-    
-    // Check if time is valid (with timeout to prevent infinite loops)
-    // Use a shorter timeout initially to avoid blocking too long
+    // Check if time is valid first (quick check)
     bool time_ok = false;
     time_t now = time(nullptr);
-    if (now > 1577836800 && !needsNtpSync) {  // Quick check first, but force sync if needed
+    if (now > 1577836800) {  // Time is valid
         time_ok = true;
+        
+        // RTC drift compensation: If we slept for > 45 minutes, we might want to resync
+        // BUT only if time appears to have drifted significantly (check after we have valid time)
+        // For now, skip NTP sync if time is already valid - RTC drift is usually minimal
+        // The periodic NTP resync (every 5 cycles) will handle long-term drift
+        if (lastSleepDurationSeconds > 45 * 60) {  // > 45 minutes
+            Serial.printf("Long sleep detected (%lu seconds, %.1f minutes), but time is valid - skipping NTP sync\n",
+                         (unsigned long)lastSleepDurationSeconds, lastSleepDurationSeconds / 60.0f);
+            Serial.println("(Periodic NTP resync every 5 cycles will handle long-term drift)");
+        }
     } else {
+        // Time is invalid - must sync NTP
         // Only try NTP sync if we have WiFi credentials
         // Use a limited timeout to prevent infinite loops
         Serial.println("Time invalid, attempting NTP sync (with timeout)...");

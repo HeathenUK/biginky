@@ -1388,9 +1388,9 @@ void EL133UF1::waitForUpdate() {
     if (_asyncInProgress) {
         Serial.println("WARNING: Display update timeout, forcing completion");
         // Power off anyway
-        const uint8_t pof[] = {0x00};
-        _sendCommand(CMD_POF, CS_BOTH_SEL, pof, sizeof(pof));
-        _busyWait(200);
-        _asyncInProgress = false;
+    const uint8_t pof[] = {0x00};
+    _sendCommand(CMD_POF, CS_BOTH_SEL, pof, sizeof(pof));
+    _busyWait(200);
+    _asyncInProgress = false;
     }
 }

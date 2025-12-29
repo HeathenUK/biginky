@@ -1,0 +1,1264 @@
+/**
+ * @file mqtt_handler.cpp
+ * @brief MQTT connection, publishing, and message handling implementation
+ * 
+ * Extracted from main_esp32p4_test.cpp as part of Priority 1 refactoring.
+ */
+
+#include "mqtt_handler.h"
+#include "json_utils.h"
+#include "webui_crypto.h"
+#include "thumbnail_utils.h"
+#include "EL133UF1.h"
+#include <Arduino.h>
+#include <time.h>
+#include <string.h>
+#include "esp_crt_bundle.h"
+#include "driver/jpeg_encode.h"
+#include "ff.h"  // FatFs
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+// MQTT configuration - hardcoded
+#define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"
+#define MQTT_BROKER_PORT 8883
+#define MQTT_CLIENT_ID "esp32p4_device"
+#define MQTT_USERNAME "e2XkCCjnqSpUIxeSKB7WR7z7BWa8B6YAqYQaSKYQd0CBavgu0qeV6c2GQ6Af4i8w"
+#define MQTT_PASSWORD ""
+#define MQTT_TOPIC_SUBSCRIBE "devices/twilio_sms_bridge/cmd"
+#define MQTT_TOPIC_WEBUI "devices/web-ui/cmd"
+#define MQTT_TOPIC_PUBLISH "devices/twilio_sms_bridge/outbox"
+#define MQTT_TOPIC_STATUS "devices/web-ui/status"
+#define MQTT_TOPIC_THUMB "devices/web-ui/thumb"
+#define MQTT_TOPIC_MEDIA "devices/web-ui/media"
+#define MQTT_MAX_MESSAGE_SIZE (1024 * 1024)  // 1MB maximum message size
+
+// MQTT runtime state
+static esp_mqtt_client_handle_t mqttClient = nullptr;
+static bool mqttConnected = false;
+static char mqttBroker[128] = MQTT_BROKER_HOSTNAME;
+static int mqttPort = MQTT_BROKER_PORT;
+static char mqttClientId[64] = MQTT_CLIENT_ID;
+static char mqttUsername[128] = MQTT_USERNAME;
+static char mqttPassword[64] = MQTT_PASSWORD;
+static char mqttTopicSubscribe[128] = MQTT_TOPIC_SUBSCRIBE;
+static char mqttTopicWebUI[128] = MQTT_TOPIC_WEBUI;
+static char mqttTopicPublish[128] = MQTT_TOPIC_PUBLISH;
+static char mqttTopicStatus[128] = MQTT_TOPIC_STATUS;
+static char mqttTopicThumb[128] = MQTT_TOPIC_THUMB;
+static char mqttTopicMedia[128] = MQTT_TOPIC_MEDIA;
+static bool mqttMessageReceived = false;
+static String lastMqttMessage = "";
+static uint8_t* mqttMessageBuffer = nullptr;
+static size_t mqttMessageBufferSize = 0;
+static size_t mqttMessageBufferTotalLen = 0;
+static size_t mqttMessageBufferUsed = 0;
+static bool mqttMessageRetain = false;
+static char mqttMessageTopic[128] = "";
+
+// Forward declaration for event handler
+static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data);
+
+// Forward declarations for structs and functions from main file
+struct MediaMapping {
+    String imageName;
+    String audioFile;
+};
+extern int loadMediaMappingsFromSD(bool autoPublish);
+extern bool sdInitDirect(bool mode1bit);
+
+// Getter functions for external access
+esp_mqtt_client_handle_t getMqttClient() {
+    return mqttClient;
+}
+
+bool isMqttConnected() {
+    return mqttConnected;
+}
+
+const char* getMqttTopicPublish() {
+    return mqttTopicPublish;
+}
+
+// Load MQTT configuration (hardcoded values)
+void mqttLoadConfig() {
+    strncpy(mqttBroker, MQTT_BROKER_HOSTNAME, sizeof(mqttBroker) - 1);
+    mqttPort = MQTT_BROKER_PORT;
+    strncpy(mqttClientId, MQTT_CLIENT_ID, sizeof(mqttClientId) - 1);
+    strncpy(mqttUsername, MQTT_USERNAME, sizeof(mqttUsername) - 1);
+    strncpy(mqttPassword, MQTT_PASSWORD, sizeof(mqttPassword) - 1);
+    strncpy(mqttTopicSubscribe, MQTT_TOPIC_SUBSCRIBE, sizeof(mqttTopicSubscribe) - 1);
+    strncpy(mqttTopicWebUI, MQTT_TOPIC_WEBUI, sizeof(mqttTopicWebUI) - 1);
+    strncpy(mqttTopicPublish, MQTT_TOPIC_PUBLISH, sizeof(mqttTopicPublish) - 1);
+    strncpy(mqttTopicStatus, MQTT_TOPIC_STATUS, sizeof(mqttTopicStatus) - 1);
+    strncpy(mqttTopicThumb, MQTT_TOPIC_THUMB, sizeof(mqttTopicThumb) - 1);
+    strncpy(mqttTopicMedia, MQTT_TOPIC_MEDIA, sizeof(mqttTopicMedia) - 1);
+    Serial.printf("MQTT config (hardcoded): broker=%s, port=%d, client_id=%s\n", 
+                  mqttBroker, mqttPort, mqttClientId);
+}
+
+// Save MQTT configuration (no-op, using hardcoded values)
+void mqttSaveConfig() {
+    Serial.println("MQTT configuration is hardcoded - edit #defines in source code to change");
+}
+
+// Connect to MQTT broker
+bool mqttConnect() {
+    if (strlen(mqttBroker) == 0) {
+        Serial.println("No MQTT broker configured");
+        return false;
+    }
+    
+    // Disconnect existing client if any
+    if (mqttClient != nullptr) {
+        esp_mqtt_client_stop(mqttClient);
+        esp_mqtt_client_destroy(mqttClient);
+        mqttClient = nullptr;
+    }
+    
+    // Reset message state for new connection
+    mqttMessageReceived = false;
+    lastMqttMessage = "";
+    
+    // Generate unique client ID if not set
+    if (strlen(mqttClientId) == 0) {
+        snprintf(mqttClientId, sizeof(mqttClientId), "esp32p4_%08X", (unsigned int)ESP.getEfuseMac());
+    }
+    
+    Serial.printf("Connecting to MQTT broker: %s:%d (TLS)\n", mqttBroker, mqttPort);
+    
+    // Configure MQTT client
+    esp_mqtt_client_config_t mqtt_cfg = {};
+    mqtt_cfg.broker.address.hostname = mqttBroker;
+    mqtt_cfg.broker.address.port = mqttPort;
+    mqtt_cfg.credentials.client_id = mqttClientId;
+    
+    if (strlen(mqttUsername) > 0) {
+        mqtt_cfg.credentials.username = mqttUsername;
+        mqtt_cfg.credentials.authentication.password = mqttPassword;
+    }
+    
+    // Configure TLS/SSL transport
+    if (mqttPort == 8883) {
+        mqtt_cfg.broker.address.transport = MQTT_TRANSPORT_OVER_SSL;
+        mqtt_cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    } else {
+        mqtt_cfg.broker.address.transport = MQTT_TRANSPORT_OVER_TCP;
+    }
+    
+    mqtt_cfg.session.keepalive = 60;
+    mqtt_cfg.network.reconnect_timeout_ms = 0;  // Disable auto-reconnect
+    mqtt_cfg.network.timeout_ms = 10000;
+    mqtt_cfg.task.stack_size = 16384;  // 16KB stack for large messages
+    mqtt_cfg.task.priority = 5;
+    
+    // Create and start MQTT client
+    mqttClient = esp_mqtt_client_init(&mqtt_cfg);
+    if (mqttClient == nullptr) {
+        Serial.println("Failed to initialize MQTT client");
+        return false;
+    }
+    
+    // Register event handler
+    esp_mqtt_client_register_event(mqttClient, MQTT_EVENT_ANY, mqttEventHandler, nullptr);
+    
+    // Start MQTT client
+    esp_err_t err = esp_mqtt_client_start(mqttClient);
+    if (err != ESP_OK) {
+        Serial.printf("Failed to start MQTT client: %s\n", esp_err_to_name(err));
+        esp_mqtt_client_destroy(mqttClient);
+        mqttClient = nullptr;
+        return false;
+    }
+    
+    // Wait for connection to establish
+    uint32_t start = millis();
+    while (!mqttConnected && (millis() - start < 10000)) {
+        delay(50);
+    }
+    
+    return mqttConnected;
+}
+
+// Disconnect from MQTT broker
+void mqttDisconnect() {
+    if (mqttClient != nullptr) {
+        Serial.println("Disconnecting from MQTT...");
+        esp_mqtt_client_unregister_event(mqttClient, MQTT_EVENT_ANY, mqttEventHandler);
+        delay(50);
+        esp_mqtt_client_stop(mqttClient);
+        delay(200);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_mqtt_client_destroy(mqttClient);
+        mqttClient = nullptr;
+        mqttConnected = false;
+        delay(200);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        Serial.println("MQTT disconnected and cleaned up");
+    }
+}
+
+// Check for MQTT messages (non-blocking)
+bool mqttCheckMessages(uint32_t timeoutMs) {
+    if (mqttClient == nullptr || !mqttConnected) {
+        return false;
+    }
+    
+    uint32_t start = millis();
+    while (millis() - start < timeoutMs) {
+        if (mqttMessageReceived && lastMqttMessage.length() > 0) {
+            return true;
+        }
+        
+        if (!mqttConnected || mqttClient == nullptr) {
+            return false;
+        }
+        
+        delay(25);
+    }
+    
+    return false;
+}
+
+// Check if a large message is still being received
+bool mqttIsMessageInProgress() {
+    return (mqttMessageBuffer != nullptr && 
+            mqttMessageBufferTotalLen > 0 && 
+            mqttMessageBufferUsed < mqttMessageBufferTotalLen);
+}
+
+// Get the last received MQTT message
+String mqttGetLastMessage() {
+    return lastMqttMessage;
+}
+
+// MQTT event handler (continued in next part due to size)
+static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+    esp_mqtt_client_handle_t client = event->client;
+    
+    switch (event->event_id) {
+        case MQTT_EVENT_CONNECTED:
+            mqttConnected = true;
+            
+            // Subscribe to topics
+            if (strlen(mqttTopicSubscribe) > 0) {
+                int msg_id = esp_mqtt_client_subscribe(client, mqttTopicSubscribe, 1);
+                Serial.printf("Subscribed to %s (msg_id: %d)\n", mqttTopicSubscribe, msg_id);
+            }
+            if (strlen(mqttTopicWebUI) > 0) {
+                int msg_id = esp_mqtt_client_subscribe(client, mqttTopicWebUI, 1);
+                Serial.printf("Subscribed to %s (msg_id: %d)\n", mqttTopicWebUI, msg_id);
+            }
+            
+            // Check if there's a pending thumbnail to publish
+            if (thumbnailPendingPublish) {
+                Serial.println("Publishing pending thumbnail after MQTT reconnect...");
+                delay(500);
+                thumbnailPendingPublish = false;
+                
+                if (display.getBuffer() != nullptr) {
+                    Serial.println("Regenerating thumbnail from current framebuffer...");
+                    publishMQTTThumbnail();
+                } else {
+                    Serial.println("Framebuffer lost, loading thumbnail from SD card...");
+                    if (!sdCardMounted && sd_card == nullptr) {
+                        Serial.println("SD card not mounted - mounting now to load thumbnail...");
+                        if (!sdInitDirect(false)) {
+                            Serial.println("ERROR: Failed to mount SD card for thumbnail load");
+                        } else {
+                            Serial.println("SD card mounted successfully");
+                        }
+                    }
+                    char* jsonFromSD = loadThumbnailFromSD();
+                    if (jsonFromSD != nullptr) {
+                        Serial.println("Loaded thumbnail from SD card, publishing...");
+                        int msg_id = esp_mqtt_client_publish(client, mqttTopicThumb, jsonFromSD, strlen(jsonFromSD), 1, 1);
+                        if (msg_id > 0) {
+                            Serial.printf("Published thumbnail from SD to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+                        } else {
+                            Serial.printf("Failed to publish thumbnail from SD (msg_id: %d)\n", msg_id);
+                        }
+                        free(jsonFromSD);
+                    } else {
+                        Serial.println("WARNING: Cannot publish thumbnail - SD file missing and framebuffer lost");
+                    }
+                }
+            }
+            break;
+            
+        case MQTT_EVENT_SUBSCRIBED:
+            Serial.printf("MQTT subscription confirmed (msg_id: %d)\n", event->msg_id);
+            break;
+            
+        case MQTT_EVENT_UNSUBSCRIBED:
+            Serial.printf("MQTT unsubscribed (msg_id: %d)\n", event->msg_id);
+            break;
+            
+        case MQTT_EVENT_DISCONNECTED:
+            Serial.println("MQTT disconnected");
+            mqttConnected = false;
+            if (mqttMessageBuffer != nullptr) {
+                free(mqttMessageBuffer);
+                mqttMessageBuffer = nullptr;
+                mqttMessageBufferSize = 0;
+                mqttMessageBufferTotalLen = 0;
+                mqttMessageBufferUsed = 0;
+            }
+            break;
+            
+        case MQTT_EVENT_DATA: {
+            // Extract topic
+            char topic[event->topic_len + 1];
+            if (event->topic_len > 0) {
+                memcpy(topic, event->topic, event->topic_len);
+                topic[event->topic_len] = '\0';
+            } else {
+                topic[0] = '\0';
+            }
+            
+            // Handle multi-chunk messages
+            if (event->current_data_offset == 0) {
+                if (mqttMessageBuffer != nullptr) {
+                    free(mqttMessageBuffer);
+                    mqttMessageBuffer = nullptr;
+                }
+                
+                if (event->total_data_len > MQTT_MAX_MESSAGE_SIZE) {
+                    Serial.printf("ERROR: MQTT message too large: %d bytes (max: %d)\n", 
+                                 event->total_data_len, MQTT_MAX_MESSAGE_SIZE);
+                    break;
+                }
+                
+                mqttMessageBufferTotalLen = event->total_data_len;
+                mqttMessageBufferUsed = 0;
+                mqttMessageRetain = event->retain;
+                
+                if (event->topic_len > 0 && event->topic_len < sizeof(mqttMessageTopic)) {
+                    memcpy(mqttMessageTopic, event->topic, event->topic_len);
+                    mqttMessageTopic[event->topic_len] = '\0';
+                } else {
+                    mqttMessageTopic[0] = '\0';
+                }
+                
+                mqttMessageBufferSize = event->total_data_len + 1;
+                mqttMessageBuffer = (uint8_t*)malloc(mqttMessageBufferSize);
+                
+                if (mqttMessageBuffer == nullptr) {
+                    Serial.printf("ERROR: Failed to allocate %d bytes for MQTT message buffer!\n", mqttMessageBufferSize);
+                    break;
+                }
+                
+                Serial.printf("Starting new MQTT message: total_len=%d, allocated buffer=%d bytes, retain=%d, topic='%s'\n", 
+                             event->total_data_len, mqttMessageBufferSize, mqttMessageRetain ? 1 : 0, mqttMessageTopic);
+            }
+            
+            // Append current chunk to buffer
+            if (event->data_len > 0 && mqttMessageBuffer != nullptr) {
+                size_t offset = event->current_data_offset;
+                if (offset + event->data_len <= mqttMessageBufferSize) {
+                    memcpy(mqttMessageBuffer + offset, event->data, event->data_len);
+                    mqttMessageBufferUsed = offset + event->data_len;
+                    if (mqttMessageBufferUsed % 51200 < event->data_len || mqttMessageBufferUsed >= event->total_data_len) {
+                        Serial.printf("MQTT message progress: %d/%d bytes (%.1f%%)\n",
+                                     mqttMessageBufferUsed, event->total_data_len,
+                                     100.0f * mqttMessageBufferUsed / event->total_data_len);
+                    }
+                } else {
+                    Serial.printf("ERROR: Chunk would overflow buffer! offset=%d, chunk_len=%d, buffer_size=%d\n",
+                                 offset, event->data_len, mqttMessageBufferSize);
+                    free(mqttMessageBuffer);
+                    mqttMessageBuffer = nullptr;
+                    break;
+                }
+            }
+            
+            // Check if we have the complete message
+            bool messageComplete = (mqttMessageBufferUsed >= event->total_data_len);
+            if (!messageComplete) {
+                break;
+            }
+            
+            // Null-terminate and process
+            if (mqttMessageBuffer != nullptr) {
+                mqttMessageBuffer[mqttMessageBufferUsed] = '\0';
+            }
+            Serial.printf("Complete MQTT message received: %d bytes\n", mqttMessageBufferUsed);
+            const char* message = (const char*)mqttMessageBuffer;
+            
+            const char* topicToClear = (strlen(mqttMessageTopic) > 0) ? mqttMessageTopic : topic;
+            bool shouldClearRetained = false;
+            
+            // Process retained messages
+            if (mqttMessageRetain && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr) {
+                shouldClearRetained = true;
+                Serial.printf("Processing retained message: topic='%s', size=%d\n", mqttMessageTopic, mqttMessageBufferUsed);
+                const char* topicToCheck = (strlen(mqttMessageTopic) > 0) ? mqttMessageTopic : topic;
+                if ((strcmp(mqttMessageTopic, mqttTopicWebUI) == 0 || strcmp(topic, mqttTopicWebUI) == 0) && message[0] == '{') {
+                    String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);
+                    Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", mqttMessageTopic, mqttMessageBufferUsed);
+                    
+                    String command = extractJsonStringField(jsonMessage, "command");
+                    if (command.length() > 0) {
+                        command.toLowerCase();
+                    }
+                    
+                    if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
+                        Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
+                        webUICommandPending = true;
+                        pendingWebUICommand = jsonMessage;
+                    } else {
+                        handleWebInterfaceCommand(jsonMessage);
+                    }
+                } else if (strcmp(mqttMessageTopic, mqttTopicSubscribe) == 0 || strcmp(topic, mqttTopicSubscribe) == 0) {
+                    lastMqttMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);
+                    mqttMessageReceived = true;
+                }
+            }
+            
+            // Clear retained messages
+            if (shouldClearRetained && strlen(topicToClear) > 0 && client != nullptr) {
+                Serial.printf("Clearing retained message on topic %s (safety measure)...\n", topicToClear);
+                int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
+                if (msg_id > 0) {
+                    Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
+                } else {
+                    Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
+                                 topicToClear, msg_id, (void*)client);
+                }
+            }
+            
+            // Process non-retained JSON messages
+            else if (!mqttMessageRetain && messageComplete && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr && message[0] == '{' && strcmp(mqttMessageTopic, mqttTopicWebUI) == 0) {
+                String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);
+                Serial.printf("Received non-retained JSON message from web UI: %d bytes\n", mqttMessageBufferUsed);
+                
+                String command = extractJsonStringField(jsonMessage, "command");
+                command.toLowerCase();
+                
+                if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear" || command == "go") {
+                    Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
+                    webUICommandPending = true;
+                    pendingWebUICommand = jsonMessage;
+                    publishMQTTStatus();
+                } else {
+                    handleWebInterfaceCommand(jsonMessage);
+                    publishMQTTStatus();
+                }
+            }
+            
+            // Free buffer after processing
+            if (messageComplete && mqttMessageBuffer != nullptr) {
+                free(mqttMessageBuffer);
+                mqttMessageBuffer = nullptr;
+                mqttMessageBufferSize = 0;
+                mqttMessageBufferTotalLen = 0;
+                mqttMessageBufferUsed = 0;
+                mqttMessageRetain = false;
+                mqttMessageTopic[0] = '\0';
+            }
+            break;
+        }
+            
+        case MQTT_EVENT_ERROR:
+            Serial.printf("MQTT error: %s\n", esp_err_to_name(event->error_handle->error_type));
+            if (event->error_handle->error_type == MQTT_ERROR_TYPE_ESP_TLS) {
+                Serial.printf("  ESP-TLS error: 0x%x\n", event->error_handle->esp_tls_last_esp_err);
+            } else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+                Serial.printf("  Connection refused: 0x%x\n", event->error_handle->connect_return_code);
+            }
+            mqttConnected = false;
+            Serial.println("MQTT connection marked as failed due to error");
+            break;
+            
+        default:
+            break;
+    }
+}
+
+// Publish device status to MQTT
+void publishMQTTStatus() {
+    Serial.println("publishMQTTStatus() called");
+    if (mqttClient == nullptr) {
+        Serial.println("ERROR: mqttClient is nullptr, cannot publish status");
+        return;
+    }
+    if (!mqttConnected) {
+        Serial.println("ERROR: mqttConnected is false, cannot publish status");
+        return;
+    }
+    Serial.println("MQTT client and connection OK, building status JSON...");
+    
+    size_t jsonSize = 512;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer for status");
+        return;
+    }
+    
+    time_t now = time(nullptr);
+    int written = 0;
+    
+    written = snprintf(jsonBuffer, jsonSize, "{\"timestamp\":%ld", (long)now);
+    
+    if (now > 1577836800) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        char timeStr[32];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"current_time\":\"%s\"", timeStr);
+    }
+    
+    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+        uint32_t nextIndex = (lastMediaIndex + 1) % g_media_mappings.size();
+        const char* imageName = g_media_mappings[nextIndex].imageName.c_str();
+        const char* audioFile = g_media_mappings[nextIndex].audioFile.c_str();
+        
+        if (audioFile[0] != '\0') {
+            written += snprintf(jsonBuffer + written, jsonSize - written,
+                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\",\"audio\":\"%s\"}",
+                               (unsigned long)nextIndex, imageName, audioFile);
+        } else {
+            written += snprintf(jsonBuffer + written, jsonSize - written,
+                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\"}",
+                               (unsigned long)nextIndex, imageName);
+        }
+    }
+    
+    if (now > 1577836800) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        uint32_t sec = (uint32_t)tm_utc.tm_sec;
+        uint32_t min = (uint32_t)tm_utc.tm_min;
+        uint32_t interval_minutes = g_sleep_interval_minutes;
+        if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+            interval_minutes = 1;
+        }
+        
+        uint32_t current_slot = (min / interval_minutes) * interval_minutes;
+        uint32_t next_slot = current_slot + interval_minutes;
+        uint32_t sleep_s;
+        if (next_slot < 60) {
+            sleep_s = (next_slot - min) * 60 - sec;
+        } else {
+            sleep_s = (60 - min) * 60 - sec;
+        }
+        if (sleep_s == 0) sleep_s = interval_minutes * 60;
+        if (sleep_s < 5 && sleep_s > 0) sleep_s += interval_minutes * 60;
+        
+        uint32_t minutes_to_add = (sleep_s + 59) / 60;
+        uint32_t total_minutes = min + minutes_to_add;
+        uint32_t wake_min = total_minutes % 60;
+        uint32_t wake_hour = tm_utc.tm_hour + (total_minutes / 60);
+        if (wake_hour >= 24) {
+            wake_hour = wake_hour % 24;
+        }
+        
+        char wakeTimeStr[16];
+        snprintf(wakeTimeStr, sizeof(wakeTimeStr), "%02d:%02d", wake_hour, wake_min);
+        written += snprintf(jsonBuffer + written, jsonSize - written,
+                           ",\"next_wake\":\"%s\",\"sleep_interval_minutes\":%lu",
+                           wakeTimeStr, (unsigned long)interval_minutes);
+    }
+    
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
+    
+    if (webUICommandPending && pendingWebUICommand.length() > 0) {
+        String cmdName = extractJsonStringField(pendingWebUICommand, "command");
+        if (cmdName.length() == 0) {
+            cmdName = "unknown";
+        }
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"pending_action\":\"%s\"",
+                           cmdName.c_str());
+    }
+    
+    written += snprintf(jsonBuffer + written, jsonSize - written, "}");
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: Status JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        return;
+    }
+    
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt status - publishing without encryption");
+        return;
+    }
+    
+    size_t encryptedLen = encryptedJson.length();
+    jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted status JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    written = encryptedLen;
+    
+    Serial.printf("Publishing encrypted status JSON (%d bytes) to %s...\n", written, mqttTopicStatus);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, jsonBuffer, written, 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published encrypted status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+    } else {
+        Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+    }
+    
+    free(jsonBuffer);
+}
+
+// Shared buffer for parallel status preparation (Core 1 prepares, Core 0 publishes)
+static char* g_preparedStatusBuffer = nullptr;
+static size_t g_preparedStatusSize = 0;
+static bool g_statusPrepared = false;
+static TaskHandle_t g_statusPrepTaskHandle = nullptr;
+static TaskHandle_t g_mainTaskHandle = nullptr;  // Main task that waits for status preparation
+
+// Task function to prepare status JSON on Core 1 (runs in parallel with WiFi/MQTT connection)
+static void statusPreparationTask(void* arg) {
+    (void)arg;
+    Serial.println("[Core 1] Starting status JSON preparation...");
+    
+    // Build status JSON (same logic as publishMQTTStatus, but without publishing)
+    size_t jsonSize = 512;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("[Core 1] ERROR: Failed to allocate JSON buffer for status");
+        g_statusPrepared = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+    
+    time_t now = time(nullptr);
+    int written = 0;
+    
+    written = snprintf(jsonBuffer, jsonSize, "{\"timestamp\":%ld", (long)now);
+    
+    if (now > 1577836800) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        char timeStr[32];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"current_time\":\"%s\"", timeStr);
+    }
+    
+    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+        uint32_t nextIndex = (lastMediaIndex + 1) % g_media_mappings.size();
+        const char* imageName = g_media_mappings[nextIndex].imageName.c_str();
+        const char* audioFile = g_media_mappings[nextIndex].audioFile.c_str();
+        
+        if (audioFile[0] != '\0') {
+            written += snprintf(jsonBuffer + written, jsonSize - written,
+                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\",\"audio\":\"%s\"}",
+                               (unsigned long)nextIndex, imageName, audioFile);
+        } else {
+            written += snprintf(jsonBuffer + written, jsonSize - written,
+                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\"}",
+                               (unsigned long)nextIndex, imageName);
+        }
+    }
+    
+    if (now > 1577836800) {
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        uint32_t sec = (uint32_t)tm_utc.tm_sec;
+        uint32_t min = (uint32_t)tm_utc.tm_min;
+        uint32_t interval_minutes = g_sleep_interval_minutes;
+        if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+            interval_minutes = 1;
+        }
+        
+        uint32_t current_slot = (min / interval_minutes) * interval_minutes;
+        uint32_t next_slot = current_slot + interval_minutes;
+        uint32_t sleep_s;
+        if (next_slot < 60) {
+            sleep_s = (next_slot - min) * 60 - sec;
+        } else {
+            sleep_s = (60 - min) * 60 - sec;
+        }
+        if (sleep_s == 0) sleep_s = interval_minutes * 60;
+        if (sleep_s < 5 && sleep_s > 0) sleep_s += interval_minutes * 60;
+        
+        uint32_t minutes_to_add = (sleep_s + 59) / 60;
+        uint32_t total_minutes = min + minutes_to_add;
+        uint32_t wake_min = total_minutes % 60;
+        uint32_t wake_hour = tm_utc.tm_hour + (total_minutes / 60);
+        if (wake_hour >= 24) {
+            wake_hour = wake_hour % 24;
+        }
+        
+        char wakeTimeStr[16];
+        snprintf(wakeTimeStr, sizeof(wakeTimeStr), "%02d:%02d", wake_hour, wake_min);
+        written += snprintf(jsonBuffer + written, jsonSize - written,
+                           ",\"next_wake\":\"%s\",\"sleep_interval_minutes\":%lu",
+                           wakeTimeStr, (unsigned long)interval_minutes);
+    }
+    
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
+    
+    if (webUICommandPending && pendingWebUICommand.length() > 0) {
+        String cmdName = extractJsonStringField(pendingWebUICommand, "command");
+        if (cmdName.length() == 0) {
+            cmdName = "unknown";
+        }
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"pending_action\":\"%s\"",
+                           cmdName.c_str());
+    }
+    
+    written += snprintf(jsonBuffer + written, jsonSize - written, "}");
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("[Core 1] ERROR: Status JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        g_statusPrepared = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+    
+    // Encrypt the JSON
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("[Core 1] ERROR: Failed to encrypt status");
+        g_statusPrepared = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+    
+    // Store encrypted result in shared buffer
+    size_t encryptedLen = encryptedJson.length();
+    if (g_preparedStatusBuffer != nullptr) {
+        free(g_preparedStatusBuffer);
+    }
+    g_preparedStatusBuffer = (char*)malloc(encryptedLen + 1);
+    if (g_preparedStatusBuffer == nullptr) {
+        Serial.println("[Core 1] ERROR: Failed to allocate memory for encrypted status JSON");
+        g_statusPrepared = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+    
+    strncpy(g_preparedStatusBuffer, encryptedJson.c_str(), encryptedLen);
+    g_preparedStatusBuffer[encryptedLen] = '\0';
+    g_preparedStatusSize = encryptedLen;
+    g_statusPrepared = true;
+    
+    Serial.printf("[Core 1] Status JSON prepared (%d bytes, encrypted)\n", encryptedLen);
+    
+    // Signal completion to main task
+    if (g_mainTaskHandle != nullptr) {
+        xTaskNotify(g_mainTaskHandle, 1, eSetBits);
+    }
+    
+    vTaskDelete(nullptr);
+}
+
+// Start parallel status preparation on Core 1
+bool prepareStatusJsonParallel() {
+    // Clear any previous preparation
+    if (g_preparedStatusBuffer != nullptr) {
+        free(g_preparedStatusBuffer);
+        g_preparedStatusBuffer = nullptr;
+    }
+    g_preparedStatusSize = 0;
+    g_statusPrepared = false;
+    
+    // Store main task handle so status prep task can notify it
+    g_mainTaskHandle = xTaskGetCurrentTaskHandle();
+    
+    // Create task on Core 1 to prepare status in parallel
+    BaseType_t result = xTaskCreatePinnedToCore(
+        statusPreparationTask,
+        "status_prep",
+        16384,  // Stack size
+        nullptr,
+        5,  // Priority (same as main task)
+        &g_statusPrepTaskHandle,
+        1  // Core 1
+    );
+    
+    if (result != pdPASS) {
+        Serial.println("ERROR: Failed to create status preparation task");
+        g_mainTaskHandle = nullptr;
+        return false;
+    }
+    
+    Serial.println("[Core 0] Started status preparation task on Core 1");
+    return true;
+}
+
+// Wait for status preparation to complete and publish it
+bool publishPreparedStatus() {
+    if (mqttClient == nullptr || !mqttConnected) {
+        Serial.println("ERROR: MQTT not connected, cannot publish prepared status");
+        return false;
+    }
+    
+    // Wait for status preparation to complete (with timeout)
+    // Note: We wait on our own task handle, which the status prep task will notify
+    uint32_t notificationValue = 0;
+    if (g_statusPrepTaskHandle != nullptr) {
+        if (xTaskNotifyWait(0, ULONG_MAX, &notificationValue, pdMS_TO_TICKS(5000)) == pdTRUE) {
+            Serial.println("[Core 0] Status preparation completed");
+        } else {
+            Serial.println("[Core 0] WARNING: Status preparation timeout");
+            // Clean up task handles
+            g_statusPrepTaskHandle = nullptr;
+            g_mainTaskHandle = nullptr;
+            return false;
+        }
+    }
+    
+    if (!g_statusPrepared || g_preparedStatusBuffer == nullptr) {
+        Serial.println("ERROR: Status not prepared or buffer is null");
+        return false;
+    }
+    
+    // Publish the pre-prepared status
+    Serial.printf("Publishing pre-prepared encrypted status JSON (%d bytes) to %s...\n", 
+                  g_preparedStatusSize, mqttTopicStatus);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, g_preparedStatusBuffer, 
+                                         g_preparedStatusSize, 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published encrypted status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+        
+        // Clean up
+        free(g_preparedStatusBuffer);
+        g_preparedStatusBuffer = nullptr;
+        g_preparedStatusSize = 0;
+        g_statusPrepared = false;
+        g_statusPrepTaskHandle = nullptr;
+        g_mainTaskHandle = nullptr;
+        
+        return true;
+    } else {
+        Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+        return false;
+    }
+}
+
+void publishMQTTThumbnail() {
+    if (mqttClient == nullptr || !mqttConnected) {
+        return;
+    }
+    
+    if (display.getBuffer() == nullptr) {
+        Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
+        return;
+    }
+    
+    const int srcWidth = 1600;
+    const int srcHeight = 1200;
+    const int thumbWidth = 400;
+    const int thumbHeight = 300;
+    const int scale = 4;
+    
+    bool isARGBMode = false;
+#if EL133UF1_USE_ARGB8888
+    isARGBMode = display.isARGBMode();
+#endif
+    
+    size_t thumbSize = thumbWidth * thumbHeight * 3;
+    uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
+    if (thumbBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate thumbnail buffer");
+        return;
+    }
+    
+    Serial.printf("Generating thumbnail: %dx%d -> %dx%d (mode: %s)\n", 
+                  srcWidth, srcHeight, thumbWidth, thumbHeight, 
+                  isARGBMode ? "ARGB8888" : "L8");
+    
+    uint8_t colorMap[8][3] = {
+        {10, 10, 10}, {245, 245, 235}, {245, 210, 50}, {190, 60, 55},
+        {128, 128, 128}, {45, 75, 160}, {55, 140, 85}, {128, 128, 128},
+    };
+    
+    for (int ty = 0; ty < thumbHeight; ty++) {
+        for (int tx = 0; tx < thumbWidth; tx++) {
+            int sx = tx * scale;
+            int sy = ty * scale;
+            uint32_t rSum = 0, gSum = 0, bSum = 0;
+            int count = 0;
+            
+            for (int dy = 0; dy < scale && (sy + dy) < srcHeight; dy++) {
+                for (int dx = 0; dx < scale && (sx + dx) < srcWidth; dx++) {
+                    uint8_t einkColor = 1;
+                    
+                    if (isARGBMode) {
+#if EL133UF1_USE_ARGB8888
+                        uint32_t* argbBuffer = display.getBufferARGB();
+                        if (argbBuffer != nullptr) {
+                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                            uint32_t argb = argbBuffer[srcIdx];
+                            einkColor = EL133UF1::argbToColor(argb);
+                        }
+#endif
+                    } else {
+                        uint8_t* framebuffer = display.getBuffer();
+                        if (framebuffer != nullptr) {
+                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                            einkColor = framebuffer[srcIdx] & 0x07;
+                            if (einkColor > 7) einkColor = 1;
+                        }
+                    }
+                    
+                    rSum += colorMap[einkColor][0];
+                    gSum += colorMap[einkColor][1];
+                    bSum += colorMap[einkColor][2];
+                    count++;
+                }
+            }
+            
+            if (count > 0) {
+                int thumbIdx = (ty * thumbWidth + tx) * 3;
+                thumbBuffer[thumbIdx + 0] = bSum / count;
+                thumbBuffer[thumbIdx + 1] = gSum / count;
+                thumbBuffer[thumbIdx + 2] = rSum / count;
+            }
+        }
+    }
+    
+    uint8_t* jpegBuffer = nullptr;
+    size_t jpegSize = 0;
+    
+#if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
+    jpeg_encoder_handle_t jpeg_handle = nullptr;
+    jpeg_encode_engine_cfg_t encode_eng_cfg = { .timeout_ms = 1000 };
+    
+    esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: Failed to create JPEG encoder engine: %d\n", ret);
+        free(thumbBuffer);
+        return;
+    }
+    
+    size_t estimated_jpeg_size = 100 * 1024;
+    jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
+    size_t rx_buffer_size = 0;
+    jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);
+    if (jpegBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JPEG output buffer");
+        jpeg_del_encoder_engine(jpeg_handle);
+        free(thumbBuffer);
+        return;
+    }
+    
+    jpeg_encode_cfg_t enc_config;
+    enc_config.width = thumbWidth;
+    enc_config.height = thumbHeight;
+    enc_config.src_type = JPEG_ENCODE_IN_FORMAT_RGB888;
+    enc_config.sub_sample = JPEG_DOWN_SAMPLING_YUV422;
+    enc_config.image_quality = 75;
+    
+    uint32_t jpeg_size_u32 = 0;
+    ret = jpeg_encoder_process(jpeg_handle, &enc_config, thumbBuffer, thumbSize, 
+                                jpegBuffer, rx_buffer_size, &jpeg_size_u32);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
+        free(jpegBuffer);
+        jpeg_del_encoder_engine(jpeg_handle);
+        free(thumbBuffer);
+        return;
+    }
+    
+    jpegSize = jpeg_size_u32;
+    jpeg_del_encoder_engine(jpeg_handle);
+    free(thumbBuffer);
+    
+    size_t base64Size = ((jpegSize + 2) / 3) * 4 + 1;
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        free(jpegBuffer);
+        return;
+    }
+    
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < jpegSize; i += 3) {
+        uint32_t b0 = jpegBuffer[i];
+        uint32_t b1 = (i + 1 < jpegSize) ? jpegBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < jpegSize) ? jpegBuffer[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < jpegSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < jpegSize) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    free(jpegBuffer);
+    
+    size_t jsonSize = 55 + base64Idx + 1;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer");
+        free(base64Buffer);
+        return;
+    }
+    
+    int written = snprintf(jsonBuffer, jsonSize, 
+                          "{\"width\":%d,\"height\":%d,\"format\":\"jpeg\",\"data\":\"%s\"}",
+                          thumbWidth, thumbHeight, base64Buffer);
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        free(base64Buffer);
+        return;
+    }
+    
+    free(base64Buffer);
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt thumbnail - publishing without encryption");
+        return;
+    }
+    
+    size_t encryptedLen = encryptedJson.length();
+    jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    written = encryptedLen;
+#else
+    Serial.println("WARNING: JPEG encoder not available, using raw RGB base64");
+    size_t base64Size = ((thumbSize + 2) / 3) * 4 + 1;
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        free(thumbBuffer);
+        return;
+    }
+    
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < thumbSize; i += 3) {
+        uint32_t b0 = thumbBuffer[i];
+        uint32_t b1 = (i + 1 < thumbSize) ? thumbBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < thumbSize) ? thumbBuffer[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < thumbSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < thumbSize) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    free(thumbBuffer);
+    
+    size_t jsonSize = 60 + base64Idx + 1;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer");
+        free(base64Buffer);
+        return;
+    }
+    
+    int written = snprintf(jsonBuffer, jsonSize, 
+                          "{\"width\":%d,\"height\":%d,\"format\":\"rgb888\",\"data\":\"%s\"}",
+                          thumbWidth, thumbHeight, base64Buffer);
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        free(base64Buffer);
+        return;
+    }
+    
+    free(base64Buffer);
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt thumbnail - publishing without encryption");
+        return;
+    }
+    
+    size_t encryptedLen = encryptedJson.length();
+    jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    written = encryptedLen;
+#endif
+    
+    Serial.printf("Publishing encrypted thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+    } else {
+        Serial.printf("Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+    }
+    
+    free(jsonBuffer);
+}
+
+void publishMQTTThumbnailIfConnected() {
+    if (mqttConnected) {
+        publishMQTTThumbnail();
+    } else {
+        Serial.println("MQTT not connected - generating thumbnail and saving to SD card for later publish...");
+        if (display.getBuffer() == nullptr) {
+            Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
+            thumbnailPendingPublish = true;
+            return;
+        }
+        thumbnailPendingPublish = true;
+    }
+}
+
+void publishMQTTMediaMappings() {
+    if (mqttClient == nullptr || !mqttConnected) {
+        Serial.println("ERROR: MQTT not connected, cannot publish media mappings");
+        return;
+    }
+    
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        Serial.println("Media mappings not loaded yet - loading from SD card now...");
+        loadMediaMappingsFromSD(false);
+        if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+            Serial.println("WARNING: No media mappings found on SD card, cannot publish media mappings");
+            return;
+        }
+    }
+    
+    Serial.printf("Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
+    
+    String jsonStr = "{\"mappings\":[";
+    
+    for (size_t i = 0; i < g_media_mappings.size(); i++) {
+        if (i > 0) {
+            jsonStr += ",";
+        }
+        
+        const MediaMapping& mm = g_media_mappings[i];
+        
+        Serial.printf("Generating thumbnail for [%zu] %s...\n", i, mm.imageName.c_str());
+        String thumbnailBase64 = generateThumbnailFromImageFile(mm.imageName);
+        
+        if (thumbnailBase64.length() == 0) {
+            Serial.printf("WARNING: Failed to generate thumbnail for %s, skipping\n", mm.imageName.c_str());
+        }
+        
+        jsonStr += "{\"index\":";
+        jsonStr += String(i);
+        jsonStr += ",\"image\":\"";
+        jsonStr += mm.imageName;
+        jsonStr += "\"";
+        
+        if (mm.audioFile.length() > 0) {
+            jsonStr += ",\"audio\":\"";
+            jsonStr += mm.audioFile;
+            jsonStr += "\"";
+        }
+        
+        if (thumbnailBase64.length() > 0) {
+            jsonStr += ",\"thumbnail\":\"";
+            jsonStr += thumbnailBase64;
+            jsonStr += "\"";
+        }
+        
+        jsonStr += "}";
+        
+        Serial.printf("Completed [%zu] %s (thumbnail: %d bytes base64)\n", i, mm.imageName.c_str(), thumbnailBase64.length());
+    }
+    
+    jsonStr += "]}";
+    
+    String encryptedJson = encryptAndFormatMessage(jsonStr);
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt media mappings - publishing without encryption");
+        return;
+    }
+    
+    size_t encryptedLen = encryptedJson.length();
+    char* jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted media mappings JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    
+    Serial.printf("Publishing encrypted media mappings JSON (%d bytes) to %s...\n", encryptedLen, mqttTopicMedia);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, jsonBuffer, encryptedLen, 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published media mappings to %s (msg_id: %d)\n", mqttTopicMedia, msg_id);
+    } else {
+        Serial.printf("Failed to publish media mappings to %s (msg_id: %d)\n", mqttTopicMedia, msg_id);
+    }
+    
+    free(jsonBuffer);
+}
+
+// Forward declaration
+static void mqttStatus();
+
+void mqttSetConfig() {
+    Serial.println("\n=== MQTT Configuration ===");
+    Serial.println("MQTT configuration is now hardcoded.");
+    Serial.println("Edit the #defines in the source code to change:");
+    Serial.println("  MQTT_BROKER_HOSTNAME");
+    Serial.println("  MQTT_BROKER_PORT");
+    Serial.println("  MQTT_USERNAME");
+    Serial.println("  MQTT_PASSWORD");
+    Serial.println("  MQTT_TOPIC_SUBSCRIBE");
+    Serial.println("  MQTT_TOPIC_PUBLISH");
+    Serial.println("==========================\n");
+    mqttStatus();
+}
+
+static void mqttStatus() {
+    Serial.println("\n=== MQTT Status ===");
+    mqttLoadConfig();
+    
+    if (strlen(mqttBroker) > 0) {
+        Serial.printf("Broker: %s:%d\n", mqttBroker, mqttPort);
+        Serial.printf("Client ID: %s\n", strlen(mqttClientId) > 0 ? mqttClientId : "(auto-generated)");
+        if (strlen(mqttUsername) > 0) {
+            Serial.printf("Username: %s\n", mqttUsername);
+            Serial.println("Password: ***");
+        } else {
+            Serial.println("Authentication: None");
+        }
+        Serial.printf("Topics:\n");
+        Serial.printf("  Subscribe: %s\n", mqttTopicSubscribe);
+        Serial.printf("  Web UI: %s\n", mqttTopicWebUI);
+        Serial.printf("  Publish: %s\n", mqttTopicPublish);
+        Serial.printf("  Status: %s\n", mqttTopicStatus);
+        Serial.printf("  Thumbnail: %s\n", mqttTopicThumb);
+        Serial.printf("  Media: %s\n", mqttTopicMedia);
+        Serial.printf("Connection: %s\n", mqttConnected ? "Connected" : "Disconnected");
+    } else {
+        Serial.println("No MQTT broker configured");
+    }
+    Serial.println("==================\n");
+}
+

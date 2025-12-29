@@ -15,7 +15,7 @@ Import("env")
 import os
 import subprocess
 import sys
-
+    
 def ensure_certificates_exist(cert_dir):
     """Ensure certificate PEM files exist, generate if needed."""
     cert_file = os.path.join(cert_dir, "server_cert.pem")
@@ -63,13 +63,13 @@ def ensure_certificates_exist(cert_dir):
         except FileNotFoundError:
             print("ERROR: openssl not found. Please install OpenSSL.")
             return False
-        
+    
         # Generate self-signed certificate (valid for 10 years)
         print("Generating self-signed certificate...")
         try:
             subprocess.run(
                 ["openssl", "req", "-new", "-x509", "-key", key_file, 
-                 "-out", cert_file, "-days", "3650",
+                "-out", cert_file, "-days", "3650",
                  "-subj", "/C=US/ST=State/L=City/O=ESP32-P4/CN=esp32.local"],
                 check=True,
                 capture_output=True
@@ -102,8 +102,8 @@ def generate_cert_header(cert_file, key_file, output_file):
         # Convert to C strings
         cert_data = pem_to_c_string(cert_pem)
         key_data = pem_to_c_string(key_pem)
-        
-        # Generate header file
+    
+    # Generate header file
         header_content = f"""/**
  * @file certificates.h
  * @brief SSL/TLS certificates for ESP32-P4 HTTPS server
@@ -131,8 +131,8 @@ static const char server_key_pem[] = "{key_data}";
 
 #endif // CERTIFICATES_H
 """
-        
-        # Write header file
+    
+    # Write header file
         output_dir = os.path.dirname(output_file)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)

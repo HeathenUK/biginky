@@ -49,7 +49,7 @@ def touch_main_file(source, target, env):
     project_dir = env.subst("$PROJECT_DIR")
     # Touch the main ESP32-P4 source file to force recompilation
     # This ensures __DATE__ and __TIME__ macros are updated
-    main_file = os.path.join(project_dir, "src", "main_esp32p4_test.cpp")
+    main_file = os.path.join(project_dir, "src", "main.cpp")
     if os.path.exists(main_file):
         os.utime(main_file, None)
         print("Touched main source file to update build date")

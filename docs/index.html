@@ -36,6 +36,15 @@ button.flex-shrink{flex-shrink:0;margin-top:0;}
 .tool-btn{background:#333;border:2px solid #555;color:#e0e0e0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
 .tool-btn:hover{background:#444;border-color:#666;}
 .tool-btn.active{background:#4CAF50;border-color:#45a049;color:white;}
+.color-btn{transition:transform 0.1s;border-radius:4px;}
+.color-btn:hover{transform:scale(1.1);border-color:#4CAF50 !important;}
+.color-btn.active{border-color:#4CAF50 !important;border-width:3px !important;}
+.color-preview-btn{transition:background-color 0.2s;border-radius:4px;display:flex;align-items:center;padding:4px;}
+.color-preview-btn:hover{background-color:#333 !important;}
+.color-palette-popup{display:flex;flex-wrap:wrap;gap:4px;}
+.palette-color-btn{transition:transform 0.1s;border-radius:4px;}
+.palette-color-btn:hover{transform:scale(1.1);border-color:#4CAF50 !important;}
+.palette-color-btn.active{border-color:#4CAF50 !important;border-width:3px !important;}
 h2{cursor:pointer;user-select:none;position:relative;padding-right:20px;}
 h2::after{content:'▼';position:absolute;right:0;font-size:14px;opacity:0.7;transition:transform 0.2s;}
 h2.collapsed::after{transform:rotate(-90deg);}
@@ -217,47 +226,75 @@ table th,table td{padding:6px;font-size:12px;}
 <button onclick="setTool('text')" id="tool-text" class="tool-btn" title="Text" style="width:44px;height:44px;padding:8px;font-size:20px;">T</button>
 <button onclick="setTool('fill')" id="tool-fill" class="tool-btn" title="Fill" style="width:44px;height:44px;padding:8px;font-size:20px;">🪣</button>
 <button onclick="setTool('rectangle')" id="tool-rectangle" class="tool-btn" title="Rectangle" style="width:44px;height:44px;padding:8px;font-size:20px;">▭</button>
+<button onclick="setTool('roundedRect')" id="tool-roundedRect" class="tool-btn" title="Rounded Rectangle" style="width:44px;height:44px;padding:8px;font-size:20px;">▢</button>
 <button onclick="setTool('circle')" id="tool-circle" class="tool-btn" title="Circle" style="width:44px;height:44px;padding:8px;font-size:20px;">○</button>
 <button onclick="setTool('line')" id="tool-line" class="tool-btn" title="Line" style="width:44px;height:44px;padding:8px;font-size:20px;">/</button>
 <button onclick="setTool('eraser')" id="tool-eraser" class="tool-btn" title="Eraser" style="width:44px;height:44px;padding:8px;font-size:20px;">🧹</button>
+<button onclick="setTool('eyedropper')" id="tool-eyedropper" class="tool-btn" title="Eyedropper" style="width:44px;height:44px;padding:8px;font-size:20px;">👁️</button>
 </div>
 <input type="hidden" id="drawTool" value="brush">
 </div>
 <div class="flex-row" style="margin-bottom:15px;">
-<div class="flex-item" style="min-width:120px;">
+<div class="flex-item" id="colorContainer" style="min-width:150px;">
 <label id="colorLabel">Colour:</label>
-<select id="drawColor" style="width:100%;">
-<option value="0" selected>Black</option>
-<option value="2">Yellow</option>
-<option value="3">Red</option>
-<option value="5">Blue</option>
-<option value="6">Green</option>
-<option value="1">White</option>
-</select>
+<div id="colorPaletteContainer" style="display:flex;gap:4px;flex-wrap:wrap;">
+<button class="color-btn" data-color="0" style="width:32px;height:32px;background:#000000;border:2px solid #555;cursor:pointer;" title="Black"></button>
+<button class="color-btn" data-color="2" style="width:32px;height:32px;background:#FFFF00;border:2px solid #555;cursor:pointer;" title="Yellow"></button>
+<button class="color-btn" data-color="3" style="width:32px;height:32px;background:#FF0000;border:2px solid #555;cursor:pointer;" title="Red"></button>
+<button class="color-btn" data-color="5" style="width:32px;height:32px;background:#0000FF;border:2px solid #555;cursor:pointer;" title="Blue"></button>
+<button class="color-btn" data-color="6" style="width:32px;height:32px;background:#00FF00;border:2px solid #555;cursor:pointer;" title="Green"></button>
+<button class="color-btn active" data-color="1" style="width:32px;height:32px;background:#FFFFFF;border:2px solid #555;cursor:pointer;" title="White"></button>
 </div>
-<div class="flex-item" id="fillColorContainer" style="min-width:120px;display:none;">
+<input type="hidden" id="drawColor" value="1">
+</div>
+<div class="flex-item" id="fillColorContainer" style="min-width:150px;display:none;">
 <label>Fill Colour:</label>
-<select id="fillColor" style="width:100%;">
-<option value="transparent">Transparent</option>
-<option value="1" selected>White</option>
-<option value="0">Black</option>
-<option value="2">Yellow</option>
-<option value="3">Red</option>
-<option value="5">Blue</option>
-<option value="6">Green</option>
-</select>
+<button id="fillColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#FFFFFF;position:relative;" title="Click to select fill color">
+<span id="fillColorIndicator" style="display:inline-block;width:32px;height:32px;background:#FFFFFF;border:2px solid #333;margin:2px;"></span>
+<span id="fillColorLabel" style="margin-left:8px;">White</span>
+</button>
+<div id="fillColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;">
+<button class="palette-color-btn" data-color="transparent" style="width:32px;height:32px;background:linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);background-size:8px 8px;background-position:0 0, 0 4px, 4px -4px, -4px 0px;border:2px solid #555;cursor:pointer;margin:2px;" title="Transparent"></button>
+<button class="palette-color-btn" data-color="0" style="width:32px;height:32px;background:#000000;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
+<button class="palette-color-btn" data-color="2" style="width:32px;height:32px;background:#FFFF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Yellow"></button>
+<button class="palette-color-btn" data-color="3" style="width:32px;height:32px;background:#FF0000;border:2px solid #555;cursor:pointer;margin:2px;" title="Red"></button>
+<button class="palette-color-btn" data-color="5" style="width:32px;height:32px;background:#0000FF;border:2px solid #555;cursor:pointer;margin:2px;" title="Blue"></button>
+<button class="palette-color-btn" data-color="6" style="width:32px;height:32px;background:#00FF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Green"></button>
+<button class="palette-color-btn active" data-color="1" style="width:32px;height:32px;background:#FFFFFF;border:2px solid #555;cursor:pointer;margin:2px;" title="White"></button>
 </div>
-<div class="flex-item" id="outlineColorContainer" style="min-width:120px;display:none;">
+<input type="hidden" id="fillColor" value="1">
+</div>
+<div class="flex-item" id="outlineColorContainer" style="min-width:150px;display:none;">
 <label>Outline Colour:</label>
-<select id="outlineColor" style="width:100%;">
-<option value="transparent">Transparent</option>
-<option value="0" selected>Black</option>
-<option value="2">Yellow</option>
-<option value="3">Red</option>
-<option value="5">Blue</option>
-<option value="6">Green</option>
-<option value="1">White</option>
-</select>
+<button id="outlineColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;position:relative;" title="Click to select outline color">
+<span id="outlineColorIndicator" style="display:inline-block;width:32px;height:32px;background:#000000;border:2px solid #333;margin:2px;"></span>
+<span id="outlineColorLabel" style="margin-left:8px;">Black</span>
+</button>
+<div id="outlineColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;">
+<button class="palette-color-btn" data-color="transparent" style="width:32px;height:32px;background:linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);background-size:8px 8px;background-position:0 0, 0 4px, 4px -4px, -4px 0px;border:2px solid #555;cursor:pointer;margin:2px;" title="Transparent"></button>
+<button class="palette-color-btn active" data-color="0" style="width:32px;height:32px;background:#000000;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
+<button class="palette-color-btn" data-color="2" style="width:32px;height:32px;background:#FFFF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Yellow"></button>
+<button class="palette-color-btn" data-color="3" style="width:32px;height:32px;background:#FF0000;border:2px solid #555;cursor:pointer;margin:2px;" title="Red"></button>
+<button class="palette-color-btn" data-color="5" style="width:32px;height:32px;background:#0000FF;border:2px solid #555;cursor:pointer;margin:2px;" title="Blue"></button>
+<button class="palette-color-btn" data-color="6" style="width:32px;height:32px;background:#00FF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Green"></button>
+<button class="palette-color-btn" data-color="1" style="width:32px;height:32px;background:#FFFFFF;border:2px solid #555;cursor:pointer;margin:2px;" title="White"></button>
+</div>
+<input type="hidden" id="outlineColor" value="0">
+</div>
+<div class="flex-item" id="brushSizeContainer" style="min-width:120px;display:none;">
+<label>Brush Size:</label>
+<input type="range" id="brushSize" min="1" max="50" value="2" style="width:100%;">
+<span id="brushSizeDisplay">2px</span>
+</div>
+<div class="flex-item" id="lineWidthContainer" style="min-width:120px;display:none;">
+<label>Line Width:</label>
+<input type="range" id="lineWidth" min="1" max="50" value="2" style="width:100%;">
+<span id="lineWidthDisplay">2px</span>
+</div>
+<div class="flex-item" id="roundedRectRadiusContainer" style="min-width:120px;display:none;">
+<label>Corner Radius:</label>
+<input type="range" id="roundedRectRadius" min="0" max="100" value="20" style="width:100%;">
+<span id="roundedRectRadiusDisplay">20px</span>
 </div>
 <div class="flex-item" id="textToolOptions" style="min-width:150px;display:none;">
 <label>Font Size:</label>
@@ -272,6 +309,24 @@ table th,table td{padding:6px;font-size:12px;}
 <option value="96">96px</option>
 </select>
 </div>
+<div class="flex-item" id="textFontFamilyContainer" style="min-width:120px;display:none;">
+<label>Font:</label>
+<select id="textFontFamily" style="width:100%;">
+<option value="Arial" selected>Arial</option>
+<option value="Times New Roman">Times New Roman</option>
+<option value="Courier New">Courier New</option>
+<option value="Georgia">Georgia</option>
+<option value="Verdana">Verdana</option>
+</select>
+</div>
+<div class="flex-item" id="textAlignContainer" style="min-width:120px;display:none;">
+<label>Alignment:</label>
+<select id="textAlign" style="width:100%;">
+<option value="left" selected>Left</option>
+<option value="center">Center</option>
+<option value="right">Right</option>
+</select>
+</div>
 <div class="flex-item" id="textInputContainer" style="min-width:200px;display:none;">
 <label>Text:</label>
 <input type="text" id="canvasTextInput" placeholder="Enter text..." style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
@@ -280,6 +335,7 @@ table th,table td{padding:6px;font-size:12px;}
 <div style="margin-bottom:10px;">
 <button onclick="clearCanvas()">Clear Canvas</button>
 <button onclick="undoCanvas()" id="undoBtn" disabled>Undo</button>
+<button onclick="redoCanvas()" id="redoBtn" disabled>Redo</button>
 <button onclick="loadImageToCanvas()" id="loadImageBtn">Load Image</button>
 <input type="file" id="imageFileInput" accept="image/*" style="display:none;" onchange="handleImageFileSelect(event)">
 <button onclick="sendCanvasToDisplay()" id="canvasDisplayBtn" disabled>Display on Panel</button>

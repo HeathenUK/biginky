@@ -9,8 +9,12 @@ let lastY = 0;
 let startX = 0;
 let startY = 0;
 let canvasHistory = [];
+let canvasRedoHistory = []; // Track states that were undone for redo
 let historyIndex = -1;
 let lastUncompressedState = null; // Keep last state uncompressed for preview
+let currentDrawColor = '1'; // Default to white
+let currentFillColor = '1'; // Default to white
+let currentOutlineColor = '0'; // Default to black
 
 const colorMap = {
     0: '#000000',  // Black
@@ -22,26 +26,138 @@ const colorMap = {
 };
 
 function getDrawColor() {
-    const val = parseInt(document.getElementById('drawColor').value);
+    const val = parseInt(currentDrawColor);
     return colorMap[val] || '#000000';
 }
 
+function getDrawColorValue() {
+    return currentDrawColor;
+}
+
+function setDrawColor(colorValue) {
+    currentDrawColor = colorValue;
+    const hiddenInput = document.getElementById('drawColor');
+    if (hiddenInput) {
+        hiddenInput.value = colorValue;
+    }
+    // Update active button in palette
+    document.querySelectorAll('#colorPaletteContainer .color-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.color === colorValue) {
+            btn.classList.add('active');
+        }
+    });
+}
+
 function getFillColor() {
-    const val = document.getElementById('fillColor').value;
-    if (val === 'transparent') {
+    if (currentFillColor === 'transparent') {
         return 'transparent';
     }
-    const numVal = parseInt(val);
+    const numVal = parseInt(currentFillColor);
     return colorMap[numVal] || '#FFFFFF';
 }
 
+function getFillColorValue() {
+    return currentFillColor;
+}
+
+function setFillColor(colorValue) {
+    currentFillColor = colorValue;
+    const hiddenInput = document.getElementById('fillColor');
+    if (hiddenInput) {
+        hiddenInput.value = colorValue;
+    }
+    // Update button indicator
+    const indicator = document.getElementById('fillColorIndicator');
+    const label = document.getElementById('fillColorLabel');
+    if (colorValue === 'transparent') {
+        if (indicator) {
+            indicator.style.background = 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)';
+            indicator.style.backgroundSize = '8px 8px';
+        }
+        if (label) label.textContent = 'Transparent';
+    } else {
+        const color = colorMap[parseInt(colorValue)] || '#FFFFFF';
+        if (indicator) {
+            indicator.style.background = color;
+            indicator.style.backgroundSize = 'auto';
+        }
+        const colorNames = {0:'Black', 1:'White', 2:'Yellow', 3:'Red', 5:'Blue', 6:'Green'};
+        if (label) label.textContent = colorNames[parseInt(colorValue)] || 'Unknown';
+    }
+    // Update active button in palette
+    document.querySelectorAll('#fillColorPalette .palette-color-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.color === colorValue) {
+            btn.classList.add('active');
+        }
+    });
+    // Close palette
+    const palette = document.getElementById('fillColorPalette');
+    if (palette) palette.style.display = 'none';
+}
+
 function getOutlineColor() {
-    const val = document.getElementById('outlineColor').value;
-    if (val === 'transparent') {
+    if (currentOutlineColor === 'transparent') {
         return 'transparent';
     }
-    const numVal = parseInt(val);
+    const numVal = parseInt(currentOutlineColor);
     return colorMap[numVal] || '#000000';
+}
+
+function getOutlineColorValue() {
+    return currentOutlineColor;
+}
+
+function setOutlineColor(colorValue) {
+    currentOutlineColor = colorValue;
+    const hiddenInput = document.getElementById('outlineColor');
+    if (hiddenInput) {
+        hiddenInput.value = colorValue;
+    }
+    // Update button indicator
+    const indicator = document.getElementById('outlineColorIndicator');
+    const label = document.getElementById('outlineColorLabel');
+    if (colorValue === 'transparent') {
+        if (indicator) {
+            indicator.style.background = 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)';
+            indicator.style.backgroundSize = '8px 8px';
+        }
+        if (label) label.textContent = 'Transparent';
+    } else {
+        const color = colorMap[parseInt(colorValue)] || '#000000';
+        if (indicator) {
+            indicator.style.background = color;
+            indicator.style.backgroundSize = 'auto';
+        }
+        const colorNames = {0:'Black', 1:'White', 2:'Yellow', 3:'Red', 5:'Blue', 6:'Green'};
+        if (label) label.textContent = colorNames[parseInt(colorValue)] || 'Unknown';
+    }
+    // Update active button in palette
+    document.querySelectorAll('#outlineColorPalette .palette-color-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.color === colorValue) {
+            btn.classList.add('active');
+        }
+    });
+    // Close palette
+    const palette = document.getElementById('outlineColorPalette');
+    if (palette) palette.style.display = 'none';
+}
+
+function getBrushSize() {
+    const slider = document.getElementById('brushSize');
+    return slider ? parseInt(slider.value) : 2;
+}
+
+function getLineWidth() {
+    const slider = document.getElementById('lineWidth');
+    return slider ? parseInt(slider.value) : 2;
+}
+
+function getRoundedRectRadius() {
+    const slider = document.getElementById('roundedRectRadius');
+    return slider ? parseInt(slider.value) : 20;
 }
 
 function setTool(tool) {
@@ -72,8 +188,13 @@ function getCurrentTool() {
 function updateToolOptions(tool) {
     const textOptions = document.getElementById('textToolOptions');
     const textInput = document.getElementById('textInputContainer');
+    const textFontFamily = document.getElementById('textFontFamilyContainer');
+    const textAlign = document.getElementById('textAlignContainer');
     const fillColorContainer = document.getElementById('fillColorContainer');
     const outlineColorContainer = document.getElementById('outlineColorContainer');
+    const brushSizeContainer = document.getElementById('brushSizeContainer');
+    const lineWidthContainer = document.getElementById('lineWidthContainer');
+    const roundedRectRadiusContainer = document.getElementById('roundedRectRadiusContainer');
     const colorLabel = document.getElementById('colorLabel');
     const colorContainer = colorLabel ? colorLabel.parentElement : null;
     
@@ -82,15 +203,46 @@ function updateToolOptions(tool) {
         if (tool === 'text') {
             textOptions.style.display = 'block';
             textInput.style.display = 'block';
+            if (textFontFamily) textFontFamily.style.display = 'block';
+            if (textAlign) textAlign.style.display = 'block';
         } else {
             textOptions.style.display = 'none';
             textInput.style.display = 'none';
+            if (textFontFamily) textFontFamily.style.display = 'none';
+            if (textAlign) textAlign.style.display = 'none';
+        }
+    }
+    
+    // Show/hide brush size for brush and eraser
+    if (brushSizeContainer) {
+        if (tool === 'brush' || tool === 'eraser') {
+            brushSizeContainer.style.display = 'block';
+        } else {
+            brushSizeContainer.style.display = 'none';
+        }
+    }
+    
+    // Show/hide line width for shapes
+    if (lineWidthContainer) {
+        if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
+            lineWidthContainer.style.display = 'block';
+        } else {
+            lineWidthContainer.style.display = 'none';
+        }
+    }
+    
+    // Show/hide corner radius for rounded rectangle
+    if (roundedRectRadiusContainer) {
+        if (tool === 'roundedRect') {
+            roundedRectRadiusContainer.style.display = 'block';
+        } else {
+            roundedRectRadiusContainer.style.display = 'none';
         }
     }
     
     // Show/hide fill and outline for shapes
     if (fillColorContainer && outlineColorContainer && colorLabel && colorContainer) {
-        if (tool === 'rectangle' || tool === 'circle') {
+        if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle') {
             // Hide regular color selector, show fill and outline
             colorContainer.style.display = 'none';
             fillColorContainer.style.display = 'block';
@@ -227,6 +379,9 @@ function saveCanvasState() {
     canvasHistory = canvasHistory.slice(0, historyIndex);
     canvasHistory.push(imageData); // Store uncompressed for now
     
+    // Clear redo history when new action is performed
+    canvasRedoHistory = [];
+    
     // Keep the most recent state uncompressed for real-time preview
     lastUncompressedState = imageData;
     
@@ -257,10 +412,18 @@ function saveCanvasState() {
     if (undoBtn) {
         undoBtn.disabled = historyIndex < 0;
     }
+    const redoBtn = document.getElementById('redoBtn');
+    if (redoBtn) {
+        redoBtn.disabled = canvasRedoHistory.length === 0;
+    }
 }
 
 async function restoreCanvasState() {
     if (historyIndex >= 0) {
+        // Save current state to redo history
+        const currentState = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        canvasRedoHistory.push(currentState);
+        
         const state = canvasHistory[historyIndex];
         // Decompress if needed, otherwise use directly
         const imageData = await decompressImageData(state);
@@ -268,9 +431,39 @@ async function restoreCanvasState() {
         // Update lastUncompressedState for preview
         lastUncompressedState = imageData;
         historyIndex--;
+        
         const undoBtn = document.getElementById('undoBtn');
         if (undoBtn) {
             undoBtn.disabled = historyIndex < 0;
+        }
+        const redoBtn = document.getElementById('redoBtn');
+        if (redoBtn) {
+            redoBtn.disabled = canvasRedoHistory.length === 0;
+        }
+    }
+}
+
+async function redoCanvasState() {
+    if (canvasRedoHistory.length > 0) {
+        // Save current state to undo history
+        const currentState = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        historyIndex++;
+        canvasHistory = canvasHistory.slice(0, historyIndex);
+        canvasHistory.push(currentState);
+        
+        // Restore from redo history
+        const state = canvasRedoHistory.pop();
+        const imageData = await decompressImageData(state);
+        ctx.putImageData(imageData, 0, 0);
+        lastUncompressedState = imageData;
+        
+        const undoBtn = document.getElementById('undoBtn');
+        if (undoBtn) {
+            undoBtn.disabled = historyIndex < 0;
+        }
+        const redoBtn = document.getElementById('redoBtn');
+        if (redoBtn) {
+            redoBtn.disabled = canvasRedoHistory.length === 0;
         }
     }
 }
@@ -579,9 +772,39 @@ function startDraw(e) {
         if (text) {
             saveCanvasState();
             ctx.fillStyle = getDrawColor();
-            ctx.font = document.getElementById('textFontSize').value + 'px Arial';
+            const fontSize = document.getElementById('textFontSize').value;
+            const fontFamily = document.getElementById('textFontFamily') ? document.getElementById('textFontFamily').value : 'Arial';
+            ctx.font = fontSize + 'px ' + fontFamily;
+            ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
+            ctx.textBaseline = 'top';
             ctx.fillText(text, coords.x, coords.y);
         }
+        return;
+    }
+    
+    if (tool === 'eyedropper') {
+        // Pick color from canvas at click position
+        const imageData = ctx.getImageData(Math.floor(coords.x), Math.floor(coords.y), 1, 1);
+        const r = imageData.data[0];
+        const g = imageData.data[1];
+        const b = imageData.data[2];
+        const rgb = `rgb(${r},${g},${b})`;
+        
+        // Find closest color in palette
+        let closestColor = '0';
+        let minDist = Infinity;
+        for (const [key, value] of Object.entries(colorMap)) {
+            const hexR = parseInt(value.substring(1, 3), 16);
+            const hexG = parseInt(value.substring(3, 5), 16);
+            const hexB = parseInt(value.substring(5, 7), 16);
+            const dist = Math.sqrt(Math.pow(r - hexR, 2) + Math.pow(g - hexG, 2) + Math.pow(b - hexB, 2));
+            if (dist < minDist) {
+                minDist = dist;
+                closestColor = key;
+            }
+        }
+        
+        setDrawColor(closestColor);
         return;
     }
     
@@ -595,7 +818,7 @@ function startDraw(e) {
     startX = lastX = coords.x;
     startY = lastY = coords.y;
     
-    if (tool === 'rectangle' || tool === 'circle' || tool === 'line') {
+    if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
         saveCanvasState();
     }
 }
@@ -613,7 +836,7 @@ function draw(e) {
         const x = coords.x;
         const y = coords.y;
         ctx.strokeStyle = tool === 'eraser' ? '#FFFFFF' : getDrawColor();
-        ctx.lineWidth = 2;
+        ctx.lineWidth = getBrushSize();
         ctx.lineCap = 'round';
         ctx.beginPath();
         ctx.moveTo(lastX, lastY);
@@ -621,7 +844,7 @@ function draw(e) {
         ctx.stroke();
         lastX = x;
         lastY = y;
-    } else if (tool === 'rectangle' || tool === 'circle' || tool === 'line') {
+    } else if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
         // Restore last saved state and draw preview
         // Use lastUncompressedState if available (for real-time preview)
         if (lastUncompressedState) {
@@ -636,7 +859,7 @@ function draw(e) {
             // If compressed, we can't restore synchronously - shape will draw on current state
         }
         
-        ctx.lineWidth = 2;
+        ctx.lineWidth = getLineWidth();
         ctx.beginPath();
         
         if (tool === 'rectangle') {
@@ -647,6 +870,32 @@ function draw(e) {
             ctx.fillRect(startX, startY, width, height);
             ctx.strokeStyle = getOutlineColor();
             ctx.strokeRect(startX, startY, width, height);
+        } else if (tool === 'roundedRect') {
+            const width = coords.x - startX;
+            const height = coords.y - startY;
+            const radius = getRoundedRectRadius();
+            const x = startX;
+            const y = startY;
+            const w = width;
+            const h = height;
+            
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + w - radius, y);
+            ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+            ctx.lineTo(x + w, y + h - radius);
+            ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+            ctx.lineTo(x + radius, y + h);
+            ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+            
+            // Fill first, then stroke
+            ctx.fillStyle = getFillColor();
+            ctx.fill();
+            ctx.strokeStyle = getOutlineColor();
+            ctx.stroke();
         } else if (tool === 'circle') {
             const radius = Math.sqrt(Math.pow(coords.x - startX, 2) + Math.pow(coords.y - startY, 2));
             ctx.arc(startX, startY, radius, 0, Math.PI * 2);
@@ -672,11 +921,15 @@ function stopDraw() {
     if (tool === 'brush' || tool === 'eraser') {
         saveCanvasState();
     }
-    // Rectangle, circle, and line already saved state in startDraw
+    // Rectangle, roundedRect, circle, and line already saved state in startDraw
 }
 
 async function undoCanvas() {
     await restoreCanvasState();
+}
+
+async function redoCanvas() {
+    await redoCanvasState();
 }
 
 // Update tool options visibility
@@ -790,6 +1043,101 @@ function initializeCanvas() {
         // Clear canvas on initialization
         clearCanvas();
     }
+    
+    // Set up color palette buttons
+    document.querySelectorAll('#colorPaletteContainer .color-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const colorValue = e.target.dataset.color;
+            setDrawColor(colorValue);
+        });
+    });
+    
+    // Set up fill color button and palette
+    const fillColorBtn = document.getElementById('fillColorBtn');
+    const fillColorPalette = document.getElementById('fillColorPalette');
+    if (fillColorBtn && fillColorPalette) {
+        fillColorBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isVisible = fillColorPalette.style.display !== 'none';
+            // Close outline palette if open
+            const outlinePalette = document.getElementById('outlineColorPalette');
+            if (outlinePalette) outlinePalette.style.display = 'none';
+            // Toggle fill palette
+            fillColorPalette.style.display = isVisible ? 'none' : 'block';
+        });
+        
+        document.querySelectorAll('#fillColorPalette .palette-color-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const colorValue = e.target.dataset.color;
+                setFillColor(colorValue);
+            });
+        });
+    }
+    
+    // Set up outline color button and palette
+    const outlineColorBtn = document.getElementById('outlineColorBtn');
+    const outlineColorPalette = document.getElementById('outlineColorPalette');
+    if (outlineColorBtn && outlineColorPalette) {
+        outlineColorBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isVisible = outlineColorPalette.style.display !== 'none';
+            // Close fill palette if open
+            if (fillColorPalette) fillColorPalette.style.display = 'none';
+            // Toggle outline palette
+            outlineColorPalette.style.display = isVisible ? 'none' : 'block';
+        });
+        
+        document.querySelectorAll('#outlineColorPalette .palette-color-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const colorValue = e.target.dataset.color;
+                setOutlineColor(colorValue);
+            });
+        });
+    }
+    
+    // Close palettes when clicking outside
+    document.addEventListener('click', (e) => {
+        if (fillColorPalette && !fillColorBtn.contains(e.target) && !fillColorPalette.contains(e.target)) {
+            fillColorPalette.style.display = 'none';
+        }
+        if (outlineColorPalette && !outlineColorBtn.contains(e.target) && !outlineColorPalette.contains(e.target)) {
+            outlineColorPalette.style.display = 'none';
+        }
+    });
+    
+    // Set up brush size slider
+    const brushSizeSlider = document.getElementById('brushSize');
+    const brushSizeDisplay = document.getElementById('brushSizeDisplay');
+    if (brushSizeSlider && brushSizeDisplay) {
+        brushSizeSlider.addEventListener('input', (e) => {
+            brushSizeDisplay.textContent = e.target.value + 'px';
+        });
+    }
+    
+    // Set up line width slider
+    const lineWidthSlider = document.getElementById('lineWidth');
+    const lineWidthDisplay = document.getElementById('lineWidthDisplay');
+    if (lineWidthSlider && lineWidthDisplay) {
+        lineWidthSlider.addEventListener('input', (e) => {
+            lineWidthDisplay.textContent = e.target.value + 'px';
+        });
+    }
+    
+    // Set up rounded rect radius slider
+    const roundedRectRadiusSlider = document.getElementById('roundedRectRadius');
+    const roundedRectRadiusDisplay = document.getElementById('roundedRectRadiusDisplay');
+    if (roundedRectRadiusSlider && roundedRectRadiusDisplay) {
+        roundedRectRadiusSlider.addEventListener('input', (e) => {
+            roundedRectRadiusDisplay.textContent = e.target.value + 'px';
+        });
+    }
+    
+    // Initialize default colors
+    setDrawColor('1'); // White
+    setFillColor('1'); // White
+    setOutlineColor('0'); // Black
 }
 
 if (document.readyState === 'loading') {

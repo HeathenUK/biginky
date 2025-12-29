@@ -237,13 +237,38 @@ async function decryptMessage(payloadBase64, ivBase64) {
             const cleanIvBase64 = ivBase64.replace(/\s/g, '');
             const cleanPayloadBase64 = payloadBase64.replace(/\s/g, '');
             
-            const ivBinaryString = atob(cleanIvBase64);
+            // Debug: Check for base64 encoding issues
+            console.log('decryptMessage: IV base64 (first 30 chars):', cleanIvBase64.substring(0, 30));
+            console.log('decryptMessage: Payload base64 (first 50 chars):', cleanPayloadBase64.substring(0, 50));
+            console.log('decryptMessage: Payload base64 (last 50 chars):', cleanPayloadBase64.substring(Math.max(0, cleanPayloadBase64.length - 50)));
+            
+            // Check if base64 strings are valid
+            const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+            if (!base64Regex.test(cleanIvBase64)) {
+                console.error('decryptMessage: Invalid characters in IV base64');
+            }
+            if (!base64Regex.test(cleanPayloadBase64)) {
+                console.error('decryptMessage: Invalid characters in payload base64');
+            }
+            
+            let ivBinaryString, payloadBinaryString;
+            try {
+                ivBinaryString = atob(cleanIvBase64);
+            } catch (e) {
+                console.error('decryptMessage: Failed to decode IV base64:', e);
+                return null;
+            }
             iv = new Uint8Array(ivBinaryString.length);
             for (let i = 0; i < ivBinaryString.length; i++) {
                 iv[i] = ivBinaryString.charCodeAt(i);
             }
             
-            const payloadBinaryString = atob(cleanPayloadBase64);
+            try {
+                payloadBinaryString = atob(cleanPayloadBase64);
+            } catch (e) {
+                console.error('decryptMessage: Failed to decode payload base64:', e);
+                return null;
+            }
             ciphertext = new Uint8Array(payloadBinaryString.length);
             for (let i = 0; i < payloadBinaryString.length; i++) {
                 ciphertext[i] = payloadBinaryString.charCodeAt(i);

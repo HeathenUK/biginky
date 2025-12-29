@@ -275,9 +275,16 @@ async function handleStatusMessage(message) {
 
 async function handleThumbnailMessage(message) {
     console.log('Thumbnail message received, parsing...');
+    console.log('Message retained flag:', message.retained);
+    console.log('Message payload string length:', message.payloadString ? message.payloadString.length : 0);
     try {
         const payload = JSON.parse(message.payloadString);
         console.log('Parsed payload:', payload);
+        console.log('Payload keys:', Object.keys(payload));
+        console.log('Has encrypted flag:', payload.encrypted);
+        console.log('Has iv field:', payload.iv !== undefined);
+        console.log('Has payload field:', payload.payload !== undefined);
+        console.log('Has hmac field:', payload.hmac !== undefined);
         
         // Check if message is encrypted
         let thumb = payload;

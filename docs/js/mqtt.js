@@ -277,7 +277,27 @@ async function handleThumbnailMessage(message) {
     console.log('Thumbnail message received, parsing...');
     console.log('Message retained flag:', message.retained);
     console.log('Message payload string length:', message.payloadString ? message.payloadString.length : 0);
+    
+    // Validate message payload is not empty or corrupted
+    if (!message.payloadString || message.payloadString.length === 0) {
+        console.error('Thumbnail message has empty payload');
+        document.getElementById('thumbnailStatus').textContent = 'Error: Empty thumbnail message received';
+        return;
+    }
+    
+    // Check for potential corruption - very large messages might be truncated
+    if (message.payloadString.length > 500000) {  // ~500KB seems reasonable max
+        console.warn('Thumbnail message is unusually large:', message.payloadString.length, 'bytes');
+    }
+    
     try {
+        // Validate JSON structure before parsing
+        if (!message.payloadString.trim().startsWith('{') || !message.payloadString.trim().endsWith('}')) {
+            console.error('Thumbnail message does not appear to be valid JSON (missing braces)');
+            document.getElementById('thumbnailStatus').textContent = 'Error: Invalid JSON structure in thumbnail message';
+            return;
+        }
+        
         const payload = JSON.parse(message.payloadString);
         console.log('Parsed payload:', payload);
         console.log('Payload keys:', Object.keys(payload));

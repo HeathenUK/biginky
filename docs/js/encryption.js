@@ -321,8 +321,28 @@ async function decryptMessage(payloadBase64, ivBase64) {
             console.error('  - Ciphertext length % 16:', ciphertext.length % 16);
             console.error('  - Error name:', decryptError.name);
             console.error('  - Error message:', decryptError.message);
-            // This usually means the key is wrong or the ciphertext is corrupted
-            return null;
+            
+            // Fallback: try removing the last block (16 bytes) in case there's an extra padding block
+            // This handles cases where the ciphertext might have an extra block that causes Web Crypto API to fail
+            if (ciphertext.length >= 32) {  // Need at least 2 blocks to try this
+                console.log('decryptMessage: Attempting fallback - removing last block (16 bytes)');
+                try {
+                    const fallbackCiphertext = ciphertext.slice(0, ciphertext.length - 16);
+                    plaintext = await crypto.subtle.decrypt(
+                        { name: 'AES-CBC', iv: iv },
+                        key,
+                        fallbackCiphertext
+                    );
+                    console.log('decryptMessage: Fallback decryption successful, plaintext length:', plaintext.byteLength, 'bytes');
+                } catch (fallbackError) {
+                    console.error('Fallback decryption also failed:', fallbackError);
+                    // This usually means the key is wrong or the ciphertext is corrupted
+                    return null;
+                }
+            } else {
+                // This usually means the key is wrong or the ciphertext is corrupted
+                return null;
+            }
         }
         
         // Remove PKCS7 padding from ArrayBuffer BEFORE converting to string

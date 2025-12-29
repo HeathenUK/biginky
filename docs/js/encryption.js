@@ -173,10 +173,12 @@ async function encryptMessage(plaintext) {
         }
         
         // Import key for AES-CBC
+        // Note: Web Crypto API infers key length from key material, so we don't specify length explicitly
+        // This allows it to work with the key as-is without strict validation
         const key = await crypto.subtle.importKey(
             'raw',
             encryptionKey,
-            { name: 'AES-CBC', length: 256 },
+            { name: 'AES-CBC' },
             false,
             ['encrypt']
         );
@@ -295,10 +297,12 @@ async function decryptMessage(payloadBase64, ivBase64) {
         }
         
         // Import key for AES-CBC
+        // Note: Web Crypto API infers key length from key material, so we don't specify length explicitly
+        // This allows it to work with the key as-is without strict validation
         const key = await crypto.subtle.importKey(
             'raw',
             encryptionKey,
-            { name: 'AES-CBC', length: 256 },
+            { name: 'AES-CBC' },
             false,
             ['decrypt']
         );

@@ -326,6 +326,18 @@ async function handleThumbnailMessage(message) {
                     return;
                 }
                 
+                // Validate IV and payload are strings and not empty
+                if (typeof payload.iv !== 'string' || payload.iv.length === 0) {
+                    console.error('Thumbnail: Invalid IV field (not a string or empty)');
+                    document.getElementById('thumbnailStatus').textContent = 'Error: Invalid IV in thumbnail message';
+                    return;
+                }
+                if (typeof payload.payload !== 'string' || payload.payload.length === 0) {
+                    console.error('Thumbnail: Invalid payload field (not a string or empty)');
+                    document.getElementById('thumbnailStatus').textContent = 'Error: Invalid payload in thumbnail message';
+                    return;
+                }
+                
                 // Verify HMAC first (on encrypted message)
                 if (webUIPassword && payload.hmac) {
                     const providedHMAC = payload.hmac;

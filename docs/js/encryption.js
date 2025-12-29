@@ -322,10 +322,13 @@ async function decryptMessage(payloadBase64, ivBase64) {
             console.error('  - Error name:', decryptError.name);
             console.error('  - Error message:', decryptError.message);
             
-            // Fallback: try removing the last block (16 bytes) in case there's an extra padding block
-            // This handles cases where the ciphertext might have an extra block that causes Web Crypto API to fail
-            if (ciphertext.length >= 32) {  // Need at least 2 blocks to try this
-                console.log('decryptMessage: Attempting fallback - removing last block (16 bytes)');
+            // Fallback: try multiple strategies to recover from decryption failure
+            // This handles cases where the ciphertext might have extra blocks or padding issues
+            let fallbackSucceeded = false;
+            
+            // Strategy 1: Try removing last block (16 bytes)
+            if (ciphertext.length >= 32 && !fallbackSucceeded) {
+                console.log('decryptMessage: Attempting fallback 1 - removing last block (16 bytes)');
                 try {
                     const fallbackCiphertext = ciphertext.slice(0, ciphertext.length - 16);
                     plaintext = await crypto.subtle.decrypt(
@@ -333,13 +336,55 @@ async function decryptMessage(payloadBase64, ivBase64) {
                         key,
                         fallbackCiphertext
                     );
-                    console.log('decryptMessage: Fallback decryption successful, plaintext length:', plaintext.byteLength, 'bytes');
+                    console.log('decryptMessage: Fallback 1 successful, plaintext length:', plaintext.byteLength, 'bytes');
+                    fallbackSucceeded = true;
                 } catch (fallbackError) {
-                    console.error('Fallback decryption also failed:', fallbackError);
-                    // This usually means the key is wrong or the ciphertext is corrupted
-                    return null;
+                    console.log('Fallback 1 failed, trying next strategy...');
                 }
-            } else {
+            }
+            
+            // Strategy 2: Try removing last 2 blocks (32 bytes)
+            if (ciphertext.length >= 48 && !fallbackSucceeded) {
+                console.log('decryptMessage: Attempting fallback 2 - removing last 2 blocks (32 bytes)');
+                try {
+                    const fallbackCiphertext = ciphertext.slice(0, ciphertext.length - 32);
+                    plaintext = await crypto.subtle.decrypt(
+                        { name: 'AES-CBC', iv: iv },
+                        key,
+                        fallbackCiphertext
+                    );
+                    console.log('decryptMessage: Fallback 2 successful, plaintext length:', plaintext.byteLength, 'bytes');
+                    fallbackSucceeded = true;
+                } catch (fallbackError) {
+                    console.log('Fallback 2 failed, trying next strategy...');
+                }
+            }
+            
+            // Strategy 3: Try removing bytes that aren't a multiple of 16 (1-15 bytes)
+            if (ciphertext.length >= 17 && !fallbackSucceeded) {
+                for (let removeBytes = 1; removeBytes <= 15 && !fallbackSucceeded; removeBytes++) {
+                    const testLength = ciphertext.length - removeBytes;
+                    if (testLength > 0 && testLength % 16 === 0) {
+                        console.log(`decryptMessage: Attempting fallback 3 - removing ${removeBytes} bytes`);
+                        try {
+                            const fallbackCiphertext = ciphertext.slice(0, testLength);
+                            plaintext = await crypto.subtle.decrypt(
+                                { name: 'AES-CBC', iv: iv },
+                                key,
+                                fallbackCiphertext
+                            );
+                            console.log(`decryptMessage: Fallback 3 successful (removed ${removeBytes} bytes), plaintext length:`, plaintext.byteLength, 'bytes');
+                            fallbackSucceeded = true;
+                            break;
+                        } catch (fallbackError) {
+                            // Continue trying
+                        }
+                    }
+                }
+            }
+            
+            if (!fallbackSucceeded) {
+                console.error('All fallback decryption strategies failed');
                 // This usually means the key is wrong or the ciphertext is corrupted
                 return null;
             }

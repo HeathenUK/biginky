@@ -307,6 +307,11 @@ async function decryptMessage(payloadBase64, ivBase64) {
             ['decrypt']
         );
         
+        // Debug: log first few bytes of IV and ciphertext to verify they're correct
+        console.log('decryptMessage: IV (first 8 bytes):', Array.from(iv.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        console.log('decryptMessage: Ciphertext (first 16 bytes):', Array.from(ciphertext.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        console.log('decryptMessage: Ciphertext (last 16 bytes):', Array.from(ciphertext.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        
         // Decrypt
         let plaintext;
         try {

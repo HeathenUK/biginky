@@ -338,6 +338,16 @@ async function handleThumbnailMessage(message) {
                     return;
                 }
                 
+                // Validate base64 string lengths (16 bytes IV = 24 base64 chars, payload should be multiple of 4)
+                const cleanIv = payload.iv.replace(/\s/g, '');
+                const cleanPayload = payload.payload.replace(/\s/g, '');
+                if (cleanIv.length !== 24) {
+                    console.warn('Thumbnail: IV base64 length is', cleanIv.length, '(expected 24 for 16 bytes)');
+                }
+                if (cleanPayload.length % 4 !== 0) {
+                    console.warn('Thumbnail: Payload base64 length is', cleanPayload.length, '(not a multiple of 4, may be corrupted)');
+                }
+                
                 // Verify HMAC first (on encrypted message)
                 if (webUIPassword && payload.hmac) {
                     const providedHMAC = payload.hmac;

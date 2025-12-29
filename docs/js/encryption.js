@@ -316,13 +316,14 @@ async function decryptMessage(payloadBase64, ivBase64) {
         // This helps diagnose if the issue is with key derivation or ciphertext format
         try {
             const testPlaintext = new TextEncoder().encode('test');
+            const testIV = crypto.getRandomValues(new Uint8Array(16));
             const testEncrypted = await crypto.subtle.encrypt(
-                { name: 'AES-CBC', iv: iv },
+                { name: 'AES-CBC', iv: testIV },
                 key,
                 testPlaintext
             );
             const testDecrypted = await crypto.subtle.decrypt(
-                { name: 'AES-CBC', iv: iv },
+                { name: 'AES-CBC', iv: testIV },
                 key,
                 testEncrypted
             );

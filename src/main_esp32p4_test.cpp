@@ -942,10 +942,16 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
         // Normal minute-by-minute sleep - apply sanity check
         // Avoid very short sleeps (USB/serial jitter)
         if (sleep_s < 5 && sleep_s > 0) {
+            uint32_t original_sleep_s = sleep_s;
             sleep_s += interval_minutes * 60;
             Serial.printf("Sleep duration too short (%lu), adding %lu seconds\n", 
-                         (unsigned long)(sleep_s - interval_minutes * 60), 
+                         (unsigned long)original_sleep_s, 
                          (unsigned long)(interval_minutes * 60));
+            
+            // Recalculate wake time after adding interval
+            uint32_t total_minutes = min + (sleep_s + 59) / 60;  // Ceiling division
+            wake_min = total_minutes % 60;
+            wake_hour = (tm_utc.tm_hour + (total_minutes / 60)) % 24;
         }
         
         // Sanity clamp - if calculation is way off, use fallback
@@ -953,6 +959,10 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
         if (sleep_s > interval_minutes * 60 + 60) {
             Serial.printf("Sleep calculation too large (%lu), using fallback\n", (unsigned long)sleep_s);
             sleep_s = fallback_seconds;
+            // Recalculate wake time for fallback
+            uint32_t total_minutes = min + (sleep_s + 59) / 60;  // Ceiling division
+            wake_min = total_minutes % 60;
+            wake_hour = (tm_utc.tm_hour + (total_minutes / 60)) % 24;
         }
     }
 

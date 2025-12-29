@@ -71,6 +71,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include "nvs_guard.h"  // RAII wrapper for Preferences
+#include "mqtt_guard.h"  // RAII wrapper for MQTT connections
 #include <ArduinoJson.h>
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
 #include "mbedtls/md.h"  // ESP32 built-in HMAC support
@@ -2378,24 +2379,24 @@ static void auto_cycle_task(void* arg) {
                 Serial.println("About to call publishMQTTStatus()...");
                 Serial.flush();
                 // Reconnect to MQTT for status publish
-                if (mqttConnect()) {
-                    delay(1000);  // Wait for connection and subscriptions
-                    publishMQTTStatus();
-                    
-                    // On cold boot, also publish media mappings (ONLY on cold boot, not deep sleep wake)
-                    if (g_is_cold_boot) {
-                        Serial.println("=== COLD BOOT: Publishing media mappings ===");
-                        publishMQTTMediaMappings();
-                        g_is_cold_boot = false;  // Clear flag after publishing media mappings
-                    }
-                    
-                    delay(200);  // Allow time for publishes to complete
-                    mqttDisconnect();
-                } else {
-                    Serial.println("WARNING: Failed to reconnect to MQTT for status publish");
-                    // Clear cold boot flag even if MQTT failed (don't retry on next cycle)
-                    if (g_is_cold_boot) {
-                        g_is_cold_boot = false;
+                {
+                    MQTTGuard guard;
+                    if (guard.isConnected()) {
+                        publishMQTTStatus();
+                        
+                        // On cold boot, also publish media mappings (ONLY on cold boot, not deep sleep wake)
+                        if (g_is_cold_boot) {
+                            Serial.println("=== COLD BOOT: Publishing media mappings ===");
+                            publishMQTTMediaMappings();
+                            g_is_cold_boot = false;  // Clear flag after publishing media mappings
+                        }
+                        // guard automatically handles delays and disconnect in destructor
+                    } else {
+                        Serial.println("WARNING: Failed to reconnect to MQTT for status publish");
+                        // Clear cold boot flag even if MQTT failed (don't retry on next cycle)
+                        if (g_is_cold_boot) {
+                            g_is_cold_boot = false;
+                        }
                     }
                 }
                 Serial.println("Returned from publishMQTTStatus()");
@@ -3054,46 +3055,45 @@ static void auto_cycle_task(void* arg) {
             Serial.println("WiFi connected for thumbnail publish");
             
             // Connect to MQTT
-            if (mqttConnect()) {
-                delay(1000);  // Wait for connection and subscriptions
-                
-                // Publish thumbnail (will load from SD if available, otherwise regenerate from framebuffer)
-                Serial.println("Publishing thumbnail to MQTT...");
-                publishMQTTThumbnail();
-                delay(200);  // Allow time for publish to complete
-                
-                // Check for SMS bridge commands after thumbnail publish (top-of-hour MQTT check)
-                Serial.println("=== Checking for SMS bridge commands (top-of-hour) ===");
-                String commandToProcess = "";
-                String originalMessageForCommand = "";
-                if (mqttCheckMessages(100)) {
-                    String msg = mqttGetLastMessage();
-                    Serial.printf("New command received: %s\n", msg.c_str());
+            String commandToProcess = "";
+            String originalMessageForCommand = "";
+            {
+                MQTTGuard guard;
+                if (guard.isConnected()) {
+                    // Publish thumbnail (will load from SD if available, otherwise regenerate from framebuffer)
+                    Serial.println("Publishing thumbnail to MQTT...");
+                    publishMQTTThumbnail();
                     
-                    // Extract command (but don't process yet - disconnect first)
-                    String command = extractCommandFromMessage(msg);
-                    if (command.length() > 0) {
-                        commandToProcess = command;  // Store for processing after disconnect
-                        originalMessageForCommand = msg;  // Store original message for commands that need it
+                    // Check for SMS bridge commands after thumbnail publish (top-of-hour MQTT check)
+                    Serial.println("=== Checking for SMS bridge commands (top-of-hour) ===");
+                    if (mqttCheckMessages(100)) {
+                        String msg = mqttGetLastMessage();
+                        Serial.printf("New command received: %s\n", msg.c_str());
+                        
+                        // Extract command (but don't process yet - disconnect first)
+                        String command = extractCommandFromMessage(msg);
+                        if (command.length() > 0) {
+                            commandToProcess = command;  // Store for processing after disconnect
+                            originalMessageForCommand = msg;  // Store original message for commands that need it
+                        }
+                        
+                        // Message already processed and cleared in event handler
+                        // The blank retained message was published in the event handler
+                        // Note: delay(200) for blank message publish is handled by guard destructor
+                    } else {
+                        Serial.println("No retained messages");
                     }
-                    
-                    // Message already processed and cleared in event handler
-                    // The blank retained message was published in the event handler
-                    delay(200);  // Allow time for blank retained message publish to complete
+                    // guard automatically handles delays and disconnect in destructor
+                    Serial.println("MQTT disconnected");
                 } else {
-                    Serial.println("No retained messages");
+                    Serial.println("WARNING: Failed to connect to MQTT for thumbnail publish");
                 }
-                
-                mqttDisconnect();
-                Serial.println("MQTT disconnected");
-                
-                // Process SMS bridge commands AFTER MQTT disconnect (to avoid stack issues)
-                if (commandToProcess.length() > 0) {
-                    Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
-                    handleMqttCommand(commandToProcess, originalMessageForCommand);
-                }
-            } else {
-                Serial.println("WARNING: Failed to connect to MQTT for thumbnail publish");
+            }
+            
+            // Process SMS bridge commands AFTER MQTT disconnect (to avoid stack issues)
+            if (commandToProcess.length() > 0) {
+                Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
+                handleMqttCommand(commandToProcess, originalMessageForCommand);
             }
             
             // Disconnect WiFi

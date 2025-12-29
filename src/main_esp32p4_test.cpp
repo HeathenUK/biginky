@@ -2458,9 +2458,18 @@ static void auto_cycle_task(void* arg) {
     
 #if WIFI_ENABLED
     // Resync NTP every 5 wake cycles to keep time accurate
+    // BUT only if time is actually invalid - if time is valid, skip to avoid delays
     if (ntpSyncCounter >= 5) {
-        Serial.println("\n=== Periodic NTP Resync (every 5 cycles) ===");
         ntpSyncCounter = 0;  // Reset counter
+        
+        // Check if time is valid before doing expensive NTP sync
+        time_t now = time(nullptr);
+        if (now > 1577836800) {
+            // Time is already valid - skip NTP resync to avoid 2+ minute delay
+            Serial.println("Periodic NTP resync skipped - time is already valid");
+        } else {
+            // Time is invalid - do NTP resync
+            Serial.println("\n=== Periodic NTP Resync (every 5 cycles) - time invalid ===");
         
         // Load WiFi credentials
         String ssid = "";
@@ -2538,6 +2547,7 @@ static void auto_cycle_task(void* arg) {
             Serial.println("No WiFi credentials saved, skipping NTP resync");
         }
         Serial.println("==========================================\n");
+        }  // End of else block for time invalid check
     } else {
         Serial.printf("NTP resync in %lu more cycles\n", (unsigned long)(5 - ntpSyncCounter));
     }

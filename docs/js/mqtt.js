@@ -452,6 +452,7 @@ async function handleThumbnailMessage(message) {
 
 async function handleMediaMessage(message) {
     console.log('Media mappings message received, parsing...');
+    console.log('Media mappings message retained flag:', message.retained);
     try {
         const payload = JSON.parse(message.payloadString);
         console.log('Parsed media payload:', payload);

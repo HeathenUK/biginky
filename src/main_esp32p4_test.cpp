@@ -1032,11 +1032,17 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
 
     Serial.printf("Time invalid; syncing NTP via WiFi SSID '%s'...\n", ssid.c_str());
     
-    // Configure WiFi for better connection reliability
+    // Configure WiFi for better connection reliability and speed
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);  // Disable WiFi sleep for better connection stability
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximum power for better range
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximum power for better range and faster connection
     WiFi.setAutoReconnect(true);  // Enable auto-reconnect
+    
+    // Additional optimizations for faster connection:
+    // - TX power already at maximum (19.5 dBm) for best signal strength
+    // - WiFi sleep disabled for immediate connection attempts
+    // - Auto-reconnect enabled for persistent connections
+    // - Connection timeout reduced to 20s for faster retries
     
     // Try connecting with multiple retries, but respect overall timeout
     int maxRetries = 15;
@@ -1066,7 +1072,9 @@ static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
         }
 
     uint32_t start = millis();
-        uint32_t timeoutPerAttempt = 30000;  // 30 seconds per attempt
+        // Reduced timeout for faster failure and retry (20s instead of 30s)
+        // This allows faster retries when connection is slow, improving overall connection time
+        uint32_t timeoutPerAttempt = 20000;  // 20 seconds per attempt (reduced from 30s)
         // Reduce timeout if we're close to overall timeout
         uint32_t remainingTime = timeout_ms - (millis() - overallStart);
         if (remainingTime < timeoutPerAttempt) {
@@ -2087,7 +2095,7 @@ bool addAllowedNumber(const String& number);  // Add number to allowed list in N
 bool removeAllowedNumber(const String& number);  // Remove number from allowed list in NVS
 void numbersLoadFromNVS();  // Load allowed numbers from NVS (called on startup)
 void mqttDisconnect();
-bool wifiConnectPersistent(int maxRetries = 10, uint32_t timeoutPerAttemptMs = 30000, bool required = true);
+bool wifiConnectPersistent(int maxRetries = 10, uint32_t timeoutPerAttemptMs = 20000, bool required = true);
 #endif // WIFI_ENABLED
 
 // Deferred web UI command (for heavy commands that need to run outside MQTT task context)
@@ -11505,11 +11513,17 @@ bool wifiConnectPersistent(int maxRetries, uint32_t timeoutPerAttemptMs, bool re
     
     Serial.printf("Connecting to WiFi: %s (persistent mode)\n", wifiSSID);
     
-    // Configure WiFi for better connection reliability
+    // Configure WiFi for better connection reliability and speed
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);  // Disable WiFi sleep for better connection stability
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximum power for better range
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximum power for better range and faster connection
     WiFi.setAutoReconnect(true);  // Enable auto-reconnect
+    
+    // Additional optimizations for faster connection:
+    // - TX power already at maximum (19.5 dBm) for best signal strength
+    // - WiFi sleep disabled for immediate connection attempts
+    // - Auto-reconnect enabled for persistent connections
+    // - Connection timeout reduced to 20s for faster retries
     
     // Try connecting with multiple retries
     for (int retry = 0; retry < maxRetries; retry++) {

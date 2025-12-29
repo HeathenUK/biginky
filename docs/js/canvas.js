@@ -27,13 +27,21 @@ function getDrawColor() {
 }
 
 function getFillColor() {
-    const val = parseInt(document.getElementById('fillColor').value);
-    return colorMap[val] || '#FFFFFF';
+    const val = document.getElementById('fillColor').value;
+    if (val === 'transparent') {
+        return 'transparent';
+    }
+    const numVal = parseInt(val);
+    return colorMap[numVal] || '#FFFFFF';
 }
 
 function getOutlineColor() {
-    const val = parseInt(document.getElementById('outlineColor').value);
-    return colorMap[val] || '#000000';
+    const val = document.getElementById('outlineColor').value;
+    if (val === 'transparent') {
+        return 'transparent';
+    }
+    const numVal = parseInt(val);
+    return colorMap[numVal] || '#000000';
 }
 
 function setTool(tool) {

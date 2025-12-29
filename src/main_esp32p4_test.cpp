@@ -2457,19 +2457,27 @@ static void auto_cycle_task(void* arg) {
     display.clear(EL133UF1_WHITE);
     
 #if WIFI_ENABLED
-    // Resync NTP every 5 wake cycles to keep time accurate
-    // BUT only if time is actually invalid - if time is valid, skip to avoid delays
-    if (ntpSyncCounter >= 5) {
-        ntpSyncCounter = 0;  // Reset counter
-        
-        // Check if time is valid before doing expensive NTP sync
-        time_t now = time(nullptr);
-        if (now > 1577836800) {
-            // Time is already valid - skip NTP resync to avoid 2+ minute delay
-            Serial.println("Periodic NTP resync skipped - time is already valid");
+    // Resync NTP at 30 minutes past each hour to keep time accurate
+    // This is a predictable time that won't interfere with top-of-hour display updates
+    // Check if we're at 30 minutes past the hour (only if time is valid to check)
+    time_t now_check = time(nullptr);
+    bool shouldResyncNTP = false;
+    
+    if (now_check > 1577836800) {  // Time is valid
+        struct tm tm_utc_check;
+        gmtime_r(&now_check, &tm_utc_check);
+        shouldResyncNTP = (tm_utc_check.tm_min == 30);  // Resync at 30 minutes past
+    } else {
+        // Time is invalid - resync immediately (don't wait for 30 minutes past)
+        shouldResyncNTP = true;
+    }
+    
+    if (shouldResyncNTP) {
+        if (now_check > 1577836800) {
+            Serial.println("\n=== Periodic NTP Resync (30 minutes past hour) ===");
         } else {
-            // Time is invalid - do NTP resync
-            Serial.println("\n=== Periodic NTP Resync (every 5 cycles) - time invalid ===");
+            Serial.println("\n=== NTP Resync (time invalid) ===");
+        }
         
         // Load WiFi credentials
         String ssid = "";
@@ -2547,10 +2555,7 @@ static void auto_cycle_task(void* arg) {
             Serial.println("No WiFi credentials saved, skipping NTP resync");
         }
         Serial.println("==========================================\n");
-        }  // End of else block for time invalid check
-    } else {
-        Serial.printf("NTP resync in %lu more cycles\n", (unsigned long)(5 - ntpSyncCounter));
-    }
+    }  // End of shouldResyncNTP check
 #endif
 
     uint32_t sd_ms = 0, dec_ms = 0;

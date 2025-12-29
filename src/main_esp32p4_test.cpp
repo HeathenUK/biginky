@@ -8,17 +8,16 @@
  * Build with: pio run -e esp32p4
  * 
  * === PIN MAPPING FOR WAVESHARE ESP32-P4-WIFI6 ===
- * Pin locations match Pico Plus 2 W form-factor (physical compatibility)
  * Configured via build flags in platformio.ini
  * 
  * Display SPI (GPIO pin assignments):
- *   SCLK    ->   GPIO3  (was GP10, pin 14)
- *   MOSI    ->   GPIO2  (was GP11, pin 15)
- *   CS0     ->   GPIO23 (was GP26, pin 31)
- *   CS1     ->   GPIO48 (was GP16, pin 21)
- *   DC      ->   GPIO26 (was GP22, pin 29)
- *   RESET   ->   GPIO22 (was GP27, pin 32)
- *   BUSY    ->   GPIO47 (was GP17, pin 22)
+ *   SCLK    ->   GPIO3
+ *   MOSI    ->   GPIO2
+ *   CS0     ->   GPIO23
+ *   CS1     ->   GPIO48
+ *   DC      ->   GPIO26
+ *   RESET   ->   GPIO22
+ *   BUSY    ->   GPIO47
  *
  */
 
@@ -137,27 +136,27 @@ extern "C" {
 // Override these with build flags or edit for your specific board
 // ============================================================================
 
-// Defaults for Waveshare ESP32-P4-WIFI6 - matches Pico Plus 2 W form-factor (physical pin locations)
+// Defaults for Waveshare ESP32-P4-WIFI6
 #ifndef PIN_SPI_SCK
-#define PIN_SPI_SCK   3     // GPIO3 = Pico GP10 (pin 14)
+#define PIN_SPI_SCK   3     // GPIO3
 #endif
 #ifndef PIN_SPI_MOSI
-#define PIN_SPI_MOSI  2     // GPIO2 = Pico GP11 (pin 15)
+#define PIN_SPI_MOSI  2     // GPIO2
 #endif
 #ifndef PIN_CS0
-#define PIN_CS0       23    // GPIO23 = Pico GP26 (pin 31)
+#define PIN_CS0       23    // GPIO23
 #endif
 #ifndef PIN_CS1
-#define PIN_CS1       48    // GPIO48 = Pico GP16 (pin 21)
+#define PIN_CS1       48    // GPIO48
 #endif
 #ifndef PIN_DC
-#define PIN_DC        26    // GPIO26 = Pico GP22 (pin 29)
+#define PIN_DC        26    // GPIO26
 #endif
 #ifndef PIN_RESET
-#define PIN_RESET     22    // GPIO22 = Pico GP27 (pin 32)
+#define PIN_RESET     22    // GPIO22
 #endif
 #ifndef PIN_BUSY
-#define PIN_BUSY      47    // GPIO47 = Pico GP17 (pin 22)
+#define PIN_BUSY      47    // GPIO47
 #endif
 #ifndef PIN_SW_D
 #define PIN_SW_D      51    // GPIO51 = Switch D (active-low)

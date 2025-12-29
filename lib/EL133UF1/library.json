@@ -9,12 +9,11 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/yourusername/el133uf1-pico.git"
+        "url": "https://github.com/yourusername/el133uf1-esp32p4.git"
     },
     "license": "MIT",
     "frameworks": "arduino",
     "platforms": [
-        "raspberrypi"
     ],
     "headers": "EL133UF1.h"
 }

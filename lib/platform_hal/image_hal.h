@@ -8,7 +8,6 @@
  * - Color space conversion
  * 
  * On ESP32-P4: Uses PPA (Pixel Processing Accelerator) hardware
- * On RP2350: Uses optimized software implementation
  */
 
 #ifndef IMAGE_HAL_H
@@ -57,7 +56,6 @@ typedef struct {
  * @brief Initialize the image processing HAL
  * 
  * On ESP32-P4: Initializes PPA hardware
- * On RP2350: No-op (software fallback ready)
  * 
  * @return true if initialization successful
  */
@@ -82,7 +80,6 @@ bool hal_image_hw_accel_available(void);
  * Source and destination must not overlap.
  * 
  * On ESP32-P4: Uses PPA SRM (Scale-Rotate-Mirror) engine
- * On RP2350: Uses optimized software rotation
  * 
  * @param src Source image descriptor
  * @param dst Destination image descriptor (dimensions should match rotated size)

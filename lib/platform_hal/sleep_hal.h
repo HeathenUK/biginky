@@ -3,7 +3,6 @@
  * @brief Platform-independent sleep interface
  * 
  * Automatically includes the correct sleep implementation based on platform:
- * - RP2350: pico_sleep.h
  * - ESP32:  esp32_sleep.h
  */
 
@@ -12,9 +11,7 @@
 
 #include "platform_hal.h"
 
-#if defined(PLATFORM_RP2350)
-    #include "pico_sleep.h"
-#elif defined(PLATFORM_ESP32) || defined(PLATFORM_ESP32P4)
+#if defined(PLATFORM_ESP32) || defined(PLATFORM_ESP32P4)
     #include "esp32_sleep.h"
 #else
     // Provide stub implementations for unknown platforms

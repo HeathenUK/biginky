@@ -2,7 +2,7 @@
  * @file EL133UF1.h
  * @brief Driver for EL133UF1 13.3" Spectra 6 E-Ink Display
  * 
- * This driver is designed for the Pimoroni Pico Plus 2 W and supports
+ * This driver is designed for ESP32-P4 and supports
  * the 6-color (Black, White, Yellow, Red, Blue, Green) Spectra e-ink panel.
  * 
  * Resolution: 1600x1200 pixels

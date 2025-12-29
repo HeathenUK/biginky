@@ -2,8 +2,7 @@
  * @file esp32_sleep.h
  * @brief Deep Sleep functionality for ESP32 (including ESP32-P4)
  * 
- * This provides the same API as pico_sleep.h but uses ESP32's deep sleep
- * and RTC memory for implementation.
+ * Uses ESP32's deep sleep and RTC memory for implementation.
  * 
  * Features:
  * - Timer-based wake from deep sleep

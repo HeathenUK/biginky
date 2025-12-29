@@ -3,7 +3,7 @@
  * @brief Platform Hardware Abstraction Layer
  * 
  * This file provides a unified interface for platform-specific functionality
- * to enable code portability between RP2350 (Pico) and ESP32-P4.
+ * for ESP32-P4.
  * 
  * Abstracts:
  * - PSRAM allocation
@@ -23,10 +23,7 @@
 // Platform Detection
 // ============================================================================
 
-#if defined(ARDUINO_ARCH_RP2040) || defined(PICO_RP2350)
-    #define PLATFORM_RP2350 1
-    #define PLATFORM_NAME "RP2350"
-#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
     #if defined(CONFIG_IDF_TARGET_ESP32P4)
         #define PLATFORM_ESP32P4 1
         #define PLATFORM_NAME "ESP32-P4"
@@ -37,7 +34,7 @@
 #else
     #define PLATFORM_UNKNOWN 1
     #define PLATFORM_NAME "Unknown"
-    #warning "Unknown platform - some features may not work"
+    #warning "Unknown platform - ESP32-P4 expected"
 #endif
 
 // ============================================================================

@@ -981,6 +981,46 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
     targetWakeHour = (uint8_t)wake_hour;
     targetWakeMinute = (uint8_t)wake_min;
     
+    // CRITICAL: Re-read time right before sleeping to account for processing delays
+    // Processing (Serial prints, NVS writes, WiFi disconnect, log close, etc.) can take
+    // 3-5 seconds, causing us to wake early if we don't account for it
+    time_t now_before_sleep = time(nullptr);
+    if (now_before_sleep > 1577836800) {  // Only adjust if time is valid
+        struct tm tm_utc_before_sleep;
+        gmtime_r(&now_before_sleep, &tm_utc_before_sleep);
+        uint32_t sec_before_sleep = (uint32_t)tm_utc_before_sleep.tm_sec;
+        uint32_t min_before_sleep = (uint32_t)tm_utc_before_sleep.tm_min;
+        
+        // Recalculate sleep duration based on current time (simpler approach)
+        uint32_t current_slot_before_sleep = (min_before_sleep / interval_minutes) * interval_minutes;
+        uint32_t next_slot_before_sleep = current_slot_before_sleep + interval_minutes;
+        
+        // If we're at a slot boundary and less than 5 seconds have passed, sleep to next slot
+        if (min_before_sleep == current_slot_before_sleep && sec_before_sleep < 5) {
+            next_slot_before_sleep = current_slot_before_sleep + interval_minutes;
+        }
+        
+        uint32_t sleep_s_recalc;
+        if (next_slot_before_sleep < 60) {
+            // Next slot is in the same hour
+            sleep_s_recalc = (next_slot_before_sleep - min_before_sleep) * 60 - sec_before_sleep;
+        } else {
+            // Next slot wraps to next hour (which is always :00)
+            sleep_s_recalc = (60 - min_before_sleep) * 60 - sec_before_sleep;
+        }
+        
+        // Use the recalculated value if it's reasonable (within 10 seconds of original)
+        // This accounts for processing delays
+        if (sleep_s_recalc < sleep_s + 10 && sleep_s_recalc >= 5) {
+            uint32_t elapsed = sleep_s - sleep_s_recalc;
+            if (elapsed > 0) {
+                Serial.printf("Adjusted sleep: %lu seconds elapsed during processing, new sleep: %lu seconds\n",
+                             (unsigned long)elapsed, (unsigned long)sleep_s_recalc);
+                sleep_s = sleep_s_recalc;
+            }
+        }
+    }
+    
     sleepNowSeconds(sleep_s);
     // Never returns
 }

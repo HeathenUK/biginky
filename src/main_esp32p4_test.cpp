@@ -297,6 +297,11 @@ struct ShowMediaTaskData {
 };
 RTC_DATA_ATTR uint32_t ntpSyncCounter = 0;  // Counter for periodic NTP resync
 RTC_DATA_ATTR bool usingMediaMappings = false;  // Track if we're using media.txt or scanning all PNGs
+
+// Cached WiFi credentials in RTC memory (survives deep sleep, avoids NVS reads)
+RTC_DATA_ATTR char cachedWifiSSID[33] = "";
+RTC_DATA_ATTR char cachedWifiPSK[65] = "";
+RTC_DATA_ATTR bool wifiCredentialsCached = false;  // Flag to indicate if credentials are cached
 RTC_DATA_ATTR char lastAudioFile[64] = "";  // Last audio file path for instant playback on switch D wake
 
 // ============================================================================
@@ -2330,19 +2335,21 @@ static void auto_cycle_task(void* arg) {
         
         // Connect to WiFi - REQUIRED for MQTT, so be persistent (keep robust retry logic)
         if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
-            // WiFi connected - check for OTA update notification first
-            // This is safe to call multiple times - it only sends notification once per firmware change
-            Serial.println("\n=== Checking for OTA firmware update ===");
-            checkAndNotifyOTAUpdate();
-            Serial.println("=== OTA check complete ===\n");
+            // WiFi connected - check for OTA update notification ONLY on cold boot
+            // This saves 2-5 seconds on every non-top-of-hour cycle
+            if (g_is_cold_boot) {
+                Serial.println("\n=== Checking for OTA firmware update (cold boot) ===");
+                checkAndNotifyOTAUpdate();
+                Serial.println("=== OTA check complete ===\n");
+            }
             
             // WiFi connected - proceed with MQTT
             // Connect to MQTT and check for retained messages
             if (mqttConnect()) {
-                // Wait for subscription and any retained messages - OPTIMIZED: reduced from 3s to 1s
+                // Wait for subscription and any retained messages - OPTIMIZED: reduced to 500ms
                 // Retained messages should arrive almost immediately after subscription completes
-                // This saves 2 seconds in the happy path while still allowing time for messages
-                delay(1000);
+                // Reduced from 1000ms to 500ms - saves 500ms per cycle without impacting functionality
+                delay(500);
                 
                 // Check if we received a retained message (mqttCheckMessages checks connection state internally)
                 String commandToProcess = "";
@@ -2360,8 +2367,8 @@ static void auto_cycle_task(void* arg) {
                     
                     // Message already processed and cleared in event handler
                     // The blank retained message was published in the event handler
-                    // OPTIMIZED: reduced from 500ms to 200ms - publish should complete quickly
-                    delay(200);  // Allow time for blank retained message publish to complete
+                    // Reduced delay - publish completes quickly, 100ms is sufficient
+                    delay(100);  // Allow time for blank retained message publish to complete
                 } else {
                     Serial.println("No retained messages");
                 }
@@ -2370,8 +2377,8 @@ static void auto_cycle_task(void* arg) {
                 // This prevents connection issues during long-running commands (like display updates)
                 // Do this BEFORE processing commands to ensure we're not in MQTT task context
                 mqttDisconnect();
-                // OPTIMIZED: reduced from 200ms to 100ms - mqttDisconnect() already has internal delays
-                delay(100);
+                // Reduced delay - mqttDisconnect() already has internal delays, 50ms is sufficient
+                delay(50);
                     
                 // Process SMS bridge commands FIRST (before deferred web UI commands)
                 // This ensures critical commands like !ota can be executed even if web UI commands cause boot loops
@@ -2427,7 +2434,8 @@ static void auto_cycle_task(void* arg) {
             // No need to keep it connected - we'll reconnect on next cycle if needed
             Serial.println("Disconnecting WiFi to save power...");
             WiFi.disconnect();
-            delay(100);  // Brief delay for disconnect to complete
+            // Reduced delay - WiFi disconnect is fast, 50ms is sufficient before sleep
+            delay(50);  // Brief delay for disconnect to complete
         } else {
             Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
         }
@@ -11462,13 +11470,25 @@ void enterConfigMode() {
     }
 }
 
-// Load WiFi credentials from NVS
+// Load WiFi credentials from NVS or RTC cache
 // Returns true if credentials were loaded successfully, false if NVS failed or credentials missing
+// Optimized: Uses RTC memory cache to avoid NVS reads on every cycle (saves ~50-100ms)
 bool wifiLoadCredentials() {
     // Clear credentials first
     wifiSSID[0] = '\0';
     wifiPSK[0] = '\0';
     
+    // Check if credentials are cached in RTC memory (survives deep sleep)
+    if (wifiCredentialsCached && strlen(cachedWifiSSID) > 0) {
+        strncpy(wifiSSID, cachedWifiSSID, sizeof(wifiSSID) - 1);
+        wifiSSID[sizeof(wifiSSID) - 1] = '\0';
+        strncpy(wifiPSK, cachedWifiPSK, sizeof(wifiPSK) - 1);
+        wifiPSK[sizeof(wifiPSK) - 1] = '\0';
+        Serial.printf("Loaded WiFi credentials from cache: %s\n", wifiSSID);
+        return true;
+    }
+    
+    // Not cached - load from NVS
     // Try to open NVS namespace
     if (!wifiPrefs.begin("wifi", true)) {  // Read-only
         Serial.println("\n========================================");
@@ -11491,7 +11511,15 @@ bool wifiLoadCredentials() {
         wifiSSID[sizeof(wifiSSID) - 1] = '\0';  // Ensure null termination
         strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
         wifiPSK[sizeof(wifiPSK) - 1] = '\0';  // Ensure null termination
-        Serial.printf("Loaded WiFi credentials for: %s\n", wifiSSID);
+        
+        // Cache credentials in RTC memory for next cycle (survives deep sleep)
+        strncpy(cachedWifiSSID, wifiSSID, sizeof(cachedWifiSSID) - 1);
+        cachedWifiSSID[sizeof(cachedWifiSSID) - 1] = '\0';
+        strncpy(cachedWifiPSK, wifiPSK, sizeof(cachedWifiPSK) - 1);
+        cachedWifiPSK[sizeof(cachedWifiPSK) - 1] = '\0';
+        wifiCredentialsCached = true;
+        
+        Serial.printf("Loaded WiFi credentials from NVS (cached): %s\n", wifiSSID);
         return true;
     } else {
         // Configuration mode needed, but this function is called from task context
@@ -11609,7 +11637,15 @@ void wifiSaveCredentials() {
     wifiPrefs.putString("ssid", wifiSSID);
     wifiPrefs.putString("psk", wifiPSK);
     wifiPrefs.end();
-    Serial.println("WiFi credentials saved to NVS");
+    
+    // Update RTC cache to avoid NVS reads on next cycle
+    strncpy(cachedWifiSSID, wifiSSID, sizeof(cachedWifiSSID) - 1);
+    cachedWifiSSID[sizeof(cachedWifiSSID) - 1] = '\0';
+    strncpy(cachedWifiPSK, wifiPSK, sizeof(cachedWifiPSK) - 1);
+    cachedWifiPSK[sizeof(cachedWifiPSK) - 1] = '\0';
+    wifiCredentialsCached = true;
+    
+    Serial.println("WiFi credentials saved to NVS and cached");
 }
 
 // Clear WiFi credentials from NVS
@@ -11619,7 +11655,13 @@ void wifiClearCredentials() {
     wifiPrefs.end();
     wifiSSID[0] = '\0';
     wifiPSK[0] = '\0';
-    Serial.println("WiFi credentials cleared from NVS");
+    
+    // Clear RTC cache as well
+    cachedWifiSSID[0] = '\0';
+    cachedWifiPSK[0] = '\0';
+    wifiCredentialsCached = false;
+    
+    Serial.println("WiFi credentials cleared from NVS and cache");
 }
 
 void wifiScan() {

@@ -312,6 +312,25 @@ async function decryptMessage(payloadBase64, ivBase64) {
         console.log('decryptMessage: Ciphertext (first 16 bytes):', Array.from(ciphertext.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         console.log('decryptMessage: Ciphertext (last 16 bytes):', Array.from(ciphertext.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         
+        // Test: Try encrypting and decrypting a test message to verify key works
+        // This helps diagnose if the issue is with key derivation or ciphertext format
+        try {
+            const testPlaintext = new TextEncoder().encode('test');
+            const testEncrypted = await crypto.subtle.encrypt(
+                { name: 'AES-CBC', iv: iv },
+                key,
+                testPlaintext
+            );
+            const testDecrypted = await crypto.subtle.decrypt(
+                { name: 'AES-CBC', iv: iv },
+                key,
+                testEncrypted
+            );
+            console.log('decryptMessage: Key test passed - encryption/decryption works with this key');
+        } catch (testError) {
+            console.error('decryptMessage: Key test failed - key may be invalid:', testError);
+        }
+        
         // Decrypt
         let plaintext;
         try {

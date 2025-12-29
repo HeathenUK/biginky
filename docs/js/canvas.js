@@ -171,6 +171,14 @@ function setTool(tool) {
     if (toolBtn) {
         toolBtn.classList.add('active');
     }
+    // Update canvas cursor based on tool
+    if (canvas) {
+        if (tool === 'eyedropper') {
+            canvas.style.cursor = 'crosshair';
+        } else {
+            canvas.style.cursor = 'crosshair';
+        }
+    }
     // Trigger change event to update UI
     if (drawToolEl) {
         drawToolEl.dispatchEvent(new Event('change'));
@@ -865,30 +873,35 @@ function draw(e) {
         if (tool === 'rectangle') {
             const width = coords.x - startX;
             const height = coords.y - startY;
+            const x = Math.min(startX, coords.x);
+            const y = Math.min(startY, coords.y);
+            const w = Math.abs(width);
+            const h = Math.abs(height);
             // Fill first, then stroke
             ctx.fillStyle = getFillColor();
-            ctx.fillRect(startX, startY, width, height);
+            ctx.fillRect(x, y, w, h);
             ctx.strokeStyle = getOutlineColor();
-            ctx.strokeRect(startX, startY, width, height);
+            ctx.strokeRect(x, y, w, h);
         } else if (tool === 'roundedRect') {
             const width = coords.x - startX;
             const height = coords.y - startY;
             const radius = getRoundedRectRadius();
-            const x = startX;
-            const y = startY;
-            const w = width;
-            const h = height;
+            const x = Math.min(startX, coords.x);
+            const y = Math.min(startY, coords.y);
+            const w = Math.abs(width);
+            const h = Math.abs(height);
+            const r = Math.min(radius, Math.min(w, h) / 2); // Limit radius to half the smallest dimension
             
             ctx.beginPath();
-            ctx.moveTo(x + radius, y);
-            ctx.lineTo(x + w - radius, y);
-            ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
-            ctx.lineTo(x + w, y + h - radius);
-            ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
-            ctx.lineTo(x + radius, y + h);
-            ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
-            ctx.lineTo(x, y + radius);
-            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.moveTo(x + r, y);
+            ctx.lineTo(x + w - r, y);
+            ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+            ctx.lineTo(x + w, y + h - r);
+            ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+            ctx.lineTo(x + r, y + h);
+            ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+            ctx.lineTo(x, y + r);
+            ctx.quadraticCurveTo(x, y, x + r, y);
             ctx.closePath();
             
             // Fill first, then stroke

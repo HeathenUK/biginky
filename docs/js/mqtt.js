@@ -365,6 +365,15 @@ async function handleThumbnailMessage(message) {
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
                 console.error('Thumbnail decryption returned empty for retained message:', message.retained);
+                
+                // If this is a retained message and decryption fails, it may have been encrypted
+                // with a different key/method. Since new messages work, we'll just skip this one.
+                if (message.retained) {
+                    console.warn('Skipping retained thumbnail message that failed to decrypt - will wait for new message');
+                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message encrypted with different key)';
+                    return;
+                }
+                
                 document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
                 return;
             }

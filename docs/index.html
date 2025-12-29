@@ -113,7 +113,6 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section">
 <h2 onclick="toggleSection(this)">Authentication (Required)</h2>
 <div class="section-content" id="section-auth">
-<p style="color:#888;font-size:14px;margin-bottom:15px;"><strong>Password required.</strong> Enter the device password (set via local WiFi UI) to enable HMAC authentication. All functionality is disabled until a password is set.</p>
 <div class="flex-row" style="align-items:center;gap:10px;">
 <div style="flex:0 0 auto;white-space:nowrap;">
 <label style="display:inline;margin:0;margin-right:8px;">Web UI Password:</label>
@@ -143,12 +142,10 @@ table th,table td{padding:6px;font-size:12px;}
 <div style="margin-top:20px;border-top:1px solid #444;padding-top:20px;">
 <h3 style="color:#4CAF50;margin-top:0;font-size:18px;">Device Status</h3>
 <div id="deviceStatus" style="font-family:monospace;font-size:12px;color:#e0e0e0;">
-<p>Not connected - status appears when connected</p>
 </div>
 </div>
 <div style="margin-top:20px;border-top:1px solid #444;padding-top:20px;">
 <h3 style="color:#4CAF50;margin-top:0;font-size:18px;">Display Preview</h3>
-<p style="color:#888;margin-bottom:10px;">Latest display content (updated on refresh):</p>
 <div id="thumbnailContainer" style="text-align:center;margin:20px 0;">
 <canvas id="thumbnailCanvas" width="400" height="300" style="border:2px solid #666;background:#fff;max-width:100%;height:auto;display:none;margin:0 auto;"></canvas>
 <p id="thumbnailStatus" style="color:#888;">No preview available yet</p>
@@ -160,8 +157,7 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section">
 <h2 onclick="toggleSection(this)">Media Mappings</h2>
 <div class="section-content" id="section-media">
-<p>Available media files from media.txt:</p>
-<div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;">Not loaded - appears when connected</div>
+<div id="mediaMappingsStatus" style="color:#888;margin-bottom:10px;"></div>
 <div class="table-wrapper">
 <div id="mediaMappingsTable">
 <!-- Table will be populated here -->
@@ -172,7 +168,6 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section">
 <h2 onclick="toggleSection(this)">Text Display</h2>
 <div class="section-content" id="section-text">
-<p>Enter text to display. Select text, background, and outline colours.</p>
 <label>Text:</label>
 <textarea id="textInput" placeholder="Enter text to display..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendTextDisplay();}"></textarea>
 <div class="flex-row">
@@ -218,7 +213,6 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
-<p>Draw on the canvas (1600x1200) - matches the display panel size. Images can be loaded and will be automatically posterized to match e-ink colors using Atkinson dithering.</p>
 <div style="margin-bottom:15px;">
 <label style="display:block;margin-bottom:8px;">Tool:</label>
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">

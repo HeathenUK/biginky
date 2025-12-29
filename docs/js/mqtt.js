@@ -235,17 +235,22 @@ async function handleStatusMessage(message) {
         updateDeviceStatus(status);
         
         // Store next wake time for busy state countdown
+        let wakeTimeUpdated = false;
         if (status.next_wake) {
             // Parse next_wake time (format: "YYYY-MM-DD HH:MM:SS" or similar)
             try {
-                nextWakeTime = new Date(status.next_wake);
+                const newWakeTime = new Date(status.next_wake);
                 // If parsing fails, try alternative formats
-                if (isNaN(nextWakeTime.getTime())) {
+                if (isNaN(newWakeTime.getTime())) {
                     // Try parsing as ISO string or other formats
                     nextWakeTime = new Date(status.next_wake.replace(' ', 'T'));
+                } else {
+                    nextWakeTime = newWakeTime;
                 }
                 if (isNaN(nextWakeTime.getTime())) {
                     nextWakeTime = null;
+                } else {
+                    wakeTimeUpdated = true;
                 }
             } catch (e) {
                 console.warn('Failed to parse next_wake time:', status.next_wake, e);
@@ -264,8 +269,24 @@ async function handleStatusMessage(message) {
                 clearInterval(busyCountdownInterval);
                 busyCountdownInterval = null;
             }
-            nextWakeTime = null;
+            // Don't clear nextWakeTime - keep it for next command
             setBusyState(false);
+        } else if (wakeTimeUpdated && isBusy) {
+            // We're in busy state and just got/updated next_wake time - update message immediately
+            // This happens when status arrives after command was sent
+            updateBusyMessage();
+            
+            // Start countdown interval if not already running
+            if (!busyCountdownInterval && nextWakeTime) {
+                busyCountdownInterval = setInterval(() => {
+                    if (isBusy) {
+                        updateBusyMessage();
+                    } else {
+                        clearInterval(busyCountdownInterval);
+                        busyCountdownInterval = null;
+                    }
+                }, 1000);
+            }
         }
     } catch (e) {
         console.error('Failed to parse/decrypt status message:', e);

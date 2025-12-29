@@ -311,12 +311,16 @@ async function handleThumbnailMessage(message) {
                     const providedHMAC = payload.hmac;
                     const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
                     
+                    console.log('Thumbnail: Verifying HMAC for new format message');
                     const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
                     if (!hmacValid) {
                         console.error('Thumbnail message HMAC verification failed');
                         document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
                         return;
                     }
+                    console.log('Thumbnail: HMAC verification passed');
+                } else {
+                    console.log('Thumbnail: Skipping HMAC verification (no password or no HMAC)');
                 }
             } else {
                 // Legacy format: IV is prepended to payload

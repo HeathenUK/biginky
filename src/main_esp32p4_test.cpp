@@ -1054,9 +1054,77 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
 // Forward declaration
 void enterConfigMode();
 
-static bool ensureTimeValid(uint32_t timeout_ms = 20000) {
+/**
+ * Perform NTP sync (extracted from ensureTimeValid for reuse)
+ * This function assumes WiFi is already connected
+ * @param timeout_ms Maximum time to wait for NTP sync
+ * @return true if NTP sync succeeded, false otherwise
+ */
+static bool performNtpSync(uint32_t timeout_ms = 30000) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    
+    // NTP sync with retries - be persistent like WiFi connection
+    const int maxNtpRetries = 5;
+    const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
+    
+    for (int retry = 0; retry < maxNtpRetries; retry++) {
+        if (retry > 0) {
+            Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
+            delay(2000);  // Brief delay between retries
+        }
+        
+        Serial.print("Syncing NTP");
+        uint32_t start = millis();
+        bool synced = false;
+        time_t now = time(nullptr);
+        
+        uint32_t attemptTimeout = ntpTimeoutPerAttempt;
+        if (timeout_ms > 0 && timeout_ms < attemptTimeout) {
+            attemptTimeout = timeout_ms;
+        }
+        
+        while ((millis() - start) < attemptTimeout) {
+            now = time(nullptr);
+            if (now > 1577836800) {
+                struct tm tm_utc;
+                gmtime_r(&now, &tm_utc);
+                char buf[32];
+                strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+                Serial.printf("\nNTP sync OK: %s\n", buf);
+                return true;
+            }
+            delay(500);
+            if ((millis() - start) % 5000 == 0) {
+                Serial.print(".");
+            }
+            
+            // Check overall timeout
+            if (timeout_ms > 0 && (millis() - start) >= timeout_ms) {
+                break;
+            }
+        }
+        
+        Serial.println();
+        Serial.printf("NTP sync attempt %d timed out after %lu seconds\n", retry + 1, (millis() - start) / 1000);
+        
+        // If WiFi is still connected, try reconfiguring NTP
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("WiFi still connected, reconfiguring NTP...");
+            configTime(0, 0, "pool.ntp.org", "time.google.com");
+        } else {
+            Serial.println("WiFi disconnected during NTP sync - caller should handle reconnection");
+            // Don't try to reconnect here - this function assumes WiFi is already connected
+            // If WiFi disconnects, that's a problem for the caller to handle
+        }
+    }
+    
+    Serial.println("NTP sync failed after all retries");
+    return false;
+}
+
+static bool ensureTimeValid(uint32_t timeout_ms = 20000, bool forceSync = false) {
     time_t now = time(nullptr);
-    if (now > 1577836800) {  // 2020-01-01
+    if (!forceSync && now > 1577836800) {  // 2020-01-01
         return true;
     }
 
@@ -2681,51 +2749,11 @@ static void auto_cycle_task(void* arg) {
             Serial.println("WiFi connected for NTP sync");
             
             // Force NTP sync regardless of time validity (always sync on cold boot)
-            // Use the same NTP sync logic as ensureTimeValid() but force it
-            configTime(0, 0, "pool.ntp.org", "time.google.com");
-            
-            Serial.print("Syncing NTP");
-            const int maxNtpRetries = 5;
-            const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
-            bool ntpSynced = false;
-            time_t now_ntp = time(nullptr);
-            
-            for (int retry = 0; retry < maxNtpRetries && !ntpSynced; retry++) {
-                if (retry > 0) {
-                    Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
-                    delay(2000);
-                }
-                
-                uint32_t start = millis();
-                while ((millis() - start < ntpTimeoutPerAttempt)) {
-                    delay(500);
-                    if ((millis() - start) % 5000 == 0) {
-                        Serial.print(".");
-                    }
-                    now_ntp = time(nullptr);
-                    if (now_ntp > 1577836800) {
-                        break;  // Time is valid, exit loop
-                    }
-                }
-                
-                if (now_ntp > 1577836800) {
-                    Serial.println(" OK!");
-                    struct tm tm_utc_ntp;
-                    gmtime_r(&now_ntp, &tm_utc_ntp);
-                    char buf[32];
-                    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc_ntp);
-                    Serial.printf("Time synced: %s\n", buf);
-                    time_ok = true;
-                    ntpSynced = true;
-                } else {
-                    Serial.println(" FAILED!");
-                    if (retry < maxNtpRetries - 1) {
-                        Serial.println("Will retry NTP sync...");
-                    }
-                }
-            }
-            
-            if (!ntpSynced) {
+            // Use centralized NTP sync function
+            bool ntpSynced = performNtpSync(60000);  // 60 second timeout
+            if (ntpSynced) {
+                time_ok = true;
+            } else {
                 Serial.println("WARNING: NTP sync failed after all retries on cold boot, but continuing...");
                 time_ok = false;
             }

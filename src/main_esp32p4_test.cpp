@@ -2554,20 +2554,19 @@ static void auto_cycle_task(void* arg) {
     if (g_is_cold_boot) {
         Serial.println("=== COLD BOOT: Always doing MQTT check (ignoring hour schedule) ===");
         
-        // Ensure WiFi is connected and time is synced
+        // ALWAYS sync NTP on cold boot (regardless of time validity)
+        // This ensures we have accurate time even if RTC drifted during power-off
+        Serial.println("Cold boot - syncing NTP (always sync on cold boot)...");
+        time_ok = ensureTimeValid(60000);
         if (!time_ok) {
-            Serial.println("Time invalid on cold boot - syncing NTP...");
-            time_ok = ensureTimeValid(60000);
-            if (!time_ok) {
-                Serial.println("WARNING: NTP sync failed on cold boot, but continuing...");
-            }
-            now = time(nullptr);
-            if (now > 1577836800) {
-                gmtime_r(&now, &tm_utc);
-                isTopOfHour = (tm_utc.tm_min == 0);
-                currentHour = tm_utc.tm_hour;
-                currentMinute = tm_utc.tm_min;
-            }
+            Serial.println("WARNING: NTP sync failed on cold boot, but continuing...");
+        }
+        now = time(nullptr);
+        if (now > 1577836800) {
+            gmtime_r(&now, &tm_utc);
+            isTopOfHour = (tm_utc.tm_min == 0);
+            currentHour = tm_utc.tm_hour;
+            currentMinute = tm_utc.tm_min;
         }
         
         // Force MQTT check regardless of hour schedule or top-of-hour status
@@ -2592,54 +2591,11 @@ static void auto_cycle_task(void* arg) {
         return;  // Never returns
     }
     
-    // If NOT top of hour, do MQTT check instead of display update
-    if (!isTopOfHour && time_ok) {
-        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
-        
-        // Sleep until next minute
-        Serial.println("Sleeping until next minute...");
-        if (time_ok) {
-            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
-        } else {
-            sleepNowSeconds(kCycleSleepSeconds);
-        }
-        // Never returns - device enters deep sleep
-        return;
-    }
-    
-    // Top of hour: proceed with normal display update cycle
-    Serial.println("=== Display Update Cycle (top of hour) ===");
-    
-    // Initialize display now that we know we need it (saves time/power on non-hourly wakes)
-    // After deep sleep, SPI needs to be reinitialized
-    Serial.println("Initializing display...");
-    
-    // Reinitialize SPI (peripherals reset after deep sleep)
-    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
-    
-    // Always do full initialization (begin() includes reset and init sequence)
-    // This ensures clean state for every display update
-    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
-        Serial.println("ERROR: Display initialization failed!");
-        // On error, sleep and try again next cycle
-        sleepNowSeconds(60);
-        return;
-    }
-    Serial.println("Display initialized");
-    
-    // Reinitialize PNG/TTF loaders after display init (they need display reference)
-    pngLoader.begin(&display);
-    ttf.begin(&display);
-    bmpLoader.begin(&display);
-    
-    // Clear the display buffer before drawing new content
-    Serial.println("Clearing display buffer...");
-    display.clear(EL133UF1_WHITE);
-    
 #if WIFI_ENABLED
     // Resync NTP at 30 minutes past each hour to keep time accurate
     // This is a predictable time that won't interfere with top-of-hour display updates
-    // Check if we're at 30 minutes past the hour (only if time is valid to check)
+    // IMPORTANT: This check happens BEFORE we decide between MQTT check and display update
+    // so it can run during the MQTT check cycle at :30 (not just at top of hour)
     time_t now_check = time(nullptr);
     bool shouldResyncNTP = false;
     
@@ -2737,7 +2693,51 @@ static void auto_cycle_task(void* arg) {
         Serial.println("==========================================\n");
     }  // End of shouldResyncNTP check
 #endif
-
+    
+    // If NOT top of hour, do MQTT check instead of display update
+    if (!isTopOfHour && time_ok) {
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
+    }
+    
+    // Top of hour: proceed with normal display update cycle
+    Serial.println("=== Display Update Cycle (top of hour) ===");
+    
+    // Initialize display now that we know we need it (saves time/power on non-hourly wakes)
+    // After deep sleep, SPI needs to be reinitialized
+    Serial.println("Initializing display...");
+    
+    // Reinitialize SPI (peripherals reset after deep sleep)
+    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+    
+    // Always do full initialization (begin() includes reset and init sequence)
+    // This ensures clean state for every display update
+    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+        Serial.println("ERROR: Display initialization failed!");
+        // On error, sleep and try again next cycle
+        sleepNowSeconds(60);
+        return;
+    }
+    Serial.println("Display initialized");
+    
+    // Reinitialize PNG/TTF loaders after display init (they need display reference)
+    pngLoader.begin(&display);
+    ttf.begin(&display);
+    bmpLoader.begin(&display);
+    
+    // Clear the display buffer before drawing new content
+    Serial.println("Clearing display buffer...");
+    display.clear(EL133UF1_WHITE);
+    
     uint32_t sd_ms = 0, dec_ms = 0;
     bool ok = false;
     

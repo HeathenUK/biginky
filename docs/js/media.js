@@ -24,8 +24,10 @@ function updateMediaMappingsTable(mappings) {
     
     for (let i = 0; i < mappings.length; i++) {
         const mapping = mappings[i];
-        // Use 1-based index for display and commands (matching firmware convention)
-        const displayIndex = mapping.index !== undefined ? mapping.index : (i + 1);
+        // Always use 1-based index for display and commands (matching firmware convention)
+        // Firmware publishes 0-based indices in the JSON, but !go command expects 1-based input
+        // So we always use (i + 1) for display, regardless of what mapping.index contains
+        const displayIndex = i + 1;
         html += '<tr style="border-bottom:1px solid #555;">';
         html += `<td style="padding:8px;border:1px solid #555;text-align:center;font-weight:bold;">${displayIndex}</td>`;
         

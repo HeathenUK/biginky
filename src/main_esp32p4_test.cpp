@@ -2173,11 +2173,11 @@ static bool webUICommandPending = false;
 static String pendingWebUICommand = "";
 
 // Schedule action types (extensible for future cron-like system)
-// Currently only ENABLED/DISABLED, but can be extended to CYCLE_MEDIA, PLAY_SOUND, etc.
 // Note: Using SCHEDULE_ prefix to avoid conflict with ESP32 HAL GPIO macros (DISABLED/ENABLED)
 enum class ScheduleAction {
     SCHEDULE_DISABLED,   // Hour is disabled - sleep until next enabled hour
-    SCHEDULE_ENABLED     // Hour is enabled - proceed with normal operations
+    SCHEDULE_ENABLED,    // Hour is enabled - proceed with normal operations
+    SCHEDULE_NTP_RESYNC  // Special action: resync NTP (e.g., at 30 minutes past hour)
     // Future: CYCLE_MEDIA, PLAY_SOUND, etc.
 };
 
@@ -2188,14 +2188,25 @@ enum class ScheduleAction {
 /**
  * Get schedule action for a given hour and minute
  * Extensible for future cron-like system (different actions at different times)
- * Currently only checks hour enablement, but can be extended to minute-level scheduling
+ * Checks both hour enablement and minute-level scheduled actions
  */
 static ScheduleAction getScheduleAction(int hour, int minute) {
-    // For now, only check hour-level enablement
-    // Future: Can check minute-level actions (e.g., CYCLE_MEDIA at :00, PLAY_SOUND at :15)
+    // First check if hour is disabled
     if (!isHourEnabled(hour)) {
         return ScheduleAction::SCHEDULE_DISABLED;
     }
+    
+    // Check for minute-level scheduled actions
+    // NTP resync at 30 minutes past each hour
+    if (minute == 30) {
+        return ScheduleAction::SCHEDULE_NTP_RESYNC;
+    }
+    
+    // Future: Add more minute-level actions here
+    // if (minute == 0) return ScheduleAction::CYCLE_MEDIA;
+    // if (minute == 15) return ScheduleAction::PLAY_SOUND;
+    
+    // Default: hour is enabled, no special action
     return ScheduleAction::SCHEDULE_ENABLED;
 }
 
@@ -2333,6 +2344,101 @@ static void checkRtcDriftCompensation(time_t now, struct tm& tm_utc, bool time_o
         targetWakeHour = 255;
         targetWakeMinute = 255;
     }
+}
+
+/**
+ * Perform NTP resync if needed (called when schedule action is SCHEDULE_NTP_RESYNC)
+ * This handles the 30 minutes past hour NTP resync
+ */
+static void doNtpResyncIfNeeded(bool time_ok) {
+#if WIFI_ENABLED
+    time_t now_check = time(nullptr);
+    
+    if (now_check > 1577836800) {
+        Serial.println("\n=== Periodic NTP Resync (30 minutes past hour) ===");
+    } else {
+        Serial.println("\n=== NTP Resync (time invalid) ===");
+    }
+    
+    // Load WiFi credentials
+    String ssid = "";
+    String psk = "";
+    {
+        NVSGuard guard("wifi", true);  // read-only
+        if (guard.isOpen()) {
+            ssid = guard.get().getString("ssid", "");
+            psk = guard.get().getString("psk", "");
+        }
+        // guard automatically calls end() in destructor
+    }
+    
+    if (ssid.length() > 0) {
+        // Load credentials into global variables for wifiConnectPersistent
+        strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+        strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+        
+        // Use persistent WiFi connection (NTP sync is important, so be persistent)
+        if (wifiConnectPersistent(8, 30000, true)) {  // 8 retries, 30s per attempt, required
+            Serial.println("WiFi connected");
+            
+            // Sync time via NTP (with retries for robustness)
+            const int maxNtpRetries = 5;
+            const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
+            bool ntpSynced = false;
+            time_t now = time(nullptr);
+            
+            for (int retry = 0; retry < maxNtpRetries && !ntpSynced; retry++) {
+                if (retry > 0) {
+                    Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
+                    delay(2000);
+                }
+                
+                configTime(0, 0, "pool.ntp.org", "time.google.com");
+                
+                Serial.print("Syncing NTP");
+                uint32_t start = millis();
+                while (now < 1577836800 && (millis() - start < ntpTimeoutPerAttempt)) {
+                    delay(500);
+                    if ((millis() - start) % 5000 == 0) {
+                        Serial.print(".");
+                    }
+                    now = time(nullptr);
+                }
+                
+                if (now > 1577836800) {
+                    Serial.println(" OK!");
+                    struct tm tm_utc;
+                    gmtime_r(&now, &tm_utc);
+                    char buf[32];
+                    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+                    Serial.printf("Time synced: %s\n", buf);
+                    ntpSynced = true;
+                } else {
+                    Serial.println(" FAILED!");
+                    if (retry < maxNtpRetries - 1) {
+                        Serial.println("Will retry NTP sync...");
+                    }
+                }
+            }
+            
+            if (!ntpSynced) {
+                Serial.println("WARNING: NTP sync failed after all retries, but continuing...");
+            }
+            
+            // Don't disconnect WiFi here - we might need it for MQTT checks
+            // WiFi will be disconnected after MQTT check or before sleep
+            Serial.println("NTP sync complete, WiFi still connected for potential MQTT use");
+        } else {
+            Serial.println("WiFi connection failed");
+        }
+    } else {
+        Serial.println("No WiFi credentials saved, skipping NTP resync");
+    }
+    Serial.println("==========================================\n");
+#else
+    (void)time_ok;  // Unused if WiFi disabled
+    Serial.println("WiFi disabled - cannot perform NTP resync");
+#endif
 }
 
 /**
@@ -2591,108 +2697,20 @@ static void auto_cycle_task(void* arg) {
         return;  // Never returns
     }
     
-#if WIFI_ENABLED
-    // Resync NTP at 30 minutes past each hour to keep time accurate
-    // This is a predictable time that won't interfere with top-of-hour display updates
-    // IMPORTANT: This check happens BEFORE we decide between MQTT check and display update
-    // so it can run during the MQTT check cycle at :30 (not just at top of hour)
-    time_t now_check = time(nullptr);
-    bool shouldResyncNTP = false;
-    
-    if (now_check > 1577836800) {  // Time is valid
-        struct tm tm_utc_check;
-        gmtime_r(&now_check, &tm_utc_check);
-        shouldResyncNTP = (tm_utc_check.tm_min == 30);  // Resync at 30 minutes past
-    } else {
-        // Time is invalid - resync immediately (don't wait for 30 minutes past)
-        shouldResyncNTP = true;
+    // Handle scheduled actions (e.g., NTP resync at 30 minutes past)
+    if (action == ScheduleAction::SCHEDULE_NTP_RESYNC) {
+        doNtpResyncIfNeeded(time_ok);
+        // After NTP resync, continue with normal cycle (MQTT check or display update)
+        // Update time variables after potential NTP sync
+        now = time(nullptr);
+        if (now > 1577836800) {
+            gmtime_r(&now, &tm_utc);
+            isTopOfHour = (tm_utc.tm_min == 0);
+            currentHour = tm_utc.tm_hour;
+            currentMinute = tm_utc.tm_min;
+            time_ok = true;
+        }
     }
-    
-    if (shouldResyncNTP) {
-        if (now_check > 1577836800) {
-            Serial.println("\n=== Periodic NTP Resync (30 minutes past hour) ===");
-        } else {
-            Serial.println("\n=== NTP Resync (time invalid) ===");
-        }
-        
-        // Load WiFi credentials
-        String ssid = "";
-        String psk = "";
-        {
-            NVSGuard guard("wifi", true);  // read-only
-            if (guard.isOpen()) {
-                ssid = guard.get().getString("ssid", "");
-                psk = guard.get().getString("psk", "");
-            }
-            // guard automatically calls end() in destructor
-        }
-        
-        if (ssid.length() > 0) {
-            // Load credentials into global variables for wifiConnectPersistent
-            strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
-            strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
-            
-            // Use persistent WiFi connection (NTP sync is important, so be persistent)
-            if (wifiConnectPersistent(8, 30000, true)) {  // 8 retries, 30s per attempt, required
-                Serial.println("WiFi connected");
-                
-                // Sync time via NTP (with retries for robustness)
-                const int maxNtpRetries = 5;
-                const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
-                bool ntpSynced = false;
-                time_t now = time(nullptr);
-                
-                for (int retry = 0; retry < maxNtpRetries && !ntpSynced; retry++) {
-                    if (retry > 0) {
-                        Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
-                        delay(2000);
-                    }
-                    
-                configTime(0, 0, "pool.ntp.org", "time.google.com");
-                
-                Serial.print("Syncing NTP");
-                    uint32_t start = millis();
-                    while (now < 1577836800 && (millis() - start < ntpTimeoutPerAttempt)) {
-                        delay(500);
-                        if ((millis() - start) % 5000 == 0) {
-                    Serial.print(".");
-                        }
-                    now = time(nullptr);
-                }
-                
-                if (now > 1577836800) {
-                    Serial.println(" OK!");
-                    struct tm tm_utc;
-                    gmtime_r(&now, &tm_utc);
-                    char buf[32];
-                    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
-                    Serial.printf("Time synced: %s\n", buf);
-                    time_ok = true;
-                        ntpSynced = true;
-                } else {
-                        Serial.println(" FAILED!");
-                        if (retry < maxNtpRetries - 1) {
-                            Serial.println("Will retry NTP sync...");
-                        }
-                    }
-                }
-                
-                if (!ntpSynced) {
-                    Serial.println("WARNING: NTP sync failed after all retries, but continuing...");
-                }
-                
-                // Don't disconnect WiFi here - we might need it for MQTT checks
-                // WiFi will be disconnected after MQTT check or before sleep
-                Serial.println("NTP sync complete, WiFi still connected for potential MQTT use");
-            } else {
-                Serial.println("WiFi connection failed");
-            }
-        } else {
-            Serial.println("No WiFi credentials saved, skipping NTP resync");
-        }
-        Serial.println("==========================================\n");
-    }  // End of shouldResyncNTP check
-#endif
     
     // If NOT top of hour, do MQTT check instead of display update
     if (!isTopOfHour && time_ok) {

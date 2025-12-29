@@ -484,6 +484,9 @@ async function handleMediaMessage(message) {
             // Decrypt the payload
             let decrypted;
             try {
+                console.log('Media mappings: Attempting decryption, message retained:', message.retained);
+                console.log('Media mappings: IV base64:', payload.iv);
+                console.log('Media mappings: Payload base64 length:', payload.payload ? payload.payload.length : 0);
                 decrypted = await decryptMessage(payload.payload, payload.iv);
             } catch (decryptError) {
                 console.error('Failed to decrypt media mappings message:', decryptError);

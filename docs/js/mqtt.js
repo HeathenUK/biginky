@@ -287,27 +287,56 @@ async function handleThumbnailMessage(message) {
             isEncrypted = true;
             console.log('Thumbnail message is encrypted, decrypting...');
             
-            // Validate encrypted message structure
-            if (!payload.iv || !payload.payload) {
-                console.error('Invalid encrypted message structure - missing iv or payload');
-                document.getElementById('thumbnailStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
-                return;
-            }
+            // Check if this is new format (separate IV) or legacy format (IV prepended)
+            const isNewFormat = payload.iv !== undefined;
+            const isLegacyFormat = !isNewFormat;
             
-            // Verify HMAC first (on encrypted message)
-            if (webUIPassword && payload.hmac) {
-                const providedHMAC = payload.hmac;
-                const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
-                
-                const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
-                if (!hmacValid) {
-                    console.error('Thumbnail message HMAC verification failed');
-                    document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+            if (isNewFormat) {
+                // New format: IV and payload are separate
+                if (!payload.iv || !payload.payload) {
+                    console.error('Invalid encrypted message structure - missing iv or payload');
+                    document.getElementById('thumbnailStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
                     return;
+                }
+                
+                // Verify HMAC first (on encrypted message)
+                if (webUIPassword && payload.hmac) {
+                    const providedHMAC = payload.hmac;
+                    const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Thumbnail message HMAC verification failed');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                        return;
+                    }
+                }
+            } else {
+                // Legacy format: IV is prepended to payload
+                console.log('Thumbnail message is in legacy format (IV prepended)');
+                if (!payload.payload) {
+                    console.error('Invalid encrypted message structure - missing payload');
+                    document.getElementById('thumbnailStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
+                    return;
+                }
+                
+                // For legacy format, HMAC might be on the payload itself or not present
+                if (webUIPassword && payload.hmac) {
+                    const providedHMAC = payload.hmac;
+                    const messageForHMAC = JSON.stringify({ encrypted: true, payload: payload.payload });
+                    
+                    const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
+                    if (!hmacValid) {
+                        console.error('Thumbnail message HMAC verification failed (legacy format)');
+                        document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
+                        return;
+                    }
                 }
             }
             
             // Decrypt the payload
+            // For new format: pass payload and IV separately
+            // For legacy format: pass payload only (IV is prepended)
             let decrypted;
             try {
                 decrypted = await decryptMessage(payload.payload, payload.iv);

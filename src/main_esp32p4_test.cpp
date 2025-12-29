@@ -764,8 +764,9 @@ static void sleepNowSeconds(uint32_t seconds) {
     Serial.printf("Sleeping for %lu seconds...\n", (unsigned long)seconds);
     Serial.flush();
     
-    // Enable timer wake
-    esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
+    // Store original sleep duration for potential adjustment
+    uint32_t original_sleep_s = seconds;
+    time_t time_at_start = time(nullptr);
     
     // ESP32-P4 can only wake from deep sleep using LP GPIOs (0-15) via ext1
     // Switch D is on GPIO51, which is NOT an LP GPIO
@@ -828,6 +829,28 @@ static void sleepNowSeconds(uint32_t seconds) {
     gpio_hold_en((gpio_num_t)C6_ENABLE);
     Serial.println("C6_ENABLE pad hold enabled - will remain LOW during deep sleep");
     Serial.flush();
+    
+    // CRITICAL: Final time adjustment right before sleeping
+    // All the delays above (log close, WiFi disconnect, serial flush, etc.) have taken time
+    // Re-read time and adjust sleep duration to account for elapsed time
+    time_t time_before_sleep = time(nullptr);
+    if (time_before_sleep > 1577836800 && time_at_start > 1577836800) {
+        int32_t elapsed_seconds = (int32_t)(time_before_sleep - time_at_start);
+        if (elapsed_seconds > 0 && elapsed_seconds < (int32_t)seconds) {
+            uint32_t adjusted_seconds = seconds - elapsed_seconds;
+            if (adjusted_seconds >= 5) {  // Don't sleep for less than 5 seconds
+                Serial.printf("Final adjustment: %ld seconds elapsed during sleepNowSeconds(), adjusting from %lu to %lu seconds\n",
+                             (long)elapsed_seconds, (unsigned long)seconds, (unsigned long)adjusted_seconds);
+                seconds = adjusted_seconds;
+            } else {
+                Serial.printf("WARNING: Adjustment would result in sleep < 5 seconds (%lu - %ld = %lu), using original %lu seconds\n",
+                             (unsigned long)seconds, (long)elapsed_seconds, (unsigned long)adjusted_seconds, (unsigned long)seconds);
+            }
+        }
+    }
+    
+    // Enable timer wake RIGHT BEFORE sleeping (after all delays)
+    esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
     
     esp_deep_sleep_start();
 }
@@ -1011,7 +1034,7 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
         
         // Use the recalculated value if it's reasonable (within 10 seconds of original)
         // This accounts for processing delays
-        if (sleep_s_recalc < sleep_s + 10 && sleep_s_recalc >= 5) {
+        if (sleep_s_recalc <= sleep_s && sleep_s_recalc >= 5) {
             uint32_t elapsed = sleep_s - sleep_s_recalc;
             if (elapsed > 0) {
                 Serial.printf("Adjusted sleep: %lu seconds elapsed during processing, new sleep: %lu seconds\n",
@@ -1021,6 +1044,8 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
         }
     }
     
+    // Note: sleepNowSeconds() will do a final adjustment right before actually sleeping
+    // to account for delays in WiFi disconnect, log close, etc.
     sleepNowSeconds(sleep_s);
     // Never returns
 }

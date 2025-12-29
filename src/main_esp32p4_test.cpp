@@ -72,6 +72,7 @@
 #include <Preferences.h>
 #include "nvs_guard.h"  // RAII wrapper for Preferences
 #include "mqtt_guard.h"  // RAII wrapper for MQTT connections
+#include "json_utils.h"  // JSON field extraction utilities
 #include <ArduinoJson.h>
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
 #include "mbedtls/md.h"  // ESP32 built-in HMAC support
@@ -3281,18 +3282,9 @@ static void publishMQTTStatus() {
     // Pending action (if a command is being processed)
     if (webUICommandPending && pendingWebUICommand.length() > 0) {
         // Extract command name from JSON for display
-        String cmdName = "unknown";
-        int cmdPos = pendingWebUICommand.indexOf("\"command\":");
-        if (cmdPos >= 0) {
-            int colonPos = pendingWebUICommand.indexOf(':', cmdPos);
-            int quoteStart = pendingWebUICommand.indexOf('"', colonPos);
-            if (quoteStart >= 0) {
-                quoteStart++;
-                int quoteEnd = pendingWebUICommand.indexOf('"', quoteStart);
-                if (quoteEnd > quoteStart) {
-                    cmdName = pendingWebUICommand.substring(quoteStart, quoteEnd);
-                }
-            }
+        String cmdName = extractJsonStringField(pendingWebUICommand, "command");
+        if (cmdName.length() == 0) {
+            cmdName = "unknown";
         }
         written += snprintf(jsonBuffer + written, jsonSize - written, ",\"pending_action\":\"%s\"",
                            cmdName.c_str());
@@ -4595,18 +4587,9 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", mqttMessageTopic, mqttMessageBufferUsed);
                     
                     // Extract command to check if it's a heavy command that should be deferred
-                    String command = "";
-                    int commandPos = jsonMessage.indexOf("\"command\"");
-                    if (commandPos >= 0) {
-                        int colonPos = jsonMessage.indexOf(':', commandPos);
-                        int quoteStart = jsonMessage.indexOf('"', colonPos);
-                        if (quoteStart >= 0) {
-                            int quoteEnd = jsonMessage.indexOf('"', quoteStart + 1);
-                            if (quoteEnd > quoteStart) {
-                                command = jsonMessage.substring(quoteStart + 1, quoteEnd);
-                                command.toLowerCase();
-                            }
-                        }
+                    String command = extractJsonStringField(jsonMessage, "command");
+                    if (command.length() > 0) {
+                        command.toLowerCase();
                     }
                     
                     // Defer heavy commands (display updates, large data processing) to be processed after MQTT disconnects
@@ -5025,19 +5008,11 @@ static String extractCommandFromMessage(const String& msg) {
     
     // If message is JSON, try to extract "text" field
     if (command.startsWith("{")) {
-        // Simple JSON parsing - look for "text":"..." pattern
-        int textStart = command.indexOf("\"text\"");
-        if (textStart >= 0) {
-            int colonPos = command.indexOf(':', textStart);
-            int quoteStart = command.indexOf('"', colonPos);
-            if (quoteStart >= 0) {
-                int quoteEnd = command.indexOf('"', quoteStart + 1);
-                if (quoteEnd >= 0) {
-                    command = command.substring(quoteStart + 1, quoteEnd);
-                    command.toLowerCase();
-                    command.trim();
-                }
-            }
+        String textField = extractJsonStringField(msg, "text");
+        if (textField.length() > 0) {
+            command = textField;
+            command.toLowerCase();
+            command.trim();
         }
     }
     
@@ -5069,28 +5044,8 @@ static String extractCommandParameter(const String& command) {
  * Returns the "from" field value (e.g., "+447816969344") or empty string if not found
  */
 static String extractFromFieldFromMessage(const String& msg) {
-    String result = "";
-    
-    // Only process JSON messages
-    if (!msg.startsWith("{")) {
-        return result;
-    }
-    
-    // Look for "from":"..." pattern
-    int fromStart = msg.indexOf("\"from\"");
-    if (fromStart >= 0) {
-        int colonPos = msg.indexOf(':', fromStart);
-        int quoteStart = msg.indexOf('"', colonPos);
-        if (quoteStart >= 0) {
-            int quoteEnd = msg.indexOf('"', quoteStart + 1);
-            if (quoteEnd >= 0) {
-                result = msg.substring(quoteStart + 1, quoteEnd);
-                result.trim();
-            }
-        }
-    }
-    
-    return result;
+    // Use the consolidated JSON parsing utility
+    return extractJsonStringField(msg, "from");
 }
 
 /**
@@ -5518,31 +5473,10 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     
     // For large messages (like canvas_display with 640KB pixelData), we can't parse the entire JSON
     // So we first check the command type using string operations, then parse only if needed
-    String command = "";
-    int commandPos = messageToProcess.indexOf("\"command\"");
-    Serial.printf("  Command position search: commandPos=%d\n", commandPos);
-    if (commandPos >= 0) {
-        int colonPos = messageToProcess.indexOf(':', commandPos);
-        Serial.printf("  Colon position: %d\n", colonPos);
-        if (colonPos >= 0) {
-            int quoteStart = messageToProcess.indexOf('"', colonPos);
-            Serial.printf("  Quote start: %d\n", quoteStart);
-            if (quoteStart >= 0) {
-                int quoteEnd = messageToProcess.indexOf('"', quoteStart + 1);
-                Serial.printf("  Quote end: %d\n", quoteEnd);
-                if (quoteEnd > quoteStart) {
-                    command = messageToProcess.substring(quoteStart + 1, quoteEnd);
-                    command.toLowerCase();
-                    Serial.printf("  Extracted command: '%s'\n", command.c_str());
-                } else {
-                    Serial.println("  ERROR: Quote end not found or invalid");
-                }
-            } else {
-                Serial.println("  ERROR: Quote start not found after colon");
-            }
-        } else {
-            Serial.println("  ERROR: Colon not found after 'command'");
-        }
+    String command = extractJsonStringField(messageToProcess, "command");
+    if (command.length() > 0) {
+        command.toLowerCase();
+        Serial.printf("  Extracted command: '%s'\n", command.c_str());
     } else {
         Serial.println("  ERROR: 'command' field not found in message");
     }
@@ -5574,81 +5508,11 @@ static bool handleWebInterfaceCommand(const String& jsonMessage) {
     // For canvas_display commands, extract fields directly without full JSON parsing (too large)
     // With increased MQTT task stack size (16KB), we can now process these directly in the MQTT task
     if (command == "canvas_display") {
-        // Extract width, height, and pixelData using string operations
-        int width = 0, height = 0;
-        String base64Data = "";
-        
-        // Extract width
-        int widthPos = messageToProcess.indexOf("\"width\"");
-        if (widthPos >= 0) {
-            int colonPos = messageToProcess.indexOf(':', widthPos);
-            if (colonPos >= 0) {
-                // Find the number after the colon
-                int numStart = colonPos + 1;
-                while (numStart < messageToProcess.length() && (messageToProcess.charAt(numStart) == ' ' || messageToProcess.charAt(numStart) == '\t')) {
-                    numStart++;
-                }
-                int numEnd = numStart;
-                while (numEnd < messageToProcess.length() && messageToProcess.charAt(numEnd) >= '0' && messageToProcess.charAt(numEnd) <= '9') {
-                    numEnd++;
-                }
-                if (numEnd > numStart) {
-                    width = messageToProcess.substring(numStart, numEnd).toInt();
-                }
-            }
-        }
-        
-        // Extract height
-        int heightPos = messageToProcess.indexOf("\"height\"");
-        if (heightPos >= 0) {
-            int colonPos = messageToProcess.indexOf(':', heightPos);
-            if (colonPos >= 0) {
-                // Find the number after the colon
-                int numStart = colonPos + 1;
-                while (numStart < messageToProcess.length() && (messageToProcess.charAt(numStart) == ' ' || messageToProcess.charAt(numStart) == '\t')) {
-                    numStart++;
-                }
-                int numEnd = numStart;
-                while (numEnd < messageToProcess.length() && messageToProcess.charAt(numEnd) >= '0' && messageToProcess.charAt(numEnd) <= '9') {
-                    numEnd++;
-                }
-                if (numEnd > numStart) {
-                    height = messageToProcess.substring(numStart, numEnd).toInt();
-                }
-            }
-        }
-        
-        // Extract pixelData (base64 string) - find the value between quotes after "pixelData"
-        int pixelDataPos = messageToProcess.indexOf("\"pixelData\"");
-        if (pixelDataPos >= 0) {
-            int colonPos = messageToProcess.indexOf(':', pixelDataPos);
-            if (colonPos >= 0) {
-                int quoteStart = messageToProcess.indexOf('"', colonPos);
-                if (quoteStart >= 0) {
-                    // Find the closing quote - but it might be the last quote in the JSON
-                    // Since pixelData is the last field, find the quote before the closing brace
-                    int lastBrace = messageToProcess.lastIndexOf('}');
-                    int quoteEnd = messageToProcess.lastIndexOf('"', lastBrace);
-                    if (quoteEnd > quoteStart) {
-                        base64Data = messageToProcess.substring(quoteStart + 1, quoteEnd);
-                    }
-                }
-            }
-        }
-        
-        // Check if data is compressed
-        bool isCompressed = false;
-        int compressedPos = messageToProcess.indexOf("\"compressed\"");
-        if (compressedPos >= 0) {
-            int colonPos = messageToProcess.indexOf(':', compressedPos);
-            if (colonPos >= 0) {
-                // Check for "true" after the colon
-                int truePos = messageToProcess.indexOf("true", colonPos);
-                if (truePos >= 0 && truePos < colonPos + 10) {
-                    isCompressed = true;
-                }
-            }
-        }
+        // Extract width, height, pixelData, and compressed using JSON utilities
+        int width = extractJsonIntField(messageToProcess, "width", 0);
+        int height = extractJsonIntField(messageToProcess, "height", 0);
+        String base64Data = extractJsonStringField(messageToProcess, "pixelData");
+        bool isCompressed = extractJsonBoolField(messageToProcess, "compressed", false);
         
         if (width == 0 || height == 0 || base64Data.length() == 0) {
             Serial.printf("ERROR: canvas_display command missing required fields (width=%d, height=%d, pixelData_len=%d)\n", 

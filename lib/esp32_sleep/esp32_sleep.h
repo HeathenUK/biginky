@@ -9,7 +9,7 @@
  * - Timer-based wake from deep sleep
  * - GPIO-based wake (for RTC alarm or button)
  * - Persistent data across deep sleep using RTC memory
- * - Optional DS3231 external RTC support for accurate timekeeping
+ * - Uses ESP32 internal RTC only (DS3231 support removed)
  */
 
 #ifndef _ESP32_SLEEP_H_
@@ -22,31 +22,27 @@ extern "C" {
 #endif
 
 // ========================================================================
-// DS3231 External RTC Support
+// RTC functions (DS3231 support removed - using ESP32 internal RTC only)
 // ========================================================================
 
 /**
- * @brief Initialize DS3231 RTC if present
- * 
- * Scans for DS3231 on I2C bus and configures it if found.
- * If DS3231 is present, it will be used for timekeeping.
- * 
- * @param sda_pin SDA GPIO pin number
- * @param scl_pin SCL GPIO pin number  
- * @param int_pin INT/SQW GPIO pin for alarm wake (use -1 to disable wake)
- * @return true if DS3231 found and initialized
+ * @brief Initialize RTC (DS3231 support removed - always returns false)
+ * @param sda_pin Unused (DS3231 removed)
+ * @param scl_pin Unused (DS3231 removed)
+ * @param int_pin Unused (DS3231 removed)
+ * @return Always returns false (no external RTC)
  */
 bool sleep_init_rtc(int sda_pin, int scl_pin, int int_pin);
 
 /**
- * @brief Check if external RTC (DS3231) is available
- * @return true if DS3231 is present and initialized
+ * @brief Check if external RTC is available
+ * @return Always returns false (DS3231 support removed)
  */
 bool sleep_has_rtc(void);
 
 /**
  * @brief Get the GPIO pin used for RTC interrupt/wake
- * @return GPIO pin number, or -1 if not configured
+ * @return Always returns -1 (DS3231 support removed)
  */
 int sleep_get_rtc_int_pin(void);
 
@@ -90,7 +86,7 @@ void sleep_clear_all_state(void);
 /**
  * @brief Get the current RTC time in milliseconds
  * 
- * Uses DS3231 if available, otherwise uses ESP32's RTC.
+ * Uses ESP32's internal RTC only (DS3231 support removed).
  * 
  * @return Current time in milliseconds since epoch
  */

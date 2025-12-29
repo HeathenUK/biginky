@@ -4,7 +4,7 @@
  * 
  * This provides DORMANT mode sleep with timer wakeup using either:
  * - RP2350's powman timer with LPOSC (Low Power Oscillator)
- * - External DS3231 RTC with alarm-based GPIO wake (more accurate)
+ * - Uses RP2350's powman timer with LPOSC (DS3231 support removed)
  */
 
 #ifndef _PICO_SLEEP_H_
@@ -17,31 +17,27 @@ extern "C" {
 #endif
 
 // ========================================================================
-// DS3231 External RTC Support
+// RTC functions (DS3231 support removed)
 // ========================================================================
 
 /**
- * @brief Initialize DS3231 RTC if present
- * 
- * Scans for DS3231 on I2C bus and configures it if found.
- * If DS3231 is present, it will be used for timekeeping instead of LPOSC.
- * 
- * @param sda_pin SDA GPIO pin number
- * @param scl_pin SCL GPIO pin number  
- * @param int_pin INT/SQW GPIO pin for alarm wake (use -1 to disable wake)
- * @return true if DS3231 found and initialized
+ * @brief Initialize RTC (DS3231 support removed - always returns false)
+ * @param sda_pin Unused (DS3231 removed)
+ * @param scl_pin Unused (DS3231 removed)
+ * @param int_pin Unused (DS3231 removed)
+ * @return Always returns false (no external RTC)
  */
 bool sleep_init_rtc(int sda_pin, int scl_pin, int int_pin);
 
 /**
- * @brief Check if external RTC (DS3231) is available
- * @return true if DS3231 is present and initialized
+ * @brief Check if external RTC is available
+ * @return Always returns false (DS3231 support removed)
  */
 bool sleep_has_rtc(void);
 
 /**
  * @brief Get the GPIO pin used for RTC interrupt/wake
- * @return GPIO pin number, or -1 if not configured
+ * @return Always returns -1 (DS3231 support removed)
  */
 int sleep_get_rtc_int_pin(void);
 
@@ -79,13 +75,8 @@ static inline void sleep_run_from_lposc(void) {
  * The system will enter dormant mode and wake up after the specified
  * number of milliseconds.
  * 
- * If DS3231 RTC is available (sleep_has_rtc() == true):
- * - Uses DS3231 alarm for accurate wake timing
- * - Wakes via GPIO interrupt from DS3231 INT pin
- * 
- * Otherwise:
- * - Uses RP2350's powman timer with LPOSC
- * - One of the sleep_run_from_* functions MUST be called before this
+ * Uses RP2350's powman timer with LPOSC (DS3231 support removed).
+ * One of the sleep_run_from_* functions MUST be called before this.
  * 
  * @param delay_ms Duration to sleep in milliseconds
  */

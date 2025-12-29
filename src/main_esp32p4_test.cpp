@@ -20,10 +20,6 @@
  *   RESET   ->   GPIO22 (was GP27, pin 32)
  *   BUSY    ->   GPIO47 (was GP17, pin 22)
  *
- * DS3231 RTC (optional):
- *   SDA     ->   GPIO31 (was GP2, pin 4)
- *   SCL     ->   GPIO30 (was GP3, pin 5)
- *   INT     ->   GPIO46 (was GP18, pin 24)
  */
 
 // Only compile this file for ESP32 builds
@@ -52,7 +48,6 @@
 #include "fonts/dancing.h"
 
 #include "es8311_simple.h"
-// DS3231 external RTC removed - using ESP32 internal RTC + NTP
 #include <time.h>
 #include <sys/time.h>
 #include <stdio.h>
@@ -175,8 +170,7 @@ extern "C" {
 #define PIN_SW_D_BRIDGE  -1  // Disabled - only timer wake enabled
 #endif
 
-// RTC I2C pins
-// DS3231 pins removed - using internal RTC only
+// RTC: Using ESP32 internal RTC only
 
 // SDMMC SD Card pins (ESP32-P4 Slot 0 IOMUX pins)
 #ifndef PIN_SD_CLK
@@ -830,21 +824,68 @@ static void sleepNowSeconds(uint32_t seconds) {
     Serial.println("C6_ENABLE pad hold enabled - will remain LOW during deep sleep");
     Serial.flush();
     
-    // CRITICAL: Final time adjustment right before sleeping
+    // CRITICAL: Final time adjustment RIGHT BEFORE enabling sleep timer
     // All the delays above (log close, WiFi disconnect, serial flush, etc.) have taken time
-    // Re-read time and adjust sleep duration to account for elapsed time
+    // Re-read time and recalculate sleep duration based on ACTUAL current time to target wake time
+    // This ensures we wake at the correct time regardless of how long cleanup took
     time_t time_before_sleep = time(nullptr);
     if (time_before_sleep > 1577836800 && time_at_start > 1577836800) {
-        int32_t elapsed_seconds = (int32_t)(time_before_sleep - time_at_start);
-        if (elapsed_seconds > 0 && elapsed_seconds < (int32_t)seconds) {
-            uint32_t adjusted_seconds = seconds - elapsed_seconds;
-            if (adjusted_seconds >= 5) {  // Don't sleep for less than 5 seconds
-                Serial.printf("Final adjustment: %ld seconds elapsed during sleepNowSeconds(), adjusting from %lu to %lu seconds\n",
-                             (long)elapsed_seconds, (unsigned long)seconds, (unsigned long)adjusted_seconds);
-                seconds = adjusted_seconds;
-            } else {
-                Serial.printf("WARNING: Adjustment would result in sleep < 5 seconds (%lu - %ld = %lu), using original %lu seconds\n",
-                             (unsigned long)seconds, (long)elapsed_seconds, (unsigned long)adjusted_seconds, (unsigned long)seconds);
+        // Recalculate sleep duration from actual current time to target wake time
+        // This is more accurate than just subtracting elapsed time
+        struct tm tm_now, tm_target;
+        gmtime_r(&time_before_sleep, &tm_now);
+        
+        // Calculate target time from stored wake hour/minute
+        if (targetWakeHour != 255 && targetWakeMinute != 255) {
+            tm_target = tm_now;
+            tm_target.tm_hour = targetWakeHour;
+            tm_target.tm_min = targetWakeMinute;
+            tm_target.tm_sec = 0;
+            
+            // Convert to time_t (mktime handles timezone, but we want UTC)
+            // Since we're using gmtime_r, we need to manually calculate
+            time_t target_time = time_before_sleep;
+            struct tm tm_check;
+            gmtime_r(&target_time, &tm_check);
+            
+            // Calculate seconds until target time
+            int32_t hours_diff = targetWakeHour - tm_check.tm_hour;
+            int32_t mins_diff = targetWakeMinute - tm_check.tm_min;
+            int32_t secs_diff = 0 - tm_check.tm_sec;
+            
+            // Handle wrap-around
+            if (hours_diff < 0) hours_diff += 24;
+            if (hours_diff == 0 && mins_diff < 0) {
+                hours_diff = 23;
+                mins_diff += 60;
+            }
+            if (hours_diff == 0 && mins_diff == 0 && secs_diff < 0) {
+                mins_diff = 59;
+                secs_diff += 60;
+            }
+            
+            int32_t recalc_seconds = hours_diff * 3600 + mins_diff * 60 + secs_diff;
+            
+            if (recalc_seconds > 0 && recalc_seconds < (int32_t)seconds + 60) {  // Allow some variance
+                if (recalc_seconds >= 5) {  // Don't sleep for less than 5 seconds
+                    Serial.printf("Final recalculation: %ld seconds until target %02d:%02d:00, adjusting from %lu to %ld seconds\n",
+                                 (long)recalc_seconds, targetWakeHour, targetWakeMinute, (unsigned long)seconds, (long)recalc_seconds);
+                    seconds = (uint32_t)recalc_seconds;
+                } else {
+                    Serial.printf("WARNING: Recalculation would result in sleep < 5 seconds (%ld), using original %lu seconds\n",
+                                 (long)recalc_seconds, (unsigned long)seconds);
+                }
+            }
+        } else {
+            // Fallback: just subtract elapsed time if we don't have target time
+            int32_t elapsed_seconds = (int32_t)(time_before_sleep - time_at_start);
+            if (elapsed_seconds > 0 && elapsed_seconds < (int32_t)seconds) {
+                uint32_t adjusted_seconds = seconds - elapsed_seconds;
+                if (adjusted_seconds >= 5) {
+                    Serial.printf("Final adjustment: %ld seconds elapsed, adjusting from %lu to %lu seconds\n",
+                                 (long)elapsed_seconds, (unsigned long)seconds, (unsigned long)adjusted_seconds);
+                    seconds = adjusted_seconds;
+                }
             }
         }
     }
@@ -1004,48 +1045,9 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
     targetWakeHour = (uint8_t)wake_hour;
     targetWakeMinute = (uint8_t)wake_min;
     
-    // CRITICAL: Re-read time right before sleeping to account for processing delays
-    // Processing (Serial prints, NVS writes, WiFi disconnect, log close, etc.) can take
-    // 3-5 seconds, causing us to wake early if we don't account for it
-    time_t now_before_sleep = time(nullptr);
-    if (now_before_sleep > 1577836800) {  // Only adjust if time is valid
-        struct tm tm_utc_before_sleep;
-        gmtime_r(&now_before_sleep, &tm_utc_before_sleep);
-        uint32_t sec_before_sleep = (uint32_t)tm_utc_before_sleep.tm_sec;
-        uint32_t min_before_sleep = (uint32_t)tm_utc_before_sleep.tm_min;
-        
-        // Recalculate sleep duration based on current time (simpler approach)
-        uint32_t current_slot_before_sleep = (min_before_sleep / interval_minutes) * interval_minutes;
-        uint32_t next_slot_before_sleep = current_slot_before_sleep + interval_minutes;
-        
-        // If we're at a slot boundary and less than 5 seconds have passed, sleep to next slot
-        if (min_before_sleep == current_slot_before_sleep && sec_before_sleep < 5) {
-            next_slot_before_sleep = current_slot_before_sleep + interval_minutes;
-        }
-        
-        uint32_t sleep_s_recalc;
-        if (next_slot_before_sleep < 60) {
-            // Next slot is in the same hour
-            sleep_s_recalc = (next_slot_before_sleep - min_before_sleep) * 60 - sec_before_sleep;
-        } else {
-            // Next slot wraps to next hour (which is always :00)
-            sleep_s_recalc = (60 - min_before_sleep) * 60 - sec_before_sleep;
-        }
-        
-        // Use the recalculated value if it's reasonable (within 10 seconds of original)
-        // This accounts for processing delays
-        if (sleep_s_recalc <= sleep_s && sleep_s_recalc >= 5) {
-            uint32_t elapsed = sleep_s - sleep_s_recalc;
-            if (elapsed > 0) {
-                Serial.printf("Adjusted sleep: %lu seconds elapsed during processing, new sleep: %lu seconds\n",
-                             (unsigned long)elapsed, (unsigned long)sleep_s_recalc);
-                sleep_s = sleep_s_recalc;
-            }
-        }
-    }
-    
     // Note: sleepNowSeconds() will do a final adjustment right before actually sleeping
-    // to account for delays in WiFi disconnect, log close, etc.
+    // to account for ALL delays (WiFi disconnect, log close, serial flush, etc.)
+    // Do NOT adjust here - let sleepNowSeconds() handle it at the very end
     sleepNowSeconds(sleep_s);
     // Never returns
 }

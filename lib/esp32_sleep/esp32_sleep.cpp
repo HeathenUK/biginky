@@ -21,13 +21,8 @@
 #include <sys/time.h>
 #include <time.h>
 
-// Try to include DS3231 driver if available
-#if __has_include("DS3231.h")
-#include "DS3231.h"
-#define HAS_DS3231 1
-#else
+// DS3231 support removed - using ESP32 internal RTC only
 #define HAS_DS3231 0
-#endif
 
 // ========================================================================
 // Platform detection and wake source support
@@ -79,12 +74,7 @@ typedef struct {
 // RTC memory storage (survives deep sleep, not power loss)
 RTC_DATA_ATTR static rtc_sleep_data_t rtc_data;
 
-// ========================================================================
-// DS3231 RTC state
-// ========================================================================
-
-static bool _rtc_present = false;
-static int _rtc_int_pin = -1;
+// DS3231 support removed - using ESP32 internal RTC only
 
 // ========================================================================
 // Helper functions
@@ -145,59 +135,21 @@ static const char* get_chip_name(void) {
 }
 
 // ========================================================================
-// DS3231 External RTC functions
+// RTC functions (DS3231 support removed - using ESP32 internal RTC only)
 // ========================================================================
 
 bool sleep_init_rtc(int sda_pin, int scl_pin, int int_pin) {
-    init_rtc_data_if_needed();
-    
-    Serial.printf("[ESP32_SLEEP] %s: sleep_init_rtc(SDA=%d, SCL=%d, INT=%d)\n", 
-                  get_chip_name(), sda_pin, scl_pin, int_pin);
-    
-    // Validate wake pin for deep sleep wake capability
-    if (int_pin >= 0 && !is_valid_wake_gpio(int_pin)) {
-#if CONFIG_IDF_TARGET_ESP32P4
-        Serial.printf("[ESP32_SLEEP] WARNING: GPIO%d cannot wake from deep sleep on ESP32-P4!\n", int_pin);
-        Serial.println("[ESP32_SLEEP] ESP32-P4 can only wake from GPIO 0-15 (LP GPIOs)");
-        Serial.println("[ESP32_SLEEP] Suggest moving RTC INT to GPIO4, GPIO5, GPIO7, or GPIO8");
-        // Don't fail - the RTC can still be used for timekeeping, just not wake
-#endif
-    }
-    
-#if HAS_DS3231
-    // Initialize I2C for DS3231
-    Wire.begin(sda_pin, scl_pin);
-    Wire.setClock(100000);  // 100kHz I2C
-    
-    // Try to initialize DS3231
-    _rtc_present = rtc.begin(&Wire, sda_pin, scl_pin);
-    _rtc_int_pin = int_pin;
-    
-    if (_rtc_present) {
-        Serial.println("[ESP32_SLEEP] DS3231 RTC detected");
-        
-        if (int_pin >= 0) {
-            pinMode(int_pin, INPUT_PULLUP);
-            rtc.clearAlarm1();
-            
-            if (is_valid_wake_gpio(int_pin)) {
-                Serial.printf("[ESP32_SLEEP] GPIO%d configured for wake\n", int_pin);
-            }
-        }
-        return true;
-    }
-#endif
-    
-    Serial.println("[ESP32_SLEEP] DS3231 not found - using ESP32 internal RTC");
-    return false;
+    (void)sda_pin; (void)scl_pin; (void)int_pin;  // Unused - DS3231 removed
+    Serial.println("[ESP32_SLEEP] Using ESP32 internal RTC only (DS3231 support removed)");
+    return false;  // No external RTC
 }
 
 bool sleep_has_rtc(void) {
-    return _rtc_present;
+    return false;  // No external RTC
 }
 
 int sleep_get_rtc_int_pin(void) {
-    return _rtc_int_pin;
+    return -1;  // No external RTC
 }
 
 // ========================================================================
@@ -244,85 +196,9 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
     
     Serial.printf("[ESP32_SLEEP] Entering deep sleep for %lu ms on %s\n", delay_ms, get_chip_name());
     
-    bool timer_enabled = false;
-    bool gpio_wake_configured = false;
-    
-#if HAS_DS3231
-    // If we have DS3231 with valid wake pin, use its alarm
-    if (_rtc_present && _rtc_int_pin >= 0 && is_valid_wake_gpio(_rtc_int_pin)) {
-        Serial.printf("[ESP32_SLEEP] Using DS3231 alarm + GPIO%d for wake\n", _rtc_int_pin);
-        
-        // Configure INT pin as input with pull-up
-        pinMode(_rtc_int_pin, INPUT_PULLUP);
-        
-        // Clear any existing alarm flags (this releases the INT pin)
-        rtc.clearAlarm1();
-        delay(10);  // Give time for INT pin to go HIGH
-        
-        // Verify INT pin is HIGH before proceeding
-        int pin_state = digitalRead(_rtc_int_pin);
-        Serial.printf("[ESP32_SLEEP] GPIO%d state after clearing alarms: %s\n", 
-                      _rtc_int_pin, pin_state ? "HIGH" : "LOW");
-        
-        if (pin_state == LOW) {
-            Serial.println("[ESP32_SLEEP] WARNING: INT pin still LOW! Trying to release...");
-            // Try disabling interrupt and clearing alarm again
-            rtc.enableAlarm1Interrupt(false);  // Disable interrupt
-            rtc.clearAlarm1();                  // Clear alarm flag
-            delay(50);
-            pin_state = digitalRead(_rtc_int_pin);
-            Serial.printf("[ESP32_SLEEP] GPIO%d state after reset: %s\n", 
-                          _rtc_int_pin, pin_state ? "HIGH" : "LOW");
-            
-            if (pin_state == LOW) {
-                Serial.println("[ESP32_SLEEP] ERROR: Cannot release INT pin, using timer fallback");
-                esp_sleep_enable_timer_wakeup((uint64_t)delay_ms * 1000ULL);
-                timer_enabled = true;
-                // Skip GPIO wake setup - go directly to sleep
-                Serial.printf("[ESP32_SLEEP] Boot count: %lu, total uptime: %lu s\n", 
-                              rtc_data.boot_count, rtc_data.uptime_seconds);
-                Serial.flush();
-                delay(10);
-                esp_deep_sleep_start();
-            }
-        }
-        
-        // Set new alarm
-        rtc.setAlarm1(delay_ms);
-        rtc.enableAlarm1Interrupt(true);
-        
-#if CONFIG_IDF_TARGET_ESP32P4
-        // ESP32-P4: Use ext1 (ext0 not supported)
-        uint64_t gpio_mask = (1ULL << _rtc_int_pin);
-        esp_err_t err = esp_sleep_enable_ext1_wakeup(gpio_mask, ESP_EXT1_WAKEUP_ANY_LOW);
-        if (err != ESP_OK) {
-            Serial.printf("[ESP32_SLEEP] WARNING: ext1 wake config failed: %d\n", err);
-        } else {
-            gpio_wake_configured = true;
-        }
-#elif HAS_EXT0_WAKE
-        // Other ESP32 variants: Use ext0 for single pin wake
-        esp_err_t err = esp_sleep_enable_ext0_wakeup((gpio_num_t)_rtc_int_pin, 0);
-        if (err != ESP_OK) {
-            Serial.printf("[ESP32_SLEEP] WARNING: ext0 wake config failed: %d\n", err);
-        } else {
-            gpio_wake_configured = true;
-        }
-#endif
-    } else if (_rtc_present && _rtc_int_pin >= 0) {
-        // RTC present but INT pin can't wake - still use alarm but fall back to timer
-        Serial.println("[ESP32_SLEEP] WARNING: RTC INT pin cannot wake, using timer fallback");
-        rtc.clearAlarm1();
-        rtc.setAlarm1(delay_ms);
-    }
-#endif
-
-    // If GPIO wake not configured, use timer
-    if (!gpio_wake_configured) {
-        Serial.println("[ESP32_SLEEP] Using ESP32 timer for wake");
-        esp_sleep_enable_timer_wakeup((uint64_t)delay_ms * 1000ULL);
-        timer_enabled = true;
-    }
+    // Use ESP32 internal RTC timer for wake (DS3231 support removed)
+    Serial.println("[ESP32_SLEEP] Using ESP32 timer for wake");
+    esp_sleep_enable_timer_wakeup((uint64_t)delay_ms * 1000ULL);
     
     // Configure additional GPIO wake sources if any
     uint64_t extra_gpio_mask = 0;
@@ -336,10 +212,6 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
     
     if (extra_gpio_mask != 0) {
 #if CONFIG_IDF_TARGET_ESP32P4 || HAS_EXT1_WAKE
-        // Combine with RTC INT pin mask if configured
-        if (gpio_wake_configured && _rtc_int_pin >= 0) {
-            extra_gpio_mask |= (1ULL << _rtc_int_pin);
-        }
         esp_err_t err = esp_sleep_enable_ext1_wakeup(extra_gpio_mask, ESP_EXT1_WAKEUP_ANY_LOW);
         if (err != ESP_OK) {
             Serial.printf("[ESP32_SLEEP] WARNING: ext1 additional GPIOs failed: %d\n", err);
@@ -363,27 +235,14 @@ void sleep_goto_dormant_for_ms(uint32_t delay_ms) {
 // ========================================================================
 
 uint64_t sleep_get_time_ms(void) {
-#if HAS_DS3231
-    if (_rtc_present) {
-        return rtc.getTimeMs();
-    }
-#endif
-    
-    // Fallback to ESP32 system time
+    // Use ESP32 system time (DS3231 support removed)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint64_t)tv.tv_sec * 1000ULL + tv.tv_usec / 1000;
 }
 
 void sleep_set_time_ms(uint64_t time_ms) {
-#if HAS_DS3231
-    if (_rtc_present) {
-        rtc.setTimeMs(time_ms);
-        Serial.printf("[ESP32_SLEEP] DS3231 time set to %llu ms\n", time_ms);
-    }
-#endif
-    
-    // Also set ESP32 system time
+    // Set ESP32 system time (DS3231 support removed)
     struct timeval tv;
     tv.tv_sec = time_ms / 1000;
     tv.tv_usec = (time_ms % 1000) * 1000;
@@ -396,32 +255,14 @@ uint32_t sleep_get_uptime_seconds(void) {
 }
 
 uint64_t sleep_get_corrected_time_ms(void) {
-#if HAS_DS3231
-    // DS3231 is crystal-accurate, no drift correction needed
-    if (_rtc_present) {
-        return rtc.getTimeMs();
-    }
-#endif
-    
-    // ESP32's RTC is also quite accurate, return as-is
+    // ESP32's RTC is quite accurate, return as-is (DS3231 support removed)
     return sleep_get_time_ms();
 }
 
 void sleep_calibrate_drift(uint64_t accurate_time_ms) {
     init_rtc_data_if_needed();
     
-#if HAS_DS3231
-    if (_rtc_present) {
-        // Just set the time, DS3231 doesn't need drift calibration
-        rtc.setTimeMs(accurate_time_ms);
-        rtc_data.last_sync_time = accurate_time_ms;
-        rtc_data.last_sync_rtc = accurate_time_ms;
-        Serial.println("[ESP32_SLEEP] DS3231 calibrated from NTP");
-        return;
-    }
-#endif
-    
-    // Set ESP32 system time
+    // Set ESP32 system time (DS3231 support removed)
     sleep_set_time_ms(accurate_time_ms);
     
     // Store sync point
@@ -497,13 +338,6 @@ void sleep_clear_gpio_wake_sources(void) {
 int sleep_get_wake_gpio(void) {
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     
-#if HAS_EXT0_WAKE
-    if (cause == ESP_SLEEP_WAKEUP_EXT0) {
-        // EXT0 is the DS3231 INT pin
-        return _rtc_int_pin;
-    }
-#endif
-    
     if (cause == ESP_SLEEP_WAKEUP_EXT1) {
         // Check which GPIO triggered
         uint64_t status = esp_sleep_get_ext1_wakeup_status();
@@ -558,16 +392,7 @@ void sleep_print_info(void) {
         Serial.printf("  Wake GPIO: %d\n", wake_gpio);
     }
     
-#if HAS_DS3231
-    Serial.printf("  External RTC: %s\n", _rtc_present ? "DS3231 present" : "Not found");
-    if (_rtc_present) {
-        Serial.printf("  RTC INT pin: GPIO%d", _rtc_int_pin);
-        if (_rtc_int_pin >= 0 && !is_valid_wake_gpio(_rtc_int_pin)) {
-            Serial.print(" (CANNOT wake - not an LP GPIO!)");
-        }
-        Serial.println();
-    }
-#endif
+    Serial.println("  RTC: ESP32 internal RTC only (DS3231 support removed)");
 
 #if CONFIG_IDF_TARGET_ESP32P4
     Serial.println("  Wake GPIOs: GPIO 0-15 only (LP GPIOs)");

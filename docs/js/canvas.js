@@ -989,6 +989,51 @@ function handleImageFileSelect(event) {
     event.target.value = '';
 }
 
+function loadFramebufferToCanvas() {
+    // Load the current framebuffer PNG onto the canvas
+    // This is the full-resolution PNG that was published by the device
+    // It's already palette-optimized, so we don't need to dither/posterize
+    
+    if (!currentFramebufferData) {
+        showStatus('canvasStatus', 'Error: No framebuffer data available. Wait for thumbnail update from device.', true);
+        return;
+    }
+    
+    if (currentFramebufferData.format !== 'png') {
+        showStatus('canvasStatus', 'Error: Framebuffer data is not in PNG format', true);
+        return;
+    }
+    
+    try {
+        saveCanvasState();
+        
+        // Create data URL from stored PNG data
+        const dataUrl = `data:image/png;base64,${currentFramebufferData.data}`;
+        const img = new Image();
+        
+        img.onload = function() {
+            // Clear canvas
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw framebuffer at full size (canvas is 1600x1200, framebuffer should be 1600x1200)
+            // No scaling needed - framebuffer should match canvas size exactly
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            
+            showStatus('canvasStatus', `Framebuffer loaded: ${currentFramebufferData.width}x${currentFramebufferData.height} (no dithering - already palette-optimized)`, false);
+        };
+        
+        img.onerror = function() {
+            showStatus('canvasStatus', 'Error: Failed to load framebuffer image', true);
+        };
+        
+        img.src = dataUrl;
+    } catch (e) {
+        console.error('Error loading framebuffer to canvas:', e);
+        showStatus('canvasStatus', 'Error: ' + e.message, true);
+    }
+}
+
 // Initialize canvas when DOM is ready
 function initializeCanvas() {
     canvas = document.getElementById('drawCanvas');

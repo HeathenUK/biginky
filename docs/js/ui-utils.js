@@ -34,6 +34,12 @@ function updateConnectionStatus(status, message) {
             btn.disabled = (status !== 'connected' || !hasPassword);
         }
     });
+    
+    // Update "Load Frame" button state (enabled if connected, password, and framebuffer data is available)
+    const loadFrameBtn = document.getElementById('loadFrameBtn');
+    if (loadFrameBtn) {
+        loadFrameBtn.disabled = (status !== 'connected' || !hasPassword || !currentFramebufferData);
+    }
 }
 
 // Update UI state based on password status
@@ -53,6 +59,12 @@ function updatePasswordStatus() {
             }
         }
     });
+    
+    // Update "Load Frame" button state (enabled if password, connected, and framebuffer data is available)
+    const loadFrameBtn = document.getElementById('loadFrameBtn');
+    if (loadFrameBtn) {
+        loadFrameBtn.disabled = !hasPassword || !isConnected || !currentFramebufferData;
+    }
     
     // Show warning if no password
     const passwordStatusEl = document.getElementById('passwordStatus');
@@ -121,6 +133,14 @@ function updateDeviceStatus(status) {
     }
     if (status.current_time) {
         html += `<p><strong>Device Time:</strong> ${status.current_time}</p>`;
+    }
+    
+    // Framebuffer updated timestamp
+    if (status.framebuffer_updated) {
+        const framebufferDate = new Date(status.framebuffer_updated * 1000);
+        html += `<p><strong>Framebuffer Updated:</strong> ${framebufferDate.toLocaleString()}</p>`;
+        // Store timestamp for checking if we need to fetch new framebuffer
+        lastFramebufferUpdateTimestamp = status.framebuffer_updated;
     }
     
     // Next media item

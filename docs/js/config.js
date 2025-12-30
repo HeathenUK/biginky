@@ -81,3 +81,7 @@ const INITIAL_RECONNECT_DELAY = MQTT_CONFIG.connection.initialReconnectDelay;
 
 // Global image files list (populated from media mappings allImages field)
 let allImageFiles = [];
+
+// Framebuffer tracking
+let lastFramebufferUpdateTimestamp = 0;  // Last framebuffer update timestamp from status message
+let currentFramebufferData = null;  // Current framebuffer PNG data for loading onto canvas

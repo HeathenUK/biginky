@@ -76,20 +76,38 @@ function updateThumbnail(thumb) {
     const ctx = canvas.getContext('2d');
     
     try {
-        if (thumb.format === 'jpeg') {
-            // JPEG format: create data URL and load as image (much simpler!)
-            const dataUrl = 'data:image/jpeg;base64,' + thumb.data;
+        if (thumb.format === 'jpeg' || thumb.format === 'png') {
+            // JPEG/PNG format: create data URL and load as image (much simpler!)
+            const mimeType = thumb.format === 'png' ? 'image/png' : 'image/jpeg';
+            const dataUrl = `data:${mimeType};base64,${thumb.data}`;
             const img = new Image();
             img.onload = function() {
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 canvas.style.display = 'block';
-                statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' JPEG (updated ' + new Date().toLocaleTimeString() + ')';
-                console.log('JPEG thumbnail updated successfully.');
+                statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' ' + thumb.format.toUpperCase() + ' (updated ' + new Date().toLocaleTimeString() + ')';
+                console.log(thumb.format.toUpperCase() + ' thumbnail updated successfully.');
+                
+                // Store framebuffer data for loading onto canvas (if PNG format - full resolution)
+                if (thumb.format === 'png') {
+                    currentFramebufferData = {
+                        format: 'png',
+                        data: thumb.data,
+                        width: thumb.width,
+                        height: thumb.height
+                    };
+                    console.log('Framebuffer PNG data stored for canvas loading');
+                    
+                    // Enable "Load Frame" button if it exists and we're connected
+                    const loadFrameBtn = document.getElementById('loadFrameBtn');
+                    if (loadFrameBtn && isConnected && webUIPassword) {
+                        loadFrameBtn.disabled = false;
+                    }
+                }
             };
             img.onerror = function() {
-                console.error('Failed to load JPEG thumbnail');
-                statusEl.textContent = 'Error loading JPEG preview';
+                console.error('Failed to load ' + thumb.format.toUpperCase() + ' thumbnail');
+                statusEl.textContent = 'Error loading ' + thumb.format.toUpperCase() + ' preview';
                 canvas.style.display = 'none';
             };
             img.src = dataUrl;

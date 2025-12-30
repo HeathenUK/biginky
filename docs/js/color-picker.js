@@ -64,6 +64,12 @@ function createColorPicker(config) {
         return;
     }
 
+    // Register this button-palette mapping for the global click handler
+    if (!window.colorPickerClickHandlerRegistered) {
+        registerColorPickerClickHandler();
+    }
+    colorPickerMappings.set(palette, button);
+
     const colorDefs = colorDefinitions[colorType] || colorDefinitions.numeric;
     const availableColors = colors || Object.keys(colorDefs);
 
@@ -139,24 +145,22 @@ function createColorPicker(config) {
 }
 
 // Global click handler to close pickers when clicking outside (registered once)
-let colorPickerClickHandlerRegistered = false;
+// Store button-palette mappings when pickers are created
+const colorPickerMappings = new Map();
 
 function registerColorPickerClickHandler() {
-    if (colorPickerClickHandlerRegistered) return;
+    if (window.colorPickerClickHandlerRegistered) return;
     
     document.addEventListener('click', (e) => {
-        // Find all color picker palettes and close them if click is outside
-        document.querySelectorAll('.color-palette-popup').forEach(palette => {
-            const button = palette.previousElementSibling;
-            if (button && button.classList.contains('color-preview-btn')) {
-                if (!button.contains(e.target) && !palette.contains(e.target)) {
-                    palette.style.display = 'none';
-                }
+        // Close all palettes if click is outside their associated buttons
+        colorPickerMappings.forEach((button, palette) => {
+            if (!button.contains(e.target) && !palette.contains(e.target)) {
+                palette.style.display = 'none';
             }
         });
     });
     
-    colorPickerClickHandlerRegistered = true;
+    window.colorPickerClickHandlerRegistered = true;
 }
 
 // Initialize on DOM ready

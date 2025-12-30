@@ -8,8 +8,7 @@ const textColorMap = {
     'blue': { hex: '#0000FF', name: 'Blue' },
     'green': { hex: '#00FF00', name: 'Green' },
     'white': { hex: '#FFFFFF', name: 'White' },
-    'multi': { hex: 'linear-gradient(90deg,#000000 0%,#FFFF00 16.66%,#FF0000 33.33%,#0000FF 50%,#00FF00 66.66%,#FFFFFF 83.33%,#000000 100%)', name: 'Multi' },
-    'multi-fade': { hex: 'linear-gradient(90deg,#000000 0%,#FFFF00 20%,#FF0000 40%,#0000FF 60%,#00FF00 80%,#FFFFFF 100%)', name: 'Multi-Fade' }
+    'multi': { hex: 'linear-gradient(90deg,#000000 0%,#FFFF00 16.66%,#FF0000 33.33%,#0000FF 50%,#00FF00 66.66%,#FFFFFF 83.33%,#000000 100%)', name: 'Multi' }
 };
 
 // Initialize text color pickers

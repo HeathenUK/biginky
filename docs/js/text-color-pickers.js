@@ -13,20 +13,26 @@ const textColorMap = {
 
 // Initialize text color pickers
 function initTextColorPickers() {
-    // Text Color picker
+    // Get all elements first (in outer scope so they're accessible everywhere)
     const textColorBtn = document.getElementById('textColorBtn');
     const textColorPalette = document.getElementById('textColorPalette');
     const textColorHidden = document.getElementById('textColor');
+    const textBackgroundColorBtn = document.getElementById('textBackgroundColorBtn');
+    const textBackgroundColorPalette = document.getElementById('textBackgroundColorPalette');
+    const textBackgroundColorHidden = document.getElementById('textBackgroundColor');
+    const textOutlineColorBtn = document.getElementById('textOutlineColorBtn');
+    const textOutlineColorPalette = document.getElementById('textOutlineColorPalette');
+    const textOutlineColorHidden = document.getElementById('textOutlineColor');
     
+    // Text Color picker
     if (textColorBtn && textColorPalette && textColorHidden) {
         textColorBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            e.preventDefault();
             const isVisible = textColorPalette.style.display !== 'none';
             // Close other palettes if open
-            const bgColorPalette = document.getElementById('textBackgroundColorPalette');
-            const outlineColorPalette = document.getElementById('textOutlineColorPalette');
-            if (bgColorPalette) bgColorPalette.style.display = 'none';
-            if (outlineColorPalette) outlineColorPalette.style.display = 'none';
+            if (textBackgroundColorPalette) textBackgroundColorPalette.style.display = 'none';
+            if (textOutlineColorPalette) textOutlineColorPalette.style.display = 'none';
             // Toggle text color palette
             textColorPalette.style.display = isVisible ? 'none' : 'block';
         });
@@ -34,8 +40,11 @@ function initTextColorPickers() {
         document.querySelectorAll('#textColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const colorValue = e.target.dataset.color;
-                setTextColor(colorValue);
+                e.preventDefault();
+                const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
+                if (colorValue) {
+                    setTextColor(colorValue);
+                }
             });
         });
         
@@ -44,17 +53,14 @@ function initTextColorPickers() {
     }
     
     // Background Color picker
-    const textBackgroundColorBtn = document.getElementById('textBackgroundColorBtn');
-    const textBackgroundColorPalette = document.getElementById('textBackgroundColorPalette');
-    const textBackgroundColorHidden = document.getElementById('textBackgroundColor');
-    
     if (textBackgroundColorBtn && textBackgroundColorPalette && textBackgroundColorHidden) {
         textBackgroundColorBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            e.preventDefault();
             const isVisible = textBackgroundColorPalette.style.display !== 'none';
             // Close other palettes if open
             if (textColorPalette) textColorPalette.style.display = 'none';
-            if (outlineColorPalette) outlineColorPalette.style.display = 'none';
+            if (textOutlineColorPalette) textOutlineColorPalette.style.display = 'none';
             // Toggle background color palette
             textBackgroundColorPalette.style.display = isVisible ? 'none' : 'block';
         });
@@ -62,8 +68,11 @@ function initTextColorPickers() {
         document.querySelectorAll('#textBackgroundColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const colorValue = e.target.dataset.color;
-                setTextBackgroundColor(colorValue);
+                e.preventDefault();
+                const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
+                if (colorValue) {
+                    setTextBackgroundColor(colorValue);
+                }
             });
         });
         
@@ -72,13 +81,10 @@ function initTextColorPickers() {
     }
     
     // Outline Color picker
-    const textOutlineColorBtn = document.getElementById('textOutlineColorBtn');
-    const textOutlineColorPalette = document.getElementById('textOutlineColorPalette');
-    const textOutlineColorHidden = document.getElementById('textOutlineColor');
-    
     if (textOutlineColorBtn && textOutlineColorPalette && textOutlineColorHidden) {
         textOutlineColorBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            e.preventDefault();
             const isVisible = textOutlineColorPalette.style.display !== 'none';
             // Close other palettes if open
             if (textColorPalette) textColorPalette.style.display = 'none';
@@ -90,8 +96,11 @@ function initTextColorPickers() {
         document.querySelectorAll('#textOutlineColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const colorValue = e.target.dataset.color;
-                setTextOutlineColor(colorValue);
+                e.preventDefault();
+                const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
+                if (colorValue) {
+                    setTextOutlineColor(colorValue);
+                }
             });
         });
         

@@ -93,15 +93,26 @@ function createColorPicker(config) {
         // Toggle this palette (use 'flex' to match CSS rule)
         if (!isVisible) {
             palette.style.display = 'flex';
-            // Ensure positioning styles are set
-            if (!palette.style.position) palette.style.position = 'absolute';
-            if (!palette.style.top) palette.style.top = '100%';
-            if (!palette.style.left) palette.style.left = '0';
-            if (!palette.style.zIndex) palette.style.zIndex = '1000';
+            // Force positioning styles to be set
+            palette.style.position = 'absolute';
+            palette.style.top = '100%';
+            palette.style.left = '0';
+            palette.style.zIndex = '1000';
+            
+            // Debug: log computed styles
+            const rect = palette.getBoundingClientRect();
+            console.log(`Color picker ${buttonId} shown - palette rect:`, {
+                display: palette.style.display,
+                position: palette.style.position,
+                top: palette.style.top,
+                left: palette.style.left,
+                zIndex: palette.style.zIndex,
+                boundingRect: { width: rect.width, height: rect.height, top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right },
+                parentRect: palette.parentElement ? palette.parentElement.getBoundingClientRect() : null
+            });
         } else {
             palette.style.display = 'none';
         }
-        console.log(`Color picker ${buttonId} toggled, palette now: ${palette.style.display}, position: ${palette.style.position}, top: ${palette.style.top}`); // TEST: Debug log
     });
 
     // Set up palette button click handlers

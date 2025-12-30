@@ -13,6 +13,45 @@ if (document.readyState === 'loading') {
             setupKeyboardShortcuts();
         }
         
+        // Initialize unified color pickers for text display
+        if (typeof createColorPicker === 'function') {
+            createColorPicker({
+                buttonId: 'textColorBtn',
+                paletteId: 'textColorPalette',
+                hiddenInputId: 'textColor',
+                indicatorId: 'textColorIndicator',
+                labelId: 'textColorLabel',
+                colorType: 'string',
+                colors: ['black', 'yellow', 'red', 'blue', 'green', 'white', 'multi'],
+                defaultValue: 'black',
+                closeOtherPickers: ['textBackgroundColorPalette', 'textOutlineColorPalette']
+            });
+            
+            createColorPicker({
+                buttonId: 'textBackgroundColorBtn',
+                paletteId: 'textBackgroundColorPalette',
+                hiddenInputId: 'textBackgroundColor',
+                indicatorId: 'textBackgroundColorIndicator',
+                labelId: 'textBackgroundColorLabel',
+                colorType: 'string',
+                colors: ['black', 'yellow', 'red', 'blue', 'green', 'white'],
+                defaultValue: 'white',
+                closeOtherPickers: ['textColorPalette', 'textOutlineColorPalette']
+            });
+            
+            createColorPicker({
+                buttonId: 'textOutlineColorBtn',
+                paletteId: 'textOutlineColorPalette',
+                hiddenInputId: 'textOutlineColor',
+                indicatorId: 'textOutlineColorIndicator',
+                labelId: 'textOutlineColorLabel',
+                colorType: 'string',
+                colors: ['black', 'yellow', 'red', 'blue', 'green', 'white'],
+                defaultValue: 'black',
+                closeOtherPickers: ['textColorPalette', 'textBackgroundColorPalette']
+            });
+        }
+        
         // Initialize canvas filename input and action selector
         const canvasFilenameInput = document.getElementById('canvasFilenameInput');
         const canvasActionSelect = document.getElementById('canvasActionSelect');
@@ -69,6 +108,45 @@ if (document.readyState === 'loading') {
     }
     if (typeof setupKeyboardShortcuts === 'function') {
         setupKeyboardShortcuts();
+    }
+    
+    // Initialize unified color pickers for text display
+    if (typeof createColorPicker === 'function') {
+        createColorPicker({
+            buttonId: 'textColorBtn',
+            paletteId: 'textColorPalette',
+            hiddenInputId: 'textColor',
+            indicatorId: 'textColorIndicator',
+            labelId: 'textColorLabel',
+            colorType: 'string',
+            colors: ['black', 'yellow', 'red', 'blue', 'green', 'white', 'multi'],
+            defaultValue: 'black',
+            closeOtherPickers: ['textBackgroundColorPalette', 'textOutlineColorPalette']
+        });
+        
+        createColorPicker({
+            buttonId: 'textBackgroundColorBtn',
+            paletteId: 'textBackgroundColorPalette',
+            hiddenInputId: 'textBackgroundColor',
+            indicatorId: 'textBackgroundColorIndicator',
+            labelId: 'textBackgroundColorLabel',
+            colorType: 'string',
+            colors: ['black', 'yellow', 'red', 'blue', 'green', 'white'],
+            defaultValue: 'white',
+            closeOtherPickers: ['textColorPalette', 'textOutlineColorPalette']
+        });
+        
+        createColorPicker({
+            buttonId: 'textOutlineColorBtn',
+            paletteId: 'textOutlineColorPalette',
+            hiddenInputId: 'textOutlineColor',
+            indicatorId: 'textOutlineColorIndicator',
+            labelId: 'textOutlineColorLabel',
+            colorType: 'string',
+            colors: ['black', 'yellow', 'red', 'blue', 'green', 'white'],
+            defaultValue: 'black',
+            closeOtherPickers: ['textColorPalette', 'textBackgroundColorPalette']
+        });
     }
     
     // Initialize canvas filename input and action selector

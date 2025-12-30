@@ -1559,11 +1559,46 @@ static void publishMQTTMediaMappingsInternalImpl() {
     
     Serial.printf("[Core 1] Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
     
-    String jsonStr = "{\"mappings\":[";
+    // Use a pre-allocated buffer instead of String concatenation to avoid truncation
+    // Estimate size: base JSON (~50 bytes) + per mapping (~200 bytes + thumbnail base64) + allImages (~50 bytes per file)
+    // Thumbnails are ~50KB base64 each, so for 4 mappings + overhead = ~300KB should be enough
+    const size_t estimatedMaxSize = 512 * 1024;  // 512KB buffer (in PSRAM)
+    char* jsonBuffer = (char*)hal_psram_malloc(estimatedMaxSize);
+    if (!jsonBuffer) {
+        Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for media mappings JSON buffer");
+        return;
+    }
+    
+    size_t jsonPos = 0;
+    
+    // Helper macro to append string to buffer with bounds checking
+    #define APPEND_STR(str) do { \
+        size_t len = strlen(str); \
+        if (jsonPos + len >= estimatedMaxSize - 1) { \
+            Serial.printf("[Core 1] ERROR: JSON buffer overflow at position %zu (trying to append %zu bytes)\n", jsonPos, len); \
+            hal_psram_free(jsonBuffer); \
+            return; \
+        } \
+        memcpy(jsonBuffer + jsonPos, str, len); \
+        jsonPos += len; \
+        jsonBuffer[jsonPos] = '\0'; \
+    } while(0)
+    
+    #define APPEND_FMT(fmt, ...) do { \
+        int written = snprintf(jsonBuffer + jsonPos, estimatedMaxSize - jsonPos, fmt, ##__VA_ARGS__); \
+        if (written < 0 || jsonPos + written >= estimatedMaxSize - 1) { \
+            Serial.printf("[Core 1] ERROR: JSON buffer overflow (pos=%zu, written=%d, max=%zu)\n", jsonPos, written, estimatedMaxSize); \
+            hal_psram_free(jsonBuffer); \
+            return; \
+        } \
+        jsonPos += written; \
+    } while(0)
+    
+    APPEND_STR("{\"mappings\":[");
     
     for (size_t i = 0; i < g_media_mappings.size(); i++) {
         if (i > 0) {
-            jsonStr += ",";
+            APPEND_STR(",");
         }
         
         const MediaMapping& mm = g_media_mappings[i];
@@ -1575,25 +1610,17 @@ static void publishMQTTMediaMappingsInternalImpl() {
             Serial.printf("[Core 1] WARNING: Failed to generate thumbnail for %s, skipping\n", mm.imageName.c_str());
         }
         
-        jsonStr += "{\"index\":";
-        jsonStr += String(i);
-        jsonStr += ",\"image\":\"";
-        jsonStr += mm.imageName;
-        jsonStr += "\"";
+        APPEND_FMT("{\"index\":%zu,\"image\":\"%s\"", i, mm.imageName.c_str());
         
         if (mm.audioFile.length() > 0) {
-            jsonStr += ",\"audio\":\"";
-            jsonStr += mm.audioFile;
-            jsonStr += "\"";
+            APPEND_FMT(",\"audio\":\"%s\"", mm.audioFile.c_str());
         }
         
         if (thumbnailBase64.length() > 0) {
-            jsonStr += ",\"thumbnail\":\"";
-            jsonStr += thumbnailBase64;
-            jsonStr += "\"";
+            APPEND_FMT(",\"thumbnail\":\"%s\"", thumbnailBase64.c_str());
         }
         
-        jsonStr += "}";
+        APPEND_STR("}");
         
         Serial.printf("[Core 1] Completed [%zu] %s (thumbnail: %d bytes base64)\n", i, mm.imageName.c_str(), thumbnailBase64.length());
     }
@@ -1603,14 +1630,18 @@ static void publishMQTTMediaMappingsInternalImpl() {
     std::vector<String> allImages = listImageFilesVector();
     Serial.printf("[Core 1] Found %zu image files on SD card\n", allImages.size());
     
-    jsonStr += ",\"allImages\":[";
+    APPEND_STR(",\"allImages\":[");
     for (size_t i = 0; i < allImages.size(); i++) {
-        if (i > 0) jsonStr += ",";
-        jsonStr += "\"";
-        jsonStr += allImages[i];
-        jsonStr += "\"";
+        if (i > 0) APPEND_STR(",");
+        APPEND_FMT("\"%s\"", allImages[i].c_str());
     }
-    jsonStr += "]}"; // Close allImages array and main JSON object
+    APPEND_STR("]}"); // Close allImages array and main JSON object
+    
+    #undef APPEND_STR
+    #undef APPEND_FMT
+    
+    String jsonStr = String(jsonBuffer);
+    hal_psram_free(jsonBuffer);
     
     String encryptedJson = encryptAndFormatMessage(jsonStr);
     if (encryptedJson.length() == 0) {
@@ -1619,16 +1650,16 @@ static void publishMQTTMediaMappingsInternalImpl() {
     }
     
     size_t encryptedLen = encryptedJson.length();
-    char* jsonBuffer = (char*)malloc(encryptedLen + 1);
-    if (!jsonBuffer) {
+    char* encryptedBuffer = (char*)malloc(encryptedLen + 1);
+    if (!encryptedBuffer) {
         Serial.println("[Core 1] ERROR: Failed to allocate memory for encrypted media mappings JSON");
         return;
     }
     
-    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
-    jsonBuffer[encryptedLen] = '\0';
+    strncpy(encryptedBuffer, encryptedJson.c_str(), encryptedLen);
+    encryptedBuffer[encryptedLen] = '\0';
     
-    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, jsonBuffer, encryptedLen, 1, 1);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, encryptedBuffer, encryptedLen, 1, 1);
     if (msg_id > 0) {
         Serial.printf("[Core 1] Published media mappings to %s (msg_id: %d, size: %zu bytes)\n", 
                      mqttTopicMedia, msg_id, encryptedLen);
@@ -1636,7 +1667,7 @@ static void publishMQTTMediaMappingsInternalImpl() {
         Serial.printf("[Core 1] Failed to publish media mappings (msg_id: %d)\n", msg_id);
     }
     
-    free(jsonBuffer);
+    free(encryptedBuffer);
     Serial.println("[Core 1] Media mappings publish complete");
 }
 

@@ -1,0 +1,13 @@
+{
+  "name": "lodepng",
+  "version": "1.0.0",
+  "description": "PNG encoder and decoder in C and C++",
+  "authors": [
+    {
+      "name": "Lode Vandevenne"
+    }
+  ],
+  "frameworks": "*",
+  "platforms": "*"
+}
+

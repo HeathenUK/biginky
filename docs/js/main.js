@@ -12,9 +12,6 @@ if (document.readyState === 'loading') {
         if (typeof setupKeyboardShortcuts === 'function') {
             setupKeyboardShortcuts();
         }
-        if (typeof initTextColorPickers === 'function') {
-            initTextColorPickers();
-        }
         
         // Initialize canvas filename input and action selector
         const canvasFilenameInput = document.getElementById('canvasFilenameInput');
@@ -72,9 +69,6 @@ if (document.readyState === 'loading') {
     }
     if (typeof setupKeyboardShortcuts === 'function') {
         setupKeyboardShortcuts();
-    }
-    if (typeof initTextColorPickers === 'function') {
-        initTextColorPickers();
     }
     
     // Initialize canvas filename input and action selector

@@ -6,7 +6,7 @@
 
 #include "command_dispatcher.h"
 #include "json_utils.h"
-#include <ArduinoJson.h>
+// ArduinoJson removed - using cJSON instead (via json_utils.h)
 
 // Forward declarations of handler functions from main.cpp
 extern bool handleClearCommand();
@@ -54,15 +54,8 @@ static String extractTextParameterForCommand(const String& command, const String
     
     // Check if it's JSON format
     if (originalMessage.startsWith("{")) {
-        // Parse JSON to extract "text" field (preserving case)
-        StaticJsonDocument<2048> doc;
-        DeserializationError error = deserializeJson(doc, originalMessage);
-        if (!error && doc.containsKey("text")) {
-            textToDisplay = doc["text"].as<String>();
-        } else {
-            // JSON parse failed or no "text" field, try to extract manually
-            textToDisplay = extractJsonStringField(originalMessage, "text");
-        }
+        // Parse JSON to extract "text" field (preserving case) using cJSON
+        textToDisplay = extractJsonStringField(originalMessage, "text");
     } else {
         // Not JSON - extract parameter from original message (preserving case)
         String lowerMsg = originalMessage;

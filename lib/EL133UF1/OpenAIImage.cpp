@@ -6,6 +6,7 @@
 #include "OpenAIImage.h"
 #include "platform_hal.h"
 #include <WiFi.h>
+#include "cJSON.h"  // For JSON building
 
 // OpenAI API endpoint
 static const char* OPENAI_HOST = "api.openai.com";
@@ -137,32 +138,38 @@ OpenAIResult OpenAIImage::generate(const char* prompt, uint8_t** outData, size_t
     Serial.printf("OpenAI: Connected. Model=%s, Size=%s, Quality=%s\n",
                   getModelString(), getSizeString(), getQualityString());
     
-    // Build JSON request body
-    // Escape special characters in prompt
-    String escapedPrompt = prompt;
-    escapedPrompt.replace("\\", "\\\\");
-    escapedPrompt.replace("\"", "\\\"");
-    escapedPrompt.replace("\n", "\\n");
-    escapedPrompt.replace("\r", "\\r");
-    escapedPrompt.replace("\t", "\\t");
+    // Build JSON request body using cJSON
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        snprintf(_lastError, sizeof(_lastError), "Failed to create JSON object");
+        client.stop();
+        return OPENAI_ERR_ALLOC_FAILED;
+    }
     
-    String body = "{";
-    body += "\"model\":\"";
-    body += getModelString();
-    body += "\",\"prompt\":\"";
-    body += escapedPrompt;
-    body += "\",\"n\":1,\"size\":\"";
-    body += getSizeString();
-    body += "\",\"response_format\":\"url\"";
+    // Add fields (cJSON handles escaping automatically)
+    cJSON_AddStringToObject(root, "model", getModelString());
+    cJSON_AddStringToObject(root, "prompt", prompt);
+    cJSON_AddNumberToObject(root, "n", 1);
+    cJSON_AddStringToObject(root, "size", getSizeString());
+    cJSON_AddStringToObject(root, "response_format", "url");
     
     // Add quality for DALL-E 3
     if (_model == DALLE_3) {
-        body += ",\"quality\":\"";
-        body += getQualityString();
-        body += "\"";
+        cJSON_AddStringToObject(root, "quality", getQualityString());
     }
     
-    body += "}";
+    // Convert to string
+    char* bodyStr = cJSON_Print(root);
+    if (!bodyStr) {
+        cJSON_Delete(root);
+        snprintf(_lastError, sizeof(_lastError), "Failed to print JSON");
+        client.stop();
+        return OPENAI_ERR_ALLOC_FAILED;
+    }
+    
+    String body = String(bodyStr);
+    free(bodyStr);
+    cJSON_Delete(root);
     
     // Send HTTP request
     client.println("POST /v1/images/generations HTTP/1.1");

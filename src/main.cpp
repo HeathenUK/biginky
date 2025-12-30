@@ -75,7 +75,8 @@
 #include "mqtt_handler.h"  // MQTT connection, publishing, and message handling
 #include "command_dispatcher.h"  // Unified command dispatcher
 #include "canvas_handler.h"  // Canvas display and save functionality
-#include <ArduinoJson.h>
+// ArduinoJson removed - using cJSON instead (via json_utils.h)
+#include "cJSON.h"  // cJSON for JSON parsing (also available via json_utils.h)
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
 #include "mbedtls/md.h"  // ESP32 built-in HMAC support
 #include "mbedtls/aes.h"  // ESP32 built-in AES encryption support
@@ -1857,15 +1858,8 @@ String extractTextParameterForCommand(const String& command, const String& origi
     
     // Check if it's JSON format
     if (originalMessage.startsWith("{")) {
-        // Parse JSON to extract "text" field (preserving case)
-        StaticJsonDocument<2048> doc;
-        DeserializationError error = deserializeJson(doc, originalMessage);
-        if (!error && doc.containsKey("text")) {
-            textToDisplay = doc["text"].as<String>();
-        } else {
-            // JSON parse failed or no "text" field, try to extract manually (using json_utils.h)
-            textToDisplay = extractJsonStringField(originalMessage, "text");
-        }
+        // Parse JSON to extract "text" field (preserving case) using cJSON
+        textToDisplay = extractJsonStringField(originalMessage, "text");
     } else {
         // Not JSON - extract parameter from original message (preserving case)
         String lowerMsg = originalMessage;
@@ -3556,15 +3550,8 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
         
         // Check if original message is JSON
         if (originalMessage.startsWith("{")) {
-            // Parse JSON to extract "text" field
-            StaticJsonDocument<2048> doc;
-            DeserializationError error = deserializeJson(doc, originalMessage);
-            if (!error && doc.containsKey("text")) {
-                textContent = doc["text"].as<String>();
-            } else {
-                // JSON parse failed, try manual extraction (using json_utils.h)
-                textContent = extractJsonStringField(originalMessage, "text");
-            }
+            // Parse JSON to extract "text" field using cJSON
+            textContent = extractJsonStringField(originalMessage, "text");
         } else {
             // Not JSON - use original message directly
             textContent = originalMessage;
@@ -3785,25 +3772,26 @@ bool handleWebInterfaceCommand(const String& jsonMessage) {
         return handleCanvasDisplayCommand(messageToProcess);
     }
     
-    // For other commands, parse JSON normally (they're small)
+    // For other commands, parse JSON using cJSON
     // Use messageToProcess (decrypted) not jsonMessage (encrypted)
-    StaticJsonDocument<4096> doc;
-    DeserializationError error = deserializeJson(doc, messageToProcess);
-    
-    if (error) {
-        Serial.printf("ERROR: Failed to parse JSON command: %s\n", error.c_str());
+    cJSON* root = cJSON_Parse(messageToProcess.c_str());
+    if (!root) {
+        const char* errorPtr = cJSON_GetErrorPtr();
+        Serial.printf("ERROR: Failed to parse JSON command: %s\n", errorPtr ? errorPtr : "unknown error");
         Serial.printf("  Attempted to parse messageToProcess (length: %d): %s\n", 
                      messageToProcess.length(), messageToProcess.substring(0, 100).c_str());
         return false;
     }
     
-    if (!doc.containsKey("command")) {
+    cJSON* commandItem = cJSON_GetObjectItem(root, "command");
+    if (!commandItem || !cJSON_IsString(commandItem)) {
         Serial.println("ERROR: JSON command missing 'command' field");
         Serial.printf("  Parsed JSON (first 200 chars): %s\n", messageToProcess.substring(0, 200).c_str());
+        cJSON_Delete(root);
         return false;
     }
     
-    command = doc["command"].as<String>();
+    command = String(cJSON_GetStringValue(commandItem));
     command.toLowerCase();
     
     Serial.printf("Web interface command: %s (from JSON parse)\n", command.c_str());
@@ -3816,6 +3804,7 @@ bool handleWebInterfaceCommand(const String& jsonMessage) {
     ctx.senderNumber = "";  // Web UI doesn't use phone numbers
     ctx.requiresAuth = true;  // Already validated by decryptAndValidateWebUIMessage
     
+    cJSON_Delete(root);  // Clean up cJSON root
     return dispatchCommand(ctx);
 }
 

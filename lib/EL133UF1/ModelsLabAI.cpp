@@ -6,6 +6,7 @@
 #include "ModelsLabAI.h"
 #include "platform_hal.h"
 #include <WiFi.h>
+#include "cJSON.h"  // For JSON building
 
 // ModelsLab API endpoint
 static const char* MODELSLAB_HOST = "modelslab.com";
@@ -392,28 +393,24 @@ ModelsLabResult ModelsLabAI::generate(const char* prompt, uint8_t** outData, siz
     Serial.printf("ModelsLab: Connected. Model=%s, Size=%dx%d\n",
                   getModelString(), _width, _height);
     
-    // Build JSON request body
-    String escapedPrompt = prompt;
-    escapedPrompt.replace("\\", "\\\\");
-    escapedPrompt.replace("\"", "\\\"");
-    escapedPrompt.replace("\n", "\\n");
-    escapedPrompt.replace("\r", "\\r");
-    escapedPrompt.replace("\t", "\\t");
+    // Build JSON request body using cJSON
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        snprintf(_lastError, sizeof(_lastError), "Failed to create JSON object");
+        client.stop();
+        return MODELSLAB_ERR_ALLOC_FAILED;
+    }
     
-    String body = "{";
-    body += "\"key\":\"";
-    body += _apiKey;
-    body += "\",\"prompt\":\"";
-    body += escapedPrompt;
-    body += "\",\"width\":";
-    body += _width;
-    body += ",\"height\":";
-    body += _height;
-    body += ",\"samples\":1";
-    body += ",\"num_inference_steps\":";
-    body += _steps;
-    body += ",\"guidance_scale\":";
-    body += String(_guidance, 1);
+    // Add API key and prompt (cJSON handles escaping automatically)
+    cJSON_AddStringToObject(root, "key", _apiKey);
+    cJSON_AddStringToObject(root, "prompt", prompt);
+    
+    // Add dimensions
+    cJSON_AddNumberToObject(root, "width", _width);
+    cJSON_AddNumberToObject(root, "height", _height);
+    cJSON_AddNumberToObject(root, "samples", 1);
+    cJSON_AddNumberToObject(root, "num_inference_steps", _steps);
+    cJSON_AddNumberToObject(root, "guidance_scale", (double)_guidance);
     
     // Add model-specific parameters
     bool isFlux = (_model == MODELSLAB_FLUX_SCHNELL || _model == MODELSLAB_FLUX_DEV);
@@ -421,35 +418,37 @@ ModelsLabResult ModelsLabAI::generate(const char* prompt, uint8_t** outData, siz
     
     // Always specify model_id for non-default models
     if (!isFlux || isQwen || _model == MODELSLAB_CUSTOM) {
-        body += ",\"model_id\":\"";
-        body += getModelString();
-        body += "\"";
+        cJSON_AddStringToObject(root, "model_id", getModelString());
     }
     
     // Negative prompt
     if (_negativePrompt && strlen(_negativePrompt) > 0) {
-        String escapedNeg = _negativePrompt;
-        escapedNeg.replace("\\", "\\\\");
-        escapedNeg.replace("\"", "\\\"");
-        body += ",\"negative_prompt\":\"";
-        body += escapedNeg;
-        body += "\"";
+        cJSON_AddStringToObject(root, "negative_prompt", _negativePrompt);
     }
     
     // Scheduler
     if (_scheduler && strlen(_scheduler) > 0) {
-        body += ",\"scheduler\":\"";
-        body += _scheduler;
-        body += "\"";
+        cJSON_AddStringToObject(root, "scheduler", _scheduler);
     }
     
     // Safety checker (disable for art)
-    body += ",\"safety_checker\":false";
+    cJSON_AddBoolToObject(root, "safety_checker", false);
     
     // Request base64 output (faster than URL for small images)
-    body += ",\"base64\":true";
+    cJSON_AddBoolToObject(root, "base64", true);
     
-    body += "}";
+    // Convert to string
+    char* bodyStr = cJSON_Print(root);
+    if (!bodyStr) {
+        cJSON_Delete(root);
+        snprintf(_lastError, sizeof(_lastError), "Failed to print JSON");
+        client.stop();
+        return MODELSLAB_ERR_ALLOC_FAILED;
+    }
+    
+    String body = String(bodyStr);
+    free(bodyStr);
+    cJSON_Delete(root);
     
     const char* endpoint = getEndpoint();
     

@@ -24,6 +24,7 @@
 #include "lodepng.h"  // For PNG encoding
 #include "miniz.h"    // For zlib decompression (tinfl_decompress_mem_to_mem)
 #include "platform_hal.h"  // For PSRAM allocation (hal_psram_malloc)
+#include "cJSON.h"  // Pure C JSON library for building JSON (handles escaping, large payloads)
 
 // MQTT configuration - hardcoded
 #define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"
@@ -1593,169 +1594,112 @@ static void publishMQTTMediaMappingsInternalImpl() {
     
     Serial.printf("[Core 1] Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
     
-    // Two-pass approach: First generate all thumbnails and calculate exact size needed
-    // Then allocate exactly that size and build the JSON. This avoids fixed buffer limits.
-    
-    // Pass 1: Generate all thumbnails and calculate total size needed
+    // Use cJSON library to build JSON properly (handles escaping, large payloads)
+    // Generate all thumbnails first
     std::vector<String> thumbnailBase64s;
     thumbnailBase64s.reserve(g_media_mappings.size());
     
-    size_t totalSize = 20; // Base JSON: {"mappings":[]}
-    
     for (size_t i = 0; i < g_media_mappings.size(); i++) {
         const MediaMapping& mm = g_media_mappings[i];
-        
         Serial.printf("[Core 1] Generating thumbnail for [%zu] %s...\n", i, mm.imageName.c_str());
         String thumbnailBase64 = generateThumbnailFromImageFile(mm.imageName);
         thumbnailBase64s.push_back(thumbnailBase64);
-        
-        // Calculate size for this mapping entry
-        // Format: {"index":N,"image":"...","audio":"...","thumbnail":"..."}
-        totalSize += 50; // JSON structure overhead
-        totalSize += String(i).length(); // index number
-        totalSize += mm.imageName.length() + 2; // "image":"..."
-        if (mm.audioFile.length() > 0) {
-            totalSize += mm.audioFile.length() + 10; // ,"audio":"..."
-        }
-        if (thumbnailBase64.length() > 0) {
-            totalSize += thumbnailBase64.length() + 15; // ,"thumbnail":"..."
-        }
-        if (i > 0) {
-            totalSize += 1; // comma before entry
-        }
-        
         Serial.printf("[Core 1] Completed [%zu] %s (thumbnail: %d bytes base64)\n", i, mm.imageName.c_str(), thumbnailBase64.length());
     }
     
-    // Add allImages array size
+    // List all image files
     Serial.println("[Core 1] Listing all image files from SD card for allImages array...");
     std::vector<String> allImages = listImageFilesVector();
     Serial.printf("[Core 1] Found %zu image files on SD card\n", allImages.size());
     
-    totalSize += 15; // ,"allImages":[]
-    for (size_t i = 0; i < allImages.size(); i++) {
-        if (i > 0) totalSize += 1; // comma
-        totalSize += allImages[i].length() + 2; // "filename"
-    }
-    totalSize += 2; // ]} closing braces
-    
-    // Add safety margin (10% or minimum 1KB)
-    size_t bufferSize = totalSize + (totalSize / 10) + 1024;
-    
-    Serial.printf("[Core 1] Calculated JSON size: %zu bytes, allocating buffer: %zu bytes\n", totalSize, bufferSize);
-    
-    // Allocate buffer with calculated size
-    char* jsonBuffer = (char*)hal_psram_malloc(bufferSize);
-    if (!jsonBuffer) {
-        Serial.printf("[Core 1] ERROR: Failed to allocate %zu bytes PSRAM for media mappings JSON buffer\n", bufferSize);
+    // Create root JSON object
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        Serial.println("[Core 1] ERROR: Failed to create root JSON object");
         return;
     }
     
-    size_t jsonPos = 0;
+    // Create mappings array
+    cJSON* mappingsArray = cJSON_CreateArray();
+    if (!mappingsArray) {
+        Serial.println("[Core 1] ERROR: Failed to create mappings array");
+        cJSON_Delete(root);
+        return;
+    }
+    cJSON_AddItemToObject(root, "mappings", mappingsArray);
     
-    // Helper macro to append string to buffer with bounds checking
-    #define APPEND_STR(str) do { \
-        size_t len = strlen(str); \
-        if (jsonPos + len >= bufferSize - 1) { \
-            Serial.printf("[Core 1] ERROR: JSON buffer overflow at position %zu (trying to append %zu bytes, buffer size: %zu)\n", jsonPos, len, bufferSize); \
-            hal_psram_free(jsonBuffer); \
-            return; \
-        } \
-        memcpy(jsonBuffer + jsonPos, str, len); \
-        jsonPos += len; \
-        jsonBuffer[jsonPos] = '\0'; \
-    } while(0)
-    
-    #define APPEND_FMT(fmt, ...) do { \
-        int written = snprintf(jsonBuffer + jsonPos, bufferSize - jsonPos, fmt, ##__VA_ARGS__); \
-        if (written < 0) { \
-            Serial.printf("[Core 1] ERROR: snprintf failed (pos=%zu, buffer size: %zu)\n", jsonPos, bufferSize); \
-            hal_psram_free(jsonBuffer); \
-            return; \
-        } \
-        if (jsonPos + written >= bufferSize - 1) { \
-            Serial.printf("[Core 1] ERROR: JSON buffer overflow (pos=%zu, written=%d, buffer size: %zu)\n", jsonPos, written, bufferSize); \
-            hal_psram_free(jsonBuffer); \
-            return; \
-        } \
-        jsonPos += written; \
-    } while(0)
-    
-    // Pass 2: Build the JSON using pre-generated thumbnails
-    APPEND_STR("{\"mappings\":[");
-    
+    // Add each mapping to the array
     for (size_t i = 0; i < g_media_mappings.size(); i++) {
-        if (i > 0) {
-            APPEND_STR(",");
-        }
-        
         const MediaMapping& mm = g_media_mappings[i];
         const String& thumbnailBase64 = thumbnailBase64s[i];
         
-        APPEND_FMT("{\"index\":%zu,\"image\":\"%s\"", i, mm.imageName.c_str());
+        cJSON* mappingObj = cJSON_CreateObject();
+        if (!mappingObj) {
+            Serial.printf("[Core 1] ERROR: Failed to create mapping object for index %zu\n", i);
+            cJSON_Delete(root);
+            return;
+        }
         
+        // Add index
+        cJSON_AddNumberToObject(mappingObj, "index", (double)i);
+        
+        // Add image name (cJSON handles JSON escaping automatically)
+        cJSON_AddStringToObject(mappingObj, "image", mm.imageName.c_str());
+        
+        // Add audio file if present
         if (mm.audioFile.length() > 0) {
-            APPEND_FMT(",\"audio\":\"%s\"", mm.audioFile.c_str());
+            cJSON_AddStringToObject(mappingObj, "audio", mm.audioFile.c_str());
         }
         
+        // Add thumbnail if present
         if (thumbnailBase64.length() > 0) {
-            APPEND_FMT(",\"thumbnail\":\"%s\"", thumbnailBase64.c_str());
+            cJSON_AddStringToObject(mappingObj, "thumbnail", thumbnailBase64.c_str());
         }
         
-        APPEND_STR("}");
+        cJSON_AddItemToArray(mappingsArray, mappingObj);
     }
     
-    APPEND_STR(",\"allImages\":[");
+    // Create allImages array
+    cJSON* allImagesArray = cJSON_CreateArray();
+    if (!allImagesArray) {
+        Serial.println("[Core 1] ERROR: Failed to create allImages array");
+        cJSON_Delete(root);
+        return;
+    }
+    
     for (size_t i = 0; i < allImages.size(); i++) {
-        if (i > 0) APPEND_STR(",");
-        APPEND_FMT("\"%s\"", allImages[i].c_str());
+        cJSON* imageItem = cJSON_CreateString(allImages[i].c_str());
+        if (!imageItem) {
+            Serial.printf("[Core 1] ERROR: Failed to create image string for index %zu\n", i);
+            cJSON_Delete(root);
+            return;
+        }
+        cJSON_AddItemToArray(allImagesArray, imageItem);
     }
-    APPEND_STR("]}"); // Close allImages array and main JSON object
+    cJSON_AddItemToObject(root, "allImages", allImagesArray);
     
-    #undef APPEND_STR
-    #undef APPEND_FMT
-    
-    Serial.printf("[Core 1] Built JSON: %zu bytes (buffer: %zu bytes)\n", jsonPos, bufferSize);
-    
-    // Verify JSON is null-terminated and complete
-    if (jsonPos >= bufferSize) {
-        Serial.println("[Core 1] ERROR: JSON buffer is full, may be truncated");
-        hal_psram_free(jsonBuffer);
-        return;
-    }
-    jsonBuffer[jsonPos] = '\0'; // Ensure null termination
-    
-    // Verify JSON ends correctly (should end with ]})
-    if (jsonPos < 2 || jsonBuffer[jsonPos-2] != ']' || jsonBuffer[jsonPos-1] != '}') {
-        Serial.printf("[Core 1] ERROR: JSON does not end correctly (last 10 chars: %.10s)\n", jsonBuffer + (jsonPos > 10 ? jsonPos - 10 : 0));
-        hal_psram_free(jsonBuffer);
+    // Print JSON to string (cJSON_Print handles memory allocation)
+    // Use cJSON_PrintBuffered with custom malloc for PSRAM
+    char* jsonString = cJSON_Print(root);
+    if (!jsonString) {
+        Serial.println("[Core 1] ERROR: Failed to print JSON to string");
+        cJSON_Delete(root);
         return;
     }
     
-    // Check if we used most of the buffer (warn if >95% full)
-    if (jsonPos > (bufferSize * 95 / 100)) {
-        Serial.printf("[Core 1] WARNING: JSON used %zu%% of buffer (%zu/%zu bytes) - size calculation may be too tight\n", 
-                     (jsonPos * 100 / bufferSize), jsonPos, bufferSize);
-    }
+    size_t jsonLen = strlen(jsonString);
+    Serial.printf("[Core 1] Built JSON using cJSON: %zu bytes\n", jsonLen);
     
-    // Convert to String (ESP32 String uses dynamic allocation, should handle large strings)
-    // Create String from buffer - this will copy the data
-    String jsonStr;
-    jsonStr.reserve(jsonPos + 1); // Pre-allocate to avoid reallocations
-    jsonStr = jsonBuffer; // This copies the data
+    // Convert to Arduino String for encryption
+    String jsonStr = String(jsonString);
     
-    hal_psram_free(jsonBuffer);
+    // Free cJSON's allocated string and object tree
+    free(jsonString);
+    cJSON_Delete(root);
     
-    // Verify String conversion succeeded (check length matches)
-    if (jsonStr.length() != jsonPos) {
-        Serial.printf("[Core 1] ERROR: String conversion length mismatch - expected %zu bytes, got %d\n", jsonPos, jsonStr.length());
-        return;
-    }
-    
-    // Verify first and last few characters match what we expect
-    if (jsonStr.charAt(0) != '{' || jsonStr.charAt(jsonStr.length() - 1) != '}') {
-        Serial.printf("[Core 1] ERROR: String conversion corrupted JSON - first char: 0x%02x, last char: 0x%02x\n", 
-                     jsonStr.charAt(0), jsonStr.charAt(jsonStr.length() - 1));
+    // Verify String conversion
+    if (jsonStr.length() != jsonLen) {
+        Serial.printf("[Core 1] ERROR: String conversion length mismatch - expected %zu bytes, got %d\n", jsonLen, jsonStr.length());
         return;
     }
     

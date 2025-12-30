@@ -1,0 +1,15 @@
+{
+    "name": "cjson",
+    "version": "1.7.18",
+    "description": "Ultralightweight JSON parser in ANSI C (local copy, excludes test files)",
+    "keywords": "json, parser, c",
+    "frameworks": "*",
+    "platforms": "*",
+    "build": {
+        "srcFilter": [
+            "+<cJSON.c>",
+            "-<*>"
+        ]
+    }
+}
+

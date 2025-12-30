@@ -6,6 +6,7 @@
 #include "GetimgAI.h"
 #include "platform_hal.h"
 #include <WiFi.h>
+#include "cJSON.h"  // For JSON building
 
 // getimg.ai API endpoint
 static const char* GETIMG_HOST = "api.getimg.ai";
@@ -204,25 +205,23 @@ GetimgResult GetimgAI::generate(const char* prompt, uint8_t** outData, size_t* o
     Serial.printf("getimg.ai: Connected. Model=%s, Size=%dx%d\n",
                   getModelString(), _width, _height);
     
-    // Build JSON request body
-    // Escape special characters in prompt
-    String escapedPrompt = prompt;
-    escapedPrompt.replace("\\", "\\\\");
-    escapedPrompt.replace("\"", "\\\"");
-    escapedPrompt.replace("\n", "\\n");
-    escapedPrompt.replace("\r", "\\r");
-    escapedPrompt.replace("\t", "\\t");
+    // Build JSON request body using cJSON
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        snprintf(_lastError, sizeof(_lastError), "Failed to create JSON object");
+        client.stop();
+        return GETIMG_ERR_ALLOC_FAILED;
+    }
     
-    String body = "{";
-    body += "\"prompt\":\"";
-    body += escapedPrompt;
-    body += "\",\"width\":";
-    body += _width;
-    body += ",\"height\":";
-    body += _height;
-    body += ",\"output_format\":\"";
-    body += getFormatString();
-    body += "\"";
+    // Add prompt (cJSON handles escaping automatically)
+    cJSON_AddStringToObject(root, "prompt", prompt);
+    
+    // Add dimensions
+    cJSON_AddNumberToObject(root, "width", _width);
+    cJSON_AddNumberToObject(root, "height", _height);
+    
+    // Add output format
+    cJSON_AddStringToObject(root, "output_format", getFormatString());
     
     // Add model-specific parameters
     bool isFluxSchnell = (_model == GETIMG_FLUX_SCHNELL);
@@ -230,33 +229,31 @@ GetimgResult GetimgAI::generate(const char* prompt, uint8_t** outData, size_t* o
     
     // Non-flux models need model specification and support more parameters
     if (!isFlux) {
-        body += ",\"model\":\"";
-        body += getModelString();
-        body += "\"";
-        
-        // Steps (not used by flux-schnell)
-        body += ",\"steps\":";
-        body += _steps;
-        
-        // Guidance scale
-        body += ",\"guidance\":";
-        body += String(_guidance, 1);
+        cJSON_AddStringToObject(root, "model", getModelString());
+        cJSON_AddNumberToObject(root, "steps", _steps);
+        cJSON_AddNumberToObject(root, "guidance", (double)_guidance);
         
         // Negative prompt
         if (_negativePrompt && strlen(_negativePrompt) > 0) {
-            String escapedNeg = _negativePrompt;
-            escapedNeg.replace("\\", "\\\\");
-            escapedNeg.replace("\"", "\\\"");
-            body += ",\"negative_prompt\":\"";
-            body += escapedNeg;
-            body += "\"";
+            cJSON_AddStringToObject(root, "negative_prompt", _negativePrompt);
         }
     }
     
     // Response format - we want base64 data
-    body += ",\"response_format\":\"b64\"";
+    cJSON_AddStringToObject(root, "response_format", "b64");
     
-    body += "}";
+    // Convert to string
+    char* bodyStr = cJSON_Print(root);
+    if (!bodyStr) {
+        cJSON_Delete(root);
+        snprintf(_lastError, sizeof(_lastError), "Failed to print JSON");
+        client.stop();
+        return GETIMG_ERR_ALLOC_FAILED;
+    }
+    
+    String body = String(bodyStr);
+    free(bodyStr);
+    cJSON_Delete(root);
     
     // Get the endpoint for this model
     const char* endpoint = getEndpoint();

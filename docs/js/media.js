@@ -106,7 +106,8 @@ function updateThumbnail(thumb) {
                 statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' ' + thumb.format.toUpperCase() + ' (scaled to ' + previewWidth + 'x' + previewHeight + ' for preview, updated ' + new Date().toLocaleTimeString() + ')';
                 console.log(thumb.format.toUpperCase() + ' thumbnail updated successfully (scaled from ' + thumb.width + 'x' + thumb.height + ' to ' + previewWidth + 'x' + previewHeight + ' for preview).');
                 
-                // Store framebuffer data for loading onto canvas (if PNG format - full resolution)
+                // Store framebuffer data for loading onto canvas (ONLY for PNG format - full resolution)
+                // JPEG format is NOT stored as it's a thumbnail, not the full framebuffer
                 if (thumb.format === 'png') {
                     currentFramebufferData = {
                         format: 'png',
@@ -120,6 +121,18 @@ function updateThumbnail(thumb) {
                     const loadFrameBtn = document.getElementById('loadFrameBtn');
                     if (loadFrameBtn && isConnected && webUIPassword) {
                         loadFrameBtn.disabled = false;
+                    }
+                } else if (thumb.format === 'jpeg') {
+                    // JPEG format is a thumbnail only - clear framebuffer data if it exists
+                    // (shouldn't happen, but ensure we don't use stale PNG data)
+                    if (currentFramebufferData) {
+                        console.log('JPEG thumbnail received - clearing stored framebuffer data (JPEG is thumbnail only, not full framebuffer)');
+                        currentFramebufferData = null;
+                        // Disable "Load Frame" button since we don't have full framebuffer
+                        const loadFrameBtn = document.getElementById('loadFrameBtn');
+                        if (loadFrameBtn) {
+                            loadFrameBtn.disabled = true;
+                        }
                     }
                 }
             };

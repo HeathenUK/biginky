@@ -605,6 +605,17 @@ async function handleMediaMessage(message) {
             return;
         }
         
+        // Extract and store allImages array (if present) for background image dropdown
+        if (mediaData.allImages && Array.isArray(mediaData.allImages)) {
+            allImageFiles = mediaData.allImages;
+            console.log(`Loaded ${allImageFiles.length} image files for background image selection`);
+            // Populate background image dropdown if it exists
+            populateBackgroundImageDropdown();
+        } else {
+            console.warn('Media mappings payload does not contain allImages array');
+            allImageFiles = [];
+        }
+        
         // Display media mappings table
         updateMediaMappingsTable(mediaData.mappings);
     } catch (e) {

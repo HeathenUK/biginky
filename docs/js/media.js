@@ -183,3 +183,32 @@ async function showMediaItem(index) {
     }
 }
 
+function populateBackgroundImageDropdown() {
+    const dropdown = document.getElementById('textBackgroundImage');
+    if (!dropdown) {
+        // Dropdown doesn't exist yet - will be created when needed
+        return;
+    }
+    
+    // Store current selection
+    const currentValue = dropdown.value;
+    
+    // Clear existing options (except the default "(Use background color)" option)
+    dropdown.innerHTML = '<option value="">(Use background color)</option>';
+    
+    // Add all image files
+    if (allImageFiles && allImageFiles.length > 0) {
+        for (let i = 0; i < allImageFiles.length; i++) {
+            const option = document.createElement('option');
+            option.value = allImageFiles[i];
+            option.textContent = allImageFiles[i];
+            dropdown.appendChild(option);
+        }
+        
+        // Restore previous selection if it still exists
+        if (currentValue) {
+            dropdown.value = currentValue;
+        }
+    }
+}
+

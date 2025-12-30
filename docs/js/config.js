@@ -78,3 +78,6 @@ let reconnectAttempts = 0;
 let reconnectTimeoutId = null;
 const MAX_RECONNECT_ATTEMPTS = MQTT_CONFIG.connection.maxReconnectAttempts;
 const INITIAL_RECONNECT_DELAY = MQTT_CONFIG.connection.initialReconnectDelay;
+
+// Global image files list (populated from media mappings allImages field)
+let allImageFiles = [];

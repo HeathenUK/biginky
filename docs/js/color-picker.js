@@ -92,33 +92,53 @@ function createColorPicker(config) {
         
         // Toggle this palette (use 'flex' to match CSS rule)
         if (!isVisible) {
-            palette.style.display = 'flex';
-            // Force positioning styles to be set
-            palette.style.position = 'absolute';
-            palette.style.left = '0';
-            palette.style.zIndex = '1000';
-            
-            // Check if there's enough space below the button, if not position above
+            // Get button position relative to viewport
             const buttonRect = button.getBoundingClientRect();
-            const paletteHeight = 120; // Approximate palette height
+            
+            // Temporarily show palette to measure it
+            palette.style.display = 'flex';
+            palette.style.visibility = 'hidden';
+            const paletteRect = palette.getBoundingClientRect();
+            const paletteHeight = paletteRect.height || 120;
+            const paletteWidth = paletteRect.width || 240;
+            palette.style.visibility = '';
+            
+            // Check if there's enough space below, if not position above
             const spaceBelow = window.innerHeight - buttonRect.bottom;
             const spaceAbove = buttonRect.top;
             
+            // Move palette to body to avoid overflow clipping
+            const originalParent = palette.parentElement;
+            if (palette.parentElement !== document.body) {
+                document.body.appendChild(palette);
+            }
+            
+            // Position relative to viewport (fixed positioning)
+            palette.style.position = 'fixed';
+            palette.style.zIndex = '10000';
+            
             if (spaceBelow < paletteHeight && spaceAbove > spaceBelow) {
                 // Position above the button
-                palette.style.top = 'auto';
-                palette.style.bottom = '100%';
-                palette.style.marginTop = '0';
-                palette.style.marginBottom = '4px';
+                palette.style.top = (buttonRect.top - paletteHeight - 4) + 'px';
             } else {
                 // Position below the button (default)
-                palette.style.top = '100%';
-                palette.style.bottom = 'auto';
-                palette.style.marginTop = '4px';
-                palette.style.marginBottom = '0';
+                palette.style.top = (buttonRect.bottom + 4) + 'px';
             }
+            palette.style.left = buttonRect.left + 'px';
+            
+            // Store original parent to restore later
+            palette.dataset.originalParent = originalParent ? originalParent.id : '';
         } else {
             palette.style.display = 'none';
+            // Restore to original parent if it was moved
+            if (palette.dataset.originalParent && palette.parentElement === document.body) {
+                const originalParent = document.getElementById(palette.dataset.originalParent) || 
+                                       document.querySelector(`.flex-item[style*="position:relative"]`);
+                if (originalParent && originalParent.contains !== undefined && !originalParent.contains(palette)) {
+                    originalParent.appendChild(palette);
+                    palette.style.position = 'absolute';
+                }
+            }
         }
     });
 

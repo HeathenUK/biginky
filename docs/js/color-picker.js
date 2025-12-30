@@ -25,6 +25,10 @@ const colorDefinitions = {
     }
 };
 
+// Global click handler to close pickers when clicking outside (registered once)
+// Store button-palette mappings when pickers are created
+const colorPickerMappings = new Map();
+
 /**
  * Create a unified color picker
  * @param {Object} config Configuration object
@@ -143,10 +147,6 @@ function createColorPicker(config) {
     // Return the setter function
     return setColorValue;
 }
-
-// Global click handler to close pickers when clicking outside (registered once)
-// Store button-palette mappings when pickers are created
-const colorPickerMappings = new Map();
 
 function registerColorPickerClickHandler() {
     if (window.colorPickerClickHandlerRegistered) return;

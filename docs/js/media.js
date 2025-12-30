@@ -82,11 +82,29 @@ function updateThumbnail(thumb) {
             const dataUrl = `data:${mimeType};base64,${thumb.data}`;
             const img = new Image();
             img.onload = function() {
+                // For preview, scale down large images to a reasonable preview size (max 800x600)
+                // while maintaining aspect ratio
+                const maxPreviewWidth = 800;
+                const maxPreviewHeight = 600;
+                let previewWidth = thumb.width;
+                let previewHeight = thumb.height;
+                
+                if (previewWidth > maxPreviewWidth || previewHeight > maxPreviewHeight) {
+                    const scale = Math.min(maxPreviewWidth / previewWidth, maxPreviewHeight / previewHeight);
+                    previewWidth = Math.round(previewWidth * scale);
+                    previewHeight = Math.round(previewHeight * scale);
+                }
+                
+                // Set canvas size for preview (scaled down)
+                canvas.width = previewWidth;
+                canvas.height = previewHeight;
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                
+                // Draw image scaled to preview size
+                ctx.drawImage(img, 0, 0, previewWidth, previewHeight);
                 canvas.style.display = 'block';
-                statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' ' + thumb.format.toUpperCase() + ' (updated ' + new Date().toLocaleTimeString() + ')';
-                console.log(thumb.format.toUpperCase() + ' thumbnail updated successfully.');
+                statusEl.textContent = 'Preview: ' + thumb.width + 'x' + thumb.height + ' ' + thumb.format.toUpperCase() + ' (scaled to ' + previewWidth + 'x' + previewHeight + ' for preview, updated ' + new Date().toLocaleTimeString() + ')';
+                console.log(thumb.format.toUpperCase() + ' thumbnail updated successfully (scaled from ' + thumb.width + 'x' + thumb.height + ' to ' + previewWidth + 'x' + previewHeight + ' for preview).');
                 
                 // Store framebuffer data for loading onto canvas (if PNG format - full resolution)
                 if (thumb.format === 'png') {
@@ -96,7 +114,7 @@ function updateThumbnail(thumb) {
                         width: thumb.width,
                         height: thumb.height
                     };
-                    console.log('Framebuffer PNG data stored for canvas loading');
+                    console.log('Framebuffer PNG data stored for canvas loading (full resolution: ' + thumb.width + 'x' + thumb.height + ')');
                     
                     // Enable "Load Frame" button if it exists and we're connected
                     const loadFrameBtn = document.getElementById('loadFrameBtn');

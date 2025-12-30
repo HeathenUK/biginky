@@ -7,11 +7,11 @@ async function sendTextDisplay() {
         return;
     }
     
-    // Get color values from dropdowns (defaults: black text, white background, black outline)
-    const color = document.getElementById('textColor').value || 'black';
-    const bgColor = document.getElementById('textBackgroundColor').value || 'white';
+    // Get color values from dropdowns (HTML has correct defaults selected)
+    const color = document.getElementById('textColor').value;
+    const bgColor = document.getElementById('textBackgroundColor').value;
     const bgImage = document.getElementById('textBackgroundImage').value;
-    const outlineColor = document.getElementById('textOutlineColor').value || 'black';
+    const outlineColor = document.getElementById('textOutlineColor').value;
     
     showStatus('textStatus', 'Sending text display command...', false);
     

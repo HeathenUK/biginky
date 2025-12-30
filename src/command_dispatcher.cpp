@@ -17,6 +17,7 @@ extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColo
 extern bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = 0);
 extern bool handleListNumbersCommand(const String& originalMessage = "");
 extern bool handleCanvasDisplayCommand(const String& messageToProcess);
+extern bool handleCanvasDisplaySaveCommand(const String& messageToProcess);
 extern bool handlePingCommand(const String& originalMessage);
 extern bool handleIpCommand(const String& originalMessage);
 extern bool handleVolumeCommand(const String& parameter);
@@ -273,6 +274,10 @@ static bool handleCanvasDisplayUnified(const CommandContext& ctx) {
     return handleCanvasDisplayCommand(ctx.originalMessage);
 }
 
+static bool handleCanvasDisplaySaveUnified(const CommandContext& ctx) {
+    return handleCanvasDisplaySaveCommand(ctx.originalMessage);
+}
+
 // Command registry
 static const UnifiedCommandEntry commandRegistry[] = {
     // Clear display
@@ -433,6 +438,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleCanvasDisplayUnified,
         .requiresAuth = true,
         .description = "Display canvas (large image data)"
+    },
+    
+    // Canvas display and save
+    {
+        .mqttName = nullptr,
+        .webUIName = "canvas_display_save",
+        .httpEndpoint = nullptr,
+        .handler = handleCanvasDisplaySaveUnified,
+        .requiresAuth = true,
+        .description = "Display canvas and save to SD (large image data)"
     }
 };
 

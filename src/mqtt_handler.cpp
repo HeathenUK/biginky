@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <time.h>
 #include <string.h>
+#include <vector>
 #include "esp_crt_bundle.h"
 #include "driver/jpeg_encode.h"
 #include "ff.h"  // FatFs
@@ -1189,7 +1190,19 @@ void publishMQTTMediaMappings() {
         Serial.printf("Completed [%zu] %s (thumbnail: %d bytes base64)\n", i, mm.imageName.c_str(), thumbnailBase64.length());
     }
     
-    jsonStr += "]}";
+    // Add allImages array - list ALL image files on SD card (not just those in mappings)
+    Serial.println("Listing all image files from SD card for allImages array...");
+    std::vector<String> allImages = listImageFilesVector();
+    Serial.printf("Found %zu image files on SD card\n", allImages.size());
+    
+    jsonStr += ",\"allImages\":[";
+    for (size_t i = 0; i < allImages.size(); i++) {
+        if (i > 0) jsonStr += ",";
+        jsonStr += "\"";
+        jsonStr += allImages[i];
+        jsonStr += "\"";
+    }
+    jsonStr += "]}"; // Close allImages array and main JSON object
     
     String encryptedJson = encryptAndFormatMessage(jsonStr);
     if (encryptedJson.length() == 0) {

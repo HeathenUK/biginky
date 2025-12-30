@@ -36,17 +36,10 @@ function getDrawColorValue() {
 
 function setDrawColor(colorValue) {
     currentDrawColor = colorValue;
-    const hiddenInput = document.getElementById('drawColor');
-    if (hiddenInput) {
-        hiddenInput.value = colorValue;
+    const select = document.getElementById('drawColor');
+    if (select) {
+        select.value = colorValue;
     }
-    // Update active button in palette
-    document.querySelectorAll('#colorPaletteContainer .color-btn').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.color === colorValue) {
-            btn.classList.add('active');
-        }
-    });
 }
 
 function getFillColor() {
@@ -63,38 +56,10 @@ function getFillColorValue() {
 
 function setFillColor(colorValue) {
     currentFillColor = colorValue;
-    const hiddenInput = document.getElementById('fillColor');
-    if (hiddenInput) {
-        hiddenInput.value = colorValue;
+    const select = document.getElementById('fillColor');
+    if (select) {
+        select.value = colorValue;
     }
-    // Update button indicator
-    const indicator = document.getElementById('fillColorIndicator');
-    const label = document.getElementById('fillColorLabel');
-    if (colorValue === 'transparent') {
-        if (indicator) {
-            indicator.style.background = 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)';
-            indicator.style.backgroundSize = '8px 8px';
-        }
-        if (label) label.textContent = 'Transparent';
-    } else {
-        const color = colorMap[parseInt(colorValue)] || '#FFFFFF';
-        if (indicator) {
-            indicator.style.background = color;
-            indicator.style.backgroundSize = 'auto';
-        }
-        const colorNames = {0:'Black', 1:'White', 2:'Yellow', 3:'Red', 5:'Blue', 6:'Green'};
-        if (label) label.textContent = colorNames[parseInt(colorValue)] || 'Unknown';
-    }
-    // Update active button in palette
-    document.querySelectorAll('#fillColorPalette .palette-color-btn').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.color === colorValue) {
-            btn.classList.add('active');
-        }
-    });
-    // Close palette
-    const palette = document.getElementById('fillColorPalette');
-    if (palette) palette.style.display = 'none';
 }
 
 function getOutlineColor() {
@@ -111,38 +76,10 @@ function getOutlineColorValue() {
 
 function setOutlineColor(colorValue) {
     currentOutlineColor = colorValue;
-    const hiddenInput = document.getElementById('outlineColor');
-    if (hiddenInput) {
-        hiddenInput.value = colorValue;
+    const select = document.getElementById('outlineColor');
+    if (select) {
+        select.value = colorValue;
     }
-    // Update button indicator
-    const indicator = document.getElementById('outlineColorIndicator');
-    const label = document.getElementById('outlineColorLabel');
-    if (colorValue === 'transparent') {
-        if (indicator) {
-            indicator.style.background = 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)';
-            indicator.style.backgroundSize = '8px 8px';
-        }
-        if (label) label.textContent = 'Transparent';
-    } else {
-        const color = colorMap[parseInt(colorValue)] || '#000000';
-        if (indicator) {
-            indicator.style.background = color;
-            indicator.style.backgroundSize = 'auto';
-        }
-        const colorNames = {0:'Black', 1:'White', 2:'Yellow', 3:'Red', 5:'Blue', 6:'Green'};
-        if (label) label.textContent = colorNames[parseInt(colorValue)] || 'Unknown';
-    }
-    // Update active button in palette
-    document.querySelectorAll('#outlineColorPalette .palette-color-btn').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.color === colorValue) {
-            btn.classList.add('active');
-        }
-    });
-    // Close palette
-    const palette = document.getElementById('outlineColorPalette');
-    if (palette) palette.style.display = 'none';
 }
 
 function getBrushSize() {
@@ -1057,68 +994,27 @@ function initializeCanvas() {
         clearCanvas();
     }
     
-    // Set up color palette buttons
-    document.querySelectorAll('#colorPaletteContainer .color-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const colorValue = e.target.dataset.color;
-            setDrawColor(colorValue);
-        });
-    });
-    
-    // Set up fill color button and palette
-    const fillColorBtn = document.getElementById('fillColorBtn');
-    const fillColorPalette = document.getElementById('fillColorPalette');
-    if (fillColorBtn && fillColorPalette) {
-        fillColorBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isVisible = fillColorPalette.style.display !== 'none';
-            // Close outline palette if open
-            const outlinePalette = document.getElementById('outlineColorPalette');
-            if (outlinePalette) outlinePalette.style.display = 'none';
-            // Toggle fill palette
-            fillColorPalette.style.display = isVisible ? 'none' : 'block';
-        });
-        
-        document.querySelectorAll('#fillColorPalette .palette-color-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const colorValue = e.target.dataset.color;
-                setFillColor(colorValue);
-            });
+    // Set up color dropdowns
+    const drawColorSelect = document.getElementById('drawColor');
+    if (drawColorSelect) {
+        drawColorSelect.addEventListener('change', (e) => {
+            setDrawColor(e.target.value);
         });
     }
     
-    // Set up outline color button and palette
-    const outlineColorBtn = document.getElementById('outlineColorBtn');
-    const outlineColorPalette = document.getElementById('outlineColorPalette');
-    if (outlineColorBtn && outlineColorPalette) {
-        outlineColorBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isVisible = outlineColorPalette.style.display !== 'none';
-            // Close fill palette if open
-            if (fillColorPalette) fillColorPalette.style.display = 'none';
-            // Toggle outline palette
-            outlineColorPalette.style.display = isVisible ? 'none' : 'block';
-        });
-        
-        document.querySelectorAll('#outlineColorPalette .palette-color-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const colorValue = e.target.dataset.color;
-                setOutlineColor(colorValue);
-            });
+    const fillColorSelect = document.getElementById('fillColor');
+    if (fillColorSelect) {
+        fillColorSelect.addEventListener('change', (e) => {
+            setFillColor(e.target.value);
         });
     }
     
-    // Close palettes when clicking outside
-    document.addEventListener('click', (e) => {
-        if (fillColorPalette && !fillColorBtn.contains(e.target) && !fillColorPalette.contains(e.target)) {
-            fillColorPalette.style.display = 'none';
-        }
-        if (outlineColorPalette && !outlineColorBtn.contains(e.target) && !outlineColorPalette.contains(e.target)) {
-            outlineColorPalette.style.display = 'none';
-        }
-    });
+    const outlineColorSelect = document.getElementById('outlineColor');
+    if (outlineColorSelect) {
+        outlineColorSelect.addEventListener('change', (e) => {
+            setOutlineColor(e.target.value);
+        });
+    }
     
     // Set up brush size slider
     const brushSizeSlider = document.getElementById('brushSize');
@@ -1147,10 +1043,7 @@ function initializeCanvas() {
         });
     }
     
-    // Initialize default colors
-    setDrawColor('1'); // White
-    setFillColor('1'); // White
-    setOutlineColor('0'); // Black
+    // Initialize default colors (dropdowns will have defaults from HTML)
 }
 
 if (document.readyState === 'loading') {

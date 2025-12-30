@@ -126,9 +126,29 @@ void publishMQTTMediaMappings(bool waitForCompletion);
  */
 void initMqttWorkerTask();
 
-// Forward declarations for canvas decode/encode work structures
-struct CanvasDecodeWorkData;
-struct PngEncodeWorkData;
+// Canvas decode work data (passed between cores)
+struct CanvasDecodeWorkData {
+    const char* base64Data;      // Input: base64 string (owned by caller, must remain valid)
+    size_t base64DataLen;        // Input: length of base64 string
+    int width;                   // Input: canvas width
+    int height;                  // Input: canvas height
+    bool isCompressed;           // Input: whether data is compressed
+    uint8_t* pixelData;          // Output: decompressed pixel data (allocated by Core 1, caller must free)
+    size_t pixelDataLen;         // Output: length of pixel data
+    bool success;                // Output: whether operation succeeded
+};
+
+// PNG encode work data (passed between cores)
+struct PngEncodeWorkData {
+    const uint8_t* rgbData;      // Input: RGB888 data (owned by caller, must remain valid)
+    size_t rgbDataLen;           // Input: length of RGB data
+    unsigned width;              // Input: image width
+    unsigned height;             // Input: image height
+    unsigned char* pngData;      // Output: PNG data (allocated by Core 1, caller must free)
+    size_t pngSize;             // Output: size of PNG data
+    unsigned error;              // Output: lodepng error code (0 = success)
+    bool success;                // Output: whether operation succeeded
+};
 
 /**
  * Decode base64 and decompress canvas data on Core 1 (synchronous - waits for completion)

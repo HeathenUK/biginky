@@ -277,6 +277,10 @@ static bool handleCanvasDisplaySaveUnified(const CommandContext& ctx) {
     return handleCanvasDisplaySaveCommand(ctx.originalMessage);
 }
 
+static bool handleCanvasSaveUnified(const CommandContext& ctx) {
+    return handleCanvasSaveCommand(ctx.originalMessage);
+}
+
 // Command registry
 static const UnifiedCommandEntry commandRegistry[] = {
     // Clear display
@@ -454,7 +458,7 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .mqttName = nullptr,
         .webUIName = "canvas_save",
         .httpEndpoint = nullptr,
-        .handler = handleCanvasSaveUnified,
+        .handler = handleCanvasSaveUnified,  // TODO: implement handleCanvasSaveUnified
         .requiresAuth = true,
         .description = "Save canvas to SD without displaying (large image data)"
     }

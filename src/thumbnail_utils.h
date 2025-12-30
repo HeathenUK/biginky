@@ -14,6 +14,7 @@
 #define THUMBNAIL_UTILS_H
 
 #include <Arduino.h>
+#include <vector>
 
 /**
  * Load JPEG thumbnail from SD card and return JSON string
@@ -37,6 +38,12 @@ String generateThumbnailFromImageFile(const String& imagePath);
  * @return true if successful, false otherwise
  */
 bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize);
+
+/**
+ * List all image files on SD card
+ * @return Vector of image filenames (e.g., "sunset.png", "mountain.jpg")
+ */
+std::vector<String> listImageFilesVector();
 
 #endif // THUMBNAIL_UTILS_H
 

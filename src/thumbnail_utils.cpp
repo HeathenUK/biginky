@@ -442,3 +442,39 @@ bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize) {
     return true;
 }
 
+std::vector<String> listImageFilesVector() {
+    std::vector<String> files;
+    
+    if (!sdCardMounted && sd_card == nullptr) {
+        Serial.println("ERROR: SD card not mounted, cannot list image files");
+        return files;
+    }
+    
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, "0:/");
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
+            // Check if it's a file (not directory) and has image extension
+            if (!(fno.fattrib & AM_DIR)) {
+                String filename = String(fno.fname);
+                String filenameLower = filename;
+                filenameLower.toLowerCase();
+                if (filenameLower.endsWith(".png") || filenameLower.endsWith(".bmp") || 
+                    filenameLower.endsWith(".jpg") || filenameLower.endsWith(".jpeg")) {
+                    files.push_back(filename);
+                }
+            }
+        }
+        f_closedir(&dir);
+    } else {
+        Serial.printf("ERROR: Failed to open SD card directory for image listing: %d\n", res);
+    }
+    
+    return files;
+}
+

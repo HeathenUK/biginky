@@ -971,7 +971,7 @@ static void publishMQTTThumbnailInternalImpl() {
         return;
     }
     
-    size_t estimated_jpeg_size = 100 * 1024;
+    size_t estimated_jpeg_size = 150 * 1024;  // 150KB should be enough for quarter-size thumbnail (increased from 100KB)
     jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
     size_t rx_buffer_size = 0;
     jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);

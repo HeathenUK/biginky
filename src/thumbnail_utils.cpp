@@ -334,7 +334,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    size_t estimated_jpeg_size = 50 * 1024;  // 50KB should be enough for quarter-size thumbnail
+    size_t estimated_jpeg_size = 150 * 1024;  // 150KB should be enough for quarter-size thumbnail (increased from 50KB)
     jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = {
         .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
     };

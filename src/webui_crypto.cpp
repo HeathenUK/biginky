@@ -708,7 +708,8 @@ bool isEncryptionEnabled() {
         return true;
     }
     // Default to true if key doesn't exist (backward compatible)
-    bool enabled = authPrefs.getBool("encryption_enabled", true);
+    // Key shortened to fit NVS 15-character limit
+    bool enabled = authPrefs.getBool("encrypt_en", true);
     authPrefs.end();
     return enabled;
 }
@@ -719,7 +720,8 @@ bool setEncryptionEnabled(bool enabled) {
         return false;
     }
     
-    bool success = authPrefs.putBool("encryption_enabled", enabled);
+    // Key shortened to fit NVS 15-character limit
+    bool success = authPrefs.putBool("encrypt_en", enabled);
     authPrefs.end();
     
     if (success) {

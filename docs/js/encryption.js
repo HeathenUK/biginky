@@ -541,13 +541,36 @@ async function decryptMessage(payloadBase64, ivBase64) {
                     // Valid JSON - use it as-is (Web Crypto API already removed padding)
                     unpaddedArray = plaintextArray;
                     paddingValid = true;
+                    console.log('Final fallback succeeded: treating entire plaintext as valid JSON (padding already removed by Web Crypto API)');
                 } else {
-                    // Only log error if JSON parsing also fails
-                    console.error('Invalid padding value:', padValue, '(expected 1-16)');
-                    console.error('Plaintext length:', plaintextArray.length);
-                    console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-                    console.error('Decryption returned empty result - data is not valid JSON');
-                    return null;
+                    // Try one more time - decode as UTF-8 and check if it's valid JSON
+                    // This handles the case where Web Crypto API removed padding but the last char is valid JSON like '}'
+                    try {
+                        const decoder = new TextDecoder('utf-8', { fatal: false });
+                        const decodedStr = decoder.decode(plaintextArray);
+                        if (decodedStr.trim().startsWith('{') && decodedStr.trim().endsWith('}')) {
+                            // Try to parse as JSON
+                            JSON.parse(decodedStr);
+                            // Valid JSON! Use it
+                            unpaddedArray = plaintextArray;
+                            paddingValid = true;
+                            console.log('Final fallback succeeded: decoded as UTF-8 and validated as JSON');
+                        } else {
+                            // Only log error if JSON parsing also fails
+                            console.error('Invalid padding value:', padValue, '(expected 1-16)');
+                            console.error('Plaintext length:', plaintextArray.length);
+                            console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+                            console.error('Decryption returned empty result - data is not valid JSON');
+                            return null;
+                        }
+                    } catch (e) {
+                        // Only log error if JSON parsing also fails
+                        console.error('Invalid padding value:', padValue, '(expected 1-16)');
+                        console.error('Plaintext length:', plaintextArray.length);
+                        console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+                        console.error('Decryption returned empty result - data is not valid JSON:', e);
+                        return null;
+                    }
                 }
             }
         }

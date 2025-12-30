@@ -449,6 +449,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleCanvasDisplaySaveUnified,
         .requiresAuth = true,
         .description = "Display canvas and save to SD (large image data)"
+    },
+    
+    // Canvas save only (no display)
+    {
+        .mqttName = nullptr,
+        .webUIName = "canvas_save",
+        .httpEndpoint = nullptr,
+        .handler = handleCanvasSaveUnified,
+        .requiresAuth = true,
+        .description = "Save canvas to SD without displaying (large image data)"
     }
 };
 

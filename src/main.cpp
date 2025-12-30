@@ -4172,12 +4172,155 @@ bool handleCanvasDisplaySaveCommand(const String& messageToProcess) {
     
     if (!saveOk) {
         Serial.println("WARNING: Failed to save canvas to SD card, but continuing with display update");
+    } else {
+        // Trigger media mappings republish to update allImages list
+        Serial.println("Canvas saved successfully - triggering media mappings republish...");
+        if (isMqttConnected()) {
+            publishMQTTMediaMappings();
+        }
     }
     
     // Update display
     Serial.println("Updating display (e-ink refresh - non-blocking, panel will take 20-30s)...");
     display.update();
     Serial.println("Display update started (can continue with other tasks or sleep)");
+    
+    return saveOk;
+}
+
+/**
+ * Handle canvas_save command - save canvas to SD card without displaying
+ */
+bool handleCanvasSaveCommand(const String& messageToProcess) {
+    // Extract width, height, pixelData, compressed, and filename using JSON utilities
+    int width = extractJsonIntField(messageToProcess, "width", 0);
+    int height = extractJsonIntField(messageToProcess, "height", 0);
+    String base64Data = extractJsonStringField(messageToProcess, "pixelData");
+    bool isCompressed = extractJsonBoolField(messageToProcess, "compressed", false);
+    String filename = extractJsonStringField(messageToProcess, "filename");
+    
+    if (width == 0 || height == 0 || base64Data.length() == 0) {
+        Serial.printf("ERROR: canvas_save command missing required fields (width=%d, height=%d, pixelData_len=%d)\n", 
+                     width, height, base64Data.length());
+        return false;
+    }
+    
+    // Validate filename (security: no path separators)
+    if (filename.length() == 0) {
+        // Generate default filename with timestamp
+        time_t now = time(nullptr);
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        char timeStr[32];
+        strftime(timeStr, sizeof(timeStr), "canvas_%Y%m%d_%H%M%S.png", &tm_utc);
+        filename = String(timeStr);
+    } else {
+        // Remove any path separators for security
+        filename.replace("/", "_");
+        filename.replace("\\", "_");
+        // Ensure .png extension
+        if (!filename.endsWith(".png")) {
+            filename += ".png";
+        }
+    }
+    
+    Serial.printf("Canvas save (no display): width=%d, height=%d, filename=%s\n", width, height, filename.c_str());
+    
+    // Decode base64 (same as handleCanvasDisplayCommand)
+    size_t decodedLen = (base64Data.length() * 3) / 4;
+    uint8_t* compressedData = (uint8_t*)hal_psram_malloc(decodedLen);
+    if (!compressedData) {
+        Serial.println("ERROR: Failed to allocate PSRAM for compressed data");
+        return false;
+    }
+    
+    // Simple base64 decode
+    size_t compressedSize = 0;
+    for (size_t i = 0; i < base64Data.length() && compressedSize < decodedLen; i += 4) {
+        uint32_t value = 0;
+        int padding = 0;
+        
+        for (int j = 0; j < 4 && (i + j) < base64Data.length(); j++) {
+            char c = base64Data.charAt(i + j);
+            if (c == '=') {
+                padding++;
+                value <<= 6;
+            } else if (c >= 'A' && c <= 'Z') {
+                value = (value << 6) | (c - 'A');
+            } else if (c >= 'a' && c <= 'z') {
+                value = (value << 6) | (c - 'a' + 26);
+            } else if (c >= '0' && c <= '9') {
+                value = (value << 6) | (c - '0' + 52);
+            } else if (c == '+') {
+                value = (value << 6) | 62;
+            } else if (c == '/') {
+                value = (value << 6) | 63;
+            }
+        }
+        
+        int bytes = 3 - padding;
+        for (int j = 0; j < bytes && compressedSize < decodedLen; j++) {
+            compressedData[compressedSize++] = (value >> (8 * (2 - j))) & 0xFF;
+        }
+    }
+    
+    // Decompress if needed
+    uint8_t* pixelData = nullptr;
+    size_t actualLen = 0;
+    
+    if (isCompressed) {
+        size_t expectedSize = width * height;
+        pixelData = (uint8_t*)hal_psram_malloc(expectedSize);
+        if (!pixelData) {
+            Serial.println("ERROR: Failed to allocate PSRAM for decompressed pixel data");
+            hal_psram_free(compressedData);
+            return false;
+        }
+        
+        size_t decompressedSize = tinfl_decompress_mem_to_mem(pixelData, expectedSize, compressedData, compressedSize, 0);
+        
+        if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+            Serial.println("ERROR: miniz decompression failed, trying with zlib header...");
+            decompressedSize = tinfl_decompress_mem_to_mem(pixelData, expectedSize, compressedData, compressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+            if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                Serial.println("ERROR: Zlib header flag also failed");
+                hal_psram_free(compressedData);
+                hal_psram_free(pixelData);
+                return false;
+            }
+        }
+        
+        if (decompressedSize != expectedSize) {
+            Serial.printf("ERROR: Decompressed size mismatch: got %zu, expected %zu\n", decompressedSize, expectedSize);
+            hal_psram_free(compressedData);
+            hal_psram_free(pixelData);
+            return false;
+        }
+        
+        actualLen = decompressedSize;
+        hal_psram_free(compressedData);
+    } else {
+        pixelData = compressedData;
+        actualLen = compressedSize;
+        compressedData = nullptr;
+    }
+    
+    // Save to SD card (no display update)
+    Serial.printf("Saving canvas to SD card as %s (no display)...\n", filename.c_str());
+    bool saveOk = saveCanvasAsPNG(pixelData, actualLen, width, height, filename);
+    
+    hal_psram_free(pixelData);
+    
+    if (saveOk) {
+        Serial.printf("Canvas saved successfully to %s\n", filename.c_str());
+        // Trigger media mappings republish to update allImages list
+        Serial.println("Triggering media mappings republish to update image list...");
+        if (isMqttConnected()) {
+            publishMQTTMediaMappings();
+        }
+    } else {
+        Serial.println("ERROR: Failed to save canvas to SD card");
+    }
     
     return saveOk;
 }

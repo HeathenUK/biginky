@@ -1,5 +1,6 @@
 // Unified Color Picker Component
 // This component can be used anywhere color selection is needed in the UI
+// TEST MARKER: This file was created from scratch on 2024-12-30
 
 // Color definitions - supports both numeric (canvas) and string (text) color values
 const colorDefinitions = {
@@ -80,6 +81,7 @@ function createColorPicker(config) {
     // Set up button click handler
     button.addEventListener('click', (e) => {
         e.stopPropagation();
+        e.preventDefault(); // TEST: Added to ensure form submission doesn't interfere
         const isVisible = palette.style.display !== 'none';
         
         // Close other pickers
@@ -90,6 +92,7 @@ function createColorPicker(config) {
         
         // Toggle this palette
         palette.style.display = isVisible ? 'none' : 'block';
+        console.log(`Color picker ${buttonId} toggled, palette now: ${palette.style.display}`); // TEST: Debug log
     });
 
     // Set up palette button click handlers

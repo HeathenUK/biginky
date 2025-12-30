@@ -3238,7 +3238,7 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                 // On cold boot, also publish media mappings (ONLY on cold boot, not deep sleep wake)
                 if (g_is_cold_boot) {
                     Serial.println("=== COLD BOOT: Publishing media mappings ===");
-                    publishMQTTMediaMappings();
+                    publishMQTTMediaMappings(true);  // Wait for Core 1 to finish before disconnecting MQTT
                     g_is_cold_boot = false;  // Clear flag after publishing media mappings
                 }
                 

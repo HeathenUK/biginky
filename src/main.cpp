@@ -1793,7 +1793,7 @@ bool handleIpCommand(const String& originalMessage);  // Made non-static for uni
 bool handleNextCommand();  // Made non-static for unified dispatcher
 bool handleGoCommand(const String& parameter);  // Made non-static for unified dispatcher
 static bool handleTextCommand(const String& parameter);
-bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = EL133UF1_WHITE);  // Made non-static for unified dispatcher
+bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = EL133UF1_WHITE, const String& backgroundImage = "");  // Made non-static for unified dispatcher
 bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = EL133UF1_WHITE);  // Made non-static for unified dispatcher
 // Wrapper functions for text commands with specific colors (for command registry)
 static bool handleTextCommandWhite(const String& param) { return handleTextCommandWithColor(param, EL133UF1_WHITE, EL133UF1_BLACK); }
@@ -7953,7 +7953,7 @@ static bool handleTextCommand(const String& parameter) {
  * Handle text command with specified fill and outline colors
  * Supports multi-line wrapping for optimal space usage
  */
-bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor) {
+bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor, const String& backgroundImage) {
     Serial.println("Processing text command with color...");
     
     // Check if parameter was provided
@@ -7976,9 +7976,85 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
         Serial.println("Display initialized");
     }
     
-    // Clear the display buffer with specified background color
-    Serial.println("Clearing display buffer...");
-    display.clear(bgColor);
+    // Load background image if provided, otherwise clear with background color
+    if (backgroundImage.length() > 0) {
+        Serial.printf("Loading background image: %s\n", backgroundImage.c_str());
+        
+        // Ensure SD card is mounted
+        if (!sdCardMounted && sd_card == nullptr) {
+            if (!sdInitDirect(false)) {
+                Serial.println("ERROR: Failed to mount SD card for background image");
+                return false;
+            }
+        }
+        
+        // Build full path (images are in root directory)
+        String imagePath = backgroundImage;
+        if (!imagePath.startsWith("/")) {
+            imagePath = "/" + imagePath;
+        }
+        String fatfsPath = "0:" + imagePath;
+        
+        // Check if file exists
+        FILINFO fno;
+        FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+        if (res != FR_OK) {
+            Serial.printf("ERROR: Background image file not found: %s (error: %d)\n", fatfsPath.c_str(), res);
+            // Fall back to background color
+            display.clear(bgColor);
+        } else {
+            size_t fileSize = fno.fsize;
+            
+            // Open and read PNG file
+            FIL pngFile;
+            res = f_open(&pngFile, fatfsPath.c_str(), FA_READ);
+            if (res != FR_OK) {
+                Serial.printf("ERROR: Failed to open background image: %s (error: %d)\n", fatfsPath.c_str(), res);
+                // Fall back to background color
+                display.clear(bgColor);
+            } else {
+                // Allocate PSRAM buffer for PNG data
+                uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+                if (!pngData) {
+                    Serial.println("ERROR: Failed to allocate PSRAM for background image");
+                    f_close(&pngFile);
+                    // Fall back to background color
+                    display.clear(bgColor);
+                } else {
+                    // Read PNG file
+                    UINT bytesRead = 0;
+                    res = f_read(&pngFile, pngData, fileSize, &bytesRead);
+                    f_close(&pngFile);
+                    
+                    if (res != FR_OK || bytesRead != fileSize) {
+                        Serial.printf("ERROR: Failed to read background image: %s (read %u/%zu bytes, error: %d)\n", 
+                                     fatfsPath.c_str(), bytesRead, fileSize, res);
+                        hal_psram_free(pngData);
+                        // Fall back to background color
+                        display.clear(bgColor);
+                    } else {
+                        // Draw background image fullscreen
+                        Serial.println("Drawing background image fullscreen...");
+                        display.clear(EL133UF1_WHITE);  // Clear first (pngLoader may need clean buffer)
+                        PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
+                        hal_psram_free(pngData);
+                        
+                        if (pres != PNG_OK) {
+                            Serial.printf("ERROR: Failed to draw background image: %s\n", pngLoader.getErrorString(pres));
+                            // Fall back to background color
+                            display.clear(bgColor);
+                        } else {
+                            Serial.println("Background image loaded successfully");
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // No background image - use background color
+        Serial.println("Clearing display buffer with background color...");
+        display.clear(bgColor);
+    }
     
     // Get display dimensions
     int16_t displayWidth = display.width();

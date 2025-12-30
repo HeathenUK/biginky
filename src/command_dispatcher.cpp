@@ -13,7 +13,7 @@ extern bool handleClearCommand();
 extern bool handleNextCommand();
 extern bool handleGoCommand(const String& parameter);
 extern bool handleShowCommand(const String& parameter);
-extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = 0);
+extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = 0, const String& backgroundImage = "");
 extern bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = 0);
 extern bool handleListNumbersCommand(const String& originalMessage = "");
 extern bool handleCanvasDisplayCommand(const String& messageToProcess);
@@ -166,6 +166,7 @@ static bool handleTextUnified(const CommandContext& ctx) {
     uint8_t fillColor = EL133UF1_WHITE;
     uint8_t outlineColor = EL133UF1_BLACK;
     uint8_t bgColor = EL133UF1_WHITE;
+    String backgroundImage = "";
     
     if (ctx.source == CommandSource::MQTT_SMS) {
         // MQTT: Extract from command string (!text <text>)
@@ -177,6 +178,7 @@ static bool handleTextUnified(const CommandContext& ctx) {
         String colorStr = extractJsonStringField(ctx.originalMessage, "color");
         String bgColorStr = extractJsonStringField(ctx.originalMessage, "backgroundColour");
         String outlineColorStr = extractJsonStringField(ctx.originalMessage, "outlineColour");
+        backgroundImage = extractJsonStringField(ctx.originalMessage, "backgroundImage");
         
         // Handle multi-color text
         if (colorStr == "multi") {
@@ -193,7 +195,7 @@ static bool handleTextUnified(const CommandContext& ctx) {
         return false;
     }
     
-    return handleTextCommandWithColor(text, fillColor, outlineColor, bgColor);
+    return handleTextCommandWithColor(text, fillColor, outlineColor, bgColor, backgroundImage);
 }
 
 static bool handleListUnified(const CommandContext& ctx) {

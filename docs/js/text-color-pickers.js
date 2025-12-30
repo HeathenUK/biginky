@@ -39,7 +39,7 @@ function initTextColorPickers() {
         document.querySelectorAll('#textColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
+                const colorValue = btn.dataset.color;
                 if (colorValue) {
                     setTextColor(colorValue);
                 }
@@ -65,7 +65,7 @@ function initTextColorPickers() {
         document.querySelectorAll('#textBackgroundColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
+                const colorValue = btn.dataset.color;
                 if (colorValue) {
                     setTextBackgroundColor(colorValue);
                 }
@@ -91,7 +91,7 @@ function initTextColorPickers() {
         document.querySelectorAll('#textOutlineColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
+                const colorValue = btn.dataset.color;
                 if (colorValue) {
                     setTextOutlineColor(colorValue);
                 }

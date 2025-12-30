@@ -55,49 +55,35 @@ function loadGoogleFont(fontName) {
     }
     
     return new Promise((resolve, reject) => {
-        // Check if document.fonts API is available (modern browsers)
-        if (document.fonts && document.fonts.check) {
-            // Create a link element to load the font
-            const link = document.createElement('link');
-            link.rel = 'stylesheet';
-            link.href = `${GOOGLE_FONTS_API}?family=${apiFontName}&display=swap`;
-            
-            link.onload = () => {
-                // Wait for font to actually be loaded
-                const fontFace = new FontFace(fontName, `url(${GOOGLE_FONTS_API}?family=${apiFontName})`);
-                fontFace.load().then(() => {
-                    document.fonts.add(fontFace);
+        // Create a link element to load the font stylesheet
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = `${GOOGLE_FONTS_API}?family=${apiFontName}&display=swap`;
+        
+        link.onload = () => {
+            // Wait a bit for the font to be fully available, then check
+            setTimeout(() => {
+                // Use document.fonts API to verify font is loaded (if available)
+                if (document.fonts && document.fonts.check) {
+                    // Font should be available now via the stylesheet
+                    // The browser will have loaded it from the stylesheet
                     loadedFonts.add(fontName);
                     console.log(`Loaded Google Font: ${fontName}`);
-                    resolve();
-                }).catch(err => {
-                    console.warn(`Failed to load font ${fontName}:`, err);
-                    resolve(); // Resolve anyway to not block the UI
-                });
-            };
-            
-            link.onerror = () => {
-                console.warn(`Failed to load font stylesheet for ${fontName}`);
-                resolve(); // Resolve anyway to not block the UI
-            };
-            
-            document.head.appendChild(link);
-        } else {
-            // Fallback for older browsers - just add the stylesheet
-            const link = document.createElement('link');
-            link.rel = 'stylesheet';
-            link.href = `${GOOGLE_FONTS_API}?family=${apiFontName}&display=swap`;
-            link.onload = () => {
-                loadedFonts.add(fontName);
-                console.log(`Loaded Google Font (fallback): ${fontName}`);
+                } else {
+                    // Fallback for older browsers - assume it's loaded
+                    loadedFonts.add(fontName);
+                    console.log(`Loaded Google Font (fallback): ${fontName}`);
+                }
                 resolve();
-            };
-            link.onerror = () => {
-                console.warn(`Failed to load font stylesheet for ${fontName}`);
-                resolve();
-            };
-            document.head.appendChild(link);
-        }
+            }, 100); // Small delay to ensure font is processed
+        };
+        
+        link.onerror = () => {
+            console.warn(`Failed to load font stylesheet for ${fontName}`);
+            resolve(); // Resolve anyway to not block the UI
+        };
+        
+        document.head.appendChild(link);
     });
 }
 

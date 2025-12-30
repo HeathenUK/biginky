@@ -27,6 +27,7 @@ function initTextColorPickers() {
     // Text Color picker
     if (textColorBtn && textColorPalette && textColorHidden) {
         textColorBtn.addEventListener('click', (e) => {
+            e.preventDefault();
             e.stopPropagation();
             const isVisible = textColorPalette.style.display !== 'none';
             // Close other palettes if open
@@ -53,6 +54,7 @@ function initTextColorPickers() {
     // Background Color picker
     if (textBackgroundColorBtn && textBackgroundColorPalette && textBackgroundColorHidden) {
         textBackgroundColorBtn.addEventListener('click', (e) => {
+            e.preventDefault();
             e.stopPropagation();
             const isVisible = textBackgroundColorPalette.style.display !== 'none';
             // Close other palettes if open
@@ -79,6 +81,7 @@ function initTextColorPickers() {
     // Outline Color picker
     if (textOutlineColorBtn && textOutlineColorPalette && textOutlineColorHidden) {
         textOutlineColorBtn.addEventListener('click', (e) => {
+            e.preventDefault();
             e.stopPropagation();
             const isVisible = textOutlineColorPalette.style.display !== 'none';
             // Close other palettes if open
@@ -102,18 +105,21 @@ function initTextColorPickers() {
         setTextOutlineColor('black');
     }
     
-    // Close palettes when clicking outside
-    document.addEventListener('click', (e) => {
-        if (textColorPalette && textColorBtn && !textColorBtn.contains(e.target) && !textColorPalette.contains(e.target)) {
-            textColorPalette.style.display = 'none';
-        }
-        if (textBackgroundColorPalette && textBackgroundColorBtn && !textBackgroundColorBtn.contains(e.target) && !textBackgroundColorPalette.contains(e.target)) {
-            textBackgroundColorPalette.style.display = 'none';
-        }
-        if (textOutlineColorPalette && textOutlineColorBtn && !textOutlineColorBtn.contains(e.target) && !textOutlineColorPalette.contains(e.target)) {
-            textOutlineColorPalette.style.display = 'none';
-        }
-    });
+    // Close palettes when clicking outside (only register once)
+    if (!window.textColorPickerClickHandlerRegistered) {
+        document.addEventListener('click', (e) => {
+            if (textColorPalette && textColorBtn && !textColorBtn.contains(e.target) && !textColorPalette.contains(e.target)) {
+                textColorPalette.style.display = 'none';
+            }
+            if (textBackgroundColorPalette && textBackgroundColorBtn && !textBackgroundColorBtn.contains(e.target) && !textBackgroundColorPalette.contains(e.target)) {
+                textBackgroundColorPalette.style.display = 'none';
+            }
+            if (textOutlineColorPalette && textOutlineColorBtn && !textOutlineColorBtn.contains(e.target) && !textOutlineColorPalette.contains(e.target)) {
+                textOutlineColorPalette.style.display = 'none';
+            }
+        });
+        window.textColorPickerClickHandlerRegistered = true;
+    }
 }
 
 function setTextColor(colorValue) {

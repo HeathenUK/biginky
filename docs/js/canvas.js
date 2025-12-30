@@ -706,14 +706,37 @@ function startDraw(e) {
     if (tool === 'text') {
         const text = document.getElementById('canvasTextInput').value.trim();
         if (text) {
-            saveCanvasState();
-            ctx.fillStyle = getDrawColor();
             const fontSize = document.getElementById('textFontSize').value;
             const fontFamily = document.getElementById('textFontFamily') ? document.getElementById('textFontFamily').value : 'Arial';
-            ctx.font = fontSize + 'px ' + fontFamily;
-            ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
-            ctx.textBaseline = 'top';
-            ctx.fillText(text, coords.x, coords.y);
+            
+            // Load Google Font if needed before drawing
+            if (typeof loadGoogleFont === 'function') {
+                loadGoogleFont(fontFamily).then(() => {
+                    // Font loaded, now draw the text
+                    saveCanvasState();
+                    ctx.fillStyle = getDrawColor();
+                    ctx.font = fontSize + 'px ' + fontFamily;
+                    ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
+                    ctx.textBaseline = 'top';
+                    ctx.fillText(text, coords.x, coords.y);
+                }).catch(() => {
+                    // Font loading failed, use fallback
+                    saveCanvasState();
+                    ctx.fillStyle = getDrawColor();
+                    ctx.font = fontSize + 'px ' + (fontFamily || 'Arial');
+                    ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
+                    ctx.textBaseline = 'top';
+                    ctx.fillText(text, coords.x, coords.y);
+                });
+            } else {
+                // Fallback if font loader not available
+                saveCanvasState();
+                ctx.fillStyle = getDrawColor();
+                ctx.font = fontSize + 'px ' + fontFamily;
+                ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
+                ctx.textBaseline = 'top';
+                ctx.fillText(text, coords.x, coords.y);
+            }
         }
         return;
     }

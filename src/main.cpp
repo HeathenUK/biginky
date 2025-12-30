@@ -1788,6 +1788,7 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
 bool handleWebInterfaceCommand(const String& jsonMessage);
 bool handleCanvasDisplayCommand(const String& messageToProcess);  // Made non-static for unified dispatcher
 bool handleCanvasDisplaySaveCommand(const String& messageToProcess);  // Made non-static for unified dispatcher
+bool handleCanvasSaveCommand(const String& messageToProcess);  // Made non-static for unified dispatcher (save only, no display)
 bool saveCanvasAsPNG(const uint8_t* pixelData, size_t pixelCount, unsigned width, unsigned height, const String& filename);  // Save canvas as PNG to SD
 static String decryptAndValidateWebUIMessage(const String& jsonMessage);
 bool handleClearCommand();  // Made non-static for unified dispatcher

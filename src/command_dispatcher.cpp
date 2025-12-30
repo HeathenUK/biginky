@@ -18,6 +18,7 @@ extern bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = 0)
 extern bool handleListNumbersCommand(const String& originalMessage = "");
 extern bool handleCanvasDisplayCommand(const String& messageToProcess);
 extern bool handleCanvasDisplaySaveCommand(const String& messageToProcess);
+extern bool handleCanvasSaveCommand(const String& messageToProcess);
 extern bool handlePingCommand(const String& originalMessage);
 extern bool handleIpCommand(const String& originalMessage);
 extern bool handleVolumeCommand(const String& parameter);

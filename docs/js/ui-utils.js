@@ -27,7 +27,7 @@ function updateConnectionStatus(status, message) {
     connectBtn.disabled = (status === 'connected' || status === 'connecting' || status === 'reconnecting' || !hasPassword);
     disconnectBtn.disabled = (status === 'disconnected');
     
-    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'canvasDisplaySaveBtn', 'canvasSaveBtn', 'clearBtn', 'nextBtn'];
+    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn'];
     buttons.forEach(id => {
         const btn = document.getElementById(id);
         if (btn) {
@@ -39,7 +39,7 @@ function updateConnectionStatus(status, message) {
 // Update UI state based on password status
 function updatePasswordStatus() {
     const hasPassword = (webUIPassword && webUIPassword.length > 0);
-    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'clearBtn', 'nextBtn', 'connectBtn'];
+    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'connectBtn'];
     
     buttons.forEach(id => {
         const btn = document.getElementById(id);

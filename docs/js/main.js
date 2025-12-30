@@ -12,6 +12,15 @@ if (document.readyState === 'loading') {
         if (typeof setupKeyboardShortcuts === 'function') {
             setupKeyboardShortcuts();
         }
+        if (typeof initTextColorPickers === 'function') {
+            initTextColorPickers();
+        }
+        
+        // Initialize canvas filename with default
+        const canvasFilenameInput = document.getElementById('canvasFilenameInput');
+        if (canvasFilenameInput && typeof generateDefaultCanvasFilename === 'function') {
+            canvasFilenameInput.value = generateDefaultCanvasFilename();
+        }
         
         // Load auto-reconnect preference
         const autoReconnectPref = localStorage.getItem('autoReconnectEnabled');
@@ -45,6 +54,15 @@ if (document.readyState === 'loading') {
     }
     if (typeof setupKeyboardShortcuts === 'function') {
         setupKeyboardShortcuts();
+    }
+    if (typeof initTextColorPickers === 'function') {
+        initTextColorPickers();
+    }
+    
+    // Initialize canvas filename with default
+    const canvasFilenameInput = document.getElementById('canvasFilenameInput');
+    if (canvasFilenameInput && typeof generateDefaultCanvasFilename === 'function') {
+        canvasFilenameInput.value = generateDefaultCanvasFilename();
     }
     
     // Load auto-reconnect preference

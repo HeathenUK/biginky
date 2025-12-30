@@ -102,6 +102,7 @@ table th,table td{padding:6px;font-size:12px;}
 <script src="js/mqtt.js"></script>
 <script src="js/commands.js"></script>
 <script src="js/canvas.js"></script>
+<script src="js/text-color-pickers.js"></script>
 <script src="js/main.js"></script>
 </head>
 <body>
@@ -171,28 +172,39 @@ table th,table td{padding:6px;font-size:12px;}
 <label>Text:</label>
 <textarea id="textInput" placeholder="Enter text to display..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendTextDisplay();}"></textarea>
 <div class="flex-row">
-<div class="flex-item">
+<div class="flex-item" style="min-width:150px;position:relative;">
 <label>Text Colour:</label>
-<select id="textColor">
-<option value="black" selected>Black</option>
-<option value="yellow">Yellow</option>
-<option value="red">Red</option>
-<option value="blue">Blue</option>
-<option value="green">Green</option>
-<option value="multi">Multi (Random Colours)</option>
-<option value="white">White</option>
-</select>
+<button id="textColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select text color">
+<span id="textColorIndicator" style="display:inline-block;width:32px;height:32px;background:#000000;border:2px solid #333;margin:2px;"></span>
+<span id="textColorLabel" style="margin-left:8px;">Black</span>
+</button>
+<div id="textColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;top:100%;">
+<button class="palette-color-btn active" data-color="black" style="width:32px;height:32px;background:#000000;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
+<button class="palette-color-btn" data-color="yellow" style="width:32px;height:32px;background:#FFFF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Yellow"></button>
+<button class="palette-color-btn" data-color="red" style="width:32px;height:32px;background:#FF0000;border:2px solid #555;cursor:pointer;margin:2px;" title="Red"></button>
+<button class="palette-color-btn" data-color="blue" style="width:32px;height:32px;background:#0000FF;border:2px solid #555;cursor:pointer;margin:2px;" title="Blue"></button>
+<button class="palette-color-btn" data-color="green" style="width:32px;height:32px;background:#00FF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Green"></button>
+<button class="palette-color-btn" data-color="white" style="width:32px;height:32px;background:#FFFFFF;border:2px solid #555;cursor:pointer;margin:2px;" title="White"></button>
+<button class="palette-color-btn" data-color="multi" style="width:64px;height:32px;background:linear-gradient(90deg,#000000 0%,#FFFF00 16.66%,#FF0000 33.33%,#0000FF 50%,#00FF00 66.66%,#FFFFFF 83.33%,#000000 100%);border:2px solid #555;cursor:pointer;margin:2px;font-size:10px;padding:0;display:flex;align-items:center;justify-content:center;" title="Multi (Random Colours)">Multi</button>
+<button class="palette-color-btn" data-color="multi-fade" style="width:64px;height:32px;background:linear-gradient(90deg,#000000 0%,#FFFF00 20%,#FF0000 40%,#0000FF 60%,#00FF00 80%,#FFFFFF 100%);border:2px solid #555;cursor:pointer;margin:2px;font-size:9px;padding:0;display:flex;align-items:center;justify-content:center;" title="Multi-Fade (Gradient)">Fade</button>
 </div>
-<div class="flex-item">
+<input type="hidden" id="textColor" value="black">
+</div>
+<div class="flex-item" style="min-width:150px;position:relative;">
 <label>Background Colour:</label>
-<select id="textBackgroundColor">
-<option value="black">Black</option>
-<option value="yellow">Yellow</option>
-<option value="red">Red</option>
-<option value="blue">Blue</option>
-<option value="green">Green</option>
-<option value="white" selected>White</option>
-</select>
+<button id="textBackgroundColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select background color">
+<span id="textBackgroundColorIndicator" style="display:inline-block;width:32px;height:32px;background:#FFFFFF;border:2px solid #333;margin:2px;"></span>
+<span id="textBackgroundColorLabel" style="margin-left:8px;">White</span>
+</button>
+<div id="textBackgroundColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;top:100%;">
+<button class="palette-color-btn" data-color="black" style="width:32px;height:32px;background:#000000;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
+<button class="palette-color-btn" data-color="yellow" style="width:32px;height:32px;background:#FFFF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Yellow"></button>
+<button class="palette-color-btn" data-color="red" style="width:32px;height:32px;background:#FF0000;border:2px solid #555;cursor:pointer;margin:2px;" title="Red"></button>
+<button class="palette-color-btn" data-color="blue" style="width:32px;height:32px;background:#0000FF;border:2px solid #555;cursor:pointer;margin:2px;" title="Blue"></button>
+<button class="palette-color-btn" data-color="green" style="width:32px;height:32px;background:#00FF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Green"></button>
+<button class="palette-color-btn active" data-color="white" style="width:32px;height:32px;background:#FFFFFF;border:2px solid #555;cursor:pointer;margin:2px;" title="White"></button>
+</div>
+<input type="hidden" id="textBackgroundColor" value="white">
 </div>
 <div class="flex-item">
 <label>Background Image:</label>
@@ -200,16 +212,21 @@ table th,table td{padding:6px;font-size:12px;}
 <option value="">(Use background color)</option>
 </select>
 </div>
-<div class="flex-item">
+<div class="flex-item" style="min-width:150px;position:relative;">
 <label>Outline Colour:</label>
-<select id="textOutlineColor">
-<option value="black" selected>Black</option>
-<option value="yellow">Yellow</option>
-<option value="red">Red</option>
-<option value="blue">Blue</option>
-<option value="green">Green</option>
-<option value="white">White</option>
-</select>
+<button id="textOutlineColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select outline color">
+<span id="textOutlineColorIndicator" style="display:inline-block;width:32px;height:32px;background:#000000;border:2px solid #333;margin:2px;"></span>
+<span id="textOutlineColorLabel" style="margin-left:8px;">Black</span>
+</button>
+<div id="textOutlineColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;top:100%;">
+<button class="palette-color-btn active" data-color="black" style="width:32px;height:32px;background:#000000;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
+<button class="palette-color-btn" data-color="yellow" style="width:32px;height:32px;background:#FFFF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Yellow"></button>
+<button class="palette-color-btn" data-color="red" style="width:32px;height:32px;background:#FF0000;border:2px solid #555;cursor:pointer;margin:2px;" title="Red"></button>
+<button class="palette-color-btn" data-color="blue" style="width:32px;height:32px;background:#0000FF;border:2px solid #555;cursor:pointer;margin:2px;" title="Blue"></button>
+<button class="palette-color-btn" data-color="green" style="width:32px;height:32px;background:#00FF00;border:2px solid #555;cursor:pointer;margin:2px;" title="Green"></button>
+<button class="palette-color-btn" data-color="white" style="width:32px;height:32px;background:#FFFFFF;border:2px solid #555;cursor:pointer;margin:2px;" title="White"></button>
+</div>
+<input type="hidden" id="textOutlineColor" value="black">
 </div>
 <button onclick="sendTextDisplay()" class="flex-shrink" id="textDisplayBtn" disabled>Display Text</button>
 </div>
@@ -332,15 +349,23 @@ table th,table td{padding:6px;font-size:12px;}
 <input type="text" id="canvasTextInput" placeholder="Enter text..." style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
 </div>
 </div>
-<div style="margin-bottom:10px;">
+<div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+<div style="flex:0 0 auto;">
 <button onclick="clearCanvas()">Clear Canvas</button>
 <button onclick="undoCanvas()" id="undoBtn" disabled>Undo</button>
 <button onclick="redoCanvas()" id="redoBtn" disabled>Redo</button>
 <button onclick="loadImageToCanvas()" id="loadImageBtn">Load Image</button>
 <input type="file" id="imageFileInput" accept="image/*" style="display:none;" onchange="handleImageFileSelect(event)">
-<button onclick="sendCanvasToDisplay()" id="canvasDisplayBtn" disabled>Display on Panel</button>
-<button onclick="sendCanvasToDisplayAndSave()" id="canvasDisplaySaveBtn" disabled>Display on Panel & Save</button>
-<button onclick="sendCanvasToSave()" id="canvasSaveBtn" disabled>Save</button>
+</div>
+<div style="flex:0 0 auto;display:flex;gap:8px;align-items:center;">
+<input type="text" id="canvasFilenameInput" placeholder="canvas_2025-12-30T12-00-00.png" style="width:220px;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;">
+<select id="canvasActionSelect" style="padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;">
+<option value="display">Display on Panel</option>
+<option value="display-save" selected>Display on Panel & Save</option>
+<option value="save">Save</option>
+</select>
+<button onclick="sendCanvasAction()" id="canvasActionBtn" disabled style="min-width:44px;padding:8px 12px;">Go</button>
+</div>
 </div>
 <canvas id="drawCanvas" width="1600" height="1200" style="max-width:100%;height:auto;"></canvas>
 <div id="canvasStatus"></div>

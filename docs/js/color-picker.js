@@ -91,8 +91,17 @@ function createColorPicker(config) {
         });
         
         // Toggle this palette (use 'flex' to match CSS rule)
-        palette.style.display = isVisible ? 'none' : 'flex';
-        console.log(`Color picker ${buttonId} toggled, palette now: ${palette.style.display}`); // TEST: Debug log
+        if (!isVisible) {
+            palette.style.display = 'flex';
+            // Ensure positioning styles are set
+            if (!palette.style.position) palette.style.position = 'absolute';
+            if (!palette.style.top) palette.style.top = '100%';
+            if (!palette.style.left) palette.style.left = '0';
+            if (!palette.style.zIndex) palette.style.zIndex = '1000';
+        } else {
+            palette.style.display = 'none';
+        }
+        console.log(`Color picker ${buttonId} toggled, palette now: ${palette.style.display}, position: ${palette.style.position}, top: ${palette.style.top}`); // TEST: Debug log
     });
 
     // Set up palette button click handlers

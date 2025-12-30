@@ -1143,7 +1143,7 @@ static void publishMQTTThumbnailInternalImpl() {
     Serial.printf("[Core 1] Publishing encrypted thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("[Core 1] Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+        Serial.printf("\n[Core 1] Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     } else {
         Serial.printf("[Core 1] Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     }

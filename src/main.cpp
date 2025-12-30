@@ -335,11 +335,12 @@ static constexpr int kCodecVolumeMaxPct = 80; // max volume (too loud above this
 // Auto demo cycle settings: random PNG + clock overlay + short beep + deep sleep
 static constexpr bool kAutoCycleEnabled = true;
 static constexpr uint32_t kCycleSleepSeconds = 60;
-static constexpr uint32_t kCycleSerialEscapeMs = 2000; // cold boot escape to interactive
 RTC_DATA_ATTR uint32_t g_cycle_count = 0;
 static TaskHandle_t g_auto_cycle_task = nullptr;
 static bool g_config_mode_needed = false;  // Flag to indicate config mode is needed
 bool g_is_cold_boot = false;  // Flag to indicate this is a cold boot (not deep sleep wake) (non-static for webui_crypto module access)
+static volatile bool g_ota_requested = false;  // Flag to indicate 'o' key was pressed for OTA mode
+static TaskHandle_t g_serial_monitor_task = nullptr;  // Task handle for serial monitor
 
 // Forward declarations (SDMMC is always enabled)
 
@@ -838,9 +839,15 @@ static time_t calculateTargetWakeTime(time_t now) {
     return now + seconds_until_target;
 }
 
+// Forward declaration
+static void checkAndStartOTA();
+
 static void sleepNowSeconds(uint32_t seconds) {
     // Note: Target wake time calculation is done by the caller (sleepUntilNextMinuteOrFallback).
     // We only recalculate it right before sleep to account for cleanup delays.
+    
+    // Check if OTA was requested before sleeping
+    checkAndStartOTA();
     
     // ESP32-P4 can only wake from deep sleep using LP GPIOs (0-15) via ext1
     // Switch D is on GPIO51, which is NOT an LP GPIO
@@ -3274,6 +3281,9 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                     mqttDisconnect();
                     delay(50);
                 }
+                
+                // Check if OTA was requested before sleeping
+                checkAndStartOTA();
             }
             
             // WiFi will be automatically disconnected by WiFiGuard destructor
@@ -4023,7 +4033,51 @@ bool handleOtaCommand(const String& originalMessage) {
 // Task wrapper for OTA server (prevents stack overflow)
 static void ota_server_task(void* arg) {
     startSdBufferedOTA();
+    g_ota_requested = false;  // Reset flag after OTA completes
     vTaskDelete(nullptr);  // Delete this task when done
+}
+
+/**
+ * Background task to monitor serial input for 'o' key (OTA mode)
+ * Runs continuously on Core 1, sets g_ota_requested flag when 'o' is pressed
+ */
+static void serial_monitor_task(void* arg) {
+    (void)arg;
+    Serial.println("Serial monitor task started - press 'o' at any time to enter OTA mode");
+    
+    while (true) {
+        if (Serial.available()) {
+            char ch = (char)Serial.read();
+            if (ch == 'o' || ch == 'O') {
+                g_ota_requested = true;
+                Serial.println("\n>>> 'o' key detected - OTA mode will start at next safe moment <<<");
+            }
+            // Drain any remaining characters to prevent buffer buildup
+            while (Serial.available()) {
+                (void)Serial.read();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));  // Check every 50ms (lightweight)
+    }
+}
+
+/**
+ * Check if OTA was requested and start OTA server if needed
+ * Call this at safe points in the code (after initialization, before sleep, etc.)
+ */
+static void checkAndStartOTA() {
+    if (g_ota_requested) {
+        Serial.println("\n>>> Starting OTA server (requested via serial) <<<");
+        g_ota_requested = false;  // Reset flag before starting
+        // Create task with sufficient stack to avoid stack protection fault
+        TaskHandle_t otaTaskHandle = nullptr;
+        xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
+        // Wait for task to complete (it will delete itself)
+        while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
+            delay(100);
+        }
+        // If we reach here, OTA timed out or failed - continue with normal operation
+    }
 }
 
 static bool startSdBufferedOTA() {
@@ -8044,7 +8098,7 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
         }
     }
     
-    // Update display
+    // Update display (thumbnail publishing happens automatically in display.update())
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
     Serial.println("Display updated");
@@ -8226,7 +8280,7 @@ bool handleMultiTextCommand(const String& parameter, uint8_t bgColor) {
         }
     }
     
-    // Update display
+    // Update display (thumbnail publishing happens automatically in display.update())
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
     Serial.println("Display updated");
@@ -8473,7 +8527,7 @@ static bool handleMultiFadeTextCommand(const String& parameter, uint8_t bgColor)
         }
     }
     
-    // Update display
+    // Update display (thumbnail publishing happens automatically in display.update())
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
     Serial.println("Display updated");
@@ -10837,6 +10891,13 @@ void setup() {
     bool wokeFromSleep = (wakeCause != ESP_SLEEP_WAKEUP_UNDEFINED);
     g_is_cold_boot = !wokeFromSleep;  // Set global flag for auto_cycle_task to use
     
+    // Start serial monitor task for continuous OTA monitoring (runs on Core 1)
+    // This task monitors serial input and sets g_ota_requested flag when 'o' is pressed
+    if (g_serial_monitor_task == nullptr) {
+        xTaskCreatePinnedToCore(serial_monitor_task, "serial_mon", 2048, nullptr, 1, &g_serial_monitor_task, 1);
+        delay(100);  // Allow task to start
+    }
+    
     if (wokeFromSleep) {
         // Quick boot after deep sleep - skip serial wait
         // Add extra delay after deep sleep to let ESP-Hosted (ESP32-C6) stabilize
@@ -10844,37 +10905,8 @@ void setup() {
         Serial.println("\n=== Woke from deep sleep ===");
         Serial.printf("Boot count: %u, Wake cause: %d\n", sleepBootCount, wakeCause);
         
-        // Check for 'o' key to start OTA server (debug shortcut)
-        // Give a short window to press 'o' before continuing
-        Serial.println("Press 'o' within 0.5 seconds to start OTA server, or wait to continue...");
-        uint32_t otaCheckStart = millis();
-        bool otaRequested = false;
-        while (millis() - otaCheckStart < 500) {
-            if (Serial.available()) {
-                char ch = (char)Serial.read();
-                if (ch == 'o' || ch == 'O') {
-                    otaRequested = true;
-                    break;
-                }
-                // Drain any other characters
-                while (Serial.available()) {
-                    (void)Serial.read();
-                }
-            }
-            delay(10);
-        }
-        
-        if (otaRequested) {
-            Serial.println("\n>>> 'o' key pressed - starting OTA server <<<");
-            // Create task with sufficient stack to avoid stack protection fault
-            TaskHandle_t otaTaskHandle = nullptr;
-            xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
-            // Wait for task to complete (it will delete itself)
-            while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
-                delay(100);
-            }
-            // If we reach here, OTA timed out or failed - continue with normal boot
-        }
+        // Check if OTA was requested (via serial monitor task)
+        checkAndStartOTA();
     } else {
         // Cold boot - wait for serial
         uint32_t start = millis();
@@ -10885,37 +10917,8 @@ void setup() {
         Serial.println("EL133UF1 ESP32-P4 Port Test");
         Serial.println("========================================\n");
         
-        // Check for 'o' key to start OTA server (debug shortcut)
-        // Give a short window to press 'o' before continuing
-        Serial.println("Press 'o' within 0.5 seconds to start OTA server, or wait to continue...");
-        uint32_t otaCheckStart = millis();
-        bool otaRequested = false;
-        while (millis() - otaCheckStart < 500) {
-            if (Serial.available()) {
-                char ch = (char)Serial.read();
-                if (ch == 'o' || ch == 'O') {
-                    otaRequested = true;
-                    break;
-                }
-                // Drain any other characters
-                while (Serial.available()) {
-                    (void)Serial.read();
-                }
-            }
-            delay(10);
-        }
-        
-        if (otaRequested) {
-            Serial.println("\n>>> 'o' key pressed - starting OTA server <<<");
-            // Create task with sufficient stack to avoid stack protection fault
-            TaskHandle_t otaTaskHandle = nullptr;
-            xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
-            // Wait for task to complete (it will delete itself)
-            while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
-                delay(100);
-            }
-            // If we reach here, OTA timed out or failed - continue with normal boot
-        }
+        // Check if OTA was requested (via serial monitor task)
+        checkAndStartOTA();
     }
     
     // Print platform info and pin configuration only on cold boot
@@ -10976,46 +10979,13 @@ void setup() {
 
     // Auto cycle: random PNG + time/date overlay + beep + deep sleep
     if (kAutoCycleEnabled) {
-        bool shouldRun = true;
-        if (!wokeFromSleep) {
-            // Drain any buffered bytes (some terminals send a newline on connect)
-            while (Serial.available()) {
-                (void)Serial.read();
-            }
-            Serial.printf("\nAuto-cycle starts in %lu ms (press '!' to cancel, 'o' for OTA)...\n", (unsigned long)kCycleSerialEscapeMs);
-            uint32_t startWait = millis();
-            while (millis() - startWait < kCycleSerialEscapeMs) {
-                if (Serial.available()) {
-                    char ch = (char)Serial.read();
-                    if (ch == '!') {
-                        shouldRun = false;
-                        break;
-                    } else if (ch == 'o' || ch == 'O') {
-                        // Debug: Connect WiFi and start OTA server
-                        Serial.println("\n>>> 'o' key pressed - starting OTA server <<<");
-                        // Create task with sufficient stack to avoid stack protection fault
-                        TaskHandle_t otaTaskHandle = nullptr;
-                        xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
-                        // Wait for task to complete (it will delete itself)
-                        while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
-                            delay(100);
-                        }
-                        shouldRun = false;
-                        break;
-                    }
-                }
-                delay(20);
-            }
-        }
-
-        if (shouldRun) {
-            // Run auto-cycle in a dedicated task with a larger stack than Arduino loopTask,
-            // since SD init and PNG decoding are stack-heavy.
-            xTaskCreatePinnedToCore(auto_cycle_task, "auto_cycle", 16384, nullptr, 5, &g_auto_cycle_task, 0);
-            return; // yield loopTask; auto_cycle_task will deep-sleep the device
-        } else {
-            Serial.println("Auto-cycle cancelled -> staying in interactive mode.");
-        }
+        // Check if OTA was requested before starting auto-cycle
+        checkAndStartOTA();
+        
+        // Run auto-cycle in a dedicated task with a larger stack than Arduino loopTask,
+        // since SD init and PNG decoding are stack-heavy.
+        xTaskCreatePinnedToCore(auto_cycle_task, "auto_cycle", 16384, nullptr, 5, &g_auto_cycle_task, 0);
+        return; // yield loopTask; auto_cycle_task will deep-sleep the device
     }
 
     // Keep legacy test-pattern behavior only when auto-cycle is disabled.

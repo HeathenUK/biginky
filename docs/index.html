@@ -339,7 +339,8 @@ table th,table td{padding:6px;font-size:12px;}
 <button onclick="loadImageToCanvas()" id="loadImageBtn">Load Image</button>
 <input type="file" id="imageFileInput" accept="image/*" style="display:none;" onchange="handleImageFileSelect(event)">
 <button onclick="sendCanvasToDisplay()" id="canvasDisplayBtn" disabled>Display on Panel</button>
-<button onclick="sendCanvasToDisplayAndSave()" id="canvasDisplaySaveBtn" disabled>Display & Save to SD</button>
+<button onclick="sendCanvasToDisplayAndSave()" id="canvasDisplaySaveBtn" disabled>Display on Panel & Save</button>
+<button onclick="sendCanvasToSave()" id="canvasSaveBtn" disabled>Save</button>
 </div>
 <canvas id="drawCanvas" width="1600" height="1200" style="max-width:100%;height:auto;"></canvas>
 <div id="canvasStatus"></div>

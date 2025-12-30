@@ -27,7 +27,7 @@ function updateConnectionStatus(status, message) {
     connectBtn.disabled = (status === 'connected' || status === 'connecting' || status === 'reconnecting' || !hasPassword);
     disconnectBtn.disabled = (status === 'disconnected');
     
-    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'canvasDisplaySaveBtn', 'clearBtn', 'nextBtn'];
+    const buttons = ['textDisplayBtn', 'canvasDisplayBtn', 'canvasDisplaySaveBtn', 'canvasSaveBtn', 'clearBtn', 'nextBtn'];
     buttons.forEach(id => {
         const btn = document.getElementById(id);
         if (btn) {

@@ -450,6 +450,8 @@ async function handleThumbnailMessage(message) {
                 thumb = JSON.parse(decrypted);
             } catch (parseError) {
                 console.error('Failed to parse decrypted thumbnail JSON:', parseError);
+                console.error('Decrypted string length:', decrypted ? decrypted.length : 0);
+                console.error('First 200 chars of decrypted data:', decrypted ? decrypted.substring(0, 200) : 'null');
                 document.getElementById('thumbnailStatus').textContent = 'Error: Invalid thumbnail data after decryption. Message may be incomplete or corrupted.';
                 return;
             }
@@ -461,7 +463,27 @@ async function handleThumbnailMessage(message) {
                 return;
             }
             
-            console.log('Decrypted thumbnail:', { width: thumb.width, height: thumb.height, format: thumb.format, dataLength: thumb.data ? thumb.data.length : 0 });
+            console.log('Decrypted thumbnail:', { 
+                width: thumb.width, 
+                height: thumb.height, 
+                format: thumb.format, 
+                dataLength: thumb.data ? thumb.data.length : 0,
+                dataType: typeof thumb.data
+            });
+            
+            // Validate base64 data length is reasonable
+            if (thumb.data && thumb.data.length > 0) {
+                // Expected base64 length for a JPEG thumbnail: roughly width * height * quality factor
+                // For 400x300 JPEG at quality 75, expect roughly 6-10KB raw, so 8-14KB base64
+                const minExpectedBase64 = 4000;  // Minimum reasonable size
+                const maxExpectedBase64 = 20000; // Maximum reasonable size
+                if (thumb.data.length < minExpectedBase64) {
+                    console.warn('Thumbnail base64 data seems too short:', thumb.data.length, 'bytes (expected at least', minExpectedBase64, ')');
+                }
+                if (thumb.data.length > maxExpectedBase64) {
+                    console.warn('Thumbnail base64 data seems too long:', thumb.data.length, 'bytes (expected at most', maxExpectedBase64, ')');
+                }
+            }
         } else if (webUIPassword && payload.hmac) {
             // Unencrypted but has HMAC - verify it
             const providedHMAC = payload.hmac;

@@ -78,6 +78,79 @@ function updateThumbnail(thumb) {
     try {
         if (thumb.format === 'jpeg' || thumb.format === 'png') {
             // JPEG/PNG format: create data URL and load as image (much simpler!)
+            
+            // Validate base64 data before using it
+            if (!thumb.data || typeof thumb.data !== 'string') {
+                console.error('Invalid thumbnail data:', typeof thumb.data);
+                statusEl.textContent = 'Error: Invalid thumbnail data type';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            // Validate base64 string format (should only contain valid base64 chars)
+            const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+            if (!base64Regex.test(thumb.data)) {
+                console.error('Invalid base64 characters in thumbnail data');
+                console.error('Data length:', thumb.data.length);
+                console.error('First 100 chars:', thumb.data.substring(0, 100));
+                console.error('Last 100 chars:', thumb.data.substring(Math.max(0, thumb.data.length - 100)));
+                statusEl.textContent = 'Error: Invalid base64 data in thumbnail';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            // Validate base64 length (should be multiple of 4, with padding)
+            if (thumb.data.length % 4 !== 0) {
+                console.error('Invalid base64 length (not multiple of 4):', thumb.data.length);
+                statusEl.textContent = 'Error: Invalid base64 data length';
+                canvas.style.display = 'none';
+                return;
+            }
+            
+            // Try to decode base64 to verify it's valid before creating data URL
+            try {
+                const testDecode = atob(thumb.data);
+                console.log('Base64 validation: decoded length =', testDecode.length);
+                console.log('Base64 validation: first 4 bytes =', 
+                    Array.from(new Uint8Array(testDecode.split('').map(c => c.charCodeAt(0)).slice(0, 4)))
+                        .map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+                
+                // Verify image header (JPEG: FF D8, PNG: 89 50 4E 47)
+                if (thumb.format === 'jpeg') {
+                    if (testDecode.length >= 2 && testDecode.charCodeAt(0) === 0xFF && testDecode.charCodeAt(1) === 0xD8) {
+                        console.log('✓ Valid JPEG header detected');
+                    } else {
+                        console.error('✗ Invalid JPEG header:', 
+                            Array.from(new Uint8Array(testDecode.split('').map(c => c.charCodeAt(0)).slice(0, 4)))
+                                .map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+                        statusEl.textContent = 'Error: Thumbnail data does not appear to be a valid JPEG';
+                        canvas.style.display = 'none';
+                        return;
+                    }
+                } else if (thumb.format === 'png') {
+                    if (testDecode.length >= 8 && 
+                        testDecode.charCodeAt(0) === 0x89 && 
+                        testDecode.charCodeAt(1) === 0x50 && 
+                        testDecode.charCodeAt(2) === 0x4E && 
+                        testDecode.charCodeAt(3) === 0x47) {
+                        console.log('✓ Valid PNG header detected');
+                    } else {
+                        console.error('✗ Invalid PNG header:', 
+                            Array.from(new Uint8Array(testDecode.split('').map(c => c.charCodeAt(0)).slice(0, 8)))
+                                .map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+                        statusEl.textContent = 'Error: Thumbnail data does not appear to be a valid PNG';
+                        canvas.style.display = 'none';
+                        return;
+                    }
+                }
+            } catch (decodeError) {
+                console.error('Failed to decode base64 data:', decodeError);
+                console.error('Base64 data length:', thumb.data.length);
+                statusEl.textContent = 'Error: Failed to decode base64 data. Data may be corrupted.';
+                canvas.style.display = 'none';
+                return;
+            }
+            
             const mimeType = thumb.format === 'png' ? 'image/png' : 'image/jpeg';
             const dataUrl = `data:${mimeType};base64,${thumb.data}`;
             const img = new Image();
@@ -136,9 +209,11 @@ function updateThumbnail(thumb) {
                     }
                 }
             };
-            img.onerror = function() {
-                console.error('Failed to load ' + thumb.format.toUpperCase() + ' thumbnail');
-                statusEl.textContent = 'Error loading ' + thumb.format.toUpperCase() + ' preview';
+            img.onerror = function(err) {
+                console.error('Failed to load ' + thumb.format.toUpperCase() + ' thumbnail:', err);
+                console.error('Data URL length:', dataUrl.length);
+                console.error('Base64 data length:', thumb.data.length);
+                statusEl.textContent = 'Error loading ' + thumb.format.toUpperCase() + ' preview - image data may be corrupted';
                 canvas.style.display = 'none';
             };
             img.src = dataUrl;

@@ -75,6 +75,33 @@ bool setWebUIPassword(const String& password);
  */
 void requireWebUIPasswordSetup();
 
+/**
+ * Check if encryption is enabled for MQTT messages
+ * @return true if encryption is enabled, false if only HMAC is used
+ */
+bool isEncryptionEnabled();
+
+/**
+ * Set encryption enabled/disabled for MQTT messages
+ * @param enabled true to enable encryption, false to use HMAC only
+ * @return true on success, false on failure
+ */
+bool setEncryptionEnabled(bool enabled);
+
+/**
+ * Base64 encode a string (helper function for unencrypted messages)
+ * @param plaintext The string to encode
+ * @return Base64-encoded string or empty string on failure
+ */
+String base64Encode(const String& plaintext);
+
+/**
+ * Base64 decode a string (helper function for unencrypted messages)
+ * @param encoded Base64-encoded string
+ * @return Decoded string or empty string on failure
+ */
+String base64Decode(const String& encoded);
+
 #endif // WEBUI_CRYPTO_H
 
 

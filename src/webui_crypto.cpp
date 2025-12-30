@@ -315,148 +315,176 @@ String encryptMessage(const String& plaintext) {
 
 String encryptAndFormatMessage(const String& plaintext) {
     if (!isWebUIPasswordSet()) {
-        Serial.println("ERROR: Cannot encrypt - password not set");
+        Serial.println("ERROR: Cannot format message - password not set");
         return "";
     }
     
-    // Get password from NVS
-    if (!authPrefs.begin("webui_auth", true)) {
-        Serial.println("ERROR: Failed to open NVS for encryption");
-        return "";
-    }
-    String password = authPrefs.getString("password", "");
-    authPrefs.end();
+    // Check if encryption is enabled
+    bool useEncryption = isEncryptionEnabled();
+    String payload;
+    String iv;
     
-    if (password.length() == 0) {
-        Serial.println("ERROR: Password is empty");
-        return "";
-    }
-    
-    // Derive encryption key from password
-    uint8_t dummyHmacKey[32];
-    uint8_t encryptionKey[32];
-    if (!deriveKeysFromPassword(password, dummyHmacKey, encryptionKey)) {
-        Serial.println("ERROR: Failed to derive encryption key");
-        return "";
-    }
-    
-    // Generate random IV (16 bytes for AES-256 CBC)
-    uint8_t iv[16];
-    esp_fill_random(iv, 16);
-    
-    // Save a copy of the original IV (mbedtls_aes_crypt_cbc modifies it in place)
-    uint8_t ivOriginal[16];
-    memcpy(ivOriginal, iv, 16);
-    
-    // Prepare plaintext
-    size_t plaintextLen = plaintext.length();
-    size_t paddedLen = ((plaintextLen + 15) / 16) * 16;  // PKCS7 padding
-    uint8_t* paddedPlaintext = (uint8_t*)malloc(paddedLen);
-    if (!paddedPlaintext) {
-        Serial.println("ERROR: Failed to allocate memory for padded plaintext");
-        return "";
-    }
-    
-    memcpy(paddedPlaintext, plaintext.c_str(), plaintextLen);
-    // PKCS7 padding
-    uint8_t padValue = paddedLen - plaintextLen;
-    for (size_t i = plaintextLen; i < paddedLen; i++) {
-        paddedPlaintext[i] = padValue;
-    }
-    
-    // Encrypt using AES-256-CBC
-    mbedtls_aes_context aes;
-    mbedtls_aes_init(&aes);
-    
-    if (mbedtls_aes_setkey_enc(&aes, encryptionKey, 256) != 0) {
-        Serial.println("ERROR: Failed to set AES encryption key");
+    if (useEncryption) {
+        // Get password from NVS
+        if (!authPrefs.begin("webui_auth", true)) {
+            Serial.println("ERROR: Failed to open NVS for encryption");
+            return "";
+        }
+        String password = authPrefs.getString("password", "");
+        authPrefs.end();
+        
+        if (password.length() == 0) {
+            Serial.println("ERROR: Password is empty");
+            return "";
+        }
+        
+        // Derive encryption key from password
+        uint8_t dummyHmacKey[32];
+        uint8_t encryptionKey[32];
+        if (!deriveKeysFromPassword(password, dummyHmacKey, encryptionKey)) {
+            Serial.println("ERROR: Failed to derive encryption key");
+            return "";
+        }
+        
+        // Generate random IV (16 bytes for AES-256 CBC)
+        uint8_t ivBytes[16];
+        esp_fill_random(ivBytes, 16);
+        
+        // Save a copy of the original IV (mbedtls_aes_crypt_cbc modifies it in place)
+        uint8_t ivOriginal[16];
+        memcpy(ivOriginal, ivBytes, 16);
+        
+        // Prepare plaintext
+        size_t plaintextLen = plaintext.length();
+        size_t paddedLen = ((plaintextLen + 15) / 16) * 16;  // PKCS7 padding
+        uint8_t* paddedPlaintext = (uint8_t*)malloc(paddedLen);
+        if (!paddedPlaintext) {
+            Serial.println("ERROR: Failed to allocate memory for padded plaintext");
+            return "";
+        }
+        
+        memcpy(paddedPlaintext, plaintext.c_str(), plaintextLen);
+        // PKCS7 padding
+        uint8_t padValue = paddedLen - plaintextLen;
+        for (size_t i = plaintextLen; i < paddedLen; i++) {
+            paddedPlaintext[i] = padValue;
+        }
+        
+        // Encrypt using AES-256-CBC
+        mbedtls_aes_context aes;
+        mbedtls_aes_init(&aes);
+        
+        if (mbedtls_aes_setkey_enc(&aes, encryptionKey, 256) != 0) {
+            Serial.println("ERROR: Failed to set AES encryption key");
+            mbedtls_aes_free(&aes);
+            free(paddedPlaintext);
+            return "";
+        }
+        
+        uint8_t* ciphertext = (uint8_t*)malloc(paddedLen);
+        if (!ciphertext) {
+            Serial.println("ERROR: Failed to allocate memory for ciphertext");
+            mbedtls_aes_free(&aes);
+            free(paddedPlaintext);
+            return "";
+        }
+        
+        if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, ivBytes, paddedPlaintext, ciphertext) != 0) {
+            Serial.println("ERROR: AES encryption failed");
+            mbedtls_aes_free(&aes);
+            free(paddedPlaintext);
+            free(ciphertext);
+            return "";
+        }
+        
         mbedtls_aes_free(&aes);
         free(paddedPlaintext);
-        return "";
-    }
-    
-    uint8_t* ciphertext = (uint8_t*)malloc(paddedLen);
-    if (!ciphertext) {
-        Serial.println("ERROR: Failed to allocate memory for ciphertext");
-        mbedtls_aes_free(&aes);
-        free(paddedPlaintext);
-        return "";
-    }
-    
-    if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, iv, paddedPlaintext, ciphertext) != 0) {
-        Serial.println("ERROR: AES encryption failed");
-        mbedtls_aes_free(&aes);
-        free(paddedPlaintext);
-        free(ciphertext);
-        return "";
-    }
-    
-    mbedtls_aes_free(&aes);
-    free(paddedPlaintext);
-    
-    // Base64 encode IV and ciphertext separately using mbedTLS
-    // Use the ORIGINAL IV (before mbedtls_aes_crypt_cbc modified it)
-    // Encode IV (16 bytes -> 24 base64 chars + null terminator)
-    char ivBase64[25];
-    size_t ivBase64Len = 0;
-    if (mbedtls_base64_encode((unsigned char*)ivBase64, 25, &ivBase64Len, ivOriginal, 16) != 0) {
-        Serial.println("ERROR: Failed to base64 encode IV");
-        free(ciphertext);
-        return "";
-    }
-    ivBase64[ivBase64Len] = '\0';
-    
-    // Encode ciphertext
-    size_t ciphertextBase64Len = ((paddedLen + 2) / 3) * 4 + 1;
-    char* ciphertextBase64 = (char*)malloc(ciphertextBase64Len);
-    if (!ciphertextBase64) {
-        Serial.println("ERROR: Failed to allocate memory for ciphertext base64");
-        free(ciphertext);
-        return "";
-    }
-    
-    size_t ciphertextBase64ActualLen = 0;
-    if (mbedtls_base64_encode((unsigned char*)ciphertextBase64, ciphertextBase64Len, &ciphertextBase64ActualLen, ciphertext, paddedLen) != 0) {
-        Serial.println("ERROR: Failed to base64 encode ciphertext");
+        
+        // Base64 encode IV and ciphertext separately using mbedTLS
+        // Use the ORIGINAL IV (before mbedtls_aes_crypt_cbc modified it)
+        // Encode IV (16 bytes -> 24 base64 chars + null terminator)
+        char ivBase64[25];
+        size_t ivBase64Len = 0;
+        if (mbedtls_base64_encode((unsigned char*)ivBase64, 25, &ivBase64Len, ivOriginal, 16) != 0) {
+            Serial.println("ERROR: Failed to base64 encode IV");
+            free(ciphertext);
+            return "";
+        }
+        ivBase64[ivBase64Len] = '\0';
+        iv = String(ivBase64);
+        
+        // Encode ciphertext
+        size_t ciphertextBase64Len = ((paddedLen + 2) / 3) * 4 + 1;
+        char* ciphertextBase64 = (char*)malloc(ciphertextBase64Len);
+        if (!ciphertextBase64) {
+            Serial.println("ERROR: Failed to allocate memory for ciphertext base64");
+            free(ciphertext);
+            return "";
+        }
+        
+        size_t ciphertextBase64ActualLen = 0;
+        if (mbedtls_base64_encode((unsigned char*)ciphertextBase64, ciphertextBase64Len, &ciphertextBase64ActualLen, ciphertext, paddedLen) != 0) {
+            Serial.println("ERROR: Failed to base64 encode ciphertext");
+            free(ciphertext);
+            free(ciphertextBase64);
+            return "";
+        }
+        ciphertextBase64[ciphertextBase64ActualLen] = '\0';
+        payload = String(ciphertextBase64);
+        
         free(ciphertext);
         free(ciphertextBase64);
-        return "";
+    } else {
+        // Encryption disabled: just base64 encode the plaintext
+        payload = base64Encode(plaintext);
+        if (payload.length() == 0) {
+            Serial.println("ERROR: Failed to base64 encode plaintext");
+            return "";
+        }
     }
-    ciphertextBase64[ciphertextBase64ActualLen] = '\0';
     
-    free(ciphertext);
-    
-    // Compute HMAC of the encrypted message (before adding hmac field)
-    // For large messages, use reserve() to avoid heap fragmentation
-    size_t ciphertextBase64StrLen = strlen(ciphertextBase64);
+    // Build message JSON (without hmac field) for HMAC computation
     String messageForHMAC;
-    messageForHMAC.reserve(50 + strlen(ivBase64) + ciphertextBase64StrLen);  // Pre-allocate to avoid reallocations
-    messageForHMAC = "{\"encrypted\":true,\"iv\":\"";
-    messageForHMAC += ivBase64;
-    messageForHMAC += "\",\"payload\":\"";
-    messageForHMAC += ciphertextBase64;
-    messageForHMAC += "\"}";
+    if (useEncryption) {
+        messageForHMAC.reserve(50 + iv.length() + payload.length());
+        messageForHMAC = "{\"encrypted\":true,\"iv\":\"";
+        messageForHMAC += iv;
+        messageForHMAC += "\",\"payload\":\"";
+        messageForHMAC += payload;
+        messageForHMAC += "\"}";
+    } else {
+        messageForHMAC.reserve(40 + payload.length());
+        messageForHMAC = "{\"encrypted\":false,\"payload\":\"";
+        messageForHMAC += payload;
+        messageForHMAC += "\"}";
+    }
     
+    // Compute HMAC (always required)
     String hmac = computeHMAC(messageForHMAC);
-    
     if (hmac.length() == 0) {
-        Serial.println("ERROR: Failed to compute HMAC for encrypted message");
-        free(ciphertextBase64);
+        Serial.println("ERROR: Failed to compute HMAC for message");
         return "";
     }
     
-    // Build final JSON (also use reserve for large messages)
+    // Build final JSON with HMAC
     String result;
-    result.reserve(messageForHMAC.length() + 20 + hmac.length());  // Pre-allocate
-    result = "{\"encrypted\":true,\"iv\":\"";
-    result += ivBase64;
-    result += "\",\"payload\":\"";
-    result += ciphertextBase64;
-    result += "\",\"hmac\":\"";
-    result += hmac;
-    result += "\"}";
+    result.reserve(messageForHMAC.length() + 20 + hmac.length());
+    if (useEncryption) {
+        result = "{\"encrypted\":true,\"iv\":\"";
+        result += iv;
+        result += "\",\"payload\":\"";
+        result += payload;
+        result += "\",\"hmac\":\"";
+        result += hmac;
+        result += "\"}";
+    } else {
+        result = "{\"encrypted\":false,\"payload\":\"";
+        result += payload;
+        result += "\",\"hmac\":\"";
+        result += hmac;
+        result += "\"}";
+    }
     
-    free(ciphertextBase64);
     return result;
 }
 
@@ -672,6 +700,101 @@ void requireWebUIPasswordSetup() {
             Serial.println("Web UI password is configured - GitHub Pages UI is enabled");
         }
     }
+}
+
+bool isEncryptionEnabled() {
+    if (!authPrefs.begin("webui_auth", true)) {
+        // Default to true (encryption enabled) if NVS access fails
+        return true;
+    }
+    // Default to true if key doesn't exist (backward compatible)
+    bool enabled = authPrefs.getBool("encryption_enabled", true);
+    authPrefs.end();
+    return enabled;
+}
+
+bool setEncryptionEnabled(bool enabled) {
+    if (!authPrefs.begin("webui_auth", false)) {
+        Serial.println("ERROR: Failed to open NVS for encryption setting storage");
+        return false;
+    }
+    
+    bool success = authPrefs.putBool("encryption_enabled", enabled);
+    authPrefs.end();
+    
+    if (success) {
+        Serial.printf("Encryption %s for MQTT messages\n", enabled ? "enabled" : "disabled");
+    } else {
+        Serial.println("ERROR: Failed to store encryption setting in NVS");
+    }
+    
+    return success;
+}
+
+String base64Encode(const String& plaintext) {
+    if (plaintext.length() == 0) {
+        return "";
+    }
+    
+    // Use mbedTLS base64 encoding
+    size_t plaintextLen = plaintext.length();
+    size_t base64Len = ((plaintextLen + 2) / 3) * 4 + 1;
+    char* base64 = (char*)malloc(base64Len);
+    if (!base64) {
+        Serial.println("ERROR: Failed to allocate memory for base64 encoding");
+        return "";
+    }
+    
+    size_t actualLen = 0;
+    if (mbedtls_base64_encode((unsigned char*)base64, base64Len, &actualLen, 
+                              (const unsigned char*)plaintext.c_str(), plaintextLen) != 0) {
+        Serial.println("ERROR: Failed to base64 encode");
+        free(base64);
+        return "";
+    }
+    
+    base64[actualLen] = '\0';
+    String result = String(base64);
+    free(base64);
+    return result;
+}
+
+String base64Decode(const String& encoded) {
+    if (encoded.length() == 0) {
+        return "";
+    }
+    
+    // Remove whitespace
+    String cleanEncoded = encoded;
+    cleanEncoded.replace("\n", "");
+    cleanEncoded.replace("\r", "");
+    cleanEncoded.replace(" ", "");
+    cleanEncoded.trim();
+    
+    size_t encodedLen = cleanEncoded.length();
+    if (encodedLen == 0) {
+        return "";
+    }
+    
+    // Calculate max decoded length
+    size_t decodedLen = ((encodedLen + 3) / 4) * 3;
+    uint8_t* decoded = (uint8_t*)malloc(decodedLen);
+    if (!decoded) {
+        Serial.println("ERROR: Failed to allocate memory for base64 decoding");
+        return "";
+    }
+    
+    size_t actualLen = 0;
+    if (mbedtls_base64_decode(decoded, decodedLen, &actualLen,
+                              (const unsigned char*)cleanEncoded.c_str(), encodedLen) != 0) {
+        Serial.println("ERROR: Failed to base64 decode");
+        free(decoded);
+        return "";
+    }
+    
+    String result = String((char*)decoded, actualLen);
+    free(decoded);
+    return result;
 }
 
 

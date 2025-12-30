@@ -2485,13 +2485,7 @@ static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
     }
 
     // Set keepout margins (areas not visible to user due to bezel/frame)
-    textPlacement.setKeepout(120);  // 120px margin on all sides (accounts for outline width)
-    
-    // Clear any previous exclusion zones (fresh start for this frame)
-    textPlacement.clearExclusionZones();
-    
-    // Get text dimensions for both time and date
-    // Adaptive sizing: try smaller sizes if keep-out areas block placement
+    // Declare variables outside guard scope
     float timeFontSize = 160.0f;
     float dateFontSize = 48.0f;
     const float minTimeFontSize = 80.0f;   // Don't go smaller than this
@@ -2508,6 +2502,14 @@ static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
     const int maxAttempts = 5;  // Try up to 5 different sizes
     uint32_t analysisStart;  // Declare for reuse
     
+    // Set keepout margins (areas not visible to user due to bezel/frame)
+    textPlacement.setKeepout(120);  // 120px margin on all sides (accounts for outline width)
+    
+    // Clear any previous exclusion zones (fresh start for this frame)
+    textPlacement.clearExclusionZones();
+    
+    // Get text dimensions for both time and date
+    // Adaptive sizing: try smaller sizes if keep-out areas block placement
     do {
         attempts++;
         
@@ -2670,6 +2672,8 @@ static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
     float authorFontSize = 64.0f;
     const float minQuoteFontSize = 56.0f;  // Doubled from 28
     const float minAuthorFontSize = 40.0f;  // Doubled from 20
+    const float minAcceptableScoreQuote = 0.25f;  // Threshold for "good enough" placement
+    const int maxAttemptsQuote = 5;  // Try up to 5 different sizes
     
     TextPlacementAnalyzer::QuoteLayoutResult quoteLayout;
     attempts = 0;
@@ -2690,9 +2694,9 @@ static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
                       quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
         
         // If score is good enough, we're done
-        if (quoteLayout.position.score >= minAcceptableScore) {
+        if (quoteLayout.position.score >= minAcceptableScoreQuote) {
             Serial.printf("  -> Acceptable quote placement found (score %.2f >= %.2f)\n", 
-                         quoteLayout.position.score, minAcceptableScore);
+                         quoteLayout.position.score, minAcceptableScoreQuote);
             break;
         }
         
@@ -2712,7 +2716,16 @@ static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
         Serial.printf("  -> Score too low, reducing font size to %.0f/%.0f\n", 
                      quoteFontSize, authorFontSize);
         
-    } while (attempts < maxAttempts);
+    } while (attempts < maxAttemptsQuote);
+    
+    // Draw the quote with author using the helper function
+    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
+                            quoteFontSize, authorFontSize,
+                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
+    
+    // Add quote as MAXIMALIST exclusion zone for any future text elements
+    // Use large padding to create maximalist rectangular keep-out area
+    textPlacement.addExclusionZone(quoteLayout.position, 200);
     
     Serial.printf("Quote placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
                   quoteFontSize, authorFontSize, quoteLayout.position.score, attempts);
@@ -2757,14 +2770,7 @@ static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
         Serial.printf("  Adjusted quote position to (%d,%d) to maintain minimum distance\n", newX, newY);
     }
     
-    // Draw the quote with author using the helper function
-    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
-                            quoteFontSize, authorFontSize,
-                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
-    
-    // Add quote as MAXIMALIST exclusion zone for any future text elements
-    // Use large padding to create maximalist rectangular keep-out area
-    textPlacement.addExclusionZone(quoteLayout.position, 200);
+    // Quote drawing and exclusion zone already handled above
 
     // Refresh display first (e-ink refresh takes 20-30 seconds)
     // Ensure reset + init happen before update
@@ -2794,8 +2800,11 @@ static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
     Serial.println("Updating display (e-ink refresh - non-blocking, will take 20-30s on panel)...");
     uint32_t refreshStart = millis();
     // Thumbnail publishing happens automatically in update() from the framebuffer
-    display.update();  // Now non-blocking - returns immediately
+    display.update();  // Uses mutex to ensure _sendBuffer() completes before returning
     Serial.println("Display update started (refresh happening on panel, ESP32 can continue)");
+    
+    // Save framebuffer to storage partition after display update
+    // safeDisplayUpdate() ensures _sendBuffer() has completed, so the buffer is safe to read
 
     // PRIORITY 3 OPTIMIZATION: Start WiFi/MQTT thumbnail publish on Core 1 in parallel with display refresh
     // This saves 4-9 seconds by doing network I/O (WiFi connect + MQTT connect + thumbnail publish) 
@@ -3669,11 +3678,24 @@ static String decryptAndValidateWebUIMessage(const String& jsonMessage) {
         }
         
         Serial.printf("  Decrypted message size: %d bytes (%.1f KB)\n", decryptedMessage.length(), decryptedMessage.length() / 1024.0f);
+    } else {
+        // New: Handle unencrypted messages with base64 payload
+        String base64Payload = extractJsonStringField(jsonMessage, "payload");
+        if (base64Payload.length() == 0) {
+            Serial.println("ERROR: Unencrypted message missing 'payload' field");
+            return "";
+        }
+        decryptedMessage = base64Decode(base64Payload);
+        if (decryptedMessage.length() == 0) {
+            Serial.println("ERROR: Failed to base64 decode unencrypted message");
+            return "";
+        }
+        Serial.printf("  Unencrypted message decoded: %d bytes (%.1f KB)\n", decryptedMessage.length(), decryptedMessage.length() / 1024.0f);
     }
     
     // Extract HMAC signature from JSON message (required for authentication)
-    // HMAC is computed on the encrypted message (if encrypted) or plain message (if not)
-    String messageForHMAC = isEncrypted ? jsonMessage : decryptedMessage;
+    // HMAC is computed on the message JSON structure (with or without iv field, depending on encrypted status)
+    String messageForHMAC = jsonMessage;
     String providedHMAC = extractJsonStringField(messageForHMAC, "hmac");
     int hmacPos = messageForHMAC.indexOf("\"hmac\"");  // Keep for HMAC removal logic below
     
@@ -3721,8 +3743,8 @@ static String decryptAndValidateWebUIMessage(const String& jsonMessage) {
     }
     Serial.println("HMAC validation successful - command authenticated");
     
-    // Return decrypted message for processing (if it was encrypted)
-    return isEncrypted ? decryptedMessage : jsonMessage;
+    // Return decoded/decrypted message for processing
+    return decryptedMessage;
 }
 
 // Canvas handler functions moved to canvas_handler.cpp/h module
@@ -3972,12 +3994,15 @@ bool handleOAICommand(const String& parameter) {
             Serial.flush();  // Ensure logs are flushed before blocking update
             
             uint32_t updateStart = millis();
-            display.update();
+            display.update();  // Uses mutex to ensure _sendBuffer() completes before returning
             uint32_t updateMs = millis() - updateStart;
             
             Serial.printf("Display update completed in %lu ms (%.1f seconds)\n", 
                          (unsigned long)updateMs, updateMs / 1000.0f);
             Serial.flush();  // Flush after update completes
+            
+            // Save framebuffer to storage partition after display update
+            // safeDisplayUpdate() ensures _sendBuffer() has completed, so the buffer is safe to read
             
             Serial.println("!oai command completed successfully");
             return true;
@@ -4044,6 +4069,7 @@ static void ota_server_task(void* arg) {
 static void serial_monitor_task(void* arg) {
     (void)arg;
     Serial.println("Serial monitor task started - press 'o' at any time to enter OTA mode");
+    Serial.println("  Press 'E' for encryption status, 'e' to toggle encryption");
     
     while (true) {
         if (Serial.available()) {
@@ -4051,6 +4077,23 @@ static void serial_monitor_task(void* arg) {
             if (ch == 'o' || ch == 'O') {
                 g_ota_requested = true;
                 Serial.println("\n>>> 'o' key detected - OTA mode will start at next safe moment <<<");
+            } else if (ch == 'E') {
+                // Show encryption status
+                bool enabled = isEncryptionEnabled();
+                Serial.printf("\n>>> Encryption status: %s <<<\n", enabled ? "ENABLED" : "DISABLED (HMAC only)");
+                Serial.println("  Messages will be " + String(enabled ? "encrypted" : "base64 encoded only"));
+                Serial.println("  HMAC authentication is always required");
+            } else if (ch == 'e') {
+                // Toggle encryption
+                bool current = isEncryptionEnabled();
+                bool newValue = !current;
+                if (setEncryptionEnabled(newValue)) {
+                    Serial.printf("\n>>> Encryption %s <<<\n", newValue ? "ENABLED" : "DISABLED");
+                    Serial.println("  New messages will be " + String(newValue ? "encrypted" : "base64 encoded only"));
+                    Serial.println("  HMAC authentication is always required");
+                } else {
+                    Serial.println("\n>>> ERROR: Failed to change encryption setting <<<");
+                }
             }
             // Drain any remaining characters to prevent buffer buildup
             while (Serial.available()) {
@@ -5131,8 +5174,11 @@ bool handleClearCommand() {
     
     // Update the display (this takes ~20-30 seconds)
     Serial.println("Updating display (this will take 20-30 seconds)...");
-    display.update();
+    display.update();  // Uses mutex to ensure _sendBuffer() completes before returning
     Serial.println("Display cleared and updated");
+    
+    // Save framebuffer to storage partition after display update
+    // safeDisplayUpdate() ensures _sendBuffer() has completed, so the buffer is safe to read
     
     return true;  // Command handled successfully
 }
@@ -5281,16 +5327,17 @@ static void show_media_task(void* parameter) {
                         }
                         
                         // Set keepout margins and clear exclusion zones
-                        textPlacement.setKeepout(100);
-                        textPlacement.clearExclusionZones();
-                        
-                        // Draw time/date overlay
+                        TextPlacementRegion bestPos;
                         float timeFontSize = 160.0f;
                         float dateFontSize = 48.0f;
                         const int16_t gapBetween = 20;
                         const int16_t timeOutline = 3;
                         const int16_t dateOutline = 2;
                         
+                        textPlacement.setKeepout(100);
+                        textPlacement.clearExclusionZones();
+                        
+                        // Draw time/date overlay
                         int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
                         int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
                         int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
@@ -5299,7 +5346,7 @@ static void show_media_task(void* parameter) {
                         int16_t blockW = max(timeW, dateW);
                         int16_t blockH = timeH + gapBetween + dateH;
                         
-                        TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
+                        bestPos = textPlacement.scanForBestPosition(
                             &display, blockW, blockH,
                             EL133UF1_WHITE, EL133UF1_BLACK);
                         
@@ -6921,8 +6968,12 @@ bool handleManageCommand() {
             Serial.println();
             
             // Update display
-            display.update();
+            display.update();  // Uses mutex to ensure _sendBuffer() completes before returning
             Serial.println("Canvas display: Success!");
+            
+            // Save framebuffer to storage partition after display update
+            // safeDisplayUpdate() ensures _sendBuffer() has completed, so the buffer is safe to read
+            
             *(data->success) = true;
             
             free(data->pixels);
@@ -10005,10 +10056,14 @@ void bmpLoadRandom(const char* dirname = "/") {
     // Update display
     Serial.println("Updating display (20-30s for e-ink refresh)...");
     uint32_t refreshStart = millis();
-    display.update();
+    display.update();  // Uses mutex to ensure _sendBuffer() completes before returning
     uint32_t refreshTime = millis() - refreshStart;
     
     Serial.printf("Display refresh: %lu ms\n", refreshTime);
+    
+    // Save framebuffer to storage partition after display update
+    // safeDisplayUpdate() ensures _sendBuffer() has completed, so the buffer is safe to read
+    
     Serial.printf("Total time: %lu ms (%.1f s)\n", 
                   millis() - totalStart, (millis() - totalStart) / 1000.0);
     Serial.println("Done!");
@@ -10366,6 +10421,8 @@ void pngLoadRandom(const char* dirname = "/") {
     display.update();
     uint32_t refreshTime = millis() - refreshStart;
     Serial.printf("Display refresh: %lu ms\n", refreshTime);
+
+    // Save framebuffer to storage partition after display update
 
     Serial.printf("Total time: %lu ms (%.1f s)\n",
                   millis() - totalStart, (millis() - totalStart) / 1000.0);
@@ -10855,6 +10912,9 @@ void setup() {
         logPrintf("\n=== Boot: %lu ms ===\n", (unsigned long)millis());
         logPrintf("SD card already mounted\n");
     }
+    
+    // Initialize storage partition for framebuffer persistence
+    // Storage initialization removed - not available in this branch
 
     // Load volume setting from NVS early (before any audio initialization)
     volumeLoadFromNVS();
@@ -10870,6 +10930,9 @@ void setup() {
     
     // Load media index from NVS
     mediaIndexLoadFromNVS();
+    
+    // Initialize text placement mutex (protects textPlacement analyzer from concurrent access)
+    // Text placement mutex removed - not available in this branch
     
     // Initialize Core 1 worker task for thumbnail generation and MQTT message building
     initMqttWorkerTask();
@@ -10894,7 +10957,7 @@ void setup() {
     // Start serial monitor task for continuous OTA monitoring (runs on Core 1)
     // This task monitors serial input and sets g_ota_requested flag when 'o' is pressed
     if (g_serial_monitor_task == nullptr) {
-        xTaskCreatePinnedToCore(serial_monitor_task, "serial_mon", 2048, nullptr, 1, &g_serial_monitor_task, 1);
+        xTaskCreatePinnedToCore(serial_monitor_task, "serial_mon", 4096, nullptr, 1, &g_serial_monitor_task, 1);
         delay(100);  // Allow task to start
     }
     

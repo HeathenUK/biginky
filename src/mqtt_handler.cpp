@@ -1541,6 +1541,40 @@ void publishMQTTMediaMappings(bool waitForCompletion) {
     }
 }
 
+// Helper function to escape JSON string (for filenames, etc.)
+static void escapeJsonString(const char* input, char* output, size_t outputSize) {
+    size_t inPos = 0;
+    size_t outPos = 0;
+    while (input[inPos] != '\0' && outPos < outputSize - 1) {
+        char c = input[inPos];
+        if (c == '\\') {
+            if (outPos + 2 < outputSize - 1) {
+                output[outPos++] = '\\';
+                output[outPos++] = '\\';
+            } else break;
+        } else if (c == '"') {
+            if (outPos + 2 < outputSize - 1) {
+                output[outPos++] = '\\';
+                output[outPos++] = '"';
+            } else break;
+        } else if (c == '\n') {
+            if (outPos + 2 < outputSize - 1) {
+                output[outPos++] = '\\';
+                output[outPos++] = 'n';
+            } else break;
+        } else if (c == '\r') {
+            if (outPos + 2 < outputSize - 1) {
+                output[outPos++] = '\\';
+                output[outPos++] = 'r';
+            } else break;
+        } else {
+            output[outPos++] = c;
+        }
+        inPos++;
+    }
+    output[outPos] = '\0';
+}
+
 // Internal implementation (actual work, runs on Core 1)
 static void publishMQTTMediaMappingsInternalImpl() {
     if (mqttClient == nullptr || !mqttConnected) {
@@ -1634,7 +1668,12 @@ static void publishMQTTMediaMappingsInternalImpl() {
     
     #define APPEND_FMT(fmt, ...) do { \
         int written = snprintf(jsonBuffer + jsonPos, bufferSize - jsonPos, fmt, ##__VA_ARGS__); \
-        if (written < 0 || jsonPos + written >= bufferSize - 1) { \
+        if (written < 0) { \
+            Serial.printf("[Core 1] ERROR: snprintf failed (pos=%zu, buffer size: %zu)\n", jsonPos, bufferSize); \
+            hal_psram_free(jsonBuffer); \
+            return; \
+        } \
+        if (jsonPos + written >= bufferSize - 1) { \
             Serial.printf("[Core 1] ERROR: JSON buffer overflow (pos=%zu, written=%d, buffer size: %zu)\n", jsonPos, written, bufferSize); \
             hal_psram_free(jsonBuffer); \
             return; \
@@ -1678,8 +1717,47 @@ static void publishMQTTMediaMappingsInternalImpl() {
     
     Serial.printf("[Core 1] Built JSON: %zu bytes (buffer: %zu bytes)\n", jsonPos, bufferSize);
     
-    String jsonStr = String(jsonBuffer);
+    // Verify JSON is null-terminated and complete
+    if (jsonPos >= bufferSize) {
+        Serial.println("[Core 1] ERROR: JSON buffer is full, may be truncated");
+        hal_psram_free(jsonBuffer);
+        return;
+    }
+    jsonBuffer[jsonPos] = '\0'; // Ensure null termination
+    
+    // Verify JSON ends correctly (should end with ]})
+    if (jsonPos < 2 || jsonBuffer[jsonPos-2] != ']' || jsonBuffer[jsonPos-1] != '}') {
+        Serial.printf("[Core 1] ERROR: JSON does not end correctly (last 10 chars: %.10s)\n", jsonBuffer + (jsonPos > 10 ? jsonPos - 10 : 0));
+        hal_psram_free(jsonBuffer);
+        return;
+    }
+    
+    // Check if we used most of the buffer (warn if >95% full)
+    if (jsonPos > (bufferSize * 95 / 100)) {
+        Serial.printf("[Core 1] WARNING: JSON used %zu%% of buffer (%zu/%zu bytes) - size calculation may be too tight\n", 
+                     (jsonPos * 100 / bufferSize), jsonPos, bufferSize);
+    }
+    
+    // Convert to String (ESP32 String uses dynamic allocation, should handle large strings)
+    // Create String from buffer - this will copy the data
+    String jsonStr;
+    jsonStr.reserve(jsonPos + 1); // Pre-allocate to avoid reallocations
+    jsonStr = jsonBuffer; // This copies the data
+    
     hal_psram_free(jsonBuffer);
+    
+    // Verify String conversion succeeded (check length matches)
+    if (jsonStr.length() != jsonPos) {
+        Serial.printf("[Core 1] ERROR: String conversion length mismatch - expected %zu bytes, got %d\n", jsonPos, jsonStr.length());
+        return;
+    }
+    
+    // Verify first and last few characters match what we expect
+    if (jsonStr.charAt(0) != '{' || jsonStr.charAt(jsonStr.length() - 1) != '}') {
+        Serial.printf("[Core 1] ERROR: String conversion corrupted JSON - first char: 0x%02x, last char: 0x%02x\n", 
+                     jsonStr.charAt(0), jsonStr.charAt(jsonStr.length() - 1));
+        return;
+    }
     
     String encryptedJson = encryptAndFormatMessage(jsonStr);
     if (encryptedJson.length() == 0) {

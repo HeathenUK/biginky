@@ -109,9 +109,22 @@ void publishMQTTThumbnail();
 void publishMQTTThumbnailIfConnected();
 
 /**
- * Publish media.txt mappings with thumbnails to MQTT
+ * Publish media.txt mappings with thumbnails to MQTT (backward compatibility - async)
  */
 void publishMQTTMediaMappings();
+
+/**
+ * Publish media.txt mappings with thumbnails to MQTT
+ * This function queues the work to Core 1 and returns immediately (async)
+ * @param waitForCompletion If true, wait for completion before returning (default: false)
+ */
+void publishMQTTMediaMappings(bool waitForCompletion);
+
+/**
+ * Initialize Core 1 task for thumbnail generation and MQTT message building
+ * Should be called once at startup
+ */
+void initMqttWorkerTask();
 
 /**
  * Get MQTT client handle (for external use)

@@ -19,6 +19,8 @@
 #include "ff.h"  // FatFs
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 // MQTT configuration - hardcoded
 #define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"
@@ -50,6 +52,22 @@ static char mqttTopicThumb[128] = MQTT_TOPIC_THUMB;
 static char mqttTopicMedia[128] = MQTT_TOPIC_MEDIA;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
+
+// Core 1 worker task for thumbnail generation and MQTT message building
+enum MqttWorkType {
+    MQTT_WORK_THUMBNAIL,
+    MQTT_WORK_MEDIA_MAPPINGS
+};
+
+struct MqttWorkRequest {
+    MqttWorkType type;
+    SemaphoreHandle_t completionSem;  // Optional: if not null, signal when done
+    bool* success;  // Optional: set result here
+};
+
+static QueueHandle_t mqttWorkQueue = nullptr;
+static TaskHandle_t mqttWorkerTaskHandle = nullptr;
+static bool mqttWorkerTaskInitialized = false;
 static uint8_t* mqttMessageBuffer = nullptr;
 static size_t mqttMessageBufferSize = 0;
 static size_t mqttMessageBufferTotalLen = 0;
@@ -844,13 +862,10 @@ bool publishPreparedStatus() {
     }
 }
 
-void publishMQTTThumbnail() {
-    if (mqttClient == nullptr || !mqttConnected) {
-        return;
-    }
-    
+// Internal implementation of thumbnail generation (runs on Core 1)
+static void publishMQTTThumbnailInternalImpl() {
     if (display.getBuffer() == nullptr) {
-        Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
+        Serial.println("[Core 1] WARNING: Display buffer is nullptr, cannot generate thumbnail");
         return;
     }
     
@@ -1109,15 +1124,48 @@ void publishMQTTThumbnail() {
     written = encryptedLen;
 #endif
     
-    Serial.printf("Publishing encrypted thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
+    Serial.printf("[Core 1] Publishing encrypted thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+        Serial.printf("[Core 1] Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     } else {
-        Serial.printf("Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+        Serial.printf("[Core 1] Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     }
     
     free(jsonBuffer);
+}
+
+// Public function - queues work to Core 1 worker task
+void publishMQTTThumbnail() {
+    if (mqttClient == nullptr || !mqttConnected) {
+        return;
+    }
+    
+    // Initialize worker task if not already done
+    if (!mqttWorkerTaskInitialized) {
+        initMqttWorkerTask();
+    }
+    
+    if (mqttWorkQueue == nullptr) {
+        Serial.println("WARNING: MQTT work queue not initialized, falling back to synchronous");
+        publishMQTTThumbnailInternalImpl();
+        return;
+    }
+    
+    // Create work request
+    MqttWorkRequest request;
+    request.type = MQTT_WORK_THUMBNAIL;
+    request.success = nullptr;
+    request.completionSem = nullptr;  // Fire and forget for thumbnails
+    
+    // Queue work request (non-blocking)
+    if (xQueueSend(mqttWorkQueue, &request, 0) != pdTRUE) {
+        Serial.println("WARNING: MQTT work queue full, falling back to synchronous");
+        publishMQTTThumbnailInternalImpl();
+        return;
+    }
+    
+    Serial.println("Queued thumbnail generation to Core 1 worker task");
 }
 
 void publishMQTTThumbnailIfConnected() {
@@ -1134,22 +1182,169 @@ void publishMQTTThumbnailIfConnected() {
     }
 }
 
+// Core 1 worker task - handles thumbnail generation and MQTT message building
+static void mqttWorkerTask(void* param) {
+    Serial.println("[Core 1] MQTT worker task started");
+    
+    MqttWorkRequest request;
+    while (true) {
+        // Wait for work request (blocking)
+        if (xQueueReceive(mqttWorkQueue, &request, portMAX_DELAY) == pdTRUE) {
+            bool workSuccess = false;
+            
+            if (request.type == MQTT_WORK_THUMBNAIL) {
+                Serial.println("[Core 1] Processing thumbnail generation work...");
+                // Generate thumbnail and publish (this is CPU-intensive)
+                if (mqttClient != nullptr && mqttConnected) {
+                    // Call the actual thumbnail generation function (runs on Core 1)
+                    publishMQTTThumbnailInternal();
+                    workSuccess = true;
+                } else {
+                    Serial.println("[Core 1] MQTT not connected, skipping thumbnail publish");
+                }
+            } else if (request.type == MQTT_WORK_MEDIA_MAPPINGS) {
+                Serial.println("[Core 1] Processing media mappings generation work...");
+                // Generate media mappings and publish (this is CPU-intensive)
+                if (mqttClient != nullptr && mqttConnected) {
+                    // Call the actual media mappings generation function (runs on Core 1)
+                    publishMQTTMediaMappingsInternal();
+                    workSuccess = true;
+                } else {
+                    Serial.println("[Core 1] MQTT not connected, skipping media mappings publish");
+                }
+            }
+            
+            // Signal completion if semaphore provided
+            if (request.completionSem != nullptr) {
+                if (request.success != nullptr) {
+                    *(request.success) = workSuccess;
+                }
+                xSemaphoreGive(request.completionSem);
+            }
+        }
+    }
+}
+
+// Internal implementation of thumbnail publish (runs on Core 1)
+static void publishMQTTThumbnailInternal() {
+    // This is the actual thumbnail generation code (moved from publishMQTTThumbnail)
+    // We'll refactor publishMQTTThumbnail to call this via queue
+    publishMQTTThumbnail();  // For now, just call the existing function
+}
+
+// Internal implementation of media mappings publish (runs on Core 1)
+static void publishMQTTMediaMappingsInternal() {
+    // This is the actual media mappings generation code (moved from publishMQTTMediaMappings)
+    // We'll refactor publishMQTTMediaMappings to call this via queue
+    publishMQTTMediaMappingsInternalImpl();
+}
+
+// Initialize Core 1 worker task
+void initMqttWorkerTask() {
+    if (mqttWorkerTaskInitialized) {
+        return;  // Already initialized
+    }
+    
+    // Create work queue
+    mqttWorkQueue = xQueueCreate(5, sizeof(MqttWorkRequest));
+    if (mqttWorkQueue == nullptr) {
+        Serial.println("ERROR: Failed to create MQTT work queue");
+        return;
+    }
+    
+    // Create worker task on Core 1
+    xTaskCreatePinnedToCore(
+        mqttWorkerTask,
+        "mqtt_worker",
+        16384,  // 16KB stack (needed for thumbnail generation and JSON building)
+        nullptr,
+        5,  // Priority 5 (same as MQTT task)
+        &mqttWorkerTaskHandle,
+        1  // Core 1
+    );
+    
+    if (mqttWorkerTaskHandle == nullptr) {
+        Serial.println("ERROR: Failed to create MQTT worker task");
+        vQueueDelete(mqttWorkQueue);
+        mqttWorkQueue = nullptr;
+        return;
+    }
+    
+    mqttWorkerTaskInitialized = true;
+    Serial.println("[Core 1] MQTT worker task initialized");
+}
+
+void publishMQTTMediaMappings(bool waitForCompletion) {
+    // Initialize worker task if not already done
+    if (!mqttWorkerTaskInitialized) {
+        initMqttWorkerTask();
+    }
+    
+    if (mqttWorkQueue == nullptr) {
+        Serial.println("ERROR: MQTT work queue not initialized, falling back to synchronous");
+        publishMQTTMediaMappingsInternalImpl();
+        return;
+    }
+    
+    // Create work request
+    MqttWorkRequest request;
+    request.type = MQTT_WORK_MEDIA_MAPPINGS;
+    request.success = nullptr;
+    request.completionSem = nullptr;
+    
+    SemaphoreHandle_t completionSem = nullptr;
+    bool success = false;
+    
+    if (waitForCompletion) {
+        completionSem = xSemaphoreCreateBinary();
+        if (completionSem != nullptr) {
+            request.completionSem = completionSem;
+            request.success = &success;
+        }
+    }
+    
+    // Queue work request
+    if (xQueueSend(mqttWorkQueue, &request, 0) != pdTRUE) {
+        Serial.println("WARNING: MQTT work queue full, falling back to synchronous");
+        if (completionSem != nullptr) {
+            vSemaphoreDelete(completionSem);
+        }
+        publishMQTTMediaMappingsInternalImpl();
+        return;
+    }
+    
+    Serial.println("Queued media mappings generation to Core 1 worker task");
+    
+    // Wait for completion if requested
+    if (waitForCompletion && completionSem != nullptr) {
+        xSemaphoreTake(completionSem, portMAX_DELAY);
+        vSemaphoreDelete(completionSem);
+        Serial.printf("Media mappings generation completed (success: %s)\n", success ? "yes" : "no");
+    }
+}
+
+// Backward compatibility wrapper (no parameters)
 void publishMQTTMediaMappings() {
+    publishMQTTMediaMappings(false);  // Async by default
+}
+
+// Internal implementation (actual work, runs on Core 1)
+static void publishMQTTMediaMappingsInternalImpl() {
     if (mqttClient == nullptr || !mqttConnected) {
-        Serial.println("ERROR: MQTT not connected, cannot publish media mappings");
+        Serial.println("[Core 1] ERROR: MQTT not connected, cannot publish media mappings");
         return;
     }
     
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
-        Serial.println("Media mappings not loaded yet - loading from SD card now...");
+        Serial.println("[Core 1] Media mappings not loaded yet - loading from SD card now...");
         loadMediaMappingsFromSD(false);
         if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
-            Serial.println("WARNING: No media mappings found on SD card, cannot publish media mappings");
+            Serial.println("[Core 1] WARNING: No media mappings found on SD card, cannot publish media mappings");
             return;
         }
     }
     
-    Serial.printf("Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
+    Serial.printf("[Core 1] Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
     
     String jsonStr = "{\"mappings\":[";
     
@@ -1160,11 +1355,11 @@ void publishMQTTMediaMappings() {
         
         const MediaMapping& mm = g_media_mappings[i];
         
-        Serial.printf("Generating thumbnail for [%zu] %s...\n", i, mm.imageName.c_str());
+        Serial.printf("[Core 1] Generating thumbnail for [%zu] %s...\n", i, mm.imageName.c_str());
         String thumbnailBase64 = generateThumbnailFromImageFile(mm.imageName);
         
         if (thumbnailBase64.length() == 0) {
-            Serial.printf("WARNING: Failed to generate thumbnail for %s, skipping\n", mm.imageName.c_str());
+            Serial.printf("[Core 1] WARNING: Failed to generate thumbnail for %s, skipping\n", mm.imageName.c_str());
         }
         
         jsonStr += "{\"index\":";
@@ -1187,13 +1382,13 @@ void publishMQTTMediaMappings() {
         
         jsonStr += "}";
         
-        Serial.printf("Completed [%zu] %s (thumbnail: %d bytes base64)\n", i, mm.imageName.c_str(), thumbnailBase64.length());
+        Serial.printf("[Core 1] Completed [%zu] %s (thumbnail: %d bytes base64)\n", i, mm.imageName.c_str(), thumbnailBase64.length());
     }
     
     // Add allImages array - list ALL image files on SD card (not just those in mappings)
-    Serial.println("Listing all image files from SD card for allImages array...");
+    Serial.println("[Core 1] Listing all image files from SD card for allImages array...");
     std::vector<String> allImages = listImageFilesVector();
-    Serial.printf("Found %zu image files on SD card\n", allImages.size());
+    Serial.printf("[Core 1] Found %zu image files on SD card\n", allImages.size());
     
     jsonStr += ",\"allImages\":[";
     for (size_t i = 0; i < allImages.size(); i++) {
@@ -1206,22 +1401,31 @@ void publishMQTTMediaMappings() {
     
     String encryptedJson = encryptAndFormatMessage(jsonStr);
     if (encryptedJson.length() == 0) {
-        Serial.println("ERROR: Failed to encrypt media mappings - publishing without encryption");
+        Serial.println("[Core 1] ERROR: Failed to encrypt media mappings - publishing without encryption");
         return;
     }
     
     size_t encryptedLen = encryptedJson.length();
     char* jsonBuffer = (char*)malloc(encryptedLen + 1);
     if (!jsonBuffer) {
-        Serial.println("ERROR: Failed to allocate memory for encrypted media mappings JSON");
+        Serial.println("[Core 1] ERROR: Failed to allocate memory for encrypted media mappings JSON");
         return;
     }
     
     strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
     jsonBuffer[encryptedLen] = '\0';
     
-    Serial.printf("Publishing encrypted media mappings JSON (%d bytes) to %s...\n", encryptedLen, mqttTopicMedia);
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, jsonBuffer, encryptedLen, 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("[Core 1] Published media mappings to %s (msg_id: %d, size: %zu bytes)\n", 
+                     mqttTopicMedia, msg_id, encryptedLen);
+    } else {
+        Serial.printf("[Core 1] Failed to publish media mappings (msg_id: %d)\n", msg_id);
+    }
+    
+    free(jsonBuffer);
+    Serial.println("[Core 1] Media mappings publish complete");
+}
     if (msg_id > 0) {
         Serial.printf("Published media mappings to %s (msg_id: %d)\n", mqttTopicMedia, msg_id);
     } else {

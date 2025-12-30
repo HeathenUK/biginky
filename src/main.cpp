@@ -11351,6 +11351,9 @@ void setup() {
     // Load media index from NVS
     mediaIndexLoadFromNVS();
     
+    // Initialize Core 1 worker task for thumbnail generation and MQTT message building
+    initMqttWorkerTask();
+    
     // Check and require web UI password setup (for GitHub Pages UI)
     requireWebUIPasswordSetup();
 

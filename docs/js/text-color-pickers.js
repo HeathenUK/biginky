@@ -24,11 +24,6 @@ function initTextColorPickers() {
     const textOutlineColorPalette = document.getElementById('textOutlineColorPalette');
     const textOutlineColorHidden = document.getElementById('textOutlineColor');
     
-    // Debug: Check if elements are found
-    if (!textColorBtn || !textColorPalette || !textColorHidden) {
-        console.warn('Text color picker elements not found:', {textColorBtn: !!textColorBtn, textColorPalette: !!textColorPalette, textColorHidden: !!textColorHidden});
-    }
-    
     // Text Color picker
     if (textColorBtn && textColorPalette && textColorHidden) {
         textColorBtn.addEventListener('click', (e) => {

@@ -24,11 +24,15 @@ function initTextColorPickers() {
     const textOutlineColorPalette = document.getElementById('textOutlineColorPalette');
     const textOutlineColorHidden = document.getElementById('textOutlineColor');
     
+    // Debug: Check if elements are found
+    if (!textColorBtn || !textColorPalette || !textColorHidden) {
+        console.warn('Text color picker elements not found:', {textColorBtn: !!textColorBtn, textColorPalette: !!textColorPalette, textColorHidden: !!textColorHidden});
+    }
+    
     // Text Color picker
     if (textColorBtn && textColorPalette && textColorHidden) {
         textColorBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            e.preventDefault();
             const isVisible = textColorPalette.style.display !== 'none';
             // Close other palettes if open
             if (textBackgroundColorPalette) textBackgroundColorPalette.style.display = 'none';
@@ -40,7 +44,6 @@ function initTextColorPickers() {
         document.querySelectorAll('#textColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                e.preventDefault();
                 const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
                 if (colorValue) {
                     setTextColor(colorValue);
@@ -56,7 +59,6 @@ function initTextColorPickers() {
     if (textBackgroundColorBtn && textBackgroundColorPalette && textBackgroundColorHidden) {
         textBackgroundColorBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            e.preventDefault();
             const isVisible = textBackgroundColorPalette.style.display !== 'none';
             // Close other palettes if open
             if (textColorPalette) textColorPalette.style.display = 'none';
@@ -68,7 +70,6 @@ function initTextColorPickers() {
         document.querySelectorAll('#textBackgroundColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                e.preventDefault();
                 const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
                 if (colorValue) {
                     setTextBackgroundColor(colorValue);
@@ -84,7 +85,6 @@ function initTextColorPickers() {
     if (textOutlineColorBtn && textOutlineColorPalette && textOutlineColorHidden) {
         textOutlineColorBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            e.preventDefault();
             const isVisible = textOutlineColorPalette.style.display !== 'none';
             // Close other palettes if open
             if (textColorPalette) textColorPalette.style.display = 'none';
@@ -96,7 +96,6 @@ function initTextColorPickers() {
         document.querySelectorAll('#textOutlineColorPalette .palette-color-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                e.preventDefault();
                 const colorValue = e.target.dataset.color || e.target.closest('.palette-color-btn')?.dataset.color;
                 if (colorValue) {
                     setTextOutlineColor(colorValue);

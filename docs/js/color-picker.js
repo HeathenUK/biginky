@@ -95,21 +95,28 @@ function createColorPicker(config) {
             palette.style.display = 'flex';
             // Force positioning styles to be set
             palette.style.position = 'absolute';
-            palette.style.top = '100%';
             palette.style.left = '0';
             palette.style.zIndex = '1000';
             
-            // Debug: log computed styles
-            const rect = palette.getBoundingClientRect();
-            console.log(`Color picker ${buttonId} shown - palette rect:`, {
-                display: palette.style.display,
-                position: palette.style.position,
-                top: palette.style.top,
-                left: palette.style.left,
-                zIndex: palette.style.zIndex,
-                boundingRect: { width: rect.width, height: rect.height, top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right },
-                parentRect: palette.parentElement ? palette.parentElement.getBoundingClientRect() : null
-            });
+            // Check if there's enough space below the button, if not position above
+            const buttonRect = button.getBoundingClientRect();
+            const paletteHeight = 120; // Approximate palette height
+            const spaceBelow = window.innerHeight - buttonRect.bottom;
+            const spaceAbove = buttonRect.top;
+            
+            if (spaceBelow < paletteHeight && spaceAbove > spaceBelow) {
+                // Position above the button
+                palette.style.top = 'auto';
+                palette.style.bottom = '100%';
+                palette.style.marginTop = '0';
+                palette.style.marginBottom = '4px';
+            } else {
+                // Position below the button (default)
+                palette.style.top = '100%';
+                palette.style.bottom = 'auto';
+                palette.style.marginTop = '4px';
+                palette.style.marginBottom = '0';
+            }
         } else {
             palette.style.display = 'none';
         }

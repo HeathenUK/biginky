@@ -557,12 +557,27 @@ async function handleMediaMessage(message) {
                 decrypted = await decryptMessage(payload.payload, payload.iv);
             } catch (decryptError) {
                 console.error('Failed to decrypt media mappings message:', decryptError);
+                // If this is a retained message and decryption fails, it may have been encrypted
+                // with a different key/method. Since new messages work, we'll just skip this one.
+                if (message.retained) {
+                    console.warn('Skipping retained media mappings message that failed to decrypt - will wait for new message');
+                    console.warn('This usually means the retained message was encrypted with a different key/method');
+                    console.warn('New media mappings will work fine - device will publish fresh mappings on next cycle');
+                    document.getElementById('mediaMappingsStatus').textContent = 'Waiting for new media mappings... (retained message encrypted with different key)';
+                    return;
+                }
                 document.getElementById('mediaMappingsStatus').textContent = 'Error: Failed to decrypt media mappings. Password may be incorrect or message corrupted.';
                 return;
             }
             
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
+                // If this is a retained message and decryption fails, skip it
+                if (message.retained) {
+                    console.warn('Skipping retained media mappings message that failed to decrypt (empty result) - will wait for new message');
+                    document.getElementById('mediaMappingsStatus').textContent = 'Waiting for new media mappings... (retained message encrypted with different key)';
+                    return;
+                }
                 document.getElementById('mediaMappingsStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
                 return;
             }

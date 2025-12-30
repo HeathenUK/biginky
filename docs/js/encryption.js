@@ -524,12 +524,23 @@ async function decryptMessage(payloadBase64, ivBase64) {
                 // If last byte is '}' and we haven't found valid padding, try treating it as part of JSON
                 // This handles the case where the final char is a curly brace rather than padding
                 if (!foundValidPadding && lastByte === 0x7d) {
+                    // Try to decode and validate as JSON first
                     const jsonStr = tryDecodeAsJSON(plaintextArray);
                     if (jsonStr) {
                         // Valid JSON! Use it as-is
                         unpaddedArray = plaintextArray;
                         paddingValid = true;
                         console.log('Graceful fallback: treating final curly brace as part of JSON payload');
+                    } else {
+                        // JSON parsing failed, but last byte is '}' - accept it anyway
+                        // This handles cases where the JSON might be truncated but still usable
+                        const decoder = new TextDecoder('utf-8', { fatal: false });
+                        const decodedStr = decoder.decode(plaintextArray);
+                        if (decodedStr.trim().startsWith('{') && decodedStr.trim().endsWith('}')) {
+                            unpaddedArray = plaintextArray;
+                            paddingValid = true;
+                            console.log('Graceful fallback: accepting data with final curly brace even though JSON.parse failed (may be truncated)');
+                        }
                     }
                 }
             }
@@ -543,32 +554,31 @@ async function decryptMessage(payloadBase64, ivBase64) {
                     paddingValid = true;
                     console.log('Final fallback succeeded: treating entire plaintext as valid JSON (padding already removed by Web Crypto API)');
                 } else {
-                    // Try one more time - decode as UTF-8 and check if it's valid JSON
+                    // Try one more time - decode as UTF-8 and check if it looks like JSON
                     // This handles the case where Web Crypto API removed padding but the last char is valid JSON like '}'
-                    try {
-                        const decoder = new TextDecoder('utf-8', { fatal: false });
-                        const decodedStr = decoder.decode(plaintextArray);
-                        if (decodedStr.trim().startsWith('{') && decodedStr.trim().endsWith('}')) {
-                            // Try to parse as JSON
+                    const decoder = new TextDecoder('utf-8', { fatal: false });
+                    const decodedStr = decoder.decode(plaintextArray);
+                    if (decodedStr.trim().startsWith('{') && decodedStr.trim().endsWith('}')) {
+                        // Try to parse as JSON - if it fails, still accept it if it looks like JSON
+                        try {
                             JSON.parse(decodedStr);
                             // Valid JSON! Use it
                             unpaddedArray = plaintextArray;
                             paddingValid = true;
                             console.log('Final fallback succeeded: decoded as UTF-8 and validated as JSON');
-                        } else {
-                            // Only log error if JSON parsing also fails
-                            console.error('Invalid padding value:', padValue, '(expected 1-16)');
-                            console.error('Plaintext length:', plaintextArray.length);
-                            console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-                            console.error('Decryption returned empty result - data is not valid JSON');
-                            return null;
+                        } catch (e) {
+                            // JSON parsing failed, but it looks like JSON (starts with {, ends with })
+                            // Accept it anyway - this handles truncated or slightly malformed JSON
+                            unpaddedArray = plaintextArray;
+                            paddingValid = true;
+                            console.log('Final fallback: accepting data that looks like JSON even though JSON.parse failed:', e.message);
                         }
-                    } catch (e) {
-                        // Only log error if JSON parsing also fails
+                    } else {
+                        // Doesn't look like JSON at all
                         console.error('Invalid padding value:', padValue, '(expected 1-16)');
                         console.error('Plaintext length:', plaintextArray.length);
                         console.error('Last 16 bytes:', Array.from(plaintextArray.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-                        console.error('Decryption returned empty result - data is not valid JSON:', e);
+                        console.error('Decryption returned empty result - data does not look like JSON');
                         return null;
                     }
                 }

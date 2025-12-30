@@ -16,9 +16,7 @@ extern bool handleShowCommand(const String& parameter);
 extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = 0, const String& backgroundImage = "");
 extern bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = 0);
 extern bool handleListNumbersCommand(const String& originalMessage = "");
-extern bool handleCanvasDisplayCommand(const String& messageToProcess);
-extern bool handleCanvasDisplaySaveCommand(const String& messageToProcess);
-extern bool handleCanvasSaveCommand(const String& messageToProcess);
+#include "canvas_handler.h"  // Canvas command handlers
 extern bool handlePingCommand(const String& originalMessage);
 extern bool handleIpCommand(const String& originalMessage);
 extern bool handleVolumeCommand(const String& parameter);

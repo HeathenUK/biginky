@@ -36,10 +36,7 @@ function getDrawColorValue() {
 
 function setDrawColor(colorValue) {
     currentDrawColor = colorValue;
-    const select = document.getElementById('drawColor');
-    if (select) {
-        select.value = colorValue;
-    }
+    // Hidden input is updated by color picker component
 }
 
 function getFillColor() {
@@ -56,10 +53,7 @@ function getFillColorValue() {
 
 function setFillColor(colorValue) {
     currentFillColor = colorValue;
-    const select = document.getElementById('fillColor');
-    if (select) {
-        select.value = colorValue;
-    }
+    // Hidden input is updated by color picker component
 }
 
 function getOutlineColor() {
@@ -76,10 +70,7 @@ function getOutlineColorValue() {
 
 function setOutlineColor(colorValue) {
     currentOutlineColor = colorValue;
-    const select = document.getElementById('outlineColor');
-    if (select) {
-        select.value = colorValue;
-    }
+    // Hidden input is updated by color picker component
 }
 
 function getBrushSize() {
@@ -1043,7 +1034,46 @@ function initializeCanvas() {
         });
     }
     
-    // Initialize default colors (dropdowns will have defaults from HTML)
+    // Set up unified color pickers for canvas
+    if (typeof createColorPicker === 'function') {
+        createColorPicker({
+            buttonId: 'drawColorBtn',
+            paletteId: 'drawColorPalette',
+            hiddenInputId: 'drawColor',
+            indicatorId: 'drawColorIndicator',
+            labelId: 'drawColorLabel',
+            colorType: 'numeric',
+            defaultValue: '1',
+            onChange: (colorValue) => setDrawColor(colorValue),
+            closeOtherPickers: ['fillColorPalette', 'outlineColorPalette']
+        });
+        
+        createColorPicker({
+            buttonId: 'fillColorBtn',
+            paletteId: 'fillColorPalette',
+            hiddenInputId: 'fillColor',
+            indicatorId: 'fillColorIndicator',
+            labelId: 'fillColorLabel',
+            colorType: 'numeric',
+            colors: ['transparent', '0', '2', '3', '5', '6', '1'],
+            defaultValue: '1',
+            onChange: (colorValue) => setFillColor(colorValue),
+            closeOtherPickers: ['drawColorPalette', 'outlineColorPalette']
+        });
+        
+        createColorPicker({
+            buttonId: 'outlineColorBtn',
+            paletteId: 'outlineColorPalette',
+            hiddenInputId: 'outlineColor',
+            indicatorId: 'outlineColorIndicator',
+            labelId: 'outlineColorLabel',
+            colorType: 'numeric',
+            colors: ['transparent', '0', '2', '3', '5', '6', '1'],
+            defaultValue: '0',
+            onChange: (colorValue) => setOutlineColor(colorValue),
+            closeOtherPickers: ['drawColorPalette', 'fillColorPalette']
+        });
+    }
 }
 
 if (document.readyState === 'loading') {

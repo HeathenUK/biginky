@@ -7852,18 +7852,90 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
                         // Fall back to background color
                         display.clear(bgColor);
                     } else {
-                        // Draw background image fullscreen
-                        Serial.println("Drawing background image fullscreen...");
-                        display.clear(EL133UF1_WHITE);  // Clear first (pngLoader may need clean buffer)
-                        PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
-                        hal_psram_free(pngData);
+                        // Decode PNG on Core 1 (offloads CPU-intensive decoding)
+                        Serial.println("Decoding background image on Core 1...");
+                        PngDecodeWorkData decodeWork = {0};
+                        decodeWork.pngData = pngData;
+                        decodeWork.pngDataLen = fileSize;
+                        decodeWork.rgbaData = nullptr;
+                        decodeWork.width = 0;
+                        decodeWork.height = 0;
+                        decodeWork.error = 0;
+                        decodeWork.success = false;
                         
-                        if (pres != PNG_OK) {
-                            Serial.printf("ERROR: Failed to draw background image: %s\n", pngLoader.getErrorString(pres));
-                            // Fall back to background color
+                        if (!queuePngDecodeWork(&decodeWork)) {
+                            Serial.println("ERROR: Failed to decode background image on Core 1");
+                            hal_psram_free(pngData);
                             display.clear(bgColor);
                         } else {
-                            Serial.println("Background image loaded successfully");
+                            // Core 1 has completed - RGBA data is now available
+                            unsigned char* rgbaData = decodeWork.rgbaData;
+                            unsigned width = decodeWork.width;
+                            unsigned height = decodeWork.height;
+                            
+                            if (rgbaData == nullptr || width == 0 || height == 0) {
+                                Serial.printf("ERROR: Core 1 decode returned invalid data (width=%u, height=%u)\n", width, height);
+                                hal_psram_free(pngData);
+                                display.clear(bgColor);
+                            } else {
+                                hal_psram_free(pngData);  // Free PNG data, we have decoded RGBA now
+                                
+                                // Convert RGBA to display color format and copy to display buffer
+                                Serial.printf("Converting RGBA to display format and drawing (%ux%u)...\n", width, height);
+                                display.clear(EL133UF1_WHITE);  // Clear first
+                                
+                                // Get display dimensions for scaling/centering
+                                int16_t displayWidth = display.width();
+                                int16_t displayHeight = display.height();
+                                
+                                // Calculate scaling to fill display (maintain aspect ratio)
+                                float scaleX = (float)displayWidth / width;
+                                float scaleY = (float)displayHeight / height;
+                                float scale = (scaleX < scaleY) ? scaleX : scaleY;  // Use smaller scale to fit
+                                
+                                int16_t scaledWidth = (int16_t)(width * scale);
+                                int16_t scaledHeight = (int16_t)(height * scale);
+                                int16_t offsetX = (displayWidth - scaledWidth) / 2;
+                                int16_t offsetY = (displayHeight - scaledHeight) / 2;
+                                
+                                // Convert and draw pixels
+                                for (int16_t y = 0; y < scaledHeight; y++) {
+                                    int16_t srcY = (int16_t)(y / scale);
+                                    if (srcY >= (int16_t)height) srcY = height - 1;
+                                    
+                                    for (int16_t x = 0; x < scaledWidth; x++) {
+                                        int16_t srcX = (int16_t)(x / scale);
+                                        if (srcX >= (int16_t)width) srcX = width - 1;
+                                        
+                                        // Get RGBA pixel
+                                        size_t rgbaIdx = (srcY * width + srcX) * 4;
+                                        uint8_t r = rgbaData[rgbaIdx];
+                                        uint8_t g = rgbaData[rgbaIdx + 1];
+                                        uint8_t b = rgbaData[rgbaIdx + 2];
+                                        uint8_t a = rgbaData[rgbaIdx + 3];
+                                        
+                                        // Convert to display color format (using global spectra6Color mapper)
+                                        uint8_t displayColor = spectra6Color.mapColorFast(r, g, b);
+                                        
+                                        // Draw pixel (with alpha blending - if alpha < 128, use white background)
+                                        int16_t dstX = offsetX + x;
+                                        int16_t dstY = offsetY + y;
+                                        if (dstX >= 0 && dstX < displayWidth && dstY >= 0 && dstY < displayHeight) {
+                                            if (a >= 128) {
+                                                display.setPixel(dstX, dstY, displayColor);
+                                            } else {
+                                                // Transparent - use background color
+                                                display.setPixel(dstX, dstY, bgColor);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Free RGBA data (allocated by Core 1 using lodepng's malloc)
+                                free(rgbaData);
+                                
+                                Serial.println("Background image loaded and drawn successfully");
+                            }
                         }
                     }
                 }

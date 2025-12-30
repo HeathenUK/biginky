@@ -61,7 +61,8 @@ enum MqttWorkType {
     MQTT_WORK_THUMBNAIL,
     MQTT_WORK_MEDIA_MAPPINGS,
     MQTT_WORK_CANVAS_DECODE,  // Base64 decode + zlib decompress for canvas commands
-    MQTT_WORK_PNG_ENCODE      // PNG encoding for canvas save
+    MQTT_WORK_PNG_ENCODE,     // PNG encoding for canvas save
+    MQTT_WORK_PNG_DECODE      // PNG decoding for background images (text display)
 };
 
 // Canvas decode/encode work data structures are now defined in mqtt_handler.h
@@ -72,7 +73,8 @@ struct MqttWorkRequest {
     bool* success;  // Optional: set result here
     union {
         CanvasDecodeWorkData* canvasDecode;  // For MQTT_WORK_CANVAS_DECODE
-        PngEncodeWorkData* pngEncode;        // For MQTT_WORK_PNG_ENCODE
+        PngEncodeWorkData* pngEncode;         // For MQTT_WORK_PNG_ENCODE
+        PngDecodeWorkData* pngDecode;         // For MQTT_WORK_PNG_DECODE
     } data;
 };
 
@@ -1199,6 +1201,45 @@ void publishMQTTThumbnailIfConnected() {
 static void publishMQTTMediaMappingsInternalImpl();
 static bool processCanvasDecodeWork(CanvasDecodeWorkData* work);
 static bool processPngEncodeWork(PngEncodeWorkData* work);
+static bool processPngDecodeWork(PngDecodeWorkData* work);
+
+// Process PNG decode work on Core 1 (defined before mqttWorkerTask)
+static bool processPngDecodeWork(PngDecodeWorkData* work) {
+    if (work == nullptr || work->pngData == nullptr || work->pngDataLen == 0) {
+        Serial.println("[Core 1] ERROR: Invalid PNG decode work data");
+        return false;
+    }
+    
+    Serial.printf("[Core 1] Decoding PNG (len=%zu)...\n", work->pngDataLen);
+    
+    // Decode PNG to RGBA8888 using lodepng
+    unsigned char* rgbaData = nullptr;
+    unsigned width = 0;
+    unsigned height = 0;
+    unsigned error = lodepng_decode32(&rgbaData, &width, &height, work->pngData, work->pngDataLen);
+    
+    if (error) {
+        Serial.printf("[Core 1] ERROR: PNG decoding failed: %u %s\n", error, lodepng_error_text(error));
+        work->error = error;
+        work->success = false;
+        return false;
+    }
+    
+    if (!rgbaData || width == 0 || height == 0) {
+        Serial.println("[Core 1] ERROR: PNG decoding returned empty data");
+        work->error = 1;
+        work->success = false;
+        return false;
+    }
+    
+    work->rgbaData = rgbaData;
+    work->width = width;
+    work->height = height;
+    work->error = 0;
+    work->success = true;
+    Serial.printf("[Core 1] PNG decoded: %ux%u RGBA8888 (%zu bytes)\n", width, height, width * height * 4);
+    return true;
+}
 
 // Core 1 worker task - handles thumbnail generation and MQTT message building
 static void mqttWorkerTask(void* param) {
@@ -1243,6 +1284,13 @@ static void mqttWorkerTask(void* param) {
                     workSuccess = processPngEncodeWork(request.data.pngEncode);
                 } else {
                     Serial.println("[Core 1] ERROR: PNG encode work data is null");
+                }
+            } else if (request.type == MQTT_WORK_PNG_DECODE) {
+                Serial.println("[Core 1] Processing PNG decode work...");
+                if (request.data.pngDecode != nullptr) {
+                    workSuccess = processPngDecodeWork(request.data.pngDecode);
+                } else {
+                    Serial.println("[Core 1] ERROR: PNG decode work data is null");
                 }
             }
             
@@ -1690,6 +1738,47 @@ bool queuePngEncodeWork(PngEncodeWorkData* work) {
     Serial.printf("PNG encode completed (success: %s, size: %zu bytes)\n", 
                   work->success ? "yes" : "no", work->success ? work->pngSize : 0);
     return work->success;
+}
+
+// Queue PNG decode work to Core 1 (synchronous - waits for completion)
+bool queuePngDecodeWork(PngDecodeWorkData* work) {
+    if (work == nullptr) {
+        return false;
+    }
+    
+    // Initialize worker task if not already done
+    if (!mqttWorkerTaskInitialized) {
+        initMqttWorkerTask();
+    }
+    
+    if (mqttWorkQueue == nullptr) {
+        Serial.println("WARNING: MQTT work queue not initialized, cannot queue PNG decode work");
+        return false;
+    }
+    
+    MqttWorkRequest request = {
+        .type = MQTT_WORK_PNG_DECODE,
+        .completionSem = nullptr,  // Will create below
+        .success = nullptr,  // Success status is returned via work->rgbaData != nullptr
+        .data = { .pngDecode = work }
+    };
+    
+    SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+    if (completionSem == nullptr) {
+        Serial.println("ERROR: Failed to create semaphore for PNG decode work.");
+        return false;
+    }
+    request.completionSem = completionSem;
+    
+    if (xQueueSend(mqttWorkQueue, &request, portMAX_DELAY) != pdTRUE) {
+        Serial.println("ERROR: Failed to queue PNG decode work.");
+        vSemaphoreDelete(completionSem);
+        return false;
+    }
+    
+    xSemaphoreTake(completionSem, portMAX_DELAY); // Wait for completion
+    vSemaphoreDelete(completionSem);
+    return (work->rgbaData != nullptr); // Success if rgbaData was allocated
 }
 
 // Forward declaration

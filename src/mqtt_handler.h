@@ -150,6 +150,17 @@ struct PngEncodeWorkData {
     bool success;                // Output: whether operation succeeded
 };
 
+// PNG decode work data (passed between cores)
+struct PngDecodeWorkData {
+    const uint8_t* pngData;      // Input: PNG data (owned by caller, must remain valid)
+    size_t pngDataLen;           // Input: length of PNG data
+    unsigned char* rgbaData;     // Output: RGBA8888 data (allocated by Core 1, caller must free)
+    unsigned width;              // Output: image width
+    unsigned height;             // Output: image height
+    unsigned error;              // Output: lodepng error code (0 = success)
+    bool success;                // Output: whether operation succeeded
+};
+
 /**
  * Decode base64 and decompress canvas data on Core 1 (synchronous - waits for completion)
  * @param work Work data structure with input/output parameters
@@ -163,6 +174,13 @@ bool queueCanvasDecodeWork(CanvasDecodeWorkData* work);
  * @return true if work was queued successfully, false otherwise (falls back to synchronous)
  */
 bool queuePngEncodeWork(PngEncodeWorkData* work);
+
+/**
+ * Decode PNG data to RGBA8888 buffer on Core 1 (synchronous - waits for completion)
+ * @param work Work data structure with input/output parameters
+ * @return true if work was queued successfully, false otherwise (falls back to synchronous)
+ */
+bool queuePngDecodeWork(PngDecodeWorkData* work);
 
 /**
  * Get MQTT client handle (for external use)

@@ -446,18 +446,6 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 }
             }
             
-            // Clear retained messages
-            if (shouldClearRetained && strlen(topicToClear) > 0 && client != nullptr) {
-                Serial.printf("Clearing retained message on topic %s (safety measure)...\n", topicToClear);
-                int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
-                if (msg_id > 0) {
-                    Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
-                } else {
-                    Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
-                                 topicToClear, msg_id, (void*)client);
-                }
-            }
-            
             // Process non-retained JSON messages
             else if (!mqttMessageRetain && messageComplete && mqttMessageBufferUsed > 0 && mqttMessageBuffer != nullptr && message[0] == '{' && strcmp(mqttMessageTopic, mqttTopicWebUI) == 0) {
                 String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);
@@ -474,6 +462,20 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 } else {
                     handleWebInterfaceCommand(jsonMessage);
                     publishMQTTStatus();
+                }
+            }
+            
+            // Clear retained messages (must happen after processing, regardless of which path was taken)
+            // Always clear retained messages to prevent them from being processed again on next reconnect
+            // Check mqttMessageRetain directly (not shouldClearRetained) to ensure we clear even if message took non-retained path
+            if (mqttMessageRetain && strlen(topicToClear) > 0 && client != nullptr) {
+                Serial.printf("Clearing retained message on topic %s (safety measure)...\n", topicToClear);
+                int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
+                if (msg_id > 0) {
+                    Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
+                } else {
+                    Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
+                                 topicToClear, msg_id, (void*)client);
                 }
             }
             

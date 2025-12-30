@@ -90,8 +90,8 @@ function createColorPicker(config) {
             if (otherPalette) otherPalette.style.display = 'none';
         });
         
-        // Toggle this palette
-        palette.style.display = isVisible ? 'none' : 'block';
+        // Toggle this palette (use 'flex' to match CSS rule)
+        palette.style.display = isVisible ? 'none' : 'flex';
         console.log(`Color picker ${buttonId} toggled, palette now: ${palette.style.display}`); // TEST: Debug log
     });
 

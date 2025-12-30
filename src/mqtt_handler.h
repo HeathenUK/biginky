@@ -126,6 +126,24 @@ void publishMQTTMediaMappings(bool waitForCompletion);
  */
 void initMqttWorkerTask();
 
+// Forward declarations for canvas decode/encode work structures
+struct CanvasDecodeWorkData;
+struct PngEncodeWorkData;
+
+/**
+ * Decode base64 and decompress canvas data on Core 1 (synchronous - waits for completion)
+ * @param work Work data structure with input/output parameters
+ * @return true if work was queued successfully, false otherwise (falls back to synchronous)
+ */
+bool queueCanvasDecodeWork(CanvasDecodeWorkData* work);
+
+/**
+ * Encode RGB data as PNG on Core 1 (synchronous - waits for completion)
+ * @param work Work data structure with input/output parameters
+ * @return true if work was queued successfully, false otherwise (falls back to synchronous)
+ */
+bool queuePngEncodeWork(PngEncodeWorkData* work);
+
 /**
  * Get MQTT client handle (for external use)
  */

@@ -21,6 +21,9 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "lodepng.h"  // For PNG encoding
+#include "miniz.h"    // For zlib decompression (tinfl_decompress_mem_to_mem)
+#include "platform_hal.h"  // For PSRAM allocation (hal_psram_malloc)
 
 // MQTT configuration - hardcoded
 #define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"
@@ -53,16 +56,46 @@ static char mqttTopicMedia[128] = MQTT_TOPIC_MEDIA;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
 
-// Core 1 worker task for thumbnail generation and MQTT message building
+// Core 1 worker task for thumbnail generation, MQTT message building, and CPU-intensive operations
 enum MqttWorkType {
     MQTT_WORK_THUMBNAIL,
-    MQTT_WORK_MEDIA_MAPPINGS
+    MQTT_WORK_MEDIA_MAPPINGS,
+    MQTT_WORK_CANVAS_DECODE,  // Base64 decode + zlib decompress for canvas commands
+    MQTT_WORK_PNG_ENCODE      // PNG encoding for canvas save
+};
+
+// Canvas decode work data (passed between cores)
+struct CanvasDecodeWorkData {
+    const char* base64Data;      // Input: base64 string (owned by caller, must remain valid)
+    size_t base64DataLen;        // Input: length of base64 string
+    int width;                   // Input: canvas width
+    int height;                  // Input: canvas height
+    bool isCompressed;           // Input: whether data is compressed
+    uint8_t* pixelData;          // Output: decompressed pixel data (allocated by Core 1, caller must free)
+    size_t pixelDataLen;         // Output: length of pixel data
+    bool success;                // Output: whether operation succeeded
+};
+
+// PNG encode work data (passed between cores)
+struct PngEncodeWorkData {
+    const uint8_t* rgbData;      // Input: RGB888 data (owned by caller, must remain valid)
+    size_t rgbDataLen;           // Input: length of RGB data
+    unsigned width;              // Input: image width
+    unsigned height;             // Input: image height
+    unsigned char* pngData;      // Output: PNG data (allocated by Core 1, caller must free)
+    size_t pngSize;             // Output: size of PNG data
+    unsigned error;              // Output: lodepng error code (0 = success)
+    bool success;                // Output: whether operation succeeded
 };
 
 struct MqttWorkRequest {
     MqttWorkType type;
-    SemaphoreHandle_t completionSem;  // Optional: if not null, signal when done
+    SemaphoreHandle_t completionSem;  // Required for synchronous operations (Core 0 waits)
     bool* success;  // Optional: set result here
+    union {
+        CanvasDecodeWorkData* canvasDecode;  // For MQTT_WORK_CANVAS_DECODE
+        PngEncodeWorkData* pngEncode;        // For MQTT_WORK_PNG_ENCODE
+    } data;
 };
 
 static QueueHandle_t mqttWorkQueue = nullptr;
@@ -1212,9 +1245,23 @@ static void mqttWorkerTask(void* param) {
                 } else {
                     Serial.println("[Core 1] MQTT not connected, skipping media mappings publish");
                 }
+            } else if (request.type == MQTT_WORK_CANVAS_DECODE) {
+                Serial.println("[Core 1] Processing canvas decode/decompress work...");
+                if (request.data.canvasDecode != nullptr) {
+                    workSuccess = processCanvasDecodeWork(request.data.canvasDecode);
+                } else {
+                    Serial.println("[Core 1] ERROR: Canvas decode work data is null");
+                }
+            } else if (request.type == MQTT_WORK_PNG_ENCODE) {
+                Serial.println("[Core 1] Processing PNG encode work...");
+                if (request.data.pngEncode != nullptr) {
+                    workSuccess = processPngEncodeWork(request.data.pngEncode);
+                } else {
+                    Serial.println("[Core 1] ERROR: PNG encode work data is null");
+                }
             }
             
-            // Signal completion if semaphore provided
+            // Signal completion (required for synchronous operations)
             if (request.completionSem != nullptr) {
                 if (request.success != nullptr) {
                     *(request.success) = workSuccess;
@@ -1237,6 +1284,139 @@ static void publishMQTTMediaMappingsInternal() {
     // This is the actual media mappings generation code (moved from publishMQTTMediaMappings)
     // We'll refactor publishMQTTMediaMappings to call this via queue
     publishMQTTMediaMappingsInternalImpl();
+}
+
+// Process canvas decode/decompress work on Core 1
+static bool processCanvasDecodeWork(CanvasDecodeWorkData* work) {
+    if (work == nullptr || work->base64Data == nullptr) {
+        Serial.println("[Core 1] ERROR: Invalid canvas decode work data");
+        return false;
+    }
+    
+    Serial.printf("[Core 1] Decoding base64 (len=%zu) and decompressing (compressed=%s)...\n", 
+                  work->base64DataLen, work->isCompressed ? "yes" : "no");
+    
+    // Decode base64
+    size_t decodedLen = (work->base64DataLen * 3) / 4;
+    uint8_t* compressedData = (uint8_t*)hal_psram_malloc(decodedLen);
+    if (!compressedData) {
+        Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for compressed data");
+        return false;
+    }
+    
+    // Simple base64 decode
+    size_t compressedSize = 0;
+    for (size_t i = 0; i < work->base64DataLen && compressedSize < decodedLen; i += 4) {
+        uint32_t value = 0;
+        int padding = 0;
+        
+        for (int j = 0; j < 4 && (i + j) < work->base64DataLen; j++) {
+            char c = work->base64Data[i + j];
+            if (c == '=') {
+                padding++;
+                value <<= 6;
+            } else if (c >= 'A' && c <= 'Z') {
+                value = (value << 6) | (c - 'A');
+            } else if (c >= 'a' && c <= 'z') {
+                value = (value << 6) | (c - 'a' + 26);
+            } else if (c >= '0' && c <= '9') {
+                value = (value << 6) | (c - '0' + 52);
+            } else if (c == '+') {
+                value = (value << 6) | 62;
+            } else if (c == '/') {
+                value = (value << 6) | 63;
+            }
+        }
+        
+        int bytes = 3 - padding;
+        for (int j = 0; j < bytes && compressedSize < decodedLen; j++) {
+            compressedData[compressedSize++] = (value >> (8 * (2 - j))) & 0xFF;
+        }
+    }
+    
+    Serial.printf("[Core 1] Base64 decoded: %zu bytes\n", compressedSize);
+    
+    // Decompress if needed
+    if (work->isCompressed) {
+        size_t expectedSize = work->width * work->height;
+        work->pixelData = (uint8_t*)hal_psram_malloc(expectedSize);
+        if (!work->pixelData) {
+            Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for decompressed pixel data");
+            hal_psram_free(compressedData);
+            return false;
+        }
+        
+        size_t decompressedSize = tinfl_decompress_mem_to_mem(work->pixelData, expectedSize, compressedData, compressedSize, 0);
+        
+        if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+            Serial.println("[Core 1] miniz decompression failed, trying with zlib header...");
+            decompressedSize = tinfl_decompress_mem_to_mem(work->pixelData, expectedSize, compressedData, compressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+            if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                Serial.println("[Core 1] Zlib header flag also failed");
+                hal_psram_free(compressedData);
+                hal_psram_free(work->pixelData);
+                work->pixelData = nullptr;
+                return false;
+            }
+        }
+        
+        if (decompressedSize != expectedSize) {
+            Serial.printf("[Core 1] ERROR: Decompressed size mismatch: got %zu, expected %zu\n", decompressedSize, expectedSize);
+            hal_psram_free(compressedData);
+            hal_psram_free(work->pixelData);
+            work->pixelData = nullptr;
+            return false;
+        }
+        
+        work->pixelDataLen = decompressedSize;
+        hal_psram_free(compressedData);
+        Serial.printf("[Core 1] Decompressed: %zu bytes\n", work->pixelDataLen);
+    } else {
+        // Not compressed, use directly
+        work->pixelData = compressedData;
+        work->pixelDataLen = compressedSize;
+        compressedData = nullptr;  // Prevent double-free
+    }
+    
+    work->success = true;
+    return true;
+}
+
+// Process PNG encode work on Core 1
+static bool processPngEncodeWork(PngEncodeWorkData* work) {
+    if (work == nullptr || work->rgbData == nullptr) {
+        Serial.println("[Core 1] ERROR: Invalid PNG encode work data");
+        return false;
+    }
+    
+    Serial.printf("[Core 1] Encoding PNG: %ux%u, RGB data: %zu bytes\n", 
+                  work->width, work->height, work->rgbDataLen);
+    
+    // Encode RGB data as PNG using lodepng
+    unsigned char* pngData = nullptr;
+    size_t pngSize = 0;
+    unsigned error = lodepng_encode24(&pngData, &pngSize, work->rgbData, work->width, work->height);
+    
+    if (error) {
+        Serial.printf("[Core 1] ERROR: PNG encoding failed: %u %s\n", error, lodepng_error_text(error));
+        work->error = error;
+        work->success = false;
+        return false;
+    }
+    
+    if (!pngData || pngSize == 0) {
+        Serial.println("[Core 1] ERROR: PNG encoding returned empty data");
+        work->error = 1;
+        work->success = false;
+        return false;
+    }
+    
+    work->pngData = pngData;
+    work->pngSize = pngSize;
+    work->error = 0;
+    work->success = true;
+    Serial.printf("[Core 1] PNG encoded: %zu bytes\n", pngSize);
+    return true;
 }
 
 // Initialize Core 1 worker task
@@ -1425,6 +1605,239 @@ static void publishMQTTMediaMappingsInternalImpl() {
     
     free(jsonBuffer);
     Serial.println("[Core 1] Media mappings publish complete");
+}
+
+// Backward compatibility wrapper (no parameters)
+void publishMQTTMediaMappings() {
+    publishMQTTMediaMappings(false);  // Async by default
+}
+
+// Process canvas decode/decompress work on Core 1
+static bool processCanvasDecodeWork(CanvasDecodeWorkData* work) {
+    if (work == nullptr || work->base64Data == nullptr) {
+        Serial.println("[Core 1] ERROR: Invalid canvas decode work data");
+        return false;
+    }
+    
+    Serial.printf("[Core 1] Decoding base64 (len=%zu) and decompressing (compressed=%s)...\n", 
+                  work->base64DataLen, work->isCompressed ? "yes" : "no");
+    
+    // Decode base64
+    size_t decodedLen = (work->base64DataLen * 3) / 4;
+    uint8_t* compressedData = (uint8_t*)hal_psram_malloc(decodedLen);
+    if (!compressedData) {
+        Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for compressed data");
+        return false;
+    }
+    
+    // Simple base64 decode
+    size_t compressedSize = 0;
+    for (size_t i = 0; i < work->base64DataLen && compressedSize < decodedLen; i += 4) {
+        uint32_t value = 0;
+        int padding = 0;
+        
+        for (int j = 0; j < 4 && (i + j) < work->base64DataLen; j++) {
+            char c = work->base64Data[i + j];
+            if (c == '=') {
+                padding++;
+                value <<= 6;
+            } else if (c >= 'A' && c <= 'Z') {
+                value = (value << 6) | (c - 'A');
+            } else if (c >= 'a' && c <= 'z') {
+                value = (value << 6) | (c - 'a' + 26);
+            } else if (c >= '0' && c <= '9') {
+                value = (value << 6) | (c - '0' + 52);
+            } else if (c == '+') {
+                value = (value << 6) | 62;
+            } else if (c == '/') {
+                value = (value << 6) | 63;
+            }
+        }
+        
+        int bytes = 3 - padding;
+        for (int j = 0; j < bytes && compressedSize < decodedLen; j++) {
+            compressedData[compressedSize++] = (value >> (8 * (2 - j))) & 0xFF;
+        }
+    }
+    
+    Serial.printf("[Core 1] Base64 decoded: %zu bytes\n", compressedSize);
+    
+    // Decompress if needed
+    if (work->isCompressed) {
+        size_t expectedSize = work->width * work->height;
+        work->pixelData = (uint8_t*)hal_psram_malloc(expectedSize);
+        if (!work->pixelData) {
+            Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for decompressed pixel data");
+            hal_psram_free(compressedData);
+            return false;
+        }
+        
+        size_t decompressedSize = tinfl_decompress_mem_to_mem(work->pixelData, expectedSize, compressedData, compressedSize, 0);
+        
+        if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+            Serial.println("[Core 1] miniz decompression failed, trying with zlib header...");
+            decompressedSize = tinfl_decompress_mem_to_mem(work->pixelData, expectedSize, compressedData, compressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+            if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                Serial.println("[Core 1] Zlib header flag also failed");
+                hal_psram_free(compressedData);
+                hal_psram_free(work->pixelData);
+                work->pixelData = nullptr;
+                return false;
+            }
+        }
+        
+        if (decompressedSize != expectedSize) {
+            Serial.printf("[Core 1] ERROR: Decompressed size mismatch: got %zu, expected %zu\n", decompressedSize, expectedSize);
+            hal_psram_free(compressedData);
+            hal_psram_free(work->pixelData);
+            work->pixelData = nullptr;
+            return false;
+        }
+        
+        work->pixelDataLen = decompressedSize;
+        hal_psram_free(compressedData);
+        Serial.printf("[Core 1] Decompressed: %zu bytes\n", work->pixelDataLen);
+    } else {
+        // Not compressed, use directly
+        work->pixelData = compressedData;
+        work->pixelDataLen = compressedSize;
+        compressedData = nullptr;  // Prevent double-free
+    }
+    
+    work->success = true;
+    return true;
+}
+
+// Process PNG encode work on Core 1
+static bool processPngEncodeWork(PngEncodeWorkData* work) {
+    if (work == nullptr || work->rgbData == nullptr) {
+        Serial.println("[Core 1] ERROR: Invalid PNG encode work data");
+        return false;
+    }
+    
+    Serial.printf("[Core 1] Encoding PNG: %ux%u, RGB data: %zu bytes\n", 
+                  work->width, work->height, work->rgbDataLen);
+    
+    // Encode RGB data as PNG using lodepng
+    unsigned char* pngData = nullptr;
+    size_t pngSize = 0;
+    unsigned error = lodepng_encode24(&pngData, &pngSize, work->rgbData, work->width, work->height);
+    
+    if (error) {
+        Serial.printf("[Core 1] ERROR: PNG encoding failed: %u %s\n", error, lodepng_error_text(error));
+        work->error = error;
+        work->success = false;
+        return false;
+    }
+    
+    if (!pngData || pngSize == 0) {
+        Serial.println("[Core 1] ERROR: PNG encoding returned empty data");
+        work->error = 1;
+        work->success = false;
+        return false;
+    }
+    
+    work->pngData = pngData;
+    work->pngSize = pngSize;
+    work->error = 0;
+    work->success = true;
+    Serial.printf("[Core 1] PNG encoded: %zu bytes\n", pngSize);
+    return true;
+}
+
+// Queue canvas decode/decompress work to Core 1 (synchronous - waits for completion)
+bool queueCanvasDecodeWork(CanvasDecodeWorkData* work) {
+    if (work == nullptr) {
+        return false;
+    }
+    
+    // Initialize worker task if not already done
+    if (!mqttWorkerTaskInitialized) {
+        initMqttWorkerTask();
+    }
+    
+    if (mqttWorkQueue == nullptr) {
+        Serial.println("WARNING: MQTT work queue not initialized, cannot queue canvas decode work");
+        return false;
+    }
+    
+    // Create work request
+    MqttWorkRequest request;
+    request.type = MQTT_WORK_CANVAS_DECODE;
+    request.data.canvasDecode = work;
+    request.success = &(work->success);
+    
+    // Create semaphore for synchronization (Core 0 will wait for Core 1)
+    SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+    if (completionSem == nullptr) {
+        Serial.println("ERROR: Failed to create semaphore for canvas decode work");
+        return false;
+    }
+    request.completionSem = completionSem;
+    
+    // Queue work request
+    if (xQueueSend(mqttWorkQueue, &request, portMAX_DELAY) != pdTRUE) {
+        Serial.println("ERROR: Failed to queue canvas decode work");
+        vSemaphoreDelete(completionSem);
+        return false;
+    }
+    
+    Serial.println("Queued canvas decode/decompress to Core 1 worker task (waiting for completion)...");
+    
+    // Wait for completion (Core 0 blocks here until Core 1 finishes)
+    xSemaphoreTake(completionSem, portMAX_DELAY);
+    vSemaphoreDelete(completionSem);
+    
+    Serial.printf("Canvas decode/decompress completed (success: %s)\n", work->success ? "yes" : "no");
+    return work->success;
+}
+
+// Queue PNG encode work to Core 1 (synchronous - waits for completion)
+bool queuePngEncodeWork(PngEncodeWorkData* work) {
+    if (work == nullptr) {
+        return false;
+    }
+    
+    // Initialize worker task if not already done
+    if (!mqttWorkerTaskInitialized) {
+        initMqttWorkerTask();
+    }
+    
+    if (mqttWorkQueue == nullptr) {
+        Serial.println("WARNING: MQTT work queue not initialized, cannot queue PNG encode work");
+        return false;
+    }
+    
+    // Create work request
+    MqttWorkRequest request;
+    request.type = MQTT_WORK_PNG_ENCODE;
+    request.data.pngEncode = work;
+    request.success = &(work->success);
+    
+    // Create semaphore for synchronization (Core 0 will wait for Core 1)
+    SemaphoreHandle_t completionSem = xSemaphoreCreateBinary();
+    if (completionSem == nullptr) {
+        Serial.println("ERROR: Failed to create semaphore for PNG encode work");
+        return false;
+    }
+    request.completionSem = completionSem;
+    
+    // Queue work request
+    if (xQueueSend(mqttWorkQueue, &request, portMAX_DELAY) != pdTRUE) {
+        Serial.println("ERROR: Failed to queue PNG encode work");
+        vSemaphoreDelete(completionSem);
+        return false;
+    }
+    
+    Serial.println("Queued PNG encode to Core 1 worker task (waiting for completion)...");
+    
+    // Wait for completion (Core 0 blocks here until Core 1 finishes)
+    xSemaphoreTake(completionSem, portMAX_DELAY);
+    vSemaphoreDelete(completionSem);
+    
+    Serial.printf("PNG encode completed (success: %s, size: %zu bytes)\n", 
+                  work->success ? "yes" : "no", work->success ? work->pngSize : 0);
+    return work->success;
 }
     if (msg_id > 0) {
         Serial.printf("Published media mappings to %s (msg_id: %d)\n", mqttTopicMedia, msg_id);

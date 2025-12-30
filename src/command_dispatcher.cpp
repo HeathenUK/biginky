@@ -163,15 +163,15 @@ static bool handleShowUnified(const CommandContext& ctx) {
 
 static bool handleTextUnified(const CommandContext& ctx) {
     String text = "";
-    uint8_t fillColor = EL133UF1_WHITE;
-    uint8_t outlineColor = EL133UF1_BLACK;
-    uint8_t bgColor = EL133UF1_WHITE;
+    uint8_t fillColor = EL133UF1_BLACK;      // Default: black text
+    uint8_t outlineColor = EL133UF1_BLACK;   // Default: black outline
+    uint8_t bgColor = EL133UF1_WHITE;        // Default: white background (only used when no background image)
     String backgroundImage = "";
     
     if (ctx.source == CommandSource::MQTT_SMS) {
         // MQTT: Extract from command string (!text <text>)
         text = extractTextParameterForCommand(ctx.command, ctx.originalMessage, "!text");
-        // MQTT text commands use default colors (white/black)
+        // MQTT text commands use default colors (black text/outline, white background)
     } else if (ctx.source == CommandSource::WEB_UI || ctx.source == CommandSource::HTTP_API) {
         // Web UI/HTTP: Extract from JSON
         text = extractJsonStringField(ctx.originalMessage, "text");
@@ -186,9 +186,17 @@ static bool handleTextUnified(const CommandContext& ctx) {
             return handleMultiTextCommand(text, bgColor);
         }
         
-        fillColor = parseColorString(colorStr);
-        bgColor = parseColorString(bgColorStr);
-        outlineColor = parseColorString(outlineColorStr);
+        // Only parse colors if provided (non-empty string)
+        // Defaults: black text, black outline, white background
+        if (colorStr.length() > 0) {
+            fillColor = parseColorString(colorStr);
+        }
+        if (bgColorStr.length() > 0) {
+            bgColor = parseColorString(bgColorStr);
+        }
+        if (outlineColorStr.length() > 0) {
+            outlineColor = parseColorString(outlineColorStr);
+        }
     }
     
     if (text.length() == 0) {

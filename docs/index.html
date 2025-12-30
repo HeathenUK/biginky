@@ -357,10 +357,10 @@ table th,table td{padding:6px;font-size:12px;}
 <input type="file" id="imageFileInput" accept="image/*" style="display:none;" onchange="handleImageFileSelect(event)">
 </div>
 <div style="flex:0 0 auto;display:flex;gap:8px;align-items:center;">
-<input type="text" id="canvasFilenameInput" placeholder="canvas_2025-12-30T12-00-00.png" style="width:220px;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;">
+<input type="text" id="canvasFilenameInput" placeholder="canvas_2025-12-30T12-00-00.png" style="width:220px;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;display:none;">
 <select id="canvasActionSelect" style="padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;">
-<option value="display">Display on Panel</option>
-<option value="display-save" selected>Display on Panel & Save</option>
+<option value="display" selected>Display on Panel</option>
+<option value="display-save">Display on Panel & Save</option>
 <option value="save">Save</option>
 </select>
 <button onclick="sendCanvasAction()" id="canvasActionBtn" disabled style="min-width:44px;padding:8px 12px;">Go</button>

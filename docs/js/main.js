@@ -16,10 +16,28 @@ if (document.readyState === 'loading') {
             initTextColorPickers();
         }
         
-        // Initialize canvas filename with default
+        // Initialize canvas filename input and action selector
         const canvasFilenameInput = document.getElementById('canvasFilenameInput');
+        const canvasActionSelect = document.getElementById('canvasActionSelect');
+        
         if (canvasFilenameInput && typeof generateDefaultCanvasFilename === 'function') {
             canvasFilenameInput.value = generateDefaultCanvasFilename();
+        }
+        
+        // Show/hide filename input based on action selection
+        function updateCanvasFilenameVisibility() {
+            if (canvasActionSelect && canvasFilenameInput) {
+                const action = canvasActionSelect.value;
+                // Show filename input only for save actions
+                canvasFilenameInput.style.display = (action === 'display-save' || action === 'save') ? 'block' : 'none';
+            }
+        }
+        
+        // Set up change handler for action selector
+        if (canvasActionSelect) {
+            canvasActionSelect.addEventListener('change', updateCanvasFilenameVisibility);
+            // Initial state
+            updateCanvasFilenameVisibility();
         }
         
         // Load auto-reconnect preference
@@ -59,10 +77,28 @@ if (document.readyState === 'loading') {
         initTextColorPickers();
     }
     
-    // Initialize canvas filename with default
+    // Initialize canvas filename input and action selector
     const canvasFilenameInput = document.getElementById('canvasFilenameInput');
+    const canvasActionSelect = document.getElementById('canvasActionSelect');
+    
     if (canvasFilenameInput && typeof generateDefaultCanvasFilename === 'function') {
         canvasFilenameInput.value = generateDefaultCanvasFilename();
+    }
+    
+    // Show/hide filename input based on action selection
+    function updateCanvasFilenameVisibility() {
+        if (canvasActionSelect && canvasFilenameInput) {
+            const action = canvasActionSelect.value;
+            // Show filename input only for save actions
+            canvasFilenameInput.style.display = (action === 'display-save' || action === 'save') ? 'block' : 'none';
+        }
+    }
+    
+    // Set up change handler for action selector
+    if (canvasActionSelect) {
+        canvasActionSelect.addEventListener('change', updateCanvasFilenameVisibility);
+        // Initial state
+        updateCanvasFilenameVisibility();
     }
     
     // Load auto-reconnect preference

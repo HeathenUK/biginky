@@ -985,28 +985,6 @@ function initializeCanvas() {
         clearCanvas();
     }
     
-    // Set up color dropdowns
-    const drawColorSelect = document.getElementById('drawColor');
-    if (drawColorSelect) {
-        drawColorSelect.addEventListener('change', (e) => {
-            setDrawColor(e.target.value);
-        });
-    }
-    
-    const fillColorSelect = document.getElementById('fillColor');
-    if (fillColorSelect) {
-        fillColorSelect.addEventListener('change', (e) => {
-            setFillColor(e.target.value);
-        });
-    }
-    
-    const outlineColorSelect = document.getElementById('outlineColor');
-    if (outlineColorSelect) {
-        outlineColorSelect.addEventListener('change', (e) => {
-            setOutlineColor(e.target.value);
-        });
-    }
-    
     // Set up brush size slider
     const brushSizeSlider = document.getElementById('brushSize');
     const brushSizeDisplay = document.getElementById('brushSizeDisplay');

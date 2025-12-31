@@ -360,40 +360,8 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     
     Serial.printf("PNG encoded successfully: %zu bytes\n", pngSize);
     
-    size_t png_size_u32 = (size_t)pngSize;
-    
-    // Save PNG thumbnail to SD card for debugging (before base64 encoding)
-    // Try to save directly - if SD card is accessible (which it clearly is since we just read the image),
-    // FatFs will work regardless of the global mount status variables
-    // Generate filename from image path (e.g., "sunset.png" -> "thumb_sunset.png")
-    String thumbFilename = "0:/thumb_";
-    // Extract base filename without extension
-    int lastSlash = imagePath.lastIndexOf('/');
-    int lastDot = imagePath.lastIndexOf('.');
-    if (lastDot > lastSlash && lastDot > 0) {
-        thumbFilename += imagePath.substring(lastSlash + 1, lastDot);
-    } else {
-        thumbFilename += imagePath.substring(lastSlash + 1);
-    }
-    thumbFilename += ".png";
-    
-    FIL thumbFile;
-    FRESULT saveRes = f_open(&thumbFile, thumbFilename.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
-    if (saveRes == FR_OK) {
-        UINT bytesWritten = 0;
-        saveRes = f_write(&thumbFile, pngBuffer, png_size_u32, &bytesWritten);
-        f_close(&thumbFile);
-        if (saveRes == FR_OK && bytesWritten == png_size_u32) {
-            Serial.printf("Saved media thumbnail to SD: %s (%u bytes)\n", thumbFilename.c_str(), bytesWritten);
-        } else {
-            Serial.printf("WARNING: Failed to write media thumbnail to SD: res=%d, written=%u/%u\n", saveRes, bytesWritten, png_size_u32);
-        }
-    } else {
-        Serial.printf("WARNING: Failed to open media thumbnail file for writing: %s (res=%d)\n", thumbFilename.c_str(), saveRes);
-    }
-    
     // Base64 encode the PNG
-    size_t base64Size = ((png_size_u32 + 2) / 3) * 4 + 1;
+    size_t base64Size = ((pngSize + 2) / 3) * 4 + 1;
     char* base64Buffer = (char*)malloc(base64Size);
     if (base64Buffer == nullptr) {
         Serial.println("ERROR: Failed to allocate base64 buffer");
@@ -404,17 +372,17 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t base64Idx = 0;
     
-    for (size_t i = 0; i < png_size_u32; i += 3) {
+    for (size_t i = 0; i < pngSize; i += 3) {
         uint32_t b0 = pngBuffer[i];
-        uint32_t b1 = (i + 1 < png_size_u32) ? pngBuffer[i + 1] : 0;
-        uint32_t b2 = (i + 2 < png_size_u32) ? pngBuffer[i + 2] : 0;
+        uint32_t b1 = (i + 1 < pngSize) ? pngBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < pngSize) ? pngBuffer[i + 2] : 0;
         uint32_t value = (b0 << 16) | (b1 << 8) | b2;
         
         if (base64Idx + 4 < base64Size) {
             base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
             base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
-            base64Buffer[base64Idx++] = (i + 1 < png_size_u32) ? base64_chars[(value >> 6) & 0x3F] : '=';
-            base64Buffer[base64Idx++] = (i + 2 < png_size_u32) ? base64_chars[value & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 1 < pngSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < pngSize) ? base64_chars[value & 0x3F] : '=';
         }
     }
     base64Buffer[base64Idx] = '\0';
@@ -426,41 +394,6 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     return result;
 }
 
-bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize) {
-    if (!sdCardMounted) {
-        Serial.println("ERROR: SD card not mounted, cannot save thumbnail");
-        return false;
-    }
-    
-    if (!jpegData || jpegSize == 0) {
-        Serial.println("ERROR: Invalid JPEG data for thumbnail save");
-        return false;
-    }
-    
-    const char* thumbPath = "0:/thumbnail.jpg";
-    
-    // Remove existing thumbnail if it exists
-    f_unlink(thumbPath);
-    
-    FIL thumbFile;
-    FRESULT res = f_open(&thumbFile, thumbPath, FA_WRITE | FA_CREATE_ALWAYS);
-    if (res != FR_OK) {
-        Serial.printf("ERROR: Failed to open thumbnail file for writing: %d\n", res);
-        return false;
-    }
-    
-    UINT bytesWritten = 0;
-    res = f_write(&thumbFile, jpegData, jpegSize, &bytesWritten);
-    f_close(&thumbFile);
-    
-    if (res != FR_OK || bytesWritten != jpegSize) {
-        Serial.printf("ERROR: Failed to write thumbnail to SD: res=%d, written=%u/%u\n", res, bytesWritten, jpegSize);
-        return false;
-    }
-    
-    Serial.printf("Saved thumbnail to SD card (%u bytes)\n", bytesWritten);
-    return true;
-}
 
 std::vector<String> listImageFilesVector() {
     std::vector<String> files;

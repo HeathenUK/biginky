@@ -1094,36 +1094,6 @@ static void publishMQTTThumbnailInternalImpl() {
     Serial.printf("[Core 1] PNG encoded successfully: %zu bytes\n", pngSize);
     
     size_t pngSize_u32 = (size_t)pngSize;
-    
-    // Save PNG thumbnail to SD card for debugging (before base64 encoding)
-    // Try to save directly - if SD card is accessible, FatFs will work regardless of global mount status
-    // Generate unique filename with timestamp
-    time_t now;
-    struct tm timeinfo;
-    char thumbFilename[64];
-    if (time(&now) != -1 && localtime_r(&now, &timeinfo) != nullptr) {
-        snprintf(thumbFilename, sizeof(thumbFilename), "0:/thumb_preview_%04d%02d%02d_%02d%02d%02d.png",
-                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    } else {
-        snprintf(thumbFilename, sizeof(thumbFilename), "0:/thumb_preview.png");
-    }
-    
-    FIL thumbFile;
-    FRESULT res = f_open(&thumbFile, thumbFilename, FA_WRITE | FA_CREATE_ALWAYS);
-    if (res == FR_OK) {
-        UINT bytesWritten = 0;
-        res = f_write(&thumbFile, pngBuffer, pngSize_u32, &bytesWritten);
-        f_close(&thumbFile);
-        if (res == FR_OK && bytesWritten == pngSize_u32) {
-            Serial.printf("[Core 1] Saved preview thumbnail to SD: %s (%u bytes)\n", thumbFilename, bytesWritten);
-        } else {
-            Serial.printf("[Core 1] WARNING: Failed to write preview thumbnail to SD: res=%d, written=%u/%u\n", res, bytesWritten, pngSize_u32);
-        }
-    } else {
-        Serial.printf("[Core 1] WARNING: Failed to open preview thumbnail file for writing: %s (res=%d)\n", thumbFilename, res);
-    }
-    
     size_t base64Size = ((pngSize_u32 + 2) / 3) * 4 + 1;
     char* base64Buffer = (char*)malloc(base64Size);
     if (base64Buffer == nullptr) {

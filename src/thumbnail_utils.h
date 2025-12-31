@@ -5,7 +5,6 @@
  * Provides functions for:
  * - Loading thumbnails from SD card
  * - Generating thumbnails from image files
- * - Saving thumbnails to SD card
  * 
  * Extracted from main_esp32p4_test.cpp as part of Priority 1 refactoring.
  */
@@ -30,14 +29,6 @@ char* loadThumbnailFromSD();
  * Quarter size: 200x150 for 800x600 images, or 400x300 for 1600x1200 images
  */
 String generateThumbnailFromImageFile(const String& imagePath);
-
-/**
- * Save JPEG thumbnail to SD card
- * @param jpegData Pointer to JPEG data
- * @param jpegSize Size of JPEG data in bytes
- * @return true if successful, false otherwise
- */
-bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize);
 
 /**
  * List all image files on SD card

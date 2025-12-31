@@ -289,12 +289,12 @@ async function handleStatusMessage(message) {
             }
         }
         
-        // Check for command completion status (new method using command_id)
-        if (status.command_completed === true && status.command_id) {
-            console.log('Command completion received:', status.command_id, 'success:', status.success);
+        // Check for command completion status (using id field)
+        if (status.command_completed === true && status.id) {
+            console.log('Command completion received:', status.id, 'success:', status.success);
             
             // Check if this is the command we're waiting for
-            if (pendingCommandId && status.command_id === pendingCommandId) {
+            if (pendingCommandId && status.id === pendingCommandId) {
                 console.log('Command completed! ID matches:', pendingCommandId);
                 pendingCommandId = null;  // Clear pending command ID
                 
@@ -314,7 +314,7 @@ async function handleStatusMessage(message) {
                     showStatus('commandStatus', 'Command completed successfully: ' + (status.command || 'unknown'), false);
                 }
             } else if (pendingCommandId) {
-                console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.command_id);
+                console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.id);
             }
         }
         

@@ -722,7 +722,7 @@ function checkHover(e) {
 
 // Check if click is on a pending element (with more permissive hit detection)
 function getPendingElementAt(x, y) {
-    const HIT_MARGIN = 20; // Extra pixels around elements for easier clicking
+    const HIT_MARGIN = 30; // Extra pixels around elements for easier clicking
     
     for (let i = pendingElements.length - 1; i >= 0; i--) {
         const elem = pendingElements[i];
@@ -961,6 +961,8 @@ function startDraw(e) {
     
     // ALWAYS check if clicking on a pending element first (before any tool-specific logic)
     const hit = getPendingElementAt(coords.x, coords.y);
+    let elementWasSelected = false;
+    
     if (hit) {
         console.log('[DEBUG] Element hit:', hit.element.type, hit.element);
         
@@ -978,11 +980,18 @@ function startDraw(e) {
             } else {
                 // Add to selection
                 selectedElements.push(hit.element);
+                elementWasSelected = true;
                 console.log('[DEBUG] Added to selection, now', selectedElements.length, 'selected:', selectedElements.map(e => e.type));
             }
         } else {
             // Single select - always set selection to this element (even if already selected)
-            selectedElements = [hit.element];
+            if (!isAlreadySelected) {
+                selectedElements = [hit.element];
+                elementWasSelected = true;
+            } else {
+                // Already selected - keep it selected
+                selectedElements = [hit.element];
+            }
             console.log('[DEBUG] Single select, now', selectedElements.length, 'selected');
         }
         
@@ -1031,9 +1040,13 @@ function startDraw(e) {
     }
     
     // Clicked elsewhere - deselect all (unless Ctrl/Cmd is held for multi-select)
-    if (!e.ctrlKey && !e.metaKey) {
+    // Only deselect if we didn't just successfully select an element
+    if (!elementWasSelected && !e.ctrlKey && !e.metaKey) {
         if (selectedElements.length > 0) {
+            console.log('[DEBUG] Clicked elsewhere, deselecting all');
             selectedElements = [];
+            draggingElements = [];
+            dragOffsets.clear();
             redrawCanvas();
         }
     }
@@ -1300,14 +1313,25 @@ if (document.readyState === 'loading') {
 }
 
 function selectNone() {
-    console.log('[DEBUG] selectNone() called, selectedElements.length:', selectedElements.length, 'draggingElements.length:', draggingElements.length);
+    console.log('[DEBUG] selectNone() called');
+    console.log('[DEBUG]   selectedElements.length:', selectedElements.length);
+    console.log('[DEBUG]   selectedElements:', selectedElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
+    console.log('[DEBUG]   draggingElements.length:', draggingElements.length);
+    console.log('[DEBUG]   pendingElements.length:', pendingElements.length);
+    
     if (selectedElements.length > 0 || draggingElements.length > 0) {
         selectedElements = [];
         draggingElements = [];
         dragOffsets.clear();
+        
+        console.log('[DEBUG] Cleared selection arrays, redrawing...');
         redrawCanvas();
+        
+        console.log('[DEBUG] After redraw - selectedElements.length:', selectedElements.length);
         showStatus('canvasStatus', 'Selection cleared', false);
-        console.log('[DEBUG] selectNone() completed, cleared selection');
+        console.log('[DEBUG] selectNone() completed');
+    } else {
+        console.log('[DEBUG] selectNone() - nothing to clear');
     }
 }
 

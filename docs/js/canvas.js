@@ -960,6 +960,7 @@ function startDraw(e) {
     // ALWAYS check if clicking on a pending element first (before any tool-specific logic)
     const hit = getPendingElementAt(coords.x, coords.y);
     if (hit) {
+        console.log('[DEBUG] Element hit:', hit.element.type, hit.element);
         // Select the element
         selectedElement = hit.element;
         
@@ -988,12 +989,20 @@ function startDraw(e) {
             else if (hit.element.textAlign === 'right') textX -= textWidth;
             dragOffset.x = coords.x - textX;
             dragOffset.y = coords.y - hit.element.y;
+            console.log('[DEBUG] Text drag offset calculated:', {
+                coords: {x: coords.x, y: coords.y},
+                textX: textX,
+                textY: hit.element.y,
+                dragOffset: {x: dragOffset.x, y: dragOffset.y},
+                alignment: hit.element.textAlign
+            });
         } else {
             // Fallback for any other element types
             dragOffset.x = coords.x - hit.element.x;
             dragOffset.y = coords.y - hit.element.y;
         }
         isDrawing = true;
+        console.log('[DEBUG] Starting drag, isDrawing:', isDrawing, 'draggingElement:', draggingElement);
         redrawCanvas(); // Redraw to show selection
         return; // Don't create new element
     }
@@ -1075,13 +1084,17 @@ function startDraw(e) {
 }
 
 function draw(e) {
-    if (!isDrawing) return;
+    if (!isDrawing) {
+        console.log('[DEBUG] draw() called but isDrawing is false');
+        return;
+    }
     e.preventDefault();
     const coords = getCanvasCoordinates(e);
     const tool = getCurrentTool();
     
     // Handle dragging pending elements
     if (draggingElement) {
+        console.log('[DEBUG] Dragging element:', draggingElement.type, 'at coords:', coords);
         if (draggingElement.type === 'circle' || draggingElement.type === 'line') {
             // For circle/line, move the center to the new position
             const oldCenterX = (draggingElement.x + draggingElement.endX) / 2;
@@ -1105,6 +1118,7 @@ function draw(e) {
             draggingElement.x += dx;
             draggingElement.y += dy;
         } else if (draggingElement.type === 'text') {
+            console.log('[DEBUG] Updating text position, dragOffset:', dragOffset);
             // For text, move the position accounting for text alignment
             ctx.font = draggingElement.fontSize + 'px ' + draggingElement.fontFamily;
             ctx.textAlign = draggingElement.textAlign;
@@ -1112,6 +1126,7 @@ function draw(e) {
             const textWidth = metrics.width;
             // Calculate the new visual x position
             const newVisualX = coords.x - dragOffset.x;
+            const oldX = draggingElement.x;
             // Convert back to stored x position based on alignment
             if (draggingElement.textAlign === 'center') {
                 draggingElement.x = newVisualX + textWidth / 2;
@@ -1121,15 +1136,23 @@ function draw(e) {
                 draggingElement.x = newVisualX;
             }
             draggingElement.y = coords.y - dragOffset.y;
+            console.log('[DEBUG] Text position updated:', {
+                oldX: oldX,
+                newX: draggingElement.x,
+                oldY: draggingElement.y - (coords.y - dragOffset.y - draggingElement.y),
+                newY: draggingElement.y
+            });
         } else {
             // Fallback for any other element types
             draggingElement.x = coords.x - dragOffset.x;
             draggingElement.y = coords.y - dragOffset.y;
         }
+        console.log('[DEBUG] Redrawing after drag');
         redrawCanvas();
         return;
     }
     
+    console.log('[DEBUG] Not dragging, tool:', tool);
     if (tool === 'brush' || tool === 'eraser') {
         const x = coords.x;
         const y = coords.y;

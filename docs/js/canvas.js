@@ -18,6 +18,7 @@ let currentOutlineColor = '0'; // Default to black
 
 // Pending elements system - elements that can be moved before finalization
 let pendingElements = [];
+let selectedElement = null; // Currently selected element (can be moved or deleted)
 let draggingElement = null;
 let dragOffset = { x: 0, y: 0 };
 
@@ -107,12 +108,10 @@ function setTool(tool) {
     }
     // Update canvas cursor based on tool
     if (canvas) {
-        if (tool === 'move') {
-            canvas.style.cursor = 'default'; // Will change to 'move' when hovering over elements
-        } else if (tool === 'eyedropper') {
+        if (tool === 'eyedropper') {
             canvas.style.cursor = 'crosshair';
         } else {
-            canvas.style.cursor = 'crosshair';
+            canvas.style.cursor = 'crosshair'; // Will change to 'move' when hovering over elements
         }
     }
     // Trigger change event to update UI
@@ -199,12 +198,6 @@ function updateToolOptions(tool) {
         }
     }
     
-    // Move tool doesn't need any special options - all options should be hidden
-    if (tool === 'move') {
-        if (colorContainer) colorContainer.style.display = 'none';
-        if (fillColorContainer) fillColorContainer.style.display = 'none';
-        if (outlineColorContainer) outlineColorContainer.style.display = 'none';
-    }
 }
 
 // Initialize tool on page load (defer until DOM is ready)
@@ -715,18 +708,14 @@ function posterizeImage(x, y, width, height) {
 
 // Check for hover over pending elements (for cursor feedback)
 function checkHover(e) {
-    if (!canvas) return;
-    const tool = getCurrentTool();
+    if (!canvas || isDrawing) return;
     const coords = getCanvasCoordinates(e);
+    const hit = getPendingElementAt(coords.x, coords.y);
     
-    if (tool === 'move') {
-        const hit = getPendingElementAt(coords.x, coords.y);
-        if (hit && !isDrawing) {
-            canvas.style.cursor = 'move';
-        } else if (!isDrawing) {
-            canvas.style.cursor = 'default';
-        }
-    } else if (!isDrawing) {
+    if (hit) {
+        canvas.style.cursor = 'move';
+    } else {
+        const tool = getCurrentTool();
         canvas.style.cursor = (tool === 'eyedropper') ? 'crosshair' : 'crosshair';
     }
 }
@@ -811,18 +800,37 @@ function finalizePendingElements() {
     }
     
     pendingElements = [];
+    selectedElement = null;
     draggingElement = null;
     redrawCanvas();
 }
 
 // Draw a pending element (either as preview or finalized)
 function drawPendingElement(elem, finalized = false) {
+    const isSelected = (elem === selectedElement);
+    
     if (elem.type === 'text') {
         ctx.fillStyle = getDrawColor();
         ctx.font = elem.fontSize + 'px ' + elem.fontFamily;
         ctx.textAlign = elem.textAlign;
         ctx.textBaseline = 'top';
         ctx.fillText(elem.text, elem.x, elem.y);
+        
+        // Draw selection outline for text
+        if (isSelected && !finalized) {
+            const metrics = ctx.measureText(elem.text);
+            const textWidth = metrics.width;
+            const textHeight = parseInt(elem.fontSize);
+            let textX = elem.x;
+            if (elem.textAlign === 'center') textX -= textWidth / 2;
+            else if (elem.textAlign === 'right') textX -= textWidth;
+            
+            ctx.strokeStyle = '#2196F3';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(textX - 2, elem.y - 2, textWidth + 4, textHeight + 4);
+            ctx.setLineDash([]);
+        }
     } else if (elem.type === 'rectangle') {
         const x = Math.min(elem.x, elem.x + elem.width);
         const y = Math.min(elem.y, elem.y + elem.height);
@@ -833,6 +841,15 @@ function drawPendingElement(elem, finalized = false) {
         ctx.strokeStyle = getOutlineColor();
         ctx.lineWidth = elem.lineWidth;
         ctx.strokeRect(x, y, w, h);
+        
+        // Draw selection outline
+        if (isSelected && !finalized) {
+            ctx.strokeStyle = '#2196F3';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+            ctx.setLineDash([]);
+        }
     } else if (elem.type === 'roundedRect') {
         const x = Math.min(elem.x, elem.x + elem.width);
         const y = Math.min(elem.y, elem.y + elem.height);
@@ -857,6 +874,15 @@ function drawPendingElement(elem, finalized = false) {
         ctx.strokeStyle = getOutlineColor();
         ctx.lineWidth = elem.lineWidth;
         ctx.stroke();
+        
+        // Draw selection outline
+        if (isSelected && !finalized) {
+            ctx.strokeStyle = '#2196F3';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+            ctx.setLineDash([]);
+        }
     } else if (elem.type === 'circle') {
         const radius = Math.sqrt(Math.pow(elem.endX - elem.x, 2) + Math.pow(elem.endY - elem.y, 2));
         ctx.beginPath();
@@ -866,6 +892,18 @@ function drawPendingElement(elem, finalized = false) {
         ctx.strokeStyle = getOutlineColor();
         ctx.lineWidth = elem.lineWidth;
         ctx.stroke();
+        
+        // Draw selection outline for circle
+        if (isSelected && !finalized) {
+            const radius = Math.sqrt(Math.pow(elem.endX - elem.x, 2) + Math.pow(elem.endY - elem.y, 2));
+            ctx.strokeStyle = '#2196F3';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.arc(elem.x, elem.y, radius + 2, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
     } else if (elem.type === 'line') {
         ctx.strokeStyle = getDrawColor();
         ctx.lineWidth = elem.lineWidth;
@@ -873,6 +911,18 @@ function drawPendingElement(elem, finalized = false) {
         ctx.moveTo(elem.x, elem.y);
         ctx.lineTo(elem.endX, elem.endY);
         ctx.stroke();
+        
+        // Draw selection outline for line
+        if (isSelected && !finalized) {
+            ctx.strokeStyle = '#2196F3';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(elem.x, elem.y);
+            ctx.lineTo(elem.endX, elem.endY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
     }
 }
 
@@ -901,32 +951,38 @@ function startDraw(e) {
     const coords = getCanvasCoordinates(e);
     const tool = getCurrentTool();
     
-    // Move tool: only allow moving pending elements
-    if (tool === 'move') {
-        const hit = getPendingElementAt(coords.x, coords.y);
-        if (hit) {
-            draggingElement = hit.element;
-            if (hit.element.type === 'circle' || hit.element.type === 'line') {
-                // For circle/line, calculate offset from the center of the shape
-                const centerX = (hit.element.x + hit.element.endX) / 2;
-                const centerY = (hit.element.y + hit.element.endY) / 2;
-                dragOffset.x = coords.x - centerX;
-                dragOffset.y = coords.y - centerY;
-            } else {
-                // For other elements, offset from top-left corner
-                dragOffset.x = coords.x - hit.element.x;
-                dragOffset.y = coords.y - hit.element.y;
-            }
-            isDrawing = true;
+    // Check if clicking on a pending element to select/move it
+    const hit = getPendingElementAt(coords.x, coords.y);
+    if (hit) {
+        // Select the element
+        selectedElement = hit.element;
+        redrawCanvas();
+        
+        // Start dragging if we're moving
+        draggingElement = hit.element;
+        if (hit.element.type === 'circle' || hit.element.type === 'line') {
+            // For circle/line, calculate offset from the center of the shape
+            const centerX = (hit.element.x + hit.element.endX) / 2;
+            const centerY = (hit.element.y + hit.element.endY) / 2;
+            dragOffset.x = coords.x - centerX;
+            dragOffset.y = coords.y - centerY;
+        } else {
+            // For other elements, offset from top-left corner
+            dragOffset.x = coords.x - hit.element.x;
+            dragOffset.y = coords.y - hit.element.y;
         }
-        // If no element hit in move mode, do nothing
+        isDrawing = true;
         return;
     }
     
-    // Other tools: check if clicking on a pending element (only if move mode was just active)
-    // Actually, let's not allow moving when other tools are active - user must use move tool
-    // If clicking elsewhere and there are pending elements, finalize them first
-    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper' && tool !== 'move') {
+    // Clicked elsewhere - deselect
+    if (selectedElement) {
+        selectedElement = null;
+        redrawCanvas();
+    }
+    
+    // If clicking elsewhere and there are pending elements, finalize them first (for shape tools)
+    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper') {
         finalizePendingElements();
     }
     
@@ -1233,6 +1289,7 @@ function clearCanvas() {
     ctx.fillStyle = '#F5F5EB';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     pendingElements = [];
+    selectedElement = null;
     draggingElement = null;
     showStatus('canvasStatus', 'Canvas cleared', false);
 }
@@ -1257,6 +1314,7 @@ function handleImageFileSelect(event) {
             saveCanvasState();
             // Clear pending elements when loading new image
             pendingElements = [];
+            selectedElement = null;
             draggingElement = null;
             
             // Calculate scaling to fit canvas while maintaining aspect ratio
@@ -1333,6 +1391,7 @@ function loadFramebufferToCanvas() {
         img.onload = function() {
             // Clear pending elements when loading framebuffer
             pendingElements = [];
+            selectedElement = null;
             draggingElement = null;
             
             // Clear canvas
@@ -1380,6 +1439,16 @@ function initializeCanvas() {
         
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
+            // Delete key to remove selected element
+            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElement) {
+                e.preventDefault();
+                const index = pendingElements.indexOf(selectedElement);
+                if (index >= 0) {
+                    pendingElements.splice(index, 1);
+                    selectedElement = null;
+                    redrawCanvas();
+                }
+            }
             // Enter to finalize pending elements
             if (e.key === 'Enter' && pendingElements.length > 0) {
                 e.preventDefault();
@@ -1389,6 +1458,7 @@ function initializeCanvas() {
             if (e.key === 'Escape' && pendingElements.length > 0) {
                 e.preventDefault();
                 pendingElements = [];
+                selectedElement = null;
                 draggingElement = null;
                 redrawCanvas();
             }

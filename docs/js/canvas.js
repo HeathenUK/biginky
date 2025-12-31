@@ -1275,6 +1275,14 @@ if (document.readyState === 'loading') {
     setupToolChangeListener();
 }
 
+function selectNone() {
+    if (selectedElement) {
+        selectedElement = null;
+        redrawCanvas();
+        showStatus('canvasStatus', 'Selection cleared', false);
+    }
+}
+
 function clearCanvas() {
     if (!canvas || !ctx) return;
     saveCanvasState();

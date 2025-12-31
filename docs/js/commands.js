@@ -612,20 +612,7 @@ function generateDefaultCanvasFilename() {
 
 // Unified canvas action handler (replaces the three separate functions)
 async function sendCanvasAction() {
-    // Clear any selected element first (if accessible)
-    try {
-        if (typeof selectedElement !== 'undefined' && selectedElement !== null) {
-            selectedElement = null;
-            // Redraw canvas to remove selection outline
-            if (typeof redrawCanvas === 'function') {
-                redrawCanvas();
-            }
-        }
-    } catch (e) {
-        // selectedElement might not be in scope, that's okay
-    }
-    
-    // Finalize any pending elements before sending
+    // Finalize any pending elements before sending (this will clear selection)
     if (typeof finalizePendingElements === 'function' && pendingElements && pendingElements.length > 0) {
         finalizePendingElements();
     }

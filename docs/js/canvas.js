@@ -798,10 +798,11 @@ function distanceToLineSegment(px, py, x1, y1, x2, y2) {
 function finalizePendingElements() {
     if (pendingElements.length === 0) return;
     
-    saveCanvasState();
-    
-    // Clear selection BEFORE drawing to avoid drawing selection outline
+    // Clear selection and redraw to remove any visible selection outline
     selectedElement = null;
+    redrawCanvas(); // This redraws without selection outline
+    
+    saveCanvasState();
     
     // Draw all pending elements to canvas (without selection outline)
     for (const elem of pendingElements) {
@@ -810,7 +811,6 @@ function finalizePendingElements() {
     
     pendingElements = [];
     draggingElement = null;
-    // No need to redrawCanvas() - we've already drawn everything to the canvas
 }
 
 // Draw a pending element (either as preview or finalized)

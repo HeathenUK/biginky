@@ -1305,7 +1305,10 @@ void publishMQTTThumbnailAlways() {
     }
     
     // Now publish the thumbnail
-    publishMQTTThumbnail();
+    // Since we're already connected and this is called from display.update(),
+    // call the internal implementation directly (synchronous) to ensure it publishes immediately
+    // The thumbnail generation is CPU-intensive but we want it to complete before returning
+    publishMQTTThumbnailInternalImpl();
     
     // Note: We intentionally do NOT disconnect WiFi/MQTT here
     // This allows them to stay connected for subsequent operations

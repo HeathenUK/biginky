@@ -12,7 +12,7 @@ let canvasHistory = [];
 let canvasRedoHistory = []; // Track states that were undone for redo
 let historyIndex = -1;
 let lastUncompressedState = null; // Keep last state uncompressed for preview
-let currentDrawColor = '1'; // Default to white
+let currentDrawColor = '0'; // Default to black
 let currentFillColor = '1'; // Default to white
 let currentOutlineColor = '0'; // Default to black
 
@@ -1230,98 +1230,6 @@ function draw(e) {
 
 let previewCanvas = null;
 let previewCtx = null;
-
-function draw(e) {
-    if (!isDrawing) return;
-    e.preventDefault();
-    const coords = getCanvasCoordinates(e);
-    const tool = getCurrentTool();
-    
-    if (tool === 'brush' || tool === 'eraser') {
-        const x = coords.x;
-        const y = coords.y;
-        ctx.strokeStyle = tool === 'eraser' ? '#F5F5EB' : getDrawColor();
-        ctx.lineWidth = getBrushSize();
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(lastX, lastY);
-        ctx.lineTo(x, y);
-        ctx.stroke();
-        lastX = x;
-        lastY = y;
-    } else if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
-        // Restore last saved state and draw preview
-        // Use lastUncompressedState if available (for real-time preview)
-        if (lastUncompressedState) {
-            ctx.putImageData(lastUncompressedState, 0, 0);
-        } else if (historyIndex >= 0 && canvasHistory[historyIndex]) {
-            const state = canvasHistory[historyIndex];
-            // Check if it's already ImageData (uncompressed) or compressed
-            if (state.data && state.width && state.height) {
-                // Already ImageData - use directly
-                ctx.putImageData(state, 0, 0);
-            }
-            // If compressed, we can't restore synchronously - shape will draw on current state
-        }
-        
-        ctx.lineWidth = getLineWidth();
-        ctx.beginPath();
-        
-        if (tool === 'rectangle') {
-            const width = coords.x - startX;
-            const height = coords.y - startY;
-            const x = Math.min(startX, coords.x);
-            const y = Math.min(startY, coords.y);
-            const w = Math.abs(width);
-            const h = Math.abs(height);
-            // Fill first, then stroke
-            ctx.fillStyle = getFillColor();
-            ctx.fillRect(x, y, w, h);
-            ctx.strokeStyle = getOutlineColor();
-            ctx.strokeRect(x, y, w, h);
-        } else if (tool === 'roundedRect') {
-            const width = coords.x - startX;
-            const height = coords.y - startY;
-            const radius = getRoundedRectRadius();
-            const x = Math.min(startX, coords.x);
-            const y = Math.min(startY, coords.y);
-            const w = Math.abs(width);
-            const h = Math.abs(height);
-            const r = Math.min(radius, Math.min(w, h) / 2); // Limit radius to half the smallest dimension
-            
-            ctx.beginPath();
-            ctx.moveTo(x + r, y);
-            ctx.lineTo(x + w - r, y);
-            ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-            ctx.lineTo(x + w, y + h - r);
-            ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-            ctx.lineTo(x + r, y + h);
-            ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-            ctx.lineTo(x, y + r);
-            ctx.quadraticCurveTo(x, y, x + r, y);
-            ctx.closePath();
-            
-            // Fill first, then stroke
-            ctx.fillStyle = getFillColor();
-            ctx.fill();
-            ctx.strokeStyle = getOutlineColor();
-            ctx.stroke();
-        } else if (tool === 'circle') {
-            const radius = Math.sqrt(Math.pow(coords.x - startX, 2) + Math.pow(coords.y - startY, 2));
-            ctx.arc(startX, startY, radius, 0, Math.PI * 2);
-            // Fill first, then stroke
-            ctx.fillStyle = getFillColor();
-            ctx.fill();
-            ctx.strokeStyle = getOutlineColor();
-            ctx.stroke();
-        } else if (tool === 'line') {
-            ctx.strokeStyle = getDrawColor();
-            ctx.moveTo(startX, startY);
-            ctx.lineTo(coords.x, coords.y);
-            ctx.stroke();
-        }
-    }
-}
 
 function stopDraw() {
     if (!isDrawing) return;

@@ -255,18 +255,18 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="flex-item" id="colorContainer" style="min-width:150px;position:relative;">
 <label id="colorLabel">Colour:</label>
 <button type="button" id="drawColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select color">
-<span id="drawColorIndicator" style="display:inline-block;width:32px;height:32px;background:#F5F5EB;border:2px solid #333;margin:2px;"></span>
-<span id="drawColorLabel" style="margin-left:8px;">White</span>
+<span id="drawColorIndicator" style="display:inline-block;width:32px;height:32px;background:#0A0A0A;border:2px solid #333;margin:2px;"></span>
+<span id="drawColorLabel" style="margin-left:8px;">Black</span>
 </button>
 <div id="drawColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;top:100%;">
-<button class="palette-color-btn" data-color="0" style="width:32px;height:32px;background:#0A0A0A;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
+<button class="palette-color-btn active" data-color="0" style="width:32px;height:32px;background:#0A0A0A;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
 <button class="palette-color-btn" data-color="2" style="width:32px;height:32px;background:#F5D232;border:2px solid #555;cursor:pointer;margin:2px;" title="Yellow"></button>
 <button class="palette-color-btn" data-color="3" style="width:32px;height:32px;background:#BE3C37;border:2px solid #555;cursor:pointer;margin:2px;" title="Red"></button>
 <button class="palette-color-btn" data-color="5" style="width:32px;height:32px;background:#2D4BA0;border:2px solid #555;cursor:pointer;margin:2px;" title="Blue"></button>
 <button class="palette-color-btn" data-color="6" style="width:32px;height:32px;background:#378C55;border:2px solid #555;cursor:pointer;margin:2px;" title="Green"></button>
-<button class="palette-color-btn active" data-color="1" style="width:32px;height:32px;background:#F5F5EB;border:2px solid #555;cursor:pointer;margin:2px;" title="White"></button>
+<button class="palette-color-btn" data-color="1" style="width:32px;height:32px;background:#F5F5EB;border:2px solid #555;cursor:pointer;margin:2px;" title="White"></button>
 </div>
-<input type="hidden" id="drawColor" value="1">
+<input type="hidden" id="drawColor" value="0">
 </div>
 <div class="flex-item" id="fillColorContainer" style="min-width:150px;display:none;position:relative;">
 <label>Fill Colour:</label>
@@ -323,11 +323,18 @@ table th,table td{padding:6px;font-size:12px;}
 <option value="12">12px</option>
 <option value="16">16px</option>
 <option value="20">20px</option>
-<option value="24" selected>24px</option>
+<option value="24">24px</option>
 <option value="32">32px</option>
 <option value="48">48px</option>
 <option value="64">64px</option>
-<option value="96">96px</option>
+<option value="96" selected>96px</option>
+<option value="128">128px</option>
+<option value="160">160px</option>
+<option value="200">200px</option>
+<option value="256">256px</option>
+<option value="320">320px</option>
+<option value="400">400px</option>
+<option value="512">512px</option>
 </select>
 </div>
 <div class="flex-item" id="textFontFamilyContainer" style="min-width:150px;display:none;">

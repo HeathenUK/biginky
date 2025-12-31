@@ -1058,6 +1058,7 @@ function startDraw(e) {
     
     // Clicked elsewhere - deselect all (unless Ctrl/Cmd is held for multi-select)
     // Only deselect if we didn't just successfully select an element
+    console.log('[DEBUG] Clicked elsewhere - elementWasSelected:', elementWasSelected, 'ctrlKey:', e.ctrlKey, 'metaKey:', e.metaKey, 'selectedElements.length:', selectedElements.length);
     if (!elementWasSelected && !e.ctrlKey && !e.metaKey) {
         if (selectedElements.length > 0) {
             console.log('[DEBUG] Clicked elsewhere, deselecting all');
@@ -1069,9 +1070,13 @@ function startDraw(e) {
     }
     
     // If clicking elsewhere and there are pending elements, finalize them first (for shape tools)
+    console.log('[DEBUG] Checking pending elements - pendingElements.length:', pendingElements.length, 'tool:', tool);
     if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper') {
+        console.log('[DEBUG] Finalizing pending elements before creating new element');
         finalizePendingElements();
     }
+    
+    console.log('[DEBUG] Continuing to create new element, tool:', tool);
     
     if (tool === 'text') {
         const text = document.getElementById('canvasTextInput').value.trim();

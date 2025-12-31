@@ -46,6 +46,8 @@
 // MQTT runtime state
 static esp_mqtt_client_handle_t mqttClient = nullptr;
 static bool mqttConnected = false;
+static SemaphoreHandle_t mqttPublishSem = nullptr;  // Semaphore to wait for publish completion
+static int mqttPendingPublishMsgId = -1;  // Message ID we're waiting for
 static char mqttBroker[128] = MQTT_BROKER_HOSTNAME;
 static int mqttPort = MQTT_BROKER_PORT;
 static char mqttClientId[64] = MQTT_CLIENT_ID;
@@ -144,6 +146,14 @@ bool mqttConnect() {
     if (strlen(mqttBroker) == 0) {
         Serial.println("No MQTT broker configured");
         return false;
+    }
+    
+    // Create publish semaphore if not already created
+    if (mqttPublishSem == nullptr) {
+        mqttPublishSem = xSemaphoreCreateBinary();
+        if (mqttPublishSem == nullptr) {
+            Serial.println("WARNING: Failed to create MQTT publish semaphore");
+        }
     }
     
     // Disconnect existing client if any
@@ -330,6 +340,15 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             
         case MQTT_EVENT_UNSUBSCRIBED:
             Serial.printf("MQTT unsubscribed (msg_id: %d)\n", event->msg_id);
+            break;
+            
+        case MQTT_EVENT_PUBLISHED:
+            // Message was published successfully
+            if (mqttPublishSem != nullptr && event->msg_id == mqttPendingPublishMsgId) {
+                Serial.printf("MQTT message published (msg_id: %d)\n", event->msg_id);
+                mqttPendingPublishMsgId = -1;
+                xSemaphoreGive(mqttPublishSem);
+            }
             break;
             
         case MQTT_EVENT_DISCONNECTED:
@@ -760,14 +779,28 @@ void publishMQTTCommandCompletion(const String& commandId, const String& command
     bool isEncrypted = isEncryptionEnabled();
     Serial.printf("Publishing %s command completion JSON (%d bytes) to %s...\n", 
                   isEncrypted ? "encrypted" : "unencrypted", written, mqttTopicStatus);
+    
+    // Wait for publish completion using semaphore
+    if (mqttPublishSem != nullptr) {
+        mqttPendingPublishMsgId = -1;  // Reset
+        xSemaphoreTake(mqttPublishSem, 0);  // Clear semaphore (non-blocking)
+    }
+    
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("Published %s command completion to %s (msg_id: %d)\n", 
+        Serial.printf("Published %s command completion to %s (msg_id: %d), waiting for confirmation...\n", 
                       isEncrypted ? "encrypted" : "unencrypted", mqttTopicStatus, msg_id);
         
-        // Wait for message to be sent (MQTT publish is asynchronous)
-        // Give it time to actually send the message before disconnecting
-        delay(500);  // 500ms should be enough for small messages
+        // Wait for MQTT_EVENT_PUBLISHED event (up to 5 seconds)
+        if (mqttPublishSem != nullptr) {
+            mqttPendingPublishMsgId = msg_id;
+            if (xSemaphoreTake(mqttPublishSem, pdMS_TO_TICKS(5000)) == pdTRUE) {
+                Serial.println("Command completion message confirmed published");
+            } else {
+                Serial.println("WARNING: Timeout waiting for command completion publish confirmation");
+            }
+            mqttPendingPublishMsgId = -1;
+        }
     } else {
         Serial.printf("Failed to publish command completion to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     }

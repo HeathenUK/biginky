@@ -12,6 +12,7 @@
 #include "platform_hal.h"  // For hal_psram_malloc, hal_psram_free
 #include "lodepng_psram.h"  // Custom PSRAM allocators for lodepng (must be before lodepng.h)
 #include "lodepng.h"       // For PNG encoding
+#include "miniz.h"         // For zlib decompression (tinfl_decompress_mem_to_mem)
 #include <Arduino.h>
 #include <time.h>
 #include "ff.h"            // FatFs for SD card operations
@@ -78,28 +79,95 @@ bool handleCanvasDisplayCommand(const String& messageToProcess) {
     Serial.printf("  Compressed: %s\n", isCompressed ? "yes" : "no");
     Serial.printf("  Expected raw pixel size: %zu bytes (%.1f KB)\n", expectedRawSize, expectedRawSize / 1024.0f);
     
-    // Queue decode/decompress work to Core 1 (synchronous - waits for completion)
-    CanvasDecodeWorkData decodeWork = {0};
-    decodeWork.base64Data = base64Data.c_str();
-    decodeWork.base64DataLen = base64Data.length();
-    decodeWork.width = width;
-    decodeWork.height = height;
-    decodeWork.isCompressed = isCompressed;
-    decodeWork.pixelData = nullptr;
-    decodeWork.pixelDataLen = 0;
-    decodeWork.success = false;
+    // Process decode/decompress synchronously on Core 0 to avoid being blocked by other work in the queue
+    // This is CPU-intensive but necessary to avoid delays from media mappings or other queued work
+    Serial.println("Processing canvas decode/decompress synchronously on Core 0...");
     
-    if (!queueCanvasDecodeWork(&decodeWork)) {
-        Serial.println("ERROR: Canvas decode/decompress failed on Core 1");
+    // Decode base64
+    size_t decodedLen = (base64Data.length() * 3) / 4;
+    uint8_t* compressedData = (uint8_t*)hal_psram_malloc(decodedLen);
+    if (!compressedData) {
+        Serial.println("ERROR: Failed to allocate PSRAM for compressed data");
         return false;
     }
     
-    // Core 1 has completed - pixelData is now available
-    uint8_t* pixelData = decodeWork.pixelData;
-    size_t actualLen = decodeWork.pixelDataLen;
+    // Simple base64 decode
+    size_t compressedSize = 0;
+    for (size_t i = 0; i < base64Data.length() && compressedSize < decodedLen; i += 4) {
+        uint32_t value = 0;
+        int padding = 0;
+        
+        for (int j = 0; j < 4 && (i + j) < base64Data.length(); j++) {
+            char c = base64Data.charAt(i + j);
+            if (c == '=') {
+                padding++;
+                value <<= 6;
+            } else if (c >= 'A' && c <= 'Z') {
+                value = (value << 6) | (c - 'A');
+            } else if (c >= 'a' && c <= 'z') {
+                value = (value << 6) | (c - 'a' + 26);
+            } else if (c >= '0' && c <= '9') {
+                value = (value << 6) | (c - '0' + 52);
+            } else if (c == '+') {
+                value = (value << 6) | 62;
+            } else if (c == '/') {
+                value = (value << 6) | 63;
+            }
+        }
+        
+        int bytes = 3 - padding;
+        for (int j = 0; j < bytes && compressedSize < decodedLen; j++) {
+            compressedData[compressedSize++] = (value >> (8 * (2 - j))) & 0xFF;
+        }
+    }
+    
+    Serial.printf("Base64 decoded: %zu bytes\n", compressedSize);
+    
+    // Decompress if needed
+    uint8_t* pixelData = nullptr;
+    size_t actualLen = 0;
+    
+    if (isCompressed) {
+        size_t expectedSize = width * height;
+        pixelData = (uint8_t*)hal_psram_malloc(expectedSize);
+        if (!pixelData) {
+            Serial.println("ERROR: Failed to allocate PSRAM for decompressed pixel data");
+            hal_psram_free(compressedData);
+            return false;
+        }
+        
+        size_t decompressedSize = tinfl_decompress_mem_to_mem(pixelData, expectedSize, compressedData, compressedSize, 0);
+        
+        if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+            Serial.println("miniz decompression failed, trying with zlib header...");
+            decompressedSize = tinfl_decompress_mem_to_mem(pixelData, expectedSize, compressedData, compressedSize, TINFL_FLAG_PARSE_ZLIB_HEADER);
+            if (decompressedSize == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                Serial.println("Zlib header flag also failed");
+                hal_psram_free(compressedData);
+                hal_psram_free(pixelData);
+                return false;
+            }
+        }
+        
+        if (decompressedSize != expectedSize) {
+            Serial.printf("ERROR: Decompressed size mismatch: got %zu, expected %zu\n", decompressedSize, expectedSize);
+            hal_psram_free(compressedData);
+            hal_psram_free(pixelData);
+            return false;
+        }
+        
+        actualLen = decompressedSize;
+        hal_psram_free(compressedData);
+        Serial.printf("Decompressed: %zu bytes (%.1f KB)\n", actualLen, actualLen / 1024.0f);
+    } else {
+        // Not compressed, use directly
+        pixelData = compressedData;
+        actualLen = compressedSize;
+        compressedData = nullptr;  // Prevent double-free
+    }
     
     if (pixelData == nullptr || actualLen == 0) {
-        Serial.println("ERROR: Core 1 decode returned null or empty pixel data");
+        Serial.println("ERROR: Decode returned null or empty pixel data");
         return false;
     }
     

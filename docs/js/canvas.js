@@ -720,12 +720,14 @@ function checkHover(e) {
     }
 }
 
-// Check if click is on a pending element
+// Check if click is on a pending element (with more permissive hit detection)
 function getPendingElementAt(x, y) {
+    const HIT_MARGIN = 10; // Extra pixels around elements for easier clicking
+    
     for (let i = pendingElements.length - 1; i >= 0; i--) {
         const elem = pendingElements[i];
         if (elem.type === 'text') {
-            // Approximate text bounds (rough estimate)
+            // Approximate text bounds with margin
             ctx.font = elem.fontSize + 'px ' + elem.fontFamily;
             ctx.textAlign = elem.textAlign;
             const metrics = ctx.measureText(elem.text);
@@ -735,7 +737,8 @@ function getPendingElementAt(x, y) {
             if (elem.textAlign === 'center') textX -= textWidth / 2;
             else if (elem.textAlign === 'right') textX -= textWidth;
             
-            if (x >= textX && x <= textX + textWidth && y >= elem.y && y <= elem.y + textHeight) {
+            if (x >= textX - HIT_MARGIN && x <= textX + textWidth + HIT_MARGIN && 
+                y >= elem.y - HIT_MARGIN && y <= elem.y + textHeight + HIT_MARGIN) {
                 return { element: elem, index: i };
             }
         } else if (elem.type === 'rectangle' || elem.type === 'roundedRect') {
@@ -743,19 +746,22 @@ function getPendingElementAt(x, y) {
             const y1 = Math.min(elem.y, elem.y + elem.height);
             const x2 = Math.max(elem.x, elem.x + elem.width);
             const y2 = Math.max(elem.y, elem.y + elem.height);
-            if (x >= x1 && x <= x2 && y >= y1 && y <= y2) {
+            // Expand hit area by margin
+            if (x >= x1 - HIT_MARGIN && x <= x2 + HIT_MARGIN && 
+                y >= y1 - HIT_MARGIN && y <= y2 + HIT_MARGIN) {
                 return { element: elem, index: i };
             }
         } else if (elem.type === 'circle') {
             const radius = Math.sqrt(Math.pow(elem.endX - elem.x, 2) + Math.pow(elem.endY - elem.y, 2));
             const dist = Math.sqrt(Math.pow(x - elem.x, 2) + Math.pow(y - elem.y, 2));
-            if (dist <= radius) {
+            // Expand hit area by margin
+            if (dist <= radius + HIT_MARGIN) {
                 return { element: elem, index: i };
             }
         } else if (elem.type === 'line') {
-            // Check if click is near the line (within 5 pixels)
+            // Check if click is near the line (within margin pixels)
             const dist = distanceToLineSegment(x, y, elem.x, elem.y, elem.endX, elem.endY);
-            if (dist <= 5) {
+            if (dist <= HIT_MARGIN) {
                 return { element: elem, index: i };
             }
         }
@@ -951,14 +957,13 @@ function startDraw(e) {
     const coords = getCanvasCoordinates(e);
     const tool = getCurrentTool();
     
-    // Check if clicking on a pending element to select/move it
+    // ALWAYS check if clicking on a pending element first (before any tool-specific logic)
     const hit = getPendingElementAt(coords.x, coords.y);
     if (hit) {
         // Select the element
         selectedElement = hit.element;
-        redrawCanvas();
         
-        // Start dragging if we're moving
+        // Start dragging immediately
         draggingElement = hit.element;
         if (hit.element.type === 'circle' || hit.element.type === 'line') {
             // For circle/line, calculate offset from the center of the shape
@@ -966,13 +971,20 @@ function startDraw(e) {
             const centerY = (hit.element.y + hit.element.endY) / 2;
             dragOffset.x = coords.x - centerX;
             dragOffset.y = coords.y - centerY;
+        } else if (hit.element.type === 'rectangle' || hit.element.type === 'roundedRect') {
+            // For rectangles, calculate offset from the actual visual top-left corner
+            const visualX = Math.min(hit.element.x, hit.element.x + hit.element.width);
+            const visualY = Math.min(hit.element.y, hit.element.y + hit.element.height);
+            dragOffset.x = coords.x - visualX;
+            dragOffset.y = coords.y - visualY;
         } else {
-            // For other elements, offset from top-left corner
+            // For text, offset from the text position
             dragOffset.x = coords.x - hit.element.x;
             dragOffset.y = coords.y - hit.element.y;
         }
         isDrawing = true;
-        return;
+        redrawCanvas(); // Redraw to show selection
+        return; // Don't create new element
     }
     
     // Clicked elsewhere - deselect
@@ -1071,8 +1083,18 @@ function draw(e) {
             draggingElement.y += dy;
             draggingElement.endX += dx;
             draggingElement.endY += dy;
+        } else if (draggingElement.type === 'rectangle' || draggingElement.type === 'roundedRect') {
+            // For rectangles, move the visual top-left corner
+            const oldVisualX = Math.min(draggingElement.x, draggingElement.x + draggingElement.width);
+            const oldVisualY = Math.min(draggingElement.y, draggingElement.y + draggingElement.height);
+            const newVisualX = coords.x - dragOffset.x;
+            const newVisualY = coords.y - dragOffset.y;
+            const dx = newVisualX - oldVisualX;
+            const dy = newVisualY - oldVisualY;
+            draggingElement.x += dx;
+            draggingElement.y += dy;
         } else {
-            // For other elements, just move the position
+            // For text, just move the position
             draggingElement.x = coords.x - dragOffset.x;
             draggingElement.y = coords.y - dragOffset.y;
         }
@@ -1093,6 +1115,11 @@ function draw(e) {
         lastX = x;
         lastY = y;
     } else if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
+        // Don't create new shapes if we're dragging an existing element
+        if (draggingElement) {
+            return;
+        }
+        
         // Remove any existing pending element of this type (only one shape at a time)
         pendingElements = pendingElements.filter(e => e.type !== tool);
         

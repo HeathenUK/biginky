@@ -28,7 +28,7 @@ const colorMap = {
 
 function getDrawColor() {
     const val = parseInt(currentDrawColor);
-    return colorMap[val] || '#000000';
+    return colorMap[val] || '#0A0A0A';
 }
 
 function getDrawColorValue() {
@@ -45,7 +45,7 @@ function getFillColor() {
         return 'transparent';
     }
     const numVal = parseInt(currentFillColor);
-    return colorMap[numVal] || '#FFFFFF';
+    return colorMap[numVal] || '#F5F5EB';
 }
 
 function getFillColorValue() {
@@ -62,7 +62,7 @@ function getOutlineColor() {
         return 'transparent';
     }
     const numVal = parseInt(currentOutlineColor);
-    return colorMap[numVal] || '#000000';
+    return colorMap[numVal] || '#0A0A0A';
 }
 
 function getOutlineColorValue() {
@@ -917,7 +917,7 @@ if (document.readyState === 'loading') {
 function clearCanvas() {
     if (!canvas || !ctx) return;
     saveCanvasState();
-    ctx.fillStyle = '#FFFFFF';
+    ctx.fillStyle = '#F5F5EB';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     showStatus('canvasStatus', 'Canvas cleared', false);
 }
@@ -962,7 +962,7 @@ function handleImageFileSelect(event) {
             }
             
             // Clear canvas and draw image centered
-            ctx.fillStyle = '#FFFFFF';
+            ctx.fillStyle = '#F5F5EB';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
             
@@ -1014,7 +1014,7 @@ function loadFramebufferToCanvas() {
         
         img.onload = function() {
             // Clear canvas
-            ctx.fillStyle = '#FFFFFF';
+            ctx.fillStyle = '#F5F5EB';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             
             // Draw framebuffer at full size (canvas is 1600x1200, framebuffer should be 1600x1200)

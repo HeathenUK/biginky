@@ -664,8 +664,43 @@ void publishMQTTStatus() {
 
 // Publish command completion status to MQTT
 void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success) {
+    // Always connect WiFi and MQTT if needed, then publish completion status
+    // This ensures command completion is always published
+    
+    // Load WiFi credentials if needed
+    if (!wifiLoadCredentials()) {
+        Serial.println("WARNING: No WiFi credentials, cannot publish command completion");
+        return;
+    }
+    
+    // Connect to WiFi if not already connected
+    bool wifiWasConnected = (WiFi.status() == WL_CONNECTED);
+    
+    if (!wifiWasConnected) {
+        Serial.println("Connecting to WiFi for command completion publish...");
+        if (!wifiConnectPersistent(5, 20000, false)) {  // 5 retries, 20s per attempt, not required
+            Serial.println("WARNING: WiFi connection failed, cannot publish command completion");
+            return;
+        }
+        Serial.println("WiFi connected for command completion publish");
+    }
+    
+    // Load MQTT config and connect if needed
+    mqttLoadConfig();
+    bool mqttWasConnected = mqttConnected;
+    
+    if (!mqttWasConnected) {
+        Serial.println("Connecting to MQTT for command completion publish...");
+        if (!mqttConnect()) {
+            Serial.println("WARNING: MQTT connection failed, cannot publish command completion");
+            // Don't disconnect WiFi - we might want to keep it connected
+            return;
+        }
+        Serial.println("MQTT connected for command completion publish");
+    }
+    
     if (mqttClient == nullptr || !mqttConnected) {
-        Serial.println("MQTT not connected, cannot publish command completion");
+        Serial.println("ERROR: MQTT client or connection state invalid after connect attempt");
         return;
     }
     

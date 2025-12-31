@@ -722,7 +722,7 @@ function checkHover(e) {
 
 // Check if click is on a pending element (with more permissive hit detection)
 function getPendingElementAt(x, y) {
-    const HIT_MARGIN = 10; // Extra pixels around elements for easier clicking
+    const HIT_MARGIN = 20; // Extra pixels around elements for easier clicking
     
     for (let i = pendingElements.length - 1; i >= 0; i--) {
         const elem = pendingElements[i];
@@ -979,13 +979,11 @@ function startDraw(e) {
                 selectedElements.push(hit.element);
             }
         } else {
-            // Single select - replace selection
-            if (!isAlreadySelected) {
-                selectedElements = [hit.element];
-            }
+            // Single select - always set selection to this element (even if already selected)
+            selectedElements = [hit.element];
         }
         
-        // Start dragging all selected elements
+        // Start dragging all selected elements (always, even if already selected)
         draggingElements = [...selectedElements];
         dragOffsets.clear();
         

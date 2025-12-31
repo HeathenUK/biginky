@@ -984,20 +984,24 @@ function startDraw(e) {
                 console.log('[DEBUG] Added to selection, now', selectedElements.length, 'selected:', selectedElements.map(e => e.type));
             }
         } else {
-            // Single select - always set selection to this element (even if already selected)
+            // Single select - replace selection only if element is NOT already selected
             if (!isAlreadySelected) {
+                // Element not in selection - replace selection with just this element
                 selectedElements = [hit.element];
                 elementWasSelected = true;
+                console.log('[DEBUG] Single select (new), now', selectedElements.length, 'selected');
             } else {
-                // Already selected - keep it selected
-                selectedElements = [hit.element];
+                // Element already in selection - keep existing selection (allows dragging all selected)
+                // Don't modify selectedElements, just ensure it's still selected
+                console.log('[DEBUG] Single select (already selected), keeping', selectedElements.length, 'selected');
             }
-            console.log('[DEBUG] Single select, now', selectedElements.length, 'selected');
         }
         
         // Start dragging all selected elements (always, even if already selected)
         draggingElements = [...selectedElements];
         console.log('[DEBUG] Starting drag with', draggingElements.length, 'elements');
+        console.log('[DEBUG]   selectedElements:', selectedElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
+        console.log('[DEBUG]   draggingElements:', draggingElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
         dragOffsets.clear();
         
         for (const elem of draggingElements) {
@@ -1135,6 +1139,7 @@ function draw(e) {
         // Handle dragging pending elements
         if (draggingElements.length > 0) {
             console.log('[DEBUG] Dragging', draggingElements.length, 'elements at coords:', coords);
+            console.log('[DEBUG]   draggingElements:', draggingElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
             
             for (const draggingElement of draggingElements) {
                 const dragOffset = dragOffsets.get(draggingElement);

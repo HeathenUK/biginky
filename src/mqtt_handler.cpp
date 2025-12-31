@@ -1160,8 +1160,11 @@ static void publishMQTTThumbnailInternalImpl() {
     // Disable auto-convert to ensure palette mode is used
     state.encoder.auto_convert = 0;
     
-    // Add 6 colors to palette (matching useDefaultPalette() in EL133UF1_Color.cpp)
+    // Add 6 colors to palette in BOTH input and output (required for palette-to-palette encoding)
+    // Matching useDefaultPalette() in EL133UF1_Color.cpp
     lodepng_palette_clear(&state.info_png.color);
+    lodepng_palette_clear(&state.info_raw);
+    
     lodepng_palette_add(&state.info_png.color, 10, 10, 10, 255);      // 0: BLACK
     lodepng_palette_add(&state.info_png.color, 245, 245, 235, 255);   // 1: WHITE
     lodepng_palette_add(&state.info_png.color, 245, 210, 50, 255);    // 2: YELLOW
@@ -1169,7 +1172,15 @@ static void publishMQTTThumbnailInternalImpl() {
     lodepng_palette_add(&state.info_png.color, 45, 75, 160, 255);     // 4: BLUE
     lodepng_palette_add(&state.info_png.color, 55, 140, 85, 255);      // 5: GREEN
     
-    // Encode using palette mode - lodepng will convert RGB to palette indices
+    // Also set the same palette in info_raw (required when input is LCT_PALETTE)
+    lodepng_palette_add(&state.info_raw, 10, 10, 10, 255);      // 0: BLACK
+    lodepng_palette_add(&state.info_raw, 245, 245, 235, 255);   // 1: WHITE
+    lodepng_palette_add(&state.info_raw, 245, 210, 50, 255);    // 2: YELLOW
+    lodepng_palette_add(&state.info_raw, 190, 60, 55, 255);     // 3: RED
+    lodepng_palette_add(&state.info_raw, 45, 75, 160, 255);     // 4: BLUE
+    lodepng_palette_add(&state.info_raw, 55, 140, 85, 255);      // 5: GREEN
+    
+    // Encode using palette mode - input is already palette indices
     unsigned error = lodepng_encode(&pngData, &pngSize, thumbBuffer, 
                                    (unsigned)thumbWidth, (unsigned)thumbHeight, 
                                    &state);
@@ -1687,8 +1698,11 @@ bool processPngEncodeWork(PngEncodeWorkData* work) {
     // Disable auto-convert to ensure palette mode is used
     state.encoder.auto_convert = 0;
     
-    // Add 6 colors to palette (matching useDefaultPalette() in EL133UF1_Color.cpp)
+    // Add 6 colors to palette in BOTH input and output (required for palette-to-palette encoding)
+    // Matching useDefaultPalette() in EL133UF1_Color.cpp
     lodepng_palette_clear(&state.info_png.color);
+    lodepng_palette_clear(&state.info_raw);
+    
     lodepng_palette_add(&state.info_png.color, 10, 10, 10, 255);      // 0: BLACK
     lodepng_palette_add(&state.info_png.color, 245, 245, 235, 255);   // 1: WHITE
     lodepng_palette_add(&state.info_png.color, 245, 210, 50, 255);    // 2: YELLOW
@@ -1696,7 +1710,15 @@ bool processPngEncodeWork(PngEncodeWorkData* work) {
     lodepng_palette_add(&state.info_png.color, 45, 75, 160, 255);     // 4: BLUE
     lodepng_palette_add(&state.info_png.color, 55, 140, 85, 255);      // 5: GREEN
     
-    // Encode using palette mode
+    // Also set the same palette in info_raw (required when input is LCT_PALETTE)
+    lodepng_palette_add(&state.info_raw, 10, 10, 10, 255);      // 0: BLACK
+    lodepng_palette_add(&state.info_raw, 245, 245, 235, 255);   // 1: WHITE
+    lodepng_palette_add(&state.info_raw, 245, 210, 50, 255);    // 2: YELLOW
+    lodepng_palette_add(&state.info_raw, 190, 60, 55, 255);     // 3: RED
+    lodepng_palette_add(&state.info_raw, 45, 75, 160, 255);     // 4: BLUE
+    lodepng_palette_add(&state.info_raw, 55, 140, 85, 255);      // 5: GREEN
+    
+    // Encode using palette mode - input is palette indices
     unsigned error = lodepng_encode(&pngData, &pngSize, paletteBuffer, 
                                    (unsigned)work->width, (unsigned)work->height, 
                                    &state);

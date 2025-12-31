@@ -687,7 +687,7 @@ void publishMQTTCommandCompletion(const String& commandId, const String& command
     
     // Add command completion info
     if (commandId.length() > 0) {
-        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"command_id\":\"%s\"", commandId.c_str());
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"id\":\"%s\"", commandId.c_str());
     }
     if (commandName.length() > 0) {
         written += snprintf(jsonBuffer + written, jsonSize - written, ",\"command\":\"%s\"", commandName.c_str());

@@ -17,12 +17,13 @@ let currentFillColor = '1'; // Default to white
 let currentOutlineColor = '0'; // Default to black
 
 const colorMap = {
-    0: '#000000',  // Black
-    1: '#FFFFFF',  // White
-    2: '#FFFF00',  // Yellow
-    3: '#FF0000',  // Red
-    5: '#0000FF',  // Blue
-    6: '#00FF00'   // Green
+    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
+    0: '#0A0A0A',  // Black (10, 10, 10)
+    1: '#F5F5EB',  // White (245, 245, 235)
+    2: '#F5D232',  // Yellow (245, 210, 50)
+    3: '#BE3C37',  // Red (190, 60, 55)
+    5: '#2D4BA0',  // Blue (45, 75, 160)
+    6: '#378C55'   // Green (55, 140, 85)
 };
 
 function getDrawColor() {

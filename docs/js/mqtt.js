@@ -801,15 +801,6 @@ function disconnectMQTT() {
     }
 }
 
-// Generate UUID v4 for command tracking
-function generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-    });
-}
-
 async function publishMessage(payload) {
     // Check if password is configured FIRST (before connection check)
     if (!webUIPassword || webUIPassword.length === 0) {
@@ -825,7 +816,17 @@ async function publishMessage(payload) {
     try {
         // Generate UUID for command tracking (if command field exists)
         if (payload.command) {
-            pendingCommandId = generateUUID();
+            // Use built-in crypto.randomUUID() if available, otherwise fallback to manual generation
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                pendingCommandId = crypto.randomUUID();
+            } else {
+                // Fallback for older browsers
+                pendingCommandId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                    const r = Math.random() * 16 | 0;
+                    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                });
+            }
             payload.id = pendingCommandId;
             console.log('Generated command ID:', pendingCommandId, 'for command:', payload.command);
         }

@@ -1072,10 +1072,7 @@ function draw(e) {
             return;
         }
         
-    } catch (error) {
-        console.error('Error in draw():', error);
-    }
-    if (tool === 'brush' || tool === 'eraser') {
+        if (tool === 'brush' || tool === 'eraser') {
         const x = coords.x;
         const y = coords.y;
         ctx.strokeStyle = tool === 'eraser' ? '#F5F5EB' : getDrawColor();
@@ -1142,6 +1139,10 @@ function draw(e) {
             pendingElements.push(shapeElem);
             redrawCanvas();
         }
+        }
+        
+    } catch (error) {
+        console.error('Error in draw():', error);
     }
 }
 

@@ -1067,108 +1067,130 @@ static void publishMQTTThumbnailInternalImpl() {
     
     const int srcWidth = 1600;
     const int srcHeight = 1200;
-    const int thumbWidth = 400;
-    const int thumbHeight = 300;
-    const int scale = 4;
+    // Use native size for preview thumbnail (no scaling)
+    const int thumbWidth = srcWidth;
+    const int thumbHeight = srcHeight;
     
     bool isARGBMode = false;
 #if EL133UF1_USE_ARGB8888
     isARGBMode = display.isARGBMode();
 #endif
     
-    size_t thumbSize = thumbWidth * thumbHeight * 3;
-    uint8_t* thumbBuffer = (uint8_t*)malloc(thumbSize);
+    // Allocate buffer for palette indices (1 byte per pixel)
+    size_t thumbSize = thumbWidth * thumbHeight;
+    uint8_t* thumbBuffer = (uint8_t*)hal_psram_malloc(thumbSize);
     if (thumbBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate thumbnail buffer");
+        Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for thumbnail buffer");
         return;
     }
     
-    Serial.printf("Generating thumbnail: %dx%d -> %dx%d (mode: %s)\n", 
-                  srcWidth, srcHeight, thumbWidth, thumbHeight, 
-                  isARGBMode ? "ARGB8888" : "L8");
+    Serial.printf("[Core 1] Generating native-size thumbnail: %dx%d (mode: %s, palette-based)\n", 
+                  thumbWidth, thumbHeight, isARGBMode ? "ARGB8888" : "L8");
     
-    uint8_t colorMap[8][3] = {
-        {10, 10, 10}, {245, 245, 235}, {245, 210, 50}, {190, 60, 55},
-        {128, 128, 128}, {45, 75, 160}, {55, 140, 85}, {128, 128, 128},
-    };
-    
-    for (int ty = 0; ty < thumbHeight; ty++) {
-        for (int tx = 0; tx < thumbWidth; tx++) {
-            int sx = tx * scale;
-            int sy = ty * scale;
-            uint32_t rSum = 0, gSum = 0, bSum = 0;
-            int count = 0;
-            
-            for (int dy = 0; dy < scale && (sy + dy) < srcHeight; dy++) {
-                for (int dx = 0; dx < scale && (sx + dx) < srcWidth; dx++) {
-                    uint8_t einkColor = 1;
-                    
-                    if (isARGBMode) {
+    // Extract e-ink color indices directly from framebuffer (no scaling, no RGB conversion)
+    if (isARGBMode) {
 #if EL133UF1_USE_ARGB8888
-                        uint32_t* argbBuffer = display.getBufferARGB();
-                        if (argbBuffer != nullptr) {
-                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
-                            uint32_t argb = argbBuffer[srcIdx];
-                            einkColor = EL133UF1::argbToColor(argb);
-                        }
-#endif
-                    } else {
-                        uint8_t* framebuffer = display.getBuffer();
-                        if (framebuffer != nullptr) {
-                            int srcIdx = (sy + dy) * srcWidth + (sx + dx);
-                            einkColor = framebuffer[srcIdx] & 0x07;
-                            if (einkColor > 7) einkColor = 1;
-                        }
+        uint32_t* argbBuffer = display.getBufferARGB();
+        if (argbBuffer != nullptr) {
+            for (int y = 0; y < thumbHeight; y++) {
+                for (int x = 0; x < thumbWidth; x++) {
+                    int srcIdx = y * srcWidth + x;
+                    uint32_t argb = argbBuffer[srcIdx];
+                    uint8_t einkColor = EL133UF1::argbToColor(argb);
+                    // Map to palette index (0-5 for the 6 colors)
+                    // EL133UF1 colors: BLACK=0, WHITE=1, YELLOW=2, RED=3, BLUE=5, GREEN=6
+                    // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
+                    uint8_t paletteIdx = 1; // Default to white
+                    switch (einkColor) {
+                        case 0: paletteIdx = 0; break; // BLACK
+                        case 1: paletteIdx = 1; break; // WHITE
+                        case 2: paletteIdx = 2; break; // YELLOW
+                        case 3: paletteIdx = 3; break; // RED
+                        case 5: paletteIdx = 4; break; // BLUE
+                        case 6: paletteIdx = 5; break; // GREEN
+                        default: paletteIdx = 1; break; // Default to white
                     }
-                    
-                    rSum += colorMap[einkColor][0];
-                    gSum += colorMap[einkColor][1];
-                    bSum += colorMap[einkColor][2];
-                    count++;
+                    thumbBuffer[y * thumbWidth + x] = paletteIdx;
                 }
             }
-            
-            if (count > 0) {
-                int thumbIdx = (ty * thumbWidth + tx) * 3;
-                thumbBuffer[thumbIdx + 0] = rSum / count;  // R (RGB order for lodepng)
-                thumbBuffer[thumbIdx + 1] = gSum / count;  // G
-                thumbBuffer[thumbIdx + 2] = bSum / count;  // B
+        }
+#endif
+    } else {
+        uint8_t* framebuffer = display.getBuffer();
+        if (framebuffer != nullptr) {
+            for (int y = 0; y < thumbHeight; y++) {
+                for (int x = 0; x < thumbWidth; x++) {
+                    int srcIdx = y * srcWidth + x;
+                    uint8_t einkColor = framebuffer[srcIdx] & 0x07;
+                    // Map to palette index (0-5 for the 6 colors)
+                    uint8_t paletteIdx = 1; // Default to white
+                    switch (einkColor) {
+                        case 0: paletteIdx = 0; break; // BLACK
+                        case 1: paletteIdx = 1; break; // WHITE
+                        case 2: paletteIdx = 2; break; // YELLOW
+                        case 3: paletteIdx = 3; break; // RED
+                        case 5: paletteIdx = 4; break; // BLUE
+                        case 6: paletteIdx = 5; break; // GREEN
+                        default: paletteIdx = 1; break; // Default to white
+                    }
+                    thumbBuffer[y * thumbWidth + x] = paletteIdx;
+                }
             }
         }
     }
     
-    // Encode to PNG using processPngEncodeWork directly (we're already on Core 1)
-    PngEncodeWorkData encodeWork = {0};
-    encodeWork.rgbData = thumbBuffer;
-    encodeWork.rgbDataLen = thumbSize;
-    encodeWork.width = thumbWidth;
-    encodeWork.height = thumbHeight;
-    encodeWork.pngData = nullptr;
-    encodeWork.pngSize = 0;
-    encodeWork.error = 0;
-    encodeWork.success = false;
+    // Encode to PNG using palette-based encoding (PNG8)
+    unsigned char* pngData = nullptr;
+    size_t pngSize = 0;
     
-    if (!processPngEncodeWork(&encodeWork)) {
-        Serial.printf("[Core 1] ERROR: PNG encoding failed: %u %s\n", 
-                     encodeWork.error, encodeWork.error ? lodepng_error_text(encodeWork.error) : "unknown");
-        free(thumbBuffer);
+    // Set up LodePNGState with palette mode
+    LodePNGState state;
+    lodepng_state_init(&state);
+    
+    // Configure color mode for palette
+    state.info_png.color.colortype = LCT_PALETTE;
+    state.info_png.color.bitdepth = 8; // 8-bit palette indices
+    state.info_raw.colortype = LCT_GREY; // Input is palette indices (1 byte per pixel)
+    state.info_raw.bitdepth = 8;
+    
+    // Disable auto-convert to ensure palette mode is used
+    state.encoder.auto_convert = 0;
+    
+    // Add 6 colors to palette (matching useDefaultPalette() in EL133UF1_Color.cpp)
+    lodepng_palette_clear(&state.info_png.color);
+    lodepng_palette_add(&state.info_png.color, 10, 10, 10, 255);      // 0: BLACK
+    lodepng_palette_add(&state.info_png.color, 245, 245, 235, 255);   // 1: WHITE
+    lodepng_palette_add(&state.info_png.color, 245, 210, 50, 255);    // 2: YELLOW
+    lodepng_palette_add(&state.info_png.color, 190, 60, 55, 255);     // 3: RED
+    lodepng_palette_add(&state.info_png.color, 45, 75, 160, 255);     // 4: BLUE
+    lodepng_palette_add(&state.info_png.color, 55, 140, 85, 255);      // 5: GREEN
+    
+    // Encode using palette mode
+    unsigned error = lodepng_encode(&pngData, &pngSize, thumbBuffer, 
+                                   (unsigned)thumbWidth, (unsigned)thumbHeight, 
+                                   &state);
+    
+    lodepng_state_cleanup(&state);
+    hal_psram_free(thumbBuffer);
+    
+    if (error) {
+        Serial.printf("[Core 1] ERROR: PNG palette encoding failed: %u %s\n", 
+                     error, lodepng_error_text(error));
+        if (pngData) lodepng_free(pngData);
         return;
     }
     
-    // PNG encoding completed - PNG data is now available
-    unsigned char* pngBuffer = encodeWork.pngData;
-    size_t pngSize = encodeWork.pngSize;
-    
-    // Free RGB data (no longer needed)
-    free(thumbBuffer);
-    
-    if (!pngBuffer || pngSize == 0) {
-        Serial.println("[Core 1] ERROR: PNG encoding returned empty data");
-        if (pngBuffer) lodepng_free(pngBuffer);
+    if (!pngData || pngSize == 0) {
+        Serial.println("[Core 1] ERROR: PNG palette encoding returned empty data");
+        if (pngData) lodepng_free(pngData);
         return;
     }
     
-    Serial.printf("[Core 1] PNG encoded successfully: %zu bytes\n", pngSize);
+    Serial.printf("[Core 1] PNG palette encoded successfully: %zu bytes (native %dx%d)\n", 
+                  pngSize, thumbWidth, thumbHeight);
+    
+    // Use the encoded PNG data directly (no need for processPngEncodeWork)
+    unsigned char* pngBuffer = pngData;
     
     size_t pngSize_u32 = (size_t)pngSize;
     size_t base64Size = ((pngSize_u32 + 2) / 3) * 4 + 1;
@@ -1207,7 +1229,7 @@ static void publishMQTTThumbnailInternalImpl() {
     }
     
     int written = snprintf(jsonBuffer, jsonSize, 
-                          "{\"width\":%d,\"height\":%d,\"format\":\"png\",\"data\":\"%s\"}",
+                          "{\"width\":%d,\"height\":%d,\"format\":\"png\",\"palette\":true,\"data\":\"%s\"}",
                           thumbWidth, thumbHeight, base64Buffer);
     
     if (written < 0 || written >= (int)jsonSize) {

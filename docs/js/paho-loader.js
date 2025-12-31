@@ -5,19 +5,19 @@ function checkPahoLoaded() {
     // Paho library exposes Paho.Client and Paho.Message, not Paho.MQTT.Client
     if (typeof Paho !== 'undefined' && typeof Paho.Client !== 'undefined') {
         pahoLibraryLoaded = true;
-        console.log('Paho MQTT library loaded successfully');
+        // console.log('Paho MQTT library loaded successfully');
         return true;
     }
     return false;
 }
 
 function loadPahoFallback() {
-    console.log('Paho MQTT library failed to load from jsDelivr, trying fallback...');
+    // console.log('Paho MQTT library failed to load from jsDelivr, trying fallback...');
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/paho-mqtt@1.1.0/paho-mqtt.js';
     script.onload = function() {
         if (checkPahoLoaded()) {
-            console.log('Paho MQTT library loaded from fallback (unpkg)');
+            // console.log('Paho MQTT library loaded from fallback (unpkg)');
         } else {
             console.error('Library loaded but structure incorrect');
         }

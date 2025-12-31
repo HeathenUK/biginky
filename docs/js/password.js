@@ -37,7 +37,7 @@ async function verifyPasswordByDecryption(password) {
         if (!mqttClient || !isConnected) {
             // Not connected - we can't verify yet, but we'll allow saving
             // The password will be verified when we connect and receive the first status message
-            console.log('Not connected to MQTT - password will be verified on first status message');
+            // console.log('Not connected to MQTT - password will be verified on first status message');
             resolve(true);  // Allow saving, verify later
             return;
         }
@@ -46,7 +46,7 @@ async function verifyPasswordByDecryption(password) {
         // The status message should already be in the retained topic
         // We can subscribe and wait for it, or check if we already have it
         // For now, we'll just allow saving and verify on the next status message
-        console.log('Connected - password will be verified on next status message');
+        // console.log('Connected - password will be verified on next status message');
         resolve(true);  // Allow saving, verify on next message
     });
 }

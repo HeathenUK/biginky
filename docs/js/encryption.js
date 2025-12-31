@@ -126,9 +126,9 @@ async function deriveEncryptionKey(password) {
     const passwordData = encoder.encode(password);
     
     // Debug: log password length and first few bytes
-    console.log('deriveEncryptionKey: password length =', password.length);
-    console.log('deriveEncryptionKey: password bytes (first 20) =', Array.from(passwordData.slice(0, 20)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-    console.log('deriveEncryptionKey: salt =', Array.from(salt).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    // console.log('deriveEncryptionKey: password length =', password.length);
+    // console.log('deriveEncryptionKey: password bytes (first 20) =', Array.from(passwordData.slice(0, 20)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    // console.log('deriveEncryptionKey: salt =', Array.from(salt).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
     
     // Import password as HMAC key
     const key = await crypto.subtle.importKey(
@@ -148,9 +148,9 @@ async function deriveEncryptionKey(password) {
     const finalKey = keyArray.length === 32 ? keyArray : keyArray.slice(0, 32);
     
     // Debug: log derived key length and first 16 bytes
-    console.log('deriveEncryptionKey: derived key length =', keyArray.length, 'bytes');
-    console.log('deriveEncryptionKey: final key length =', finalKey.length, 'bytes');
-    console.log('deriveEncryptionKey: derived key (first 16 bytes) =', Array.from(finalKey.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+    // console.log('deriveEncryptionKey: derived key length =', keyArray.length, 'bytes');
+    // console.log('deriveEncryptionKey: final key length =', finalKey.length, 'bytes');
+    // console.log('deriveEncryptionKey: derived key (first 16 bytes) =', Array.from(finalKey.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
     
     return finalKey;
 }
@@ -221,15 +221,15 @@ async function decryptMessage(payloadBase64, ivBase64) {
     }
     
     // Diagnostic: Log password info (first few chars only for security)
-    console.log('decryptMessage: password length =', webUIPassword ? webUIPassword.length : 0);
-    console.log('decryptMessage: password preview =', webUIPassword ? webUIPassword.substring(0, 3) + '...' : 'null');
+    // console.log('decryptMessage: password length =', webUIPassword ? webUIPassword.length : 0);
+    // console.log('decryptMessage: password preview =', webUIPassword ? webUIPassword.substring(0, 3) + '...' : 'null');
     
     try {
         let iv, ciphertext;
         
         // Diagnostic: Log payload base64 length
-        console.log('decryptMessage: payloadBase64 length:', payloadBase64 ? payloadBase64.length : 0);
-        console.log('decryptMessage: ivBase64 length:', ivBase64 ? ivBase64.length : 0);
+        // console.log('decryptMessage: payloadBase64 length:', payloadBase64 ? payloadBase64.length : 0);
+        // console.log('decryptMessage: ivBase64 length:', ivBase64 ? ivBase64.length : 0);
         
         if (ivBase64) {
             // New format: IV and payload are separate
@@ -238,9 +238,9 @@ async function decryptMessage(payloadBase64, ivBase64) {
             const cleanPayloadBase64 = payloadBase64.replace(/\s/g, '');
             
             // Debug: Check for base64 encoding issues
-            console.log('decryptMessage: IV base64 (first 30 chars):', cleanIvBase64.substring(0, 30));
-            console.log('decryptMessage: Payload base64 (first 50 chars):', cleanPayloadBase64.substring(0, 50));
-            console.log('decryptMessage: Payload base64 (last 50 chars):', cleanPayloadBase64.substring(Math.max(0, cleanPayloadBase64.length - 50)));
+            // console.log('decryptMessage: IV base64 (first 30 chars):', cleanIvBase64.substring(0, 30));
+            // console.log('decryptMessage: Payload base64 (first 50 chars):', cleanPayloadBase64.substring(0, 50));
+            // console.log('decryptMessage: Payload base64 (last 50 chars):', cleanPayloadBase64.substring(Math.max(0, cleanPayloadBase64.length - 50)));
             
             // Check if base64 strings are valid
             const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -289,9 +289,9 @@ async function decryptMessage(payloadBase64, ivBase64) {
         }
         
         // Diagnostic: Log decoded lengths
-        console.log('decryptMessage: IV length (decoded):', iv.length);
-        console.log('decryptMessage: ciphertext length (decoded):', ciphertext.length);
-        console.log('decryptMessage: ciphertext length % 16:', ciphertext.length % 16);
+        // console.log('decryptMessage: IV length (decoded):', iv.length);
+        // console.log('decryptMessage: ciphertext length (decoded):', ciphertext.length);
+        // console.log('decryptMessage: ciphertext length % 16:', ciphertext.length % 16);
         
         // Validate IV length
         if (iv.length !== 16) {
@@ -333,9 +333,9 @@ async function decryptMessage(payloadBase64, ivBase64) {
         );
         
         // Debug: log first few bytes of IV and ciphertext to verify they're correct
-        console.log('decryptMessage: IV (first 8 bytes):', Array.from(iv.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-        console.log('decryptMessage: Ciphertext (first 16 bytes):', Array.from(ciphertext.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
-        console.log('decryptMessage: Ciphertext (last 16 bytes):', Array.from(ciphertext.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        // console.log('decryptMessage: IV (first 8 bytes):', Array.from(iv.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        // console.log('decryptMessage: Ciphertext (first 16 bytes):', Array.from(ciphertext.slice(0, 16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        // console.log('decryptMessage: Ciphertext (last 16 bytes):', Array.from(ciphertext.slice(-16)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         
         // Note: Key test removed - we import key with ['decrypt'] only, so we can't test encryption
         // The key is valid if it can decrypt, which we'll test with the actual ciphertext
@@ -343,13 +343,13 @@ async function decryptMessage(payloadBase64, ivBase64) {
         // Decrypt
         let plaintext;
         try {
-            console.log('decryptMessage: Attempting decryption with ciphertext length:', ciphertext.length, 'bytes');
+            // console.log('decryptMessage: Attempting decryption with ciphertext length:', ciphertext.length, 'bytes');
             plaintext = await crypto.subtle.decrypt(
                 { name: 'AES-CBC', iv: iv },
                 key,
                 ciphertext
             );
-            console.log('decryptMessage: Decryption successful, plaintext length:', plaintext.byteLength, 'bytes');
+            // console.log('decryptMessage: Decryption successful, plaintext length:', plaintext.byteLength, 'bytes');
         } catch (decryptError) {
             console.error('crypto.subtle.decrypt failed:', decryptError);
             console.error('Decryption failure details:');
@@ -365,7 +365,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
             
             // Strategy 1: Try removing last block (16 bytes)
             if (ciphertext.length >= 32 && !fallbackSucceeded) {
-                console.log('decryptMessage: Attempting fallback 1 - removing last block (16 bytes)');
+                // console.log('decryptMessage: Attempting fallback 1 - removing last block (16 bytes)');
                 try {
                     const fallbackCiphertext = ciphertext.slice(0, ciphertext.length - 16);
                     plaintext = await crypto.subtle.decrypt(
@@ -373,16 +373,16 @@ async function decryptMessage(payloadBase64, ivBase64) {
                         key,
                         fallbackCiphertext
                     );
-                    console.log('decryptMessage: Fallback 1 successful, plaintext length:', plaintext.byteLength, 'bytes');
+                    // console.log('decryptMessage: Fallback 1 successful, plaintext length:', plaintext.byteLength, 'bytes');
                     fallbackSucceeded = true;
                 } catch (fallbackError) {
-                    console.log('Fallback 1 failed, trying next strategy...');
+                    // console.log('Fallback 1 failed, trying next strategy...');
                 }
             }
             
             // Strategy 2: Try removing last 2 blocks (32 bytes)
             if (ciphertext.length >= 48 && !fallbackSucceeded) {
-                console.log('decryptMessage: Attempting fallback 2 - removing last 2 blocks (32 bytes)');
+                // console.log('decryptMessage: Attempting fallback 2 - removing last 2 blocks (32 bytes)');
                 try {
                     const fallbackCiphertext = ciphertext.slice(0, ciphertext.length - 32);
                     plaintext = await crypto.subtle.decrypt(
@@ -390,10 +390,10 @@ async function decryptMessage(payloadBase64, ivBase64) {
                         key,
                         fallbackCiphertext
                     );
-                    console.log('decryptMessage: Fallback 2 successful, plaintext length:', plaintext.byteLength, 'bytes');
+                    // console.log('decryptMessage: Fallback 2 successful, plaintext length:', plaintext.byteLength, 'bytes');
                     fallbackSucceeded = true;
                 } catch (fallbackError) {
-                    console.log('Fallback 2 failed, trying next strategy...');
+                    // console.log('Fallback 2 failed, trying next strategy...');
                 }
             }
             
@@ -402,7 +402,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
                 for (let removeBytes = 1; removeBytes <= 15 && !fallbackSucceeded; removeBytes++) {
                     const testLength = ciphertext.length - removeBytes;
                     if (testLength > 0 && testLength % 16 === 0) {
-                        console.log(`decryptMessage: Attempting fallback 3 - removing ${removeBytes} bytes`);
+                        // console.log(`decryptMessage: Attempting fallback 3 - removing ${removeBytes} bytes`);
                         try {
                             const fallbackCiphertext = ciphertext.slice(0, testLength);
                             plaintext = await crypto.subtle.decrypt(
@@ -410,7 +410,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
                                 key,
                                 fallbackCiphertext
                             );
-                            console.log(`decryptMessage: Fallback 3 successful (removed ${removeBytes} bytes), plaintext length:`, plaintext.byteLength, 'bytes');
+                            // console.log(`decryptMessage: Fallback 3 successful (removed ${removeBytes} bytes), plaintext length:`, plaintext.byteLength, 'bytes');
                             fallbackSucceeded = true;
                             break;
                         } catch (fallbackError) {
@@ -437,7 +437,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
         
         // Debug: log first few bytes of decrypted data
         const debugBytes = Array.from(plaintextArray.slice(0, Math.min(20, plaintextArray.length)));
-        console.log('Decrypted bytes (first 20):', debugBytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
+        // console.log('Decrypted bytes (first 20):', debugBytes.map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
         
         // Helper function to check if a Uint8Array contains valid JSON
         const tryDecodeAsJSON = (dataArray) => {
@@ -515,7 +515,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
                                 unpaddedArray = tryUnpadded;
                                 paddingValid = true;
                                 foundValidPadding = true;
-                                console.log('Padding validation fallback succeeded with padding value:', tryPad);
+                                // console.log('Padding validation fallback succeeded with padding value:', tryPad);
                             }
                         }
                     }
@@ -530,7 +530,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
                         // Valid JSON! Use it as-is
                         unpaddedArray = plaintextArray;
                         paddingValid = true;
-                        console.log('Graceful fallback: treating final curly brace as part of JSON payload');
+                        // console.log('Graceful fallback: treating final curly brace as part of JSON payload');
                     } else {
                         // JSON parsing failed, but last byte is '}' - accept it anyway
                         // This handles cases where the JSON might be truncated but still usable
@@ -539,7 +539,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
                         if (decodedStr.trim().startsWith('{') && decodedStr.trim().endsWith('}')) {
                             unpaddedArray = plaintextArray;
                             paddingValid = true;
-                            console.log('Graceful fallback: accepting data with final curly brace even though JSON.parse failed (may be truncated)');
+                            // console.log('Graceful fallback: accepting data with final curly brace even though JSON.parse failed (may be truncated)');
                         }
                     }
                 }
@@ -552,7 +552,7 @@ async function decryptMessage(payloadBase64, ivBase64) {
                     // Valid JSON - use it as-is (Web Crypto API already removed padding)
                     unpaddedArray = plaintextArray;
                     paddingValid = true;
-                    console.log('Final fallback succeeded: treating entire plaintext as valid JSON (padding already removed by Web Crypto API)');
+                    // console.log('Final fallback succeeded: treating entire plaintext as valid JSON (padding already removed by Web Crypto API)');
                 } else {
                     // Try one more time - decode as UTF-8 and check if it looks like JSON
                     // This handles the case where Web Crypto API removed padding but the last char is valid JSON like '}'
@@ -565,13 +565,13 @@ async function decryptMessage(payloadBase64, ivBase64) {
                             // Valid JSON! Use it
                             unpaddedArray = plaintextArray;
                             paddingValid = true;
-                            console.log('Final fallback succeeded: decoded as UTF-8 and validated as JSON');
+                            // console.log('Final fallback succeeded: decoded as UTF-8 and validated as JSON');
                         } catch (e) {
                             // JSON parsing failed, but it looks like JSON (starts with {, ends with })
                             // Accept it anyway - this handles truncated or slightly malformed JSON
                             unpaddedArray = plaintextArray;
                             paddingValid = true;
-                            console.log('Final fallback: accepting data that looks like JSON even though JSON.parse failed:', e.message);
+                            // console.log('Final fallback: accepting data that looks like JSON even though JSON.parse failed:', e.message);
                         }
                     } else {
                         // Doesn't look like JSON at all

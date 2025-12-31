@@ -50,9 +50,9 @@ function mergeConfig(defaultConfig, customConfig) {
 // mqtt-config.js should be loaded before this file, so window.MQTT_CONFIG should be available if it exists
 if (typeof window !== 'undefined' && window.MQTT_CONFIG) {
     MQTT_CONFIG = mergeConfig(DEFAULT_MQTT_CONFIG, window.MQTT_CONFIG);
-    console.log('Loaded custom MQTT configuration from mqtt-config.js');
+    // console.log('Loaded custom MQTT configuration from mqtt-config.js');
 } else {
-    console.log('Using default MQTT configuration. To customize, create mqtt-config.js from mqtt-config.example.js');
+    // console.log('Using default MQTT configuration. To customize, create mqtt-config.js from mqtt-config.example.js');
 }
 
 // Export configuration constants for backward compatibility

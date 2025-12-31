@@ -1,7 +1,7 @@
 // MQTT connection and messaging functions
 
 function connectMQTT() {
-    console.log('connectMQTT() called');
+    // console.log('connectMQTT() called');
     
     // Require password before connecting
     if (!webUIPassword || webUIPassword.length === 0) {
@@ -14,7 +14,7 @@ function connectMQTT() {
     const password = MQTT_CONFIG.auth.password || '';
     
     if (!token || token === 'YOUR_RESTRICTED_TOKEN_HERE') {
-        console.log('MQTT token not configured');
+        // console.log('MQTT token not configured');
         updateConnectionStatus('disconnected', 'Error: MQTT token not configured. Please create mqtt-config.js from mqtt-config.example.js');
         return;
     }
@@ -24,7 +24,7 @@ function connectMQTT() {
         return;
     }
     
-    console.log('Starting connection to', MQTT_BROKER, 'port', MQTT_PORT);
+    // console.log('Starting connection to', MQTT_BROKER, 'port', MQTT_PORT);
     updateConnectionStatus('connecting', 'Connecting to MQTT broker...');
     
     // Check if Paho MQTT library is loaded
@@ -49,12 +49,12 @@ function connectMQTT() {
     }
     
     const clientId = 'biginky_web_' + Math.random().toString(16).substr(2, 8);
-    console.log('Creating MQTT client with ID:', clientId);
+    // console.log('Creating MQTT client with ID:', clientId);
     console.log('Paho.Client available:', typeof Paho.Client);
     
     try {
         mqttClient = new Paho.Client(MQTT_BROKER, MQTT_PORT, MQTT_CONFIG.path || '/mqtt', clientId);
-        console.log('MQTT client created successfully');
+        // console.log('MQTT client created successfully');
     } catch (e) {
         console.error('Failed to create MQTT client:', e);
         updateConnectionStatus('disconnected', 'Error creating MQTT client: ' + e.message);
@@ -75,7 +75,7 @@ function connectMQTT() {
     };
     
     mqttClient.onMessageArrived = async function(message) {
-        console.log('Message received:', message);
+        // console.log('Message received:', message);
         logCommand('MESSAGE_RECEIVED', { topic: message.destinationName });
         
         // Handle status messages
@@ -86,7 +86,7 @@ function connectMQTT() {
         } else if (message.destinationName === MQTT_TOPIC_MEDIA) {
             await handleMediaMessage(message);
         } else {
-            console.log('Message on different topic, ignoring:', message.destinationName);
+            // console.log('Message on different topic, ignoring:', message.destinationName);
         }
     };
     
@@ -110,9 +110,9 @@ function connectMQTT() {
             mqttClient.subscribe(MQTT_TOPIC_STATUS, { qos: 1 });
             mqttClient.subscribe(MQTT_TOPIC_THUMB, { qos: 1 });
             mqttClient.subscribe(MQTT_TOPIC_MEDIA, { qos: 1 });
-            console.log('Subscribed to status topic:', MQTT_TOPIC_STATUS);
-            console.log('Subscribed to thumbnail topic:', MQTT_TOPIC_THUMB);
-            console.log('Subscribed to media topic:', MQTT_TOPIC_MEDIA);
+            // console.log('Subscribed to status topic:', MQTT_TOPIC_STATUS);
+            // console.log('Subscribed to thumbnail topic:', MQTT_TOPIC_THUMB);
+            // console.log('Subscribed to media topic:', MQTT_TOPIC_MEDIA);
             
             // If no status message arrives within 3 seconds, show a message
             setTimeout(function() {
@@ -146,7 +146,7 @@ function connectMQTT() {
 }
 
 async function handleStatusMessage(message) {
-    console.log('Status message received, parsing...');
+    // console.log('Status message received, parsing...');
     try {
         const payload = JSON.parse(message.payloadString);
         console.log('Parsed status:', payload);
@@ -173,7 +173,7 @@ async function handleStatusMessage(message) {
                     document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
                     return;
                 }
-                console.log('HMAC verification passed - password is correct for HMAC');
+                // console.log('HMAC verification passed - password is correct for HMAC');
             } else {
                 console.warn('No password or HMAC provided - cannot verify message authenticity');
             }
@@ -195,8 +195,8 @@ async function handleStatusMessage(message) {
             }
             
             // Debug: log first few characters of decrypted data
-            console.log('Decrypted data (first 100 chars):', decrypted.substring(0, 100));
-            console.log('Decrypted data length:', decrypted.length);
+            // console.log('Decrypted data (first 100 chars):', decrypted.substring(0, 100));
+            // console.log('Decrypted data length:', decrypted.length);
             
             // Parse decrypted JSON
             try {
@@ -208,10 +208,10 @@ async function handleStatusMessage(message) {
                 return;
             }
             
-            console.log('Decrypted status:', status);
+            // console.log('Decrypted status:', status);
         } else if (payload.encrypted === false && payload.payload) {
             // Unencrypted message with base64-encoded payload
-            console.log('Status message is unencrypted (HMAC only), base64 decoding payload...');
+            // console.log('Status message is unencrypted (HMAC only), base64 decoding payload...');
             
             // Verify HMAC first (on unencrypted message structure)
             if (webUIPassword && payload.hmac) {
@@ -224,7 +224,7 @@ async function handleStatusMessage(message) {
                     document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: HMAC verification failed. Password may be incorrect.</p>';
                     return;
                 }
-                console.log('Status message HMAC verified successfully (unencrypted)');
+                // console.log('Status message HMAC verified successfully (unencrypted)');
             } else {
                 console.warn('No password or HMAC provided for unencrypted message - cannot verify');
             }
@@ -253,7 +253,7 @@ async function handleStatusMessage(message) {
                 return;
             }
             status = payloadCopy;
-            console.log('Status message HMAC verified successfully (legacy unencrypted)');
+            // console.log('Status message HMAC verified successfully (legacy unencrypted)');
         } else {
             // No password configured or no HMAC - just display (for backward compatibility)
             if (!webUIPassword) {
@@ -296,11 +296,11 @@ async function handleStatusMessage(message) {
         
         // Check for command completion status (using id field)
         if (status.command_completed === true && status.id) {
-            console.log('Command completion received:', status.id, 'success:', status.success);
+            // console.log('Command completion received:', status.id, 'success:', status.success);
             
             // Check if this is the command we're waiting for
             if (pendingCommandId && status.id === pendingCommandId) {
-                console.log('Command completed! ID matches:', pendingCommandId);
+                // console.log('Command completed! ID matches:', pendingCommandId);
                 pendingCommandId = null;  // Clear pending command ID
                 
                 // Clear busy state
@@ -319,7 +319,7 @@ async function handleStatusMessage(message) {
                     showStatus('commandStatus', 'Command completed successfully: ' + (status.command || 'unknown'), false);
                 }
             } else if (pendingCommandId) {
-                console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.id);
+                // console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.id);
             }
         }
         
@@ -360,9 +360,9 @@ async function handleStatusMessage(message) {
 }
 
 async function handleThumbnailMessage(message) {
-    console.log('Thumbnail message received, parsing...');
-    console.log('Message retained flag:', message.retained);
-    console.log('Message payload string length:', message.payloadString ? message.payloadString.length : 0);
+    // console.log('Thumbnail message received, parsing...');
+    // console.log('Message retained flag:', message.retained);
+    // console.log('Message payload string length:', message.payloadString ? message.payloadString.length : 0);
     
     // Validate message payload is not empty or corrupted
     if (!message.payloadString || message.payloadString.length === 0) {
@@ -387,10 +387,10 @@ async function handleThumbnailMessage(message) {
         const payload = JSON.parse(message.payloadString);
         console.log('Parsed payload:', payload);
         console.log('Payload keys:', Object.keys(payload));
-        console.log('Has encrypted flag:', payload.encrypted);
+        // console.log('Has encrypted flag:', payload.encrypted);
         console.log('Has iv field:', payload.iv !== undefined);
         console.log('Has payload field:', payload.payload !== undefined);
-        console.log('Has hmac field:', payload.hmac !== undefined);
+        // console.log('Has hmac field:', payload.hmac !== undefined);
         
         // Check if message is encrypted or unencrypted
         let thumb = payload;
@@ -398,7 +398,7 @@ async function handleThumbnailMessage(message) {
         
         if (payload.encrypted === true && payload.payload) {
             isEncrypted = true;
-            console.log('Thumbnail message is encrypted, decrypting...');
+            // console.log('Thumbnail message is encrypted, decrypting...');
             
             // Check if this is new format (separate IV) or legacy format (IV prepended)
             const isNewFormat = payload.iv !== undefined;
@@ -439,20 +439,20 @@ async function handleThumbnailMessage(message) {
                     const providedHMAC = payload.hmac;
                     const messageForHMAC = JSON.stringify({ encrypted: true, iv: payload.iv, payload: payload.payload });
                     
-                    console.log('Thumbnail: Verifying HMAC for new format message');
+                    // console.log('Thumbnail: Verifying HMAC for new format message');
                     const hmacValid = await verifyHMAC(messageForHMAC, providedHMAC);
                     if (!hmacValid) {
                         console.error('Thumbnail message HMAC verification failed');
                         document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
                         return;
                     }
-                    console.log('Thumbnail: HMAC verification passed');
+                    // console.log('Thumbnail: HMAC verification passed');
                 } else {
-                    console.log('Thumbnail: Skipping HMAC verification (no password or no HMAC)');
+                    // console.log('Thumbnail: Skipping HMAC verification (no password or no HMAC)');
                 }
             } else {
                 // Legacy format: IV is prepended to payload
-                console.log('Thumbnail message is in legacy format (IV prepended)');
+                // console.log('Thumbnail message is in legacy format (IV prepended)');
                 if (!payload.payload) {
                     console.error('Invalid encrypted message structure - missing payload');
                     document.getElementById('thumbnailStatus').textContent = 'Error: Invalid encrypted message structure. Message may be incomplete.';
@@ -478,10 +478,10 @@ async function handleThumbnailMessage(message) {
             // For legacy format: pass payload only (IV is prepended)
             let decrypted;
             try {
-                console.log('Thumbnail: Attempting decryption, message retained:', message.retained);
-                console.log('Thumbnail: IV base64:', payload.iv);
-                console.log('Thumbnail: Payload base64 length:', payload.payload ? payload.payload.length : 0);
-                console.log('Thumbnail: Payload base64 (first 50 chars):', payload.payload ? payload.payload.substring(0, 50) : 'null');
+                // console.log('Thumbnail: Attempting decryption, message retained:', message.retained);
+                // console.log('Thumbnail: IV base64:', payload.iv);
+                // console.log('Thumbnail: Payload base64 length:', payload.payload ? payload.payload.length : 0);
+                // console.log('Thumbnail: Payload base64 (first 50 chars):', payload.payload ? payload.payload.substring(0, 50) : 'null');
                 decrypted = await decryptMessage(payload.payload, payload.iv);
             } catch (decryptError) {
                 console.error('Failed to decrypt thumbnail message:', decryptError);
@@ -528,7 +528,7 @@ async function handleThumbnailMessage(message) {
                 return;
             }
             
-            console.log('Decrypted thumbnail:', { 
+            // console.log('Decrypted thumbnail:', { 
                 width: thumb.width, 
                 height: thumb.height, 
                 format: thumb.format, 
@@ -551,7 +551,7 @@ async function handleThumbnailMessage(message) {
             }
         } else if (payload.encrypted === false && payload.payload) {
             // Unencrypted message with base64-encoded payload
-            console.log('Thumbnail message is unencrypted (HMAC only), base64 decoding payload...');
+            // console.log('Thumbnail message is unencrypted (HMAC only), base64 decoding payload...');
             
             // Verify HMAC first (on unencrypted message structure)
             if (webUIPassword && payload.hmac) {
@@ -564,7 +564,7 @@ async function handleThumbnailMessage(message) {
                     document.getElementById('thumbnailStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
                     return;
                 }
-                console.log('Thumbnail message HMAC verified successfully (unencrypted)');
+                // console.log('Thumbnail message HMAC verified successfully (unencrypted)');
             } else {
                 console.warn('No password or HMAC provided for unencrypted thumbnail - cannot verify');
             }
@@ -573,7 +573,7 @@ async function handleThumbnailMessage(message) {
             try {
                 const decoded = atob(payload.payload);
                 thumb = JSON.parse(decoded);
-                console.log('Base64 decoded and parsed thumbnail:', { 
+                // console.log('Base64 decoded and parsed thumbnail:', { 
                     width: thumb.width, 
                     height: thumb.height, 
                     format: thumb.format 
@@ -640,11 +640,11 @@ async function handleThumbnailMessage(message) {
 }
 
 async function handleMediaMessage(message) {
-    console.log('Media mappings message received, parsing...');
-    console.log('Media mappings message retained flag:', message.retained);
+    // console.log('Media mappings message received, parsing...');
+    // console.log('Media mappings message retained flag:', message.retained);
     try {
         const payload = JSON.parse(message.payloadString);
-        console.log('Parsed media payload:', payload);
+        // console.log('Parsed media payload:', payload);
         
         // Check if message is encrypted or unencrypted
         let mediaData = payload;
@@ -673,9 +673,9 @@ async function handleMediaMessage(message) {
             // Decrypt the payload
             let decrypted;
             try {
-                console.log('Media mappings: Attempting decryption, message retained:', message.retained);
-                console.log('Media mappings: IV base64:', payload.iv);
-                console.log('Media mappings: Payload base64 length:', payload.payload ? payload.payload.length : 0);
+                //                 // console.log('Media mappings: Attempting decryption, message retained:', message.retained);
+                // console.log('Media mappings: IV base64:', payload.iv);
+                // console.log('Media mappings: Payload base64 length:', payload.payload ? payload.payload.length : 0);
                 decrypted = await decryptMessage(payload.payload, payload.iv);
             } catch (decryptError) {
                 console.error('Failed to decrypt media mappings message:', decryptError);
@@ -713,10 +713,10 @@ async function handleMediaMessage(message) {
                 return;
             }
             
-            console.log('Decrypted media mappings:', { mappingCount: mediaData.mappings ? mediaData.mappings.length : 0 });
+            // console.log('Decrypted media mappings:', { mappingCount: mediaData.mappings ? mediaData.mappings.length : 0 });
         } else if (payload.encrypted === false && payload.payload) {
             // Unencrypted message with base64-encoded payload
-            console.log('Media mappings message is unencrypted (HMAC only), base64 decoding payload...');
+            // console.log('Media mappings message is unencrypted (HMAC only), base64 decoding payload...');
             
             // Verify HMAC first (on unencrypted message structure)
             if (webUIPassword && payload.hmac) {
@@ -729,7 +729,7 @@ async function handleMediaMessage(message) {
                     document.getElementById('mediaMappingsStatus').textContent = 'Error: HMAC verification failed. Password may be incorrect.';
                     return;
                 }
-                console.log('Media mappings message HMAC verified successfully (unencrypted)');
+                // console.log('Media mappings message HMAC verified successfully (unencrypted)');
             } else {
                 console.warn('No password or HMAC provided for unencrypted media mappings - cannot verify');
             }
@@ -738,7 +738,7 @@ async function handleMediaMessage(message) {
             try {
                 const decoded = atob(payload.payload);
                 mediaData = JSON.parse(decoded);
-                console.log('Base64 decoded and parsed media mappings:', { mappingCount: mediaData.mappings ? mediaData.mappings.length : 0 });
+                // console.log('Base64 decoded and parsed media mappings:', { mappingCount: mediaData.mappings ? mediaData.mappings.length : 0 });
             } catch (decodeError) {
                 console.error('Failed to base64 decode or parse media mappings message:', decodeError);
                 document.getElementById('mediaMappingsStatus').textContent = 'Error: Failed to decode unencrypted media mappings message.';
@@ -758,7 +758,7 @@ async function handleMediaMessage(message) {
                 return;
             }
             mediaData = payloadCopy;
-            console.log('Media mappings message HMAC verified successfully (legacy unencrypted)');
+            // console.log('Media mappings message HMAC verified successfully (legacy unencrypted)');
         } else {
             // No password configured or no HMAC - just display (for backward compatibility)
             if (!webUIPassword) {

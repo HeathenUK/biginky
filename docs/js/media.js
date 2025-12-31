@@ -199,7 +199,7 @@ function updateThumbnail(thumb) {
                     // JPEG format is a thumbnail only - clear framebuffer data if it exists
                     // (shouldn't happen, but ensure we don't use stale PNG data)
                     if (currentFramebufferData) {
-                        console.log('JPEG thumbnail received - clearing stored framebuffer data (JPEG is thumbnail only, not full framebuffer)');
+                        // console.log('JPEG thumbnail received - clearing stored framebuffer data (JPEG is thumbnail only, not full framebuffer)');
                         currentFramebufferData = null;
                         // Disable "Load Frame" button since we don't have full framebuffer
                         const loadFrameBtn = document.getElementById('loadFrameBtn');

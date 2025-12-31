@@ -18,6 +18,8 @@ let currentOutlineColor = '0'; // Default to black
 
 // Pending elements system - elements that can be moved before finalization
 let pendingElements = [];
+let draggingElements = []; // Array of elements being dragged
+let dragOffsets = new Map(); // Map of element -> drag offset
 
 const colorMap = {
     // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()

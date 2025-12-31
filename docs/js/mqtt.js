@@ -529,12 +529,12 @@ async function handleThumbnailMessage(message) {
             }
             
             // console.log('Decrypted thumbnail:', { 
-                width: thumb.width, 
-                height: thumb.height, 
-                format: thumb.format, 
-                dataLength: thumb.data ? thumb.data.length : 0,
-                dataType: typeof thumb.data
-            });
+            //     width: thumb.width, 
+            //     height: thumb.height, 
+            //     format: thumb.format, 
+            //     dataLength: thumb.data ? thumb.data.length : 0,
+            //     dataType: typeof thumb.data
+            // });
             
             // Validate base64 data length is reasonable
             if (thumb.data && thumb.data.length > 0) {

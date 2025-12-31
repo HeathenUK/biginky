@@ -803,14 +803,14 @@ function finalizePendingElements() {
     // Clear selection BEFORE drawing to avoid drawing selection outline
     selectedElement = null;
     
-    // Draw all pending elements to canvas
+    // Draw all pending elements to canvas (without selection outline)
     for (const elem of pendingElements) {
         drawPendingElement(elem, true);
     }
     
     pendingElements = [];
     draggingElement = null;
-    redrawCanvas();
+    // No need to redrawCanvas() - we've already drawn everything to the canvas
 }
 
 // Draw a pending element (either as preview or finalized)

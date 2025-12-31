@@ -475,6 +475,9 @@ bool logInit();    // Initialize logging (mount SD and open log file)
 void logFlush();   // Flush log file to ensure data is written
 void logClose();   // Close log file (call before deep sleep)
 
+// Persistent WiFiGuard - stays alive until deep sleep
+static WiFiGuard* g_persistentWifiGuard = nullptr;
+
 // Helper to ensure SD is mounted (simplifies conditional mounting logic)
 static inline bool ensureSDMounted() {
     if (sdCardMounted) {
@@ -870,7 +873,12 @@ static void sleepNowSeconds(uint32_t seconds) {
     
     // Disconnect WiFi before deep sleep (but don't shut down ESP-Hosted completely)
     // Just disconnect from network - ESP-Hosted will handle its own state
-    if (WiFi.status() == WL_CONNECTED) {
+    // Destroy persistent WiFiGuard if it exists (will disconnect WiFi in destructor)
+    if (g_persistentWifiGuard != nullptr) {
+        Serial.println("Destroying persistent WiFiGuard before deep sleep (will disconnect WiFi)...");
+        delete g_persistentWifiGuard;
+        g_persistentWifiGuard = nullptr;
+    } else if (WiFi.status() == WL_CONNECTED) {
         Serial.println("Disconnecting WiFi before deep sleep...");
         WiFi.disconnect(true);
         // Reduced delay - WiFi.disconnect() is asynchronous but needs some time for cleanup
@@ -3159,9 +3167,23 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
     
     // Connect to WiFi - REQUIRED for MQTT, so be persistent (keep robust retry logic)
     // While Core 0 is connecting to WiFi (network I/O, blocking), Core 1 is preparing status JSON (CPU-bound)
+    // Use persistent WiFiGuard that stays alive until deep sleep
     {
-        WiFiGuard wifiGuard(10, 30000, true, 50);  // 10 retries, 30s per attempt, required, 50ms disconnect delay
-        if (wifiGuard.isConnected()) {
+        // Create persistent WiFiGuard if it doesn't exist
+        if (g_persistentWifiGuard == nullptr) {
+            g_persistentWifiGuard = new WiFiGuard(10, 30000, true, 50);  // 10 retries, 30s per attempt, required, 50ms disconnect delay
+        }
+        
+        // Reconnect if not already connected
+        if (!g_persistentWifiGuard->isConnected() && WiFi.status() != WL_CONNECTED) {
+            // WiFiGuard already tried to connect in constructor, but if it failed or disconnected,
+            // we need to reconnect manually
+            if (wifiConnectPersistent(10, 30000, true)) {
+                // Connection successful - WiFiGuard will track it
+            }
+        }
+        
+        if (g_persistentWifiGuard->isConnected() || WiFi.status() == WL_CONNECTED) {
             // WiFi connected - check for OTA update notification ONLY on cold boot
             // This saves 2-5 seconds on every non-top-of-hour cycle
             if (g_is_cold_boot) {
@@ -3322,12 +3344,12 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                 checkAndStartOTA();
             }
             
-            // WiFi will be automatically disconnected by WiFiGuard destructor
-            Serial.println("Disconnecting WiFi to save power...");
+            // Keep WiFi connected - WiFiGuard stays alive until deep sleep
+            Serial.println("Keeping WiFi connected (will disconnect only before deep sleep)");
         } else {
             Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
         }
-    }  // WiFiGuard destructor disconnects WiFi here
+    }  // WiFiGuard stays alive - will be destroyed before deep sleep
 }
 
 // ============================================================================

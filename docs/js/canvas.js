@@ -16,6 +16,11 @@ let currentDrawColor = '1'; // Default to white
 let currentFillColor = '1'; // Default to white
 let currentOutlineColor = '0'; // Default to black
 
+// Pending elements system - elements that can be moved before finalization
+let pendingElements = [];
+let draggingElement = null;
+let dragOffset = { x: 0, y: 0 };
+
 const colorMap = {
     // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
     0: '#0A0A0A',  // Black (10, 10, 10)
@@ -699,45 +704,233 @@ function posterizeImage(x, y, width, height) {
     ctx.putImageData(imageData, x, y);
 }
 
+// Check for hover over pending elements (for cursor feedback)
+function checkHover(e) {
+    if (!canvas) return;
+    const coords = getCanvasCoordinates(e);
+    const hit = getPendingElementAt(coords.x, coords.y);
+    if (hit && !isDrawing) {
+        canvas.style.cursor = 'move';
+    } else if (!isDrawing) {
+        const tool = getCurrentTool();
+        canvas.style.cursor = (tool === 'eyedropper') ? 'crosshair' : 'crosshair';
+    }
+}
+
+// Check if click is on a pending element
+function getPendingElementAt(x, y) {
+    for (let i = pendingElements.length - 1; i >= 0; i--) {
+        const elem = pendingElements[i];
+        if (elem.type === 'text') {
+            // Approximate text bounds (rough estimate)
+            ctx.font = elem.fontSize + 'px ' + elem.fontFamily;
+            ctx.textAlign = elem.textAlign;
+            const metrics = ctx.measureText(elem.text);
+            const textWidth = metrics.width;
+            const textHeight = parseInt(elem.fontSize);
+            let textX = elem.x;
+            if (elem.textAlign === 'center') textX -= textWidth / 2;
+            else if (elem.textAlign === 'right') textX -= textWidth;
+            
+            if (x >= textX && x <= textX + textWidth && y >= elem.y && y <= elem.y + textHeight) {
+                return { element: elem, index: i };
+            }
+        } else if (elem.type === 'rectangle' || elem.type === 'roundedRect') {
+            const x1 = Math.min(elem.x, elem.x + elem.width);
+            const y1 = Math.min(elem.y, elem.y + elem.height);
+            const x2 = Math.max(elem.x, elem.x + elem.width);
+            const y2 = Math.max(elem.y, elem.y + elem.height);
+            if (x >= x1 && x <= x2 && y >= y1 && y <= y2) {
+                return { element: elem, index: i };
+            }
+        } else if (elem.type === 'circle') {
+            const radius = Math.sqrt(Math.pow(elem.endX - elem.x, 2) + Math.pow(elem.endY - elem.y, 2));
+            const dist = Math.sqrt(Math.pow(x - elem.x, 2) + Math.pow(y - elem.y, 2));
+            if (dist <= radius) {
+                return { element: elem, index: i };
+            }
+        } else if (elem.type === 'line') {
+            // Check if click is near the line (within 5 pixels)
+            const dist = distanceToLineSegment(x, y, elem.x, elem.y, elem.endX, elem.endY);
+            if (dist <= 5) {
+                return { element: elem, index: i };
+            }
+        }
+    }
+    return null;
+}
+
+function distanceToLineSegment(px, py, x1, y1, x2, y2) {
+    const A = px - x1;
+    const B = py - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+    if (lenSq !== 0) param = dot / lenSq;
+    let xx, yy;
+    if (param < 0) {
+        xx = x1;
+        yy = y1;
+    } else if (param > 1) {
+        xx = x2;
+        yy = y2;
+    } else {
+        xx = x1 + param * C;
+        yy = y1 + param * D;
+    }
+    const dx = px - xx;
+    const dy = py - yy;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Finalize all pending elements (draw them permanently to canvas)
+function finalizePendingElements() {
+    if (pendingElements.length === 0) return;
+    
+    saveCanvasState();
+    
+    // Draw all pending elements to canvas
+    for (const elem of pendingElements) {
+        drawPendingElement(elem, true);
+    }
+    
+    pendingElements = [];
+    draggingElement = null;
+    redrawCanvas();
+}
+
+// Draw a pending element (either as preview or finalized)
+function drawPendingElement(elem, finalized = false) {
+    if (elem.type === 'text') {
+        ctx.fillStyle = getDrawColor();
+        ctx.font = elem.fontSize + 'px ' + elem.fontFamily;
+        ctx.textAlign = elem.textAlign;
+        ctx.textBaseline = 'top';
+        ctx.fillText(elem.text, elem.x, elem.y);
+    } else if (elem.type === 'rectangle') {
+        const x = Math.min(elem.x, elem.x + elem.width);
+        const y = Math.min(elem.y, elem.y + elem.height);
+        const w = Math.abs(elem.width);
+        const h = Math.abs(elem.height);
+        ctx.fillStyle = getFillColor();
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = getOutlineColor();
+        ctx.lineWidth = elem.lineWidth;
+        ctx.strokeRect(x, y, w, h);
+    } else if (elem.type === 'roundedRect') {
+        const x = Math.min(elem.x, elem.x + elem.width);
+        const y = Math.min(elem.y, elem.y + elem.height);
+        const w = Math.abs(elem.width);
+        const h = Math.abs(elem.height);
+        const radius = getRoundedRectRadius();
+        const r = Math.min(radius, Math.min(w, h) / 2);
+        
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+        ctx.fillStyle = getFillColor();
+        ctx.fill();
+        ctx.strokeStyle = getOutlineColor();
+        ctx.lineWidth = elem.lineWidth;
+        ctx.stroke();
+    } else if (elem.type === 'circle') {
+        const radius = Math.sqrt(Math.pow(elem.endX - elem.x, 2) + Math.pow(elem.endY - elem.y, 2));
+        ctx.beginPath();
+        ctx.arc(elem.x, elem.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = getFillColor();
+        ctx.fill();
+        ctx.strokeStyle = getOutlineColor();
+        ctx.lineWidth = elem.lineWidth;
+        ctx.stroke();
+    } else if (elem.type === 'line') {
+        ctx.strokeStyle = getDrawColor();
+        ctx.lineWidth = elem.lineWidth;
+        ctx.beginPath();
+        ctx.moveTo(elem.x, elem.y);
+        ctx.lineTo(elem.endX, elem.endY);
+        ctx.stroke();
+    }
+}
+
+// Redraw canvas with pending elements
+function redrawCanvas() {
+    // Restore last saved state
+    if (lastUncompressedState) {
+        ctx.putImageData(lastUncompressedState, 0, 0);
+    } else if (historyIndex >= 0 && canvasHistory[historyIndex]) {
+        const state = canvasHistory[historyIndex];
+        if (state.data && state.width && state.height) {
+            ctx.putImageData(state, 0, 0);
+        }
+    }
+    
+    // Draw all pending elements
+    for (const elem of pendingElements) {
+        drawPendingElement(elem, false);
+    }
+}
+
+// Removed updateFinalizeButton - no longer needed since "Go" button finalizes
+
 function startDraw(e) {
     e.preventDefault();
     const coords = getCanvasCoordinates(e);
     const tool = getCurrentTool();
+    
+    // Check if clicking on a pending element to drag it
+    const hit = getPendingElementAt(coords.x, coords.y);
+    if (hit) {
+        draggingElement = hit.element;
+        if (hit.element.type === 'circle' || hit.element.type === 'line') {
+            // For circle/line, calculate offset from the center of the shape
+            const centerX = (hit.element.x + hit.element.endX) / 2;
+            const centerY = (hit.element.y + hit.element.endY) / 2;
+            dragOffset.x = coords.x - centerX;
+            dragOffset.y = coords.y - centerY;
+        } else {
+            // For other elements, offset from top-left corner
+            dragOffset.x = coords.x - hit.element.x;
+            dragOffset.y = coords.y - hit.element.y;
+        }
+        isDrawing = true;
+        return;
+    }
+    
+    // If clicking elsewhere and there are pending elements, finalize them first
+    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper') {
+        finalizePendingElements();
+    }
     
     if (tool === 'text') {
         const text = document.getElementById('canvasTextInput').value.trim();
         if (text) {
             const fontSize = document.getElementById('textFontSize').value;
             const fontFamily = document.getElementById('textFontFamily') ? document.getElementById('textFontFamily').value : 'Arial';
+            const textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
             
-            // Load Google Font if needed before drawing
-            if (typeof loadGoogleFont === 'function') {
-                loadGoogleFont(fontFamily).then(() => {
-                    // Font loaded, now draw the text
-                    saveCanvasState();
-                    ctx.fillStyle = getDrawColor();
-                    ctx.font = fontSize + 'px ' + fontFamily;
-                    ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
-                    ctx.textBaseline = 'top';
-                    ctx.fillText(text, coords.x, coords.y);
-                }).catch(() => {
-                    // Font loading failed, use fallback
-                    saveCanvasState();
-                    ctx.fillStyle = getDrawColor();
-                    ctx.font = fontSize + 'px ' + (fontFamily || 'Arial');
-                    ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
-                    ctx.textBaseline = 'top';
-                    ctx.fillText(text, coords.x, coords.y);
-                });
-            } else {
-                // Fallback if font loader not available
-                saveCanvasState();
-                ctx.fillStyle = getDrawColor();
-                ctx.font = fontSize + 'px ' + fontFamily;
-                ctx.textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
-                ctx.textBaseline = 'top';
-                ctx.fillText(text, coords.x, coords.y);
-            }
+            // Create pending text element
+            saveCanvasState();
+            const textElem = {
+                type: 'text',
+                text: text,
+                x: coords.x,
+                y: coords.y,
+                fontSize: fontSize,
+                fontFamily: fontFamily,
+                textAlign: textAlign
+            };
+            pendingElements.push(textElem);
+            redrawCanvas();
         }
         return;
     }
@@ -780,6 +973,100 @@ function startDraw(e) {
     
     if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
         saveCanvasState();
+    }
+}
+
+function draw(e) {
+    if (!isDrawing) return;
+    e.preventDefault();
+    const coords = getCanvasCoordinates(e);
+    const tool = getCurrentTool();
+    
+    // Handle dragging pending elements
+    if (draggingElement) {
+        if (draggingElement.type === 'circle' || draggingElement.type === 'line') {
+            // For circle/line, move the center to the new position
+            const oldCenterX = (draggingElement.x + draggingElement.endX) / 2;
+            const oldCenterY = (draggingElement.y + draggingElement.endY) / 2;
+            const newCenterX = coords.x - dragOffset.x;
+            const newCenterY = coords.y - dragOffset.y;
+            const dx = newCenterX - oldCenterX;
+            const dy = newCenterY - oldCenterY;
+            draggingElement.x += dx;
+            draggingElement.y += dy;
+            draggingElement.endX += dx;
+            draggingElement.endY += dy;
+        } else {
+            // For other elements, just move the position
+            draggingElement.x = coords.x - dragOffset.x;
+            draggingElement.y = coords.y - dragOffset.y;
+        }
+        redrawCanvas();
+        return;
+    }
+    
+    if (tool === 'brush' || tool === 'eraser') {
+        const x = coords.x;
+        const y = coords.y;
+        ctx.strokeStyle = tool === 'eraser' ? '#F5F5EB' : getDrawColor();
+        ctx.lineWidth = getBrushSize();
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        lastX = x;
+        lastY = y;
+    } else if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
+        // Remove any existing pending element of this type (only one shape at a time)
+        pendingElements = pendingElements.filter(e => e.type !== tool);
+        
+        // Create or update pending shape element
+        const lineWidth = getLineWidth();
+        let shapeElem = null;
+        
+        if (tool === 'rectangle') {
+            shapeElem = {
+                type: 'rectangle',
+                x: startX,
+                y: startY,
+                width: coords.x - startX,
+                height: coords.y - startY,
+                lineWidth: lineWidth
+            };
+        } else if (tool === 'roundedRect') {
+            shapeElem = {
+                type: 'roundedRect',
+                x: startX,
+                y: startY,
+                width: coords.x - startX,
+                height: coords.y - startY,
+                lineWidth: lineWidth
+            };
+        } else if (tool === 'circle') {
+            shapeElem = {
+                type: 'circle',
+                x: startX,
+                y: startY,
+                endX: coords.x,
+                endY: coords.y,
+                lineWidth: lineWidth
+            };
+        } else if (tool === 'line') {
+            shapeElem = {
+                type: 'line',
+                x: startX,
+                y: startY,
+                endX: coords.x,
+                endY: coords.y,
+                lineWidth: lineWidth
+            };
+        }
+        
+        if (shapeElem) {
+            pendingElements.push(shapeElem);
+            redrawCanvas();
+        }
     }
 }
 
@@ -883,10 +1170,17 @@ function stopDraw() {
     isDrawing = false;
     
     const tool = getCurrentTool();
+    
+    // Stop dragging if we were dragging
+    if (draggingElement) {
+        draggingElement = null;
+        return;
+    }
+    
     if (tool === 'brush' || tool === 'eraser') {
         saveCanvasState();
     }
-    // Rectangle, roundedRect, circle, and line already saved state in startDraw
+    // Shapes are now in pendingElements, not finalized until user finalizes them
 }
 
 async function undoCanvas() {
@@ -919,6 +1213,8 @@ function clearCanvas() {
     saveCanvasState();
     ctx.fillStyle = '#F5F5EB';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    pendingElements = [];
+    draggingElement = null;
     showStatus('canvasStatus', 'Canvas cleared', false);
 }
 
@@ -940,6 +1236,9 @@ function handleImageFileSelect(event) {
         const img = new Image();
         img.onload = function() {
             saveCanvasState();
+            // Clear pending elements when loading new image
+            pendingElements = [];
+            draggingElement = null;
             
             // Calculate scaling to fit canvas while maintaining aspect ratio
             const canvasAspect = canvas.width / canvas.height;
@@ -1013,6 +1312,10 @@ function loadFramebufferToCanvas() {
         const img = new Image();
         
         img.onload = function() {
+            // Clear pending elements when loading framebuffer
+            pendingElements = [];
+            draggingElement = null;
+            
             // Clear canvas
             ctx.fillStyle = '#F5F5EB';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1043,12 +1346,34 @@ function initializeCanvas() {
         
         // Set up event listeners
         canvas.addEventListener('mousedown', startDraw);
-        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) {
+                checkHover(e);
+            } else {
+                draw(e);
+            }
+        });
         canvas.addEventListener('mouseup', stopDraw);
         canvas.addEventListener('mouseleave', stopDraw);
         canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDraw(e); });
         canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); });
         canvas.addEventListener('touchend', (e) => { e.preventDefault(); stopDraw(); });
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Enter to finalize pending elements
+            if (e.key === 'Enter' && pendingElements.length > 0) {
+                e.preventDefault();
+                finalizePendingElements();
+            }
+            // Escape to cancel pending elements
+            if (e.key === 'Escape' && pendingElements.length > 0) {
+                e.preventDefault();
+                pendingElements = [];
+                draggingElement = null;
+                redrawCanvas();
+            }
+        });
         
         // Clear canvas on initialization
         clearCanvas();

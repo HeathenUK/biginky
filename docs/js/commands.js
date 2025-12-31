@@ -612,6 +612,11 @@ function generateDefaultCanvasFilename() {
 
 // Unified canvas action handler (replaces the three separate functions)
 async function sendCanvasAction() {
+    // Finalize any pending elements before sending
+    if (typeof finalizePendingElements === 'function' && pendingElements && pendingElements.length > 0) {
+        finalizePendingElements();
+    }
+    
     const actionSelect = document.getElementById('canvasActionSelect');
     const actionBtn = document.getElementById('canvasActionBtn');
     

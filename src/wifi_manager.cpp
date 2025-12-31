@@ -27,9 +27,9 @@ extern bool wifiCredentialsCached;
 bool performNtpSync(uint32_t timeout_ms) {
     configTime(0, 0, "pool.ntp.org", "time.google.com");
     
-    // NTP sync with retries - be persistent like WiFi connection
-    const int maxNtpRetries = 5;
-    const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
+    // NTP sync with retries - be very persistent (retry a lot harder)
+    const int maxNtpRetries = 20;  // Increased from 5 to 20 for much more persistence
+    const uint32_t ntpTimeoutPerAttempt = 60000;  // 60 seconds per attempt (increased from 30s)
     
     for (int retry = 0; retry < maxNtpRetries; retry++) {
         if (retry > 0) {

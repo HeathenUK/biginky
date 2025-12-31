@@ -12,14 +12,14 @@
 #include "platform_hal.h"  // For hal_psram_malloc/free
 #include <pngle.h>  // For PNG decoding
 #include <string.h>  // For memset
-
-#if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
-#include "driver/jpeg_encode.h"
-#endif
+#include "mqtt_handler.h"  // For processPngEncodeWork
+#include "lodepng_psram.h"  // For lodepng_free (must be before lodepng.h)
+#include "lodepng.h"  // For lodepng_error_text
 
 // External dependencies from main file
 extern bool sdCardMounted;
 extern sdmmc_card_t* sd_card;
+bool sdInitDirect(bool mode1bit = false);  // Forward declaration for SD card mounting
 
 // Helper structure for PNG to RGB decoding
 static struct {
@@ -118,7 +118,7 @@ static bool decodePNGToRGB(const uint8_t* pngData, size_t pngLen, uint8_t** rgbB
 }
 
 char* loadThumbnailFromSD() {
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("SD card not mounted, cannot load thumbnail");
         return nullptr;
     }
@@ -194,7 +194,7 @@ char* loadThumbnailFromSD() {
     }
     
     int written = snprintf(jsonBuffer, jsonSize, 
-                          "{\"width\":400,\"height\":300,\"format\":\"jpeg\",\"data\":\"%s\"}",
+                          "{\"width\":400,\"height\":300,\"format\":\"png\",\"data\":\"%s\"}",
                           base64Buffer);
     free(base64Buffer);
     
@@ -211,10 +211,14 @@ char* loadThumbnailFromSD() {
 }
 
 String generateThumbnailFromImageFile(const String& imagePath) {
-#if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
-    if (!sdCardMounted && sd_card == nullptr) {
-        Serial.printf("ERROR: SD card not mounted, cannot generate thumbnail for %s\n", imagePath.c_str());
-        return "";
+    // Ensure SD card is mounted (required for reading image and saving thumbnail)
+    if (!sdCardMounted) {
+        Serial.printf("SD card not mounted, attempting to mount for thumbnail generation...\n");
+        if (!sdInitDirect(false)) {
+            Serial.printf("ERROR: Failed to mount SD card, cannot generate thumbnail for %s\n", imagePath.c_str());
+            return "";
+        }
+        Serial.println("SD card mounted successfully for thumbnail generation");
     }
     
     // Load image file from SD into memory
@@ -310,104 +314,120 @@ String generateThumbnailFromImageFile(const String& imagePath) {
             
             if (count > 0) {
                 int thumbIdx = (ty * thumbWidth + tx) * 3;
-                // JPEG encoder expects RGB888 format (R, G, B order)
-                // R and B channels are swapped based on user feedback
-                thumbBuffer[thumbIdx + 0] = bSum / count;  // R (swapped from B)
-                thumbBuffer[thumbIdx + 1] = gSum / count;  // G (unchanged)
-                thumbBuffer[thumbIdx + 2] = rSum / count;  // B (swapped from R)
+                // PNG encoder (lodepng) expects RGB888 format (R, G, B order)
+                thumbBuffer[thumbIdx + 0] = rSum / count;  // R
+                thumbBuffer[thumbIdx + 1] = gSum / count;  // G
+                thumbBuffer[thumbIdx + 2] = bSum / count;  // B
             }
         }
     }
     
     hal_psram_free(rgbBuffer);
     
-    // Encode to JPEG
-    jpeg_encoder_handle_t jpeg_handle = nullptr;
-    jpeg_encode_engine_cfg_t encode_eng_cfg = {
-        .timeout_ms = 1000,
-    };
+    // Encode to PNG using processPngEncodeWork directly (we're already on Core 1)
+    // This matches the approach used in Canvas save, but calls processPngEncodeWork directly
+    // since generateThumbnailFromImageFile is called from Core 1 worker task
+    PngEncodeWorkData encodeWork = {0};
+    encodeWork.rgbData = thumbBuffer;
+    encodeWork.rgbDataLen = thumbSize;
+    encodeWork.width = thumbWidth;
+    encodeWork.height = thumbHeight;
+    encodeWork.pngData = nullptr;
+    encodeWork.pngSize = 0;
+    encodeWork.error = 0;
+    encodeWork.success = false;
     
-    esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
-    if (ret != ESP_OK) {
-        Serial.printf("ERROR: Failed to create JPEG encoder engine: %d\n", ret);
+    // Call processPngEncodeWork directly (we're already on Core 1)
+    if (!processPngEncodeWork(&encodeWork)) {
+        Serial.printf("ERROR: PNG encoding failed: %u %s\n", 
+                     encodeWork.error, encodeWork.error ? lodepng_error_text(encodeWork.error) : "unknown");
         hal_psram_free(thumbBuffer);
         return "";
     }
     
-    size_t estimated_jpeg_size = 150 * 1024;  // 150KB should be enough for quarter-size thumbnail (increased from 50KB)
-    jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = {
-        .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
-    };
-    size_t rx_buffer_size = 0;
-    uint8_t* jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);
-    if (jpegBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate JPEG output buffer");
-        jpeg_del_encoder_engine(jpeg_handle);
-        hal_psram_free(thumbBuffer);
-        return "";
-    }
+    // PNG encoding completed - PNG data is now available
+    unsigned char* pngBuffer = encodeWork.pngData;
+    size_t pngSize = encodeWork.pngSize;
     
-    jpeg_encode_cfg_t enc_config;
-    enc_config.width = thumbWidth;
-    enc_config.height = thumbHeight;
-    enc_config.src_type = JPEG_ENCODE_IN_FORMAT_RGB888;
-    enc_config.sub_sample = JPEG_DOWN_SAMPLING_YUV422;
-    enc_config.image_quality = 75;
-    
-    uint32_t jpeg_size_u32 = 0;
-    ret = jpeg_encoder_process(jpeg_handle, &enc_config, thumbBuffer, thumbSize, 
-                                jpegBuffer, rx_buffer_size, &jpeg_size_u32);
-    if (ret != ESP_OK) {
-        Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
-        free(jpegBuffer);
-        jpeg_del_encoder_engine(jpeg_handle);
-        hal_psram_free(thumbBuffer);
-        return "";
-    }
-    
-    jpeg_del_encoder_engine(jpeg_handle);
+    // Free RGB data (no longer needed)
     hal_psram_free(thumbBuffer);
     
-    // Base64 encode the JPEG
-    size_t base64Size = ((jpeg_size_u32 + 2) / 3) * 4 + 1;
+    if (!pngBuffer || pngSize == 0) {
+        Serial.println("ERROR: PNG encoding returned empty data");
+        if (pngBuffer) lodepng_free(pngBuffer);
+        return "";
+    }
+    
+    Serial.printf("PNG encoded successfully: %zu bytes\n", pngSize);
+    
+    size_t png_size_u32 = (size_t)pngSize;
+    
+    // Save PNG thumbnail to SD card for debugging (before base64 encoding)
+    // Try to save directly - if SD card is accessible (which it clearly is since we just read the image),
+    // FatFs will work regardless of the global mount status variables
+    // Generate filename from image path (e.g., "sunset.png" -> "thumb_sunset.png")
+    String thumbFilename = "0:/thumb_";
+    // Extract base filename without extension
+    int lastSlash = imagePath.lastIndexOf('/');
+    int lastDot = imagePath.lastIndexOf('.');
+    if (lastDot > lastSlash && lastDot > 0) {
+        thumbFilename += imagePath.substring(lastSlash + 1, lastDot);
+    } else {
+        thumbFilename += imagePath.substring(lastSlash + 1);
+    }
+    thumbFilename += ".png";
+    
+    FIL thumbFile;
+    FRESULT saveRes = f_open(&thumbFile, thumbFilename.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (saveRes == FR_OK) {
+        UINT bytesWritten = 0;
+        saveRes = f_write(&thumbFile, pngBuffer, png_size_u32, &bytesWritten);
+        f_close(&thumbFile);
+        if (saveRes == FR_OK && bytesWritten == png_size_u32) {
+            Serial.printf("Saved media thumbnail to SD: %s (%u bytes)\n", thumbFilename.c_str(), bytesWritten);
+        } else {
+            Serial.printf("WARNING: Failed to write media thumbnail to SD: res=%d, written=%u/%u\n", saveRes, bytesWritten, png_size_u32);
+        }
+    } else {
+        Serial.printf("WARNING: Failed to open media thumbnail file for writing: %s (res=%d)\n", thumbFilename.c_str(), saveRes);
+    }
+    
+    // Base64 encode the PNG
+    size_t base64Size = ((png_size_u32 + 2) / 3) * 4 + 1;
     char* base64Buffer = (char*)malloc(base64Size);
     if (base64Buffer == nullptr) {
         Serial.println("ERROR: Failed to allocate base64 buffer");
-        free(jpegBuffer);
+        lodepng_free(pngBuffer);
         return "";
     }
     
     const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t base64Idx = 0;
     
-    for (size_t i = 0; i < jpeg_size_u32; i += 3) {
-        uint32_t b0 = jpegBuffer[i];
-        uint32_t b1 = (i + 1 < jpeg_size_u32) ? jpegBuffer[i + 1] : 0;
-        uint32_t b2 = (i + 2 < jpeg_size_u32) ? jpegBuffer[i + 2] : 0;
+    for (size_t i = 0; i < png_size_u32; i += 3) {
+        uint32_t b0 = pngBuffer[i];
+        uint32_t b1 = (i + 1 < png_size_u32) ? pngBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < png_size_u32) ? pngBuffer[i + 2] : 0;
         uint32_t value = (b0 << 16) | (b1 << 8) | b2;
         
         if (base64Idx + 4 < base64Size) {
             base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
             base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
-            base64Buffer[base64Idx++] = (i + 1 < jpeg_size_u32) ? base64_chars[(value >> 6) & 0x3F] : '=';
-            base64Buffer[base64Idx++] = (i + 2 < jpeg_size_u32) ? base64_chars[value & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 1 < png_size_u32) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < png_size_u32) ? base64_chars[value & 0x3F] : '=';
         }
     }
     base64Buffer[base64Idx] = '\0';
     
-    free(jpegBuffer);
+    lodepng_free(pngBuffer);
     String result = String(base64Buffer);
     free(base64Buffer);
     
     return result;
-#else
-    Serial.println("ERROR: JPEG encoder or SD card not available for thumbnail generation");
-    return "";
-#endif
 }
 
 bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize) {
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("ERROR: SD card not mounted, cannot save thumbnail");
         return false;
     }
@@ -445,7 +465,7 @@ bool saveThumbnailToSD(const uint8_t* jpegData, size_t jpegSize) {
 std::vector<String> listImageFilesVector() {
     std::vector<String> files;
     
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("ERROR: SD card not mounted, cannot list image files");
         return files;
     }

@@ -10,6 +10,7 @@
 #include "json_utils.h"    // For extractJsonIntField, extractJsonStringField, extractJsonBoolField
 #include "EL133UF1.h"      // For display constants and display object
 #include "platform_hal.h"  // For hal_psram_malloc, hal_psram_free
+#include "lodepng_psram.h"  // Custom PSRAM allocators for lodepng (must be before lodepng.h)
 #include "lodepng.h"       // For PNG encoding
 #include <Arduino.h>
 #include <time.h>
@@ -49,7 +50,7 @@ bool sdInitDirect(bool mode1bit = false);
 
 // Helper function to ensure SD card is mounted
 static bool ensureSDMounted() {
-    if (sdCardMounted && sd_card != nullptr) {
+    if (sdCardMounted) {
         return true;
     }
     return sdInitDirect(false);
@@ -227,7 +228,7 @@ bool saveCanvasAsPNG(const uint8_t* pixelData, size_t pixelCount, unsigned width
     
     if (!pngData || pngSize == 0) {
         Serial.println("ERROR: Core 1 PNG encoding returned empty data");
-        if (pngData) free(pngData);  // lodepng uses malloc
+        if (pngData) lodepng_free(pngData);  // lodepng uses PSRAM allocator
         return false;
     }
     
@@ -237,7 +238,7 @@ bool saveCanvasAsPNG(const uint8_t* pixelData, size_t pixelCount, unsigned width
     FRESULT fileRes = f_open(&file, fatfsPath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
     if (fileRes != FR_OK) {
         Serial.printf("ERROR: Failed to open file for writing: %d (path: %s)\n", fileRes, fatfsPath.c_str());
-        free(pngData);  // lodepng uses malloc
+        lodepng_free(pngData);  // lodepng uses PSRAM allocator
         return false;
     }
     
@@ -245,7 +246,7 @@ bool saveCanvasAsPNG(const uint8_t* pixelData, size_t pixelCount, unsigned width
     fileRes = f_write(&file, pngData, pngSize, &bytesWritten);
     f_close(&file);
     
-    free(pngData);  // lodepng uses malloc, so use free()
+    lodepng_free(pngData);  // lodepng uses PSRAM allocator
     
     if (fileRes != FR_OK || bytesWritten != pngSize) {
         Serial.printf("ERROR: Failed to write PNG to SD: res=%d, written=%u/%zu\n", fileRes, bytesWritten, pngSize);

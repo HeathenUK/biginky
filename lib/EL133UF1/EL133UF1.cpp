@@ -1333,13 +1333,12 @@ void EL133UF1::updateAsync(bool skipInit) {
     // Send buffer data
     _sendBuffer();
 
-    // ALWAYS generate thumbnail automatically (from framebuffer, before refresh starts)
-    // If MQTT connected: publishes immediately
-    // If MQTT not connected: saves to SD card and sets flag for later publish
-    // This ensures thumbnails are always created and persist through deep sleep
+    // ALWAYS generate thumbnail and publish after display update
+    // Connects WiFi and MQTT if needed to ensure thumbnail is always published
+    // This ensures thumbnails are always published after every display update
 #if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
-    extern void publishMQTTThumbnailIfConnected();
-    publishMQTTThumbnailIfConnected();  // Always generates thumbnail, publishes or saves based on MQTT status
+    extern void publishMQTTThumbnailAlways();
+    publishMQTTThumbnailAlways();  // Always connects and publishes thumbnail
 #endif
 
     // Power on

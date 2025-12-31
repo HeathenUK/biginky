@@ -26,6 +26,7 @@ extern sdmmc_card_t* sd_card;
 extern bool thumbnailPendingPublish;
 extern bool webUICommandPending;
 extern String pendingWebUICommand;
+extern String lastProcessedCommandId;  // ID of the last command that was processed
 extern std::vector<struct MediaMapping> g_media_mappings;
 extern bool g_media_mappings_loaded;
 extern uint32_t lastMediaIndex;
@@ -109,6 +110,12 @@ void publishMQTTThumbnail();
 void publishMQTTThumbnailIfConnected();
 
 /**
+ * Always connect WiFi and MQTT (if needed) and publish thumbnail
+ * This ensures thumbnails are always published after display updates
+ */
+void publishMQTTThumbnailAlways();
+
+/**
  * Publish media.txt mappings with thumbnails to MQTT (backward compatibility - async)
  */
 void publishMQTTMediaMappings();
@@ -174,6 +181,13 @@ bool queueCanvasDecodeWork(CanvasDecodeWorkData* work);
  * @return true if work was queued successfully, false otherwise (falls back to synchronous)
  */
 bool queuePngEncodeWork(PngEncodeWorkData* work);
+
+/**
+ * Process PNG encoding work directly (for use when already on Core 1)
+ * @param work Work data structure with input/output parameters
+ * @return true if encoding succeeded, false otherwise
+ */
+bool processPngEncodeWork(PngEncodeWorkData* work);
 
 /**
  * Decode PNG data to RGBA8888 buffer on Core 1 (synchronous - waits for completion)

@@ -40,6 +40,7 @@
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
 #include <pngle.h>  // For direct PNG decoding to RGB buffer
+#include "lodepng_psram.h"  // Custom PSRAM allocators for lodepng (must be before lodepng.h)
 #include "lodepng.h"  // For PNG encoding (canvas save functionality)
 #include "EL133UF1_TextPlacement.h"
 #include "OpenAIImage.h"
@@ -476,7 +477,7 @@ void logClose();   // Close log file (call before deep sleep)
 
 // Helper to ensure SD is mounted (simplifies conditional mounting logic)
 static inline bool ensureSDMounted() {
-    if (sdCardMounted && sd_card != nullptr) {
+    if (sdCardMounted) {
         return true;
     }
     // Try to mount if not already mounted
@@ -1197,7 +1198,7 @@ int loadQuotesFromSD() {
     
     Serial.println("\n=== Loading quotes from SD card ===");
     
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("  SD card not mounted");
         return 0;
     }
@@ -1302,7 +1303,7 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
     
     Serial.println("\n=== Loading media mappings from SD card ===");
     
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("  SD card not mounted");
         return 0;
     }
@@ -1463,7 +1464,7 @@ bool playWavFile(const String& audioPath) {
         Serial.printf("\n=== Playing %s: %s ===\n", isMP3 ? "MP3" : "WAV", audioPath.c_str());
     }
     
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         if (!isBeep) {
             Serial.println("  SD card not mounted");
         }
@@ -1617,7 +1618,7 @@ static void handleSwitchDWake() {
     bool needSD = (lastAudioFile[0] != '\0');
     Serial.printf("Stored audio file: %s\n", lastAudioFile[0] != '\0' ? lastAudioFile : "(none)");
     
-    if (needSD && !sdCardMounted && sd_card == nullptr) {
+    if (needSD && !sdCardMounted) {
         Serial.println("Mounting SD card...");
         if (!sdInitDirect(false)) {
             Serial.println("SD mount failed - going back to sleep");
@@ -1849,6 +1850,7 @@ void numbersLoadFromNVS();  // Load allowed numbers from NVS (called on startup)
 // Deferred web UI command (for heavy commands that need to run outside MQTT task context)
 bool webUICommandPending = false;
 String pendingWebUICommand = "";
+String lastProcessedCommandId = "";  // ID of the last command that was processed (for completion status)
 
 // ============================================================================
 // Command Registry System - MIGRATED TO command_dispatcher.cpp/h
@@ -2107,48 +2109,18 @@ static void doNtpResyncIfNeeded(bool time_ok) {
         if (wifiConnectPersistent(8, 30000, true)) {  // 8 retries, 30s per attempt, required
             Serial.println("WiFi connected");
             
-            // Sync time via NTP (with retries for robustness)
-            const int maxNtpRetries = 5;
-            const uint32_t ntpTimeoutPerAttempt = 30000;  // 30 seconds per attempt
-            bool ntpSynced = false;
-            time_t now = time(nullptr);
-            
-            for (int retry = 0; retry < maxNtpRetries && !ntpSynced; retry++) {
-                if (retry > 0) {
-                    Serial.printf("NTP sync retry %d of %d...\n", retry + 1, maxNtpRetries);
-                    delay(2000);
-                }
-                
-                configTime(0, 0, "pool.ntp.org", "time.google.com");
-                
-                Serial.print("Syncing NTP");
-                uint32_t start = millis();
-                while (now < 1577836800 && (millis() - start < ntpTimeoutPerAttempt)) {
-                    delay(500);
-                    if ((millis() - start) % 5000 == 0) {
-                        Serial.print(".");
-                    }
-                    now = time(nullptr);
-                }
-                
-                if (now > 1577836800) {
-                    Serial.println(" OK!");
-                    struct tm tm_utc;
-                    gmtime_r(&now, &tm_utc);
-                    char buf[32];
-                    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
-                    Serial.printf("Time synced: %s\n", buf);
-                    ntpSynced = true;
-                } else {
-                    Serial.println(" FAILED!");
-                    if (retry < maxNtpRetries - 1) {
-                        Serial.println("Will retry NTP sync...");
-                    }
-                }
-            }
-            
+            // Sync time via NTP using centralized function (with much more persistent retries)
+            // Use longer timeout for periodic resyncs (5 minutes total)
+            bool ntpSynced = performNtpSync(300000);  // 5 minute timeout (20 retries * 60s = up to 20 minutes)
             if (!ntpSynced) {
                 Serial.println("WARNING: NTP sync failed after all retries, but continuing...");
+            } else {
+                time_t now = time(nullptr);
+                struct tm tm_utc;
+                gmtime_r(&now, &tm_utc);
+                char buf[32];
+                strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &tm_utc);
+                Serial.printf("Time synced: %s\n", buf);
             }
             
             // Don't disconnect WiFi here - we might need it for MQTT checks
@@ -2231,7 +2203,7 @@ static bool loadMediaForDisplay(bool time_ok, uint32_t& sd_ms, uint32_t& dec_ms)
 
     if (!ok) {
         // Mount SD card first if not already mounted
-        if (!sdCardMounted && sd_card == nullptr) {
+        if (!sdCardMounted) {
             if (!sdInitDirect(false)) {
                 Serial.println("Failed to mount SD card!");
                 Serial.println("SDMMC disabled; cannot load config or images. Sleeping.");
@@ -3003,6 +2975,43 @@ static void auto_cycle_task(void* arg) {
     // Check for RTC drift compensation (may sleep and return)
     checkRtcDriftCompensation(now, tm_utc, time_ok);
     
+    // Periodic NTP resync every 5 wakes (to handle long-term drift)
+    if (ntpSyncCounter > 0 && ntpSyncCounter % 5 == 0) {
+        Serial.printf("\n=== Periodic NTP Resync (every 5 wakes, counter=%lu) ===\n", (unsigned long)ntpSyncCounter);
+        
+        // Load WiFi credentials
+        if (wifiLoadCredentials()) {
+            // Connect to WiFi (required for NTP sync)
+            if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
+                Serial.println("WiFi connected for periodic NTP resync");
+                
+                // Force NTP sync using centralized function (with very persistent retries)
+                bool ntpSynced = performNtpSync(300000);  // 5 minute timeout
+                if (ntpSynced) {
+                    // Update time variables after NTP sync
+                    now = time(nullptr);
+                    if (now > 1577836800) {
+                        gmtime_r(&now, &tm_utc);
+                        isTopOfHour = (tm_utc.tm_min == 0);
+                        currentHour = tm_utc.tm_hour;
+                        currentMinute = tm_utc.tm_min;
+                        time_ok = true;
+                        Serial.println("Periodic NTP resync successful");
+                    }
+                } else {
+                    Serial.println("WARNING: Periodic NTP resync failed after all retries, but continuing...");
+                }
+                
+                // Don't disconnect WiFi here - might be needed for MQTT checks
+            } else {
+                Serial.println("WARNING: WiFi connection failed for periodic NTP resync");
+            }
+        } else {
+            Serial.println("WARNING: No WiFi credentials for periodic NTP resync");
+        }
+        Serial.println("==========================================\n");
+    }
+    
     Serial.printf("Current time: %02d:%02d:%02d (isTopOfHour: %s, hour enabled: %s)\n", 
                   tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
                   isTopOfHour ? "YES" : "NO",
@@ -3279,7 +3288,21 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                     // But we process it after SMS bridge commands so critical commands like !ota can run first
                     if (webUICommandPending && pendingWebUICommand.length() > 0) {
                         Serial.println("Processing deferred web UI command after MQTT disconnect");
-                        handleWebInterfaceCommand(pendingWebUICommand);
+                        
+                        // Extract command ID for tracking
+                        extern String lastProcessedCommandId;
+                        String cmdId = extractJsonStringField(pendingWebUICommand, "id");
+                        String cmdName = extractJsonStringField(pendingWebUICommand, "command");
+                        if (cmdId.length() > 0) {
+                            lastProcessedCommandId = cmdId;
+                        }
+                        
+                        bool success = handleWebInterfaceCommand(pendingWebUICommand);
+                        
+                        // Publish completion status (will connect WiFi/MQTT if needed)
+                        extern void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
+                        publishMQTTCommandCompletion(cmdId, cmdName, success);
+                        
                         webUICommandPending = false;
                         pendingWebUICommand = "";
                     }
@@ -3941,7 +3964,7 @@ bool handleOAICommand(const String& parameter) {
             
             // Save image to SD card in separate directory to avoid mixing with media.txt images
 
-            if (sdCardMounted || sd_card != nullptr || sdInitDirect(false)) {
+            if (sdCardMounted || sdInitDirect(false)) {
                 const char* aiDir = "/ai_generated";
                 String fatfsDir = "0:" + String(aiDir);
                 
@@ -5240,7 +5263,7 @@ static void show_media_task(void* parameter) {
     if (displayOk) {
 
         // Mount SD card if needed
-        if (!sdCardMounted && sd_card == nullptr) {
+        if (!sdCardMounted) {
             Serial.println("Mounting SD card...");
             if (!sdInitDirect(false)) {
                 Serial.println("ERROR: Failed to mount SD card!");
@@ -5488,7 +5511,7 @@ bool handleManageCommand() {
     }
     
     // Ensure SD card is mounted
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("SD card not mounted - attempting to mount...");
         if (!sdInitDirect()) {
             Serial.println("ERROR: Failed to mount SD card");
@@ -7385,7 +7408,7 @@ bool handleNextCommand() {
     
 
     // Mount SD card if needed
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("Mounting SD card...");
         if (!sdInitDirect(false)) {
             Serial.println("ERROR: Failed to mount SD card!");
@@ -7629,7 +7652,7 @@ bool handleGoCommand(const String& parameter) {
     
 
     // Mount SD card if needed
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("Mounting SD card...");
         if (!sdInitDirect(false)) {
             Serial.println("ERROR: Failed to mount SD card!");
@@ -7894,7 +7917,7 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
         Serial.printf("Loading background image: %s\n", backgroundImage.c_str());
         
         // Ensure SD card is mounted
-        if (!sdCardMounted && sd_card == nullptr) {
+        if (!sdCardMounted) {
             if (!sdInitDirect(false)) {
                 Serial.println("ERROR: Failed to mount SD card for background image");
                 return false;
@@ -8026,7 +8049,7 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
                                 }
                                 
                                 // Free RGBA data (allocated by Core 1 using lodepng's malloc)
-                                free(rgbaData);
+                                lodepng_free(rgbaData);
                                 
                                 Serial.println("Background image loaded and drawn successfully");
                             }
@@ -8621,7 +8644,7 @@ static bool handleGetCommand(const String& parameter) {
 
     
     // Mount SD card if needed
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("Mounting SD card...");
         if (!sdInitDirect(false)) {
             Serial.println("ERROR: Failed to mount SD card!");
@@ -9050,7 +9073,7 @@ bool handleListNumbersCommand(const String& originalMessage) {
     
 
     // Mount SD card if needed
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("Mounting SD card...");
         if (!sdInitDirect(false)) {
             Serial.println("ERROR: Failed to mount SD card!");
@@ -9262,7 +9285,7 @@ bool handleShowCommand(const String& parameter) {
     
 
     // Mount SD card if needed
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("Mounting SD card...");
         if (!sdInitDirect(false)) {
             Serial.println("ERROR: Failed to mount SD card!");
@@ -9432,18 +9455,9 @@ void wifiStatus() {
 
 
 void sdUnmountDirect() {
-    if (sd_card == nullptr) {
-        Serial.println("SD card not mounted");
-        return;
-    }
-    
-    // Close log file before unmounting
-    logClose();
-    
-    esp_vfs_fat_sdcard_unmount("/sdcard", sd_card);
-    sd_card = nullptr;
-    sdCardMounted = false;
-    Serial.println("SD card unmounted");
+    // SD card unmounting is DISABLED - SD card should never be unmounted
+    Serial.println("SD card unmount DISABLED - SD card will remain mounted");
+    // Do nothing - keep SD card mounted
 }
 
 // ============================================================================
@@ -9452,7 +9466,7 @@ void sdUnmountDirect() {
 
 bool logInit() {
     // Ensure SD card is mounted
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         if (!sdInitDirect(false)) {
             return false;  // SD mount failed
         }
@@ -9842,14 +9856,9 @@ void sdReadTest() {
 }
 
 void sdUnmount() {
-    if (!sdCardMounted) {
-        Serial.println("SD card not mounted");
-        return;
-    }
-    
-    SD_MMC.end();
-    sdCardMounted = false;
-    Serial.println("SD card unmounted");
+    // SD card unmounting is DISABLED - SD card should never be unmounted
+    Serial.println("SD card unmount DISABLED - SD card will remain mounted");
+    // Do nothing - keep SD card mounted
 }
 
 // ============================================================================
@@ -9926,7 +9935,7 @@ void bmpLoadRandom(const char* dirname = "/") {
     Serial.println("\n=== Loading Random BMP ===");
     uint32_t totalStart = millis();
     
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("SD card not mounted. Mounting...");
         if (!sdInitDirect(false)) {
             Serial.println("Failed to mount SD card!");
@@ -10073,7 +10082,7 @@ void bmpLoadRandom(const char* dirname = "/") {
 void bmpListFiles(const char* dirname = "/") {
     Serial.println("\n=== BMP Files on SD Card (FatFs) ===");
     
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("SD card not mounted!");
         return;
     }
@@ -10320,7 +10329,7 @@ void pngLoadRandom(const char* dirname = "/") {
     Serial.println("\n=== Loading Random PNG ===");
     uint32_t totalStart = millis();
 
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("SD card not mounted. Mounting...");
         if (!sdInitDirect(false)) {
             Serial.println("Failed to mount SD card!");
@@ -10433,7 +10442,7 @@ void pngLoadRandom(const char* dirname = "/") {
 void pngListFiles(const char* dirname = "/") {
     Serial.println("\n=== PNG Files on SD Card (FatFs) ===");
 
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         Serial.println("SD card not mounted!");
         return;
     }
@@ -10586,7 +10595,7 @@ bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32
     if (out_sd_read_ms) *out_sd_read_ms = 0;
     if (out_decode_ms) *out_decode_ms = 0;
 
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         if (!sdInitDirect(false)) {
             Serial.println("Failed to mount SD card!");
             return false;
@@ -10896,7 +10905,7 @@ void setup() {
 
     // Mount SD card as early as possible for logging
     // SD card is now always mounted - it's required for logging and all operations
-    if (!sdCardMounted && sd_card == nullptr) {
+    if (!sdCardMounted) {
         if (sdInitDirect(false)) {
             // Initialize logging system
             logInit();

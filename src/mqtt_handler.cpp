@@ -9,8 +9,10 @@
 #include "json_utils.h"
 #include "webui_crypto.h"
 #include "thumbnail_utils.h"
+#include "wifi_manager.h"  // For wifiLoadCredentials, wifiConnectPersistent
 #include "EL133UF1.h"
 #include <Arduino.h>
+#include <WiFi.h>  // For WiFi.status()
 #include <time.h>
 #include <string.h>
 #include <vector>
@@ -21,9 +23,10 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "platform_hal.h"  // For PSRAM allocation (hal_psram_malloc)
+#include "lodepng_psram.h"  // Custom PSRAM allocators for lodepng (must be before lodepng.h)
 #include "lodepng.h"  // For PNG encoding
 #include "miniz.h"    // For zlib decompression (tinfl_decompress_mem_to_mem)
-#include "platform_hal.h"  // For PSRAM allocation (hal_psram_malloc)
 #include "cJSON.h"  // Pure C JSON library for building JSON (handles escaping, large payloads)
 
 // MQTT configuration - hardcoded
@@ -90,6 +93,7 @@ static bool mqttMessageRetain = false;
 static char mqttMessageTopic[128] = "";
 
 // Forward declaration for event handler
+void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
 static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data);
 
 // Forward declarations for structs and functions from main file
@@ -295,7 +299,7 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     publishMQTTThumbnail();
                 } else {
                     Serial.println("Framebuffer lost, loading thumbnail from SD card...");
-                    if (!sdCardMounted && sd_card == nullptr) {
+                    if (!sdCardMounted) {
                         Serial.println("SD card not mounted - mounting now to load thumbnail...");
                         if (!sdInitDirect(false)) {
                             Serial.println("ERROR: Failed to mount SD card for thumbnail load");
@@ -454,6 +458,14 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);
                 Serial.printf("Received non-retained JSON message from web UI: %d bytes\n", mqttMessageBufferUsed);
                 
+                // Extract command ID for tracking
+                extern String lastProcessedCommandId;
+                String cmdId = extractJsonStringField(jsonMessage, "id");
+                if (cmdId.length() > 0) {
+                    lastProcessedCommandId = cmdId;
+                    Serial.printf("Command ID: %s\n", cmdId.c_str());
+                }
+                
                 String command = extractJsonStringField(jsonMessage, "command");
                 command.toLowerCase();
                 
@@ -463,8 +475,9 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     pendingWebUICommand = jsonMessage;
                     publishMQTTStatus();
                 } else {
-                    handleWebInterfaceCommand(jsonMessage);
-                    publishMQTTStatus();
+                    bool success = handleWebInterfaceCommand(jsonMessage);
+                    // Publish completion status with command ID
+                    publishMQTTCommandCompletion(cmdId, command, success);
                 }
             }
             
@@ -635,12 +648,89 @@ void publishMQTTStatus() {
     jsonBuffer[encryptedLen] = '\0';
     written = encryptedLen;
     
-    Serial.printf("Publishing encrypted status JSON (%d bytes) to %s...\n", written, mqttTopicStatus);
+    bool isEncrypted = isEncryptionEnabled();
+    Serial.printf("Publishing %s status JSON (%d bytes) to %s...\n", 
+                  isEncrypted ? "encrypted" : "unencrypted", written, mqttTopicStatus);
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("Published encrypted status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+        Serial.printf("Published %s status to %s (msg_id: %d)\n", 
+                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicStatus, msg_id);
     } else {
         Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+    }
+    
+    free(jsonBuffer);
+}
+
+// Publish command completion status to MQTT
+void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success) {
+    if (mqttClient == nullptr || !mqttConnected) {
+        Serial.println("MQTT not connected, cannot publish command completion");
+        return;
+    }
+    
+    Serial.printf("Publishing command completion: id=%s, command=%s, success=%d\n", 
+                  commandId.c_str(), commandName.c_str(), success ? 1 : 0);
+    
+    // Build completion status JSON
+    size_t jsonSize = 512;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer for command completion");
+        return;
+    }
+    
+    time_t now = time(nullptr);
+    int written = 0;
+    
+    written = snprintf(jsonBuffer, jsonSize, "{\"timestamp\":%ld", (long)now);
+    
+    // Add command completion info
+    if (commandId.length() > 0) {
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"command_id\":\"%s\"", commandId.c_str());
+    }
+    if (commandName.length() > 0) {
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"command\":\"%s\"", commandName.c_str());
+    }
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"command_completed\":true,\"success\":%s", success ? "true" : "false");
+    
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true}");
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: Command completion JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        return;
+    }
+    
+    String plaintextJson = String(jsonBuffer);
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    free(jsonBuffer);
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt command completion - publishing without encryption");
+        return;
+    }
+    
+    size_t encryptedLen = encryptedJson.length();
+    jsonBuffer = (char*)malloc(encryptedLen + 1);
+    if (!jsonBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for encrypted command completion JSON");
+        return;
+    }
+    
+    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
+    jsonBuffer[encryptedLen] = '\0';
+    written = encryptedLen;
+    
+    bool isEncrypted = isEncryptionEnabled();
+    Serial.printf("Publishing %s command completion JSON (%d bytes) to %s...\n", 
+                  isEncrypted ? "encrypted" : "unencrypted", written, mqttTopicStatus);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, jsonBuffer, written, 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published %s command completion to %s (msg_id: %d)\n", 
+                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicStatus, msg_id);
+    } else {
+        Serial.printf("Failed to publish command completion to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     }
     
     free(jsonBuffer);
@@ -861,7 +951,9 @@ bool publishPreparedStatus() {
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, g_preparedStatusBuffer, 
                                          g_preparedStatusSize, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("Published encrypted status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+        bool isEncrypted = isEncryptionEnabled();
+        Serial.printf("Published %s status to %s (msg_id: %d)\n", 
+                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicStatus, msg_id);
         
         // Clean up
         free(g_preparedStatusBuffer);
@@ -883,6 +975,17 @@ static void publishMQTTThumbnailInternalImpl() {
     if (display.getBuffer() == nullptr) {
         Serial.println("[Core 1] WARNING: Display buffer is nullptr, cannot generate thumbnail");
         return;
+    }
+    
+    // Ensure SD card is mounted (required for saving thumbnail)
+    if (!sdCardMounted) {
+        Serial.println("[Core 1] SD card not mounted, attempting to mount for thumbnail save...");
+        if (!sdInitDirect(false)) {
+            Serial.println("[Core 1] WARNING: Failed to mount SD card, thumbnail will not be saved to SD");
+            // Continue anyway - we can still publish the thumbnail via MQTT
+        } else {
+            Serial.println("[Core 1] SD card mounted successfully for thumbnail save");
+        }
     }
     
     const int srcWidth = 1600;
@@ -950,86 +1053,103 @@ static void publishMQTTThumbnailInternalImpl() {
             
             if (count > 0) {
                 int thumbIdx = (ty * thumbWidth + tx) * 3;
-                thumbBuffer[thumbIdx + 0] = bSum / count;
-                thumbBuffer[thumbIdx + 1] = gSum / count;
-                thumbBuffer[thumbIdx + 2] = rSum / count;
+                thumbBuffer[thumbIdx + 0] = rSum / count;  // R (RGB order for lodepng)
+                thumbBuffer[thumbIdx + 1] = gSum / count;  // G
+                thumbBuffer[thumbIdx + 2] = bSum / count;  // B
             }
         }
     }
     
-    uint8_t* jpegBuffer = nullptr;
-    size_t jpegSize = 0;
+    // Encode to PNG using processPngEncodeWork directly (we're already on Core 1)
+    PngEncodeWorkData encodeWork = {0};
+    encodeWork.rgbData = thumbBuffer;
+    encodeWork.rgbDataLen = thumbSize;
+    encodeWork.width = thumbWidth;
+    encodeWork.height = thumbHeight;
+    encodeWork.pngData = nullptr;
+    encodeWork.pngSize = 0;
+    encodeWork.error = 0;
+    encodeWork.success = false;
     
-#if defined(SOC_JPEG_ENCODE_SUPPORTED) && SOC_JPEG_ENCODE_SUPPORTED
-    jpeg_encoder_handle_t jpeg_handle = nullptr;
-    jpeg_encode_engine_cfg_t encode_eng_cfg = { .timeout_ms = 1000 };
-    
-    esp_err_t ret = jpeg_new_encoder_engine(&encode_eng_cfg, &jpeg_handle);
-    if (ret != ESP_OK) {
-        Serial.printf("ERROR: Failed to create JPEG encoder engine: %d\n", ret);
+    if (!processPngEncodeWork(&encodeWork)) {
+        Serial.printf("[Core 1] ERROR: PNG encoding failed: %u %s\n", 
+                     encodeWork.error, encodeWork.error ? lodepng_error_text(encodeWork.error) : "unknown");
         free(thumbBuffer);
         return;
     }
     
-    size_t estimated_jpeg_size = 150 * 1024;  // 150KB should be enough for quarter-size thumbnail (increased from 100KB)
-    jpeg_encode_memory_alloc_cfg_t rx_mem_cfg = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
-    size_t rx_buffer_size = 0;
-    jpegBuffer = (uint8_t*)jpeg_alloc_encoder_mem(estimated_jpeg_size, &rx_mem_cfg, &rx_buffer_size);
-    if (jpegBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate JPEG output buffer");
-        jpeg_del_encoder_engine(jpeg_handle);
-        free(thumbBuffer);
-        return;
-    }
+    // PNG encoding completed - PNG data is now available
+    unsigned char* pngBuffer = encodeWork.pngData;
+    size_t pngSize = encodeWork.pngSize;
     
-    jpeg_encode_cfg_t enc_config;
-    enc_config.width = thumbWidth;
-    enc_config.height = thumbHeight;
-    enc_config.src_type = JPEG_ENCODE_IN_FORMAT_RGB888;
-    enc_config.sub_sample = JPEG_DOWN_SAMPLING_YUV422;
-    enc_config.image_quality = 75;
-    
-    uint32_t jpeg_size_u32 = 0;
-    ret = jpeg_encoder_process(jpeg_handle, &enc_config, thumbBuffer, thumbSize, 
-                                jpegBuffer, rx_buffer_size, &jpeg_size_u32);
-    if (ret != ESP_OK) {
-        Serial.printf("ERROR: JPEG encoding failed: %d\n", ret);
-        free(jpegBuffer);
-        jpeg_del_encoder_engine(jpeg_handle);
-        free(thumbBuffer);
-        return;
-    }
-    
-    jpegSize = jpeg_size_u32;
-    jpeg_del_encoder_engine(jpeg_handle);
+    // Free RGB data (no longer needed)
     free(thumbBuffer);
     
-    size_t base64Size = ((jpegSize + 2) / 3) * 4 + 1;
+    if (!pngBuffer || pngSize == 0) {
+        Serial.println("[Core 1] ERROR: PNG encoding returned empty data");
+        if (pngBuffer) lodepng_free(pngBuffer);
+        return;
+    }
+    
+    Serial.printf("[Core 1] PNG encoded successfully: %zu bytes\n", pngSize);
+    
+    size_t pngSize_u32 = (size_t)pngSize;
+    
+    // Save PNG thumbnail to SD card for debugging (before base64 encoding)
+    // Try to save directly - if SD card is accessible, FatFs will work regardless of global mount status
+    // Generate unique filename with timestamp
+    time_t now;
+    struct tm timeinfo;
+    char thumbFilename[64];
+    if (time(&now) != -1 && localtime_r(&now, &timeinfo) != nullptr) {
+        snprintf(thumbFilename, sizeof(thumbFilename), "0:/thumb_preview_%04d%02d%02d_%02d%02d%02d.png",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    } else {
+        snprintf(thumbFilename, sizeof(thumbFilename), "0:/thumb_preview.png");
+    }
+    
+    FIL thumbFile;
+    FRESULT res = f_open(&thumbFile, thumbFilename, FA_WRITE | FA_CREATE_ALWAYS);
+    if (res == FR_OK) {
+        UINT bytesWritten = 0;
+        res = f_write(&thumbFile, pngBuffer, pngSize_u32, &bytesWritten);
+        f_close(&thumbFile);
+        if (res == FR_OK && bytesWritten == pngSize_u32) {
+            Serial.printf("[Core 1] Saved preview thumbnail to SD: %s (%u bytes)\n", thumbFilename, bytesWritten);
+        } else {
+            Serial.printf("[Core 1] WARNING: Failed to write preview thumbnail to SD: res=%d, written=%u/%u\n", res, bytesWritten, pngSize_u32);
+        }
+    } else {
+        Serial.printf("[Core 1] WARNING: Failed to open preview thumbnail file for writing: %s (res=%d)\n", thumbFilename, res);
+    }
+    
+    size_t base64Size = ((pngSize_u32 + 2) / 3) * 4 + 1;
     char* base64Buffer = (char*)malloc(base64Size);
     if (base64Buffer == nullptr) {
         Serial.println("ERROR: Failed to allocate base64 buffer");
-        free(jpegBuffer);
+        lodepng_free(pngBuffer);
         return;
     }
     
     const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t base64Idx = 0;
     
-    for (size_t i = 0; i < jpegSize; i += 3) {
-        uint32_t b0 = jpegBuffer[i];
-        uint32_t b1 = (i + 1 < jpegSize) ? jpegBuffer[i + 1] : 0;
-        uint32_t b2 = (i + 2 < jpegSize) ? jpegBuffer[i + 2] : 0;
+    for (size_t i = 0; i < pngSize_u32; i += 3) {
+        uint32_t b0 = pngBuffer[i];
+        uint32_t b1 = (i + 1 < pngSize_u32) ? pngBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < pngSize_u32) ? pngBuffer[i + 2] : 0;
         uint32_t value = (b0 << 16) | (b1 << 8) | b2;
         
         if (base64Idx + 4 < base64Size) {
             base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
             base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
-            base64Buffer[base64Idx++] = (i + 1 < jpegSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
-            base64Buffer[base64Idx++] = (i + 2 < jpegSize) ? base64_chars[value & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 1 < pngSize_u32) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < pngSize_u32) ? base64_chars[value & 0x3F] : '=';
         }
     }
     base64Buffer[base64Idx] = '\0';
-    free(jpegBuffer);
+    lodepng_free(pngBuffer);
     
     size_t jsonSize = 55 + base64Idx + 1;
     char* jsonBuffer = (char*)malloc(jsonSize);
@@ -1040,7 +1160,7 @@ static void publishMQTTThumbnailInternalImpl() {
     }
     
     int written = snprintf(jsonBuffer, jsonSize, 
-                          "{\"width\":%d,\"height\":%d,\"format\":\"jpeg\",\"data\":\"%s\"}",
+                          "{\"width\":%d,\"height\":%d,\"format\":\"png\",\"data\":\"%s\"}",
                           thumbWidth, thumbHeight, base64Buffer);
     
     if (written < 0 || written >= (int)jsonSize) {
@@ -1070,80 +1190,15 @@ static void publishMQTTThumbnailInternalImpl() {
     strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
     jsonBuffer[encryptedLen] = '\0';
     written = encryptedLen;
-#else
-    Serial.println("WARNING: JPEG encoder not available, using raw RGB base64");
-    size_t base64Size = ((thumbSize + 2) / 3) * 4 + 1;
-    char* base64Buffer = (char*)malloc(base64Size);
-    if (base64Buffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate base64 buffer");
-        free(thumbBuffer);
-        return;
-    }
     
-    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t base64Idx = 0;
-    
-    for (size_t i = 0; i < thumbSize; i += 3) {
-        uint32_t b0 = thumbBuffer[i];
-        uint32_t b1 = (i + 1 < thumbSize) ? thumbBuffer[i + 1] : 0;
-        uint32_t b2 = (i + 2 < thumbSize) ? thumbBuffer[i + 2] : 0;
-        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
-        
-        if (base64Idx + 4 < base64Size) {
-            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
-            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
-            base64Buffer[base64Idx++] = (i + 1 < thumbSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
-            base64Buffer[base64Idx++] = (i + 2 < thumbSize) ? base64_chars[value & 0x3F] : '=';
-        }
-    }
-    base64Buffer[base64Idx] = '\0';
-    free(thumbBuffer);
-    
-    size_t jsonSize = 60 + base64Idx + 1;
-    char* jsonBuffer = (char*)malloc(jsonSize);
-    if (jsonBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate JSON buffer");
-        free(base64Buffer);
-        return;
-    }
-    
-    int written = snprintf(jsonBuffer, jsonSize, 
-                          "{\"width\":%d,\"height\":%d,\"format\":\"rgb888\",\"data\":\"%s\"}",
-                          thumbWidth, thumbHeight, base64Buffer);
-    
-    if (written < 0 || written >= (int)jsonSize) {
-        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
-        free(jsonBuffer);
-        free(base64Buffer);
-        return;
-    }
-    
-    free(base64Buffer);
-    String plaintextJson = String(jsonBuffer);
-    String encryptedJson = encryptAndFormatMessage(plaintextJson);
-    free(jsonBuffer);
-    
-    if (encryptedJson.length() == 0) {
-        Serial.println("ERROR: Failed to encrypt thumbnail - publishing without encryption");
-        return;
-    }
-    
-    size_t encryptedLen = encryptedJson.length();
-    jsonBuffer = (char*)malloc(encryptedLen + 1);
-    if (!jsonBuffer) {
-        Serial.println("ERROR: Failed to allocate memory for encrypted JSON");
-        return;
-    }
-    
-    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
-    jsonBuffer[encryptedLen] = '\0';
-    written = encryptedLen;
-#endif
-    
-    Serial.printf("[Core 1] Publishing encrypted thumbnail JSON (%d bytes) to %s...\n", written, mqttTopicThumb);
+    bool isEncrypted = isEncryptionEnabled();
+    Serial.printf("[Core 1] Publishing %s thumbnail JSON (%d bytes) to %s...\n", 
+                  isEncrypted ? "encrypted" : "unencrypted", written, mqttTopicThumb);
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("\n[Core 1] Published thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+        bool isEncrypted = isEncryptionEnabled();
+        Serial.printf("\n[Core 1] Published %s thumbnail to %s (msg_id: %d)\n", 
+                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicThumb, msg_id);
     } else {
         Serial.printf("[Core 1] Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
     }
@@ -1198,11 +1253,65 @@ void publishMQTTThumbnailIfConnected() {
     }
 }
 
+void publishMQTTThumbnailAlways() {
+    // Always connect WiFi and MQTT if needed, then publish thumbnail
+    // This ensures thumbnails are published after every display update
+    
+    // Check if display buffer is available
+    if (display.getBuffer() == nullptr) {
+        Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
+        thumbnailPendingPublish = true;
+        return;
+    }
+    
+    // Load WiFi credentials if needed
+    if (!wifiLoadCredentials()) {
+        Serial.println("WARNING: No WiFi credentials, cannot publish thumbnail");
+        thumbnailPendingPublish = true;
+        return;
+    }
+    
+    // Connect to WiFi if not already connected
+    bool wifiWasConnected = (WiFi.status() == WL_CONNECTED);
+    
+    if (!wifiWasConnected) {
+        Serial.println("Connecting to WiFi for thumbnail publish...");
+        if (!wifiConnectPersistent(5, 20000, false)) {  // 5 retries, 20s per attempt, not required
+            Serial.println("WARNING: WiFi connection failed, saving thumbnail to SD for later publish");
+            thumbnailPendingPublish = true;
+            return;
+        }
+        Serial.println("WiFi connected for thumbnail publish");
+    }
+    
+    // Load MQTT config and connect if needed
+    mqttLoadConfig();
+    bool mqttWasConnected = mqttConnected;
+    
+    if (!mqttWasConnected) {
+        Serial.println("Connecting to MQTT for thumbnail publish...");
+        if (!mqttConnect()) {
+            Serial.println("WARNING: MQTT connection failed, saving thumbnail to SD for later publish");
+            thumbnailPendingPublish = true;
+            // Don't disconnect WiFi - we might want to keep it connected
+            return;
+        }
+        Serial.println("MQTT connected for thumbnail publish");
+    }
+    
+    // Now publish the thumbnail
+    publishMQTTThumbnail();
+    
+    // Note: We intentionally do NOT disconnect WiFi/MQTT here
+    // This allows them to stay connected for subsequent operations
+    // The user requested considering never disconnecting WiFi
+}
+
 // Forward declarations (must be before mqttWorkerTask which uses them)
 static void publishMQTTMediaMappingsInternalImpl();
 static bool processCanvasDecodeWork(CanvasDecodeWorkData* work);
-static bool processPngEncodeWork(PngEncodeWorkData* work);
 static bool processPngDecodeWork(PngDecodeWorkData* work);
+void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
 
 // Process PNG decode work on Core 1 (defined before mqttWorkerTask)
 static bool processPngDecodeWork(PngDecodeWorkData* work) {
@@ -1316,7 +1425,6 @@ static void publishMQTTThumbnailInternal() {
 // Forward declarations (must be before first use)
 static void publishMQTTMediaMappingsInternalImpl();
 static bool processCanvasDecodeWork(CanvasDecodeWorkData* work);
-static bool processPngEncodeWork(PngEncodeWorkData* work);
 
 // Internal implementation of media mappings publish (runs on Core 1)
 static void publishMQTTMediaMappingsInternal() {
@@ -1422,7 +1530,7 @@ static bool processCanvasDecodeWork(CanvasDecodeWorkData* work) {
 }
 
 // Process PNG encode work on Core 1
-static bool processPngEncodeWork(PngEncodeWorkData* work) {
+bool processPngEncodeWork(PngEncodeWorkData* work) {
     if (work == nullptr || work->rgbData == nullptr) {
         Serial.println("[Core 1] ERROR: Invalid PNG encode work data");
         return false;
@@ -1585,6 +1693,15 @@ static void publishMQTTMediaMappingsInternalImpl() {
     
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
         Serial.println("[Core 1] Media mappings not loaded yet - loading from SD card now...");
+        // Ensure SD card is mounted before loading mappings
+        if (!sdCardMounted) {
+            Serial.println("[Core 1] SD card not mounted, attempting to mount for media mappings load...");
+            if (!sdInitDirect(false)) {
+                Serial.println("[Core 1] ERROR: Failed to mount SD card, cannot load media mappings");
+                return;
+            }
+            Serial.println("[Core 1] SD card mounted successfully for media mappings load");
+        }
         loadMediaMappingsFromSD(false);
         if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
             Serial.println("[Core 1] WARNING: No media mappings found on SD card, cannot publish media mappings");
@@ -1721,8 +1838,9 @@ static void publishMQTTMediaMappingsInternalImpl() {
     
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, encryptedBuffer, encryptedLen, 1, 1);
     if (msg_id > 0) {
-        Serial.printf("[Core 1] Published media mappings to %s (msg_id: %d, size: %zu bytes)\n", 
-                     mqttTopicMedia, msg_id, encryptedLen);
+        bool isEncrypted = isEncryptionEnabled();
+        Serial.printf("[Core 1] Published %s media mappings to %s (msg_id: %d, size: %zu bytes)\n",
+                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicMedia, msg_id, encryptedLen);
     } else {
         Serial.printf("[Core 1] Failed to publish media mappings (msg_id: %d)\n", msg_id);
     }

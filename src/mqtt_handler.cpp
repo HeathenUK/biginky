@@ -1077,7 +1077,9 @@ static void publishMQTTThumbnailInternalImpl() {
 #endif
     
     // Allocate buffer for RGB values (3 bytes per pixel) - we'll convert palette indices to RGB
-    size_t thumbSize = thumbWidth * thumbHeight * 3;
+    // Optimization #1: Allocate buffer for palette indices directly (1 byte per pixel instead of 3)
+    // This reduces memory usage by 3x and eliminates redundant RGB conversion
+    size_t thumbSize = thumbWidth * thumbHeight;
     uint8_t* thumbBuffer = (uint8_t*)hal_psram_malloc(thumbSize);
     if (thumbBuffer == nullptr) {
         Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for thumbnail buffer");
@@ -1087,17 +1089,24 @@ static void publishMQTTThumbnailInternalImpl() {
     Serial.printf("[Core 1] Generating native-size thumbnail: %dx%d (mode: %s, palette-based)\n", 
                   thumbWidth, thumbHeight, isARGBMode ? "ARGB8888" : "L8");
     
-    // Palette RGB values (matching useDefaultPalette() in EL133UF1_Color.cpp)
-    uint8_t paletteRGB[6][3] = {
-        {10, 10, 10},        // 0: BLACK
-        {245, 245, 235},      // 1: WHITE
-        {245, 210, 50},       // 2: YELLOW
-        {190, 60, 55},        // 3: RED
-        {45, 75, 160},        // 4: BLUE
-        {55, 140, 85}         // 5: GREEN
+    uint32_t convertStart = millis();
+    
+    // Optimization #2: Lookup table instead of switch statement (faster, no branching)
+    // EL133UF1 colors: BLACK=0, WHITE=1, YELLOW=2, RED=3, BLUE=5, GREEN=6
+    // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
+    static const uint8_t einkToPaletteLUT[8] = {
+        0,  // 0 → 0 (BLACK)
+        1,  // 1 → 1 (WHITE)
+        2,  // 2 → 2 (YELLOW)
+        3,  // 3 → 3 (RED)
+        1,  // 4 → 1 (WHITE, invalid e-ink color)
+        4,  // 5 → 4 (BLUE)
+        5,  // 6 → 5 (GREEN)
+        1   // 7 → 1 (WHITE, invalid e-ink color)
     };
     
-    // Extract e-ink color indices and convert to RGB values
+    // Optimization #3: Process in cache-friendly row-by-row order (already optimal)
+    // Extract e-ink color indices and convert directly to palette indices (no RGB conversion)
     if (isARGBMode) {
 #if EL133UF1_USE_ARGB8888
         uint32_t* argbBuffer = display.getBufferARGB();
@@ -1107,24 +1116,8 @@ static void publishMQTTThumbnailInternalImpl() {
                     int srcIdx = y * srcWidth + x;
                     uint32_t argb = argbBuffer[srcIdx];
                     uint8_t einkColor = EL133UF1::argbToColor(argb);
-                    // Map to palette index (0-5 for the 6 colors)
-                    // EL133UF1 colors: BLACK=0, WHITE=1, YELLOW=2, RED=3, BLUE=5, GREEN=6
-                    // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
-                    uint8_t paletteIdx = 1; // Default to white
-                    switch (einkColor) {
-                        case 0: paletteIdx = 0; break; // BLACK
-                        case 1: paletteIdx = 1; break; // WHITE
-                        case 2: paletteIdx = 2; break; // YELLOW
-                        case 3: paletteIdx = 3; break; // RED
-                        case 5: paletteIdx = 4; break; // BLUE
-                        case 6: paletteIdx = 5; break; // GREEN
-                        default: paletteIdx = 1; break; // Default to white
-                    }
-                    // Convert palette index to RGB
-                    int rgbIdx = (y * thumbWidth + x) * 3;
-                    thumbBuffer[rgbIdx + 0] = paletteRGB[paletteIdx][0]; // R
-                    thumbBuffer[rgbIdx + 1] = paletteRGB[paletteIdx][1]; // G
-                    thumbBuffer[rgbIdx + 2] = paletteRGB[paletteIdx][2]; // B
+                    // Direct LUT lookup - no branching, no RGB conversion
+                    thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor & 0x07];
                 }
             }
         }
@@ -1136,39 +1129,31 @@ static void publishMQTTThumbnailInternalImpl() {
                 for (int x = 0; x < thumbWidth; x++) {
                     int srcIdx = y * srcWidth + x;
                     uint8_t einkColor = framebuffer[srcIdx] & 0x07;
-                    // Map to palette index (0-5 for the 6 colors)
-                    uint8_t paletteIdx = 1; // Default to white
-                    switch (einkColor) {
-                        case 0: paletteIdx = 0; break; // BLACK
-                        case 1: paletteIdx = 1; break; // WHITE
-                        case 2: paletteIdx = 2; break; // YELLOW
-                        case 3: paletteIdx = 3; break; // RED
-                        case 5: paletteIdx = 4; break; // BLUE
-                        case 6: paletteIdx = 5; break; // GREEN
-                        default: paletteIdx = 1; break; // Default to white
-                    }
-                    // Convert palette index to RGB
-                    int rgbIdx = (y * thumbWidth + x) * 3;
-                    thumbBuffer[rgbIdx + 0] = paletteRGB[paletteIdx][0]; // R
-                    thumbBuffer[rgbIdx + 1] = paletteRGB[paletteIdx][1]; // G
-                    thumbBuffer[rgbIdx + 2] = paletteRGB[paletteIdx][2]; // B
+                    // Direct LUT lookup - no branching, no RGB conversion
+                    thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor];
                 }
             }
         }
     }
     
-    // Encode to PNG using palette-based encoding (PNG8)
+    uint32_t convertTime = millis() - convertStart;
+    Serial.printf("[Core 1] Color conversion completed: %lu ms (processing %d pixels, direct palette indices)\n", 
+                  convertTime, thumbWidth * thumbHeight);
+    
+    // Encode to PNG using palette-based encoding (PNG8) - direct palette index input
     unsigned char* pngData = nullptr;
     size_t pngSize = 0;
+    
+    uint32_t encodeStart = millis();
     
     // Set up LodePNGState with palette mode
     LodePNGState state;
     lodepng_state_init(&state);
     
-    // Configure color mode for palette
+    // Configure color mode for palette - input is already palette indices!
     state.info_png.color.colortype = LCT_PALETTE;
     state.info_png.color.bitdepth = 8; // 8-bit palette indices
-    state.info_raw.colortype = LCT_RGB; // Input is RGB888 (3 bytes per pixel)
+    state.info_raw.colortype = LCT_PALETTE; // Input is palette indices (1 byte per pixel) - optimization #1
     state.info_raw.bitdepth = 8;
     
     // Disable auto-convert to ensure palette mode is used
@@ -1204,8 +1189,9 @@ static void publishMQTTThumbnailInternalImpl() {
         return;
     }
     
-    Serial.printf("[Core 1] PNG palette encoded successfully: %zu bytes (native %dx%d)\n", 
-                  pngSize, thumbWidth, thumbHeight);
+    uint32_t encodeTime = millis() - encodeStart;
+    Serial.printf("[Core 1] PNG palette encoded successfully: %zu bytes (native %dx%d) in %lu ms\n", 
+                  pngSize, thumbWidth, thumbHeight, encodeTime);
     
     // Use the encoded PNG data directly (no need for processPngEncodeWork)
     unsigned char* pngBuffer = pngData;

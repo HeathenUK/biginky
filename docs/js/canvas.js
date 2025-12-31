@@ -977,8 +977,19 @@ function startDraw(e) {
             const visualY = Math.min(hit.element.y, hit.element.y + hit.element.height);
             dragOffset.x = coords.x - visualX;
             dragOffset.y = coords.y - visualY;
+        } else if (hit.element.type === 'text') {
+            // For text, calculate offset from the visual text position (accounting for alignment)
+            ctx.font = hit.element.fontSize + 'px ' + hit.element.fontFamily;
+            ctx.textAlign = hit.element.textAlign;
+            const metrics = ctx.measureText(hit.element.text);
+            const textWidth = metrics.width;
+            let textX = hit.element.x;
+            if (hit.element.textAlign === 'center') textX -= textWidth / 2;
+            else if (hit.element.textAlign === 'right') textX -= textWidth;
+            dragOffset.x = coords.x - textX;
+            dragOffset.y = coords.y - hit.element.y;
         } else {
-            // For text, offset from the text position
+            // Fallback for any other element types
             dragOffset.x = coords.x - hit.element.x;
             dragOffset.y = coords.y - hit.element.y;
         }
@@ -1093,8 +1104,25 @@ function draw(e) {
             const dy = newVisualY - oldVisualY;
             draggingElement.x += dx;
             draggingElement.y += dy;
+        } else if (draggingElement.type === 'text') {
+            // For text, move the position accounting for text alignment
+            ctx.font = draggingElement.fontSize + 'px ' + draggingElement.fontFamily;
+            ctx.textAlign = draggingElement.textAlign;
+            const metrics = ctx.measureText(draggingElement.text);
+            const textWidth = metrics.width;
+            // Calculate the new visual x position
+            const newVisualX = coords.x - dragOffset.x;
+            // Convert back to stored x position based on alignment
+            if (draggingElement.textAlign === 'center') {
+                draggingElement.x = newVisualX + textWidth / 2;
+            } else if (draggingElement.textAlign === 'right') {
+                draggingElement.x = newVisualX + textWidth;
+            } else {
+                draggingElement.x = newVisualX;
+            }
+            draggingElement.y = coords.y - dragOffset.y;
         } else {
-            // For text, just move the position
+            // Fallback for any other element types
             draggingElement.x = coords.x - dragOffset.x;
             draggingElement.y = coords.y - dragOffset.y;
         }

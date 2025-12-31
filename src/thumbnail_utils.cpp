@@ -57,6 +57,28 @@ static void pngle_rgb_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t 
     }
 }
 
+// Check if PNG is paletted (color type 3)
+// PNG header: 8 bytes signature + IHDR chunk
+// Color type is at byte 25 (after signature, length, "IHDR", width, height, bit depth)
+static bool isPNGPaletted(const uint8_t* pngData, size_t pngLen) {
+    if (!pngData || pngLen < 30) return false;
+    
+    // Check PNG signature
+    static const uint8_t PNG_SIG[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (int i = 0; i < 8; i++) {
+        if (pngData[i] != PNG_SIG[i]) return false;
+    }
+    
+    // Check IHDR chunk type (bytes 12-15 should be "IHDR")
+    if (pngData[12] != 'I' || pngData[13] != 'H' || pngData[14] != 'D' || pngData[15] != 'R') {
+        return false;
+    }
+    
+    // Color type is at byte 25 (3 = palette)
+    uint8_t colorType = pngData[25];
+    return (colorType == 3);
+}
+
 // Decode PNG to RGB888 buffer (doesn't require display)
 static bool decodePNGToRGB(const uint8_t* pngData, size_t pngLen, uint8_t** rgbBuffer, uint32_t* width, uint32_t* height) {
     if (!pngData || pngLen < 24) return false;
@@ -261,7 +283,12 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
+    // Check if PNG is already paletted (color type 3)
+    bool isPaletted = isPNGPaletted(imageData, fileSize);
+    Serial.printf("PNG color type: %s\n", isPaletted ? "paletted" : "RGB");
+    
     // Decode PNG to RGB buffer (works without display)
+    // Note: Even paletted PNGs are decoded to RGB by pngle, but we can optimize the conversion
     uint8_t* rgbBuffer = nullptr;
     uint32_t srcWidth = 0, srcHeight = 0;
     bool loaded = false;
@@ -287,8 +314,6 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     const int thumbWidth = srcWidth / 4;   // Quarter width
     const int thumbHeight = srcHeight / 4;  // Quarter height
     
-    Serial.printf("Converting full-size image to palette indices first (better quality)...\n");
-    
     // Map Spectra color codes to palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 5=BLUE, 6=GREEN
     // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
     static const uint8_t spectraToPaletteLUT[] = {
@@ -302,12 +327,18 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         1   // 7 → 1 (WHITE, invalid e-ink color)
     };
     
-    // Ensure LUT is built if using custom palette
-    if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
-        spectra6Color.buildLUT();
-    }
+    // Our palette RGB values (matching lodepng palette)
+    static const uint8_t paletteRGB[6][3] = {
+        {10, 10, 10},        // 0: BLACK
+        {245, 245, 235},     // 1: WHITE
+        {245, 210, 50},      // 2: YELLOW
+        {190, 60, 55},       // 3: RED
+        {45, 75, 160},       // 4: BLUE
+        {55, 140, 85}        // 5: GREEN
+    };
     
-    // Convert full-size RGB to palette indices first (better quality than scaling then converting)
+    // Convert RGB to palette indices
+    // If PNG was already paletted, RGB values should match our palette exactly
     uint32_t convertStart = millis();
     size_t paletteSize = srcWidth * srcHeight;
     uint8_t* paletteBuffer = (uint8_t*)hal_psram_malloc(paletteSize);
@@ -317,14 +348,50 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    for (size_t i = 0; i < paletteSize; i++) {
-        uint8_t r = rgbBuffer[i * 3 + 0];
-        uint8_t g = rgbBuffer[i * 3 + 1];
-        uint8_t b = rgbBuffer[i * 3 + 2];
+    if (isPaletted) {
+        // Fast path: PNG was already paletted, RGB values should match our palette
+        // Direct RGB matching (exact match with small tolerance for rounding)
+        Serial.println("Fast path: PNG is paletted, using direct RGB matching...");
+        for (size_t i = 0; i < paletteSize; i++) {
+            uint8_t r = rgbBuffer[i * 3 + 0];
+            uint8_t g = rgbBuffer[i * 3 + 1];
+            uint8_t b = rgbBuffer[i * 3 + 2];
+            
+            // Try exact match first
+            bool matched = false;
+            for (int p = 0; p < 6; p++) {
+                if (r == paletteRGB[p][0] && g == paletteRGB[p][1] && b == paletteRGB[p][2]) {
+                    paletteBuffer[i] = p;
+                    matched = true;
+                    break;
+                }
+            }
+            
+            // If no exact match, use color matching (shouldn't happen for our paletted PNGs)
+            if (!matched) {
+                if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+                    spectra6Color.buildLUT();
+                }
+                uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
+                paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
+            }
+        }
+    } else {
+        // Normal path: RGB image, use color matching
+        Serial.println("Normal path: RGB image, using color matching...");
+        if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+            spectra6Color.buildLUT();
+        }
         
-        // Map RGB to Spectra color code, then to palette index
-        uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
-        paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
+        for (size_t i = 0; i < paletteSize; i++) {
+            uint8_t r = rgbBuffer[i * 3 + 0];
+            uint8_t g = rgbBuffer[i * 3 + 1];
+            uint8_t b = rgbBuffer[i * 3 + 2];
+            
+            // Map RGB to Spectra color code, then to palette index
+            uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
+            paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
+        }
     }
     
     uint32_t convertTime = millis() - convertStart;

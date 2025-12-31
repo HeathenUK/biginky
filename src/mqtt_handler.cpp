@@ -764,6 +764,10 @@ void publishMQTTCommandCompletion(const String& commandId, const String& command
     if (msg_id > 0) {
         Serial.printf("Published %s command completion to %s (msg_id: %d)\n", 
                       isEncrypted ? "encrypted" : "unencrypted", mqttTopicStatus, msg_id);
+        
+        // Wait for message to be sent (MQTT publish is asynchronous)
+        // Give it time to actually send the message before disconnecting
+        delay(500);  // 500ms should be enough for small messages
     } else {
         Serial.printf("Failed to publish command completion to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
     }

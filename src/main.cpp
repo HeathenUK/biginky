@@ -3303,6 +3303,10 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                         extern void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
                         publishMQTTCommandCompletion(cmdId, cmdName, success);
                         
+                        // Wait a bit longer to ensure the completion message is actually sent
+                        // before WiFiGuard destructor disconnects WiFi
+                        delay(1000);  // 1 second should be enough for small messages
+                        
                         webUICommandPending = false;
                         pendingWebUICommand = "";
                     }

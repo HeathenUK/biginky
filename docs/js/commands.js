@@ -613,9 +613,6 @@ function generateDefaultCanvasFilename() {
 // Unified canvas action handler (replaces the three separate functions)
 async function sendCanvasAction() {
     // Clear selection before finalizing
-    if (typeof selectNone === 'function') {
-        selectNone();
-    }
     
     // Finalize any pending elements before sending
     if (typeof finalizePendingElements === 'function' && pendingElements && pendingElements.length > 0) {

@@ -977,31 +977,44 @@ function startDraw(e) {
                 const index = selectedElements.indexOf(hit.element);
                 selectedElements.splice(index, 1);
                 console.log('[DEBUG] Removed from selection, now', selectedElements.length, 'selected');
+                console.log('[DEBUG]   selectedElements:', selectedElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
             } else {
                 // Add to selection
                 selectedElements.push(hit.element);
                 elementWasSelected = true;
                 console.log('[DEBUG] Added to selection, now', selectedElements.length, 'selected:', selectedElements.map(e => e.type));
+                console.log('[DEBUG]   selectedElements:', selectedElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
             }
         } else {
             // Single select - replace selection only if element is NOT already selected
             if (!isAlreadySelected) {
                 // Element not in selection - replace selection with just this element
+                console.log('[DEBUG] Single select (new) - BEFORE:', selectedElements.length, 'selected');
                 selectedElements = [hit.element];
                 elementWasSelected = true;
-                console.log('[DEBUG] Single select (new), now', selectedElements.length, 'selected');
+                console.log('[DEBUG] Single select (new) - AFTER:', selectedElements.length, 'selected');
+                console.log('[DEBUG]   selectedElements:', selectedElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
             } else {
                 // Element already in selection - keep existing selection (allows dragging all selected)
                 // Don't modify selectedElements, just ensure it's still selected
                 console.log('[DEBUG] Single select (already selected), keeping', selectedElements.length, 'selected');
+                console.log('[DEBUG]   selectedElements:', selectedElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
             }
         }
         
         // Start dragging all selected elements (always, even if already selected)
+        // Make a deep copy to ensure we're dragging all selected elements
         draggingElements = [...selectedElements];
         console.log('[DEBUG] Starting drag with', draggingElements.length, 'elements');
+        console.log('[DEBUG]   selectedElements.length:', selectedElements.length);
         console.log('[DEBUG]   selectedElements:', selectedElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
+        console.log('[DEBUG]   draggingElements.length:', draggingElements.length);
         console.log('[DEBUG]   draggingElements:', draggingElements.map(e => ({ type: e.type, text: e.text || '', x: e.x, y: e.y })));
+        
+        // Verify we have the same elements
+        if (selectedElements.length !== draggingElements.length) {
+            console.error('[ERROR] Mismatch: selectedElements.length =', selectedElements.length, 'but draggingElements.length =', draggingElements.length);
+        }
         dragOffsets.clear();
         
         for (const elem of draggingElements) {

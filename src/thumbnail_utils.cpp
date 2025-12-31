@@ -335,8 +335,8 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     heap_caps_free(rgbBuffer);
     rgbBuffer = nullptr;
     
-    // Now scale palette indices (similar to framebuffer thumbnail approach)
-    // This preserves quality better than scaling RGB then converting
+    // Now scale palette indices (exactly like framebuffer thumbnail - direct sampling)
+    // Sample every 4th pixel directly (no averaging) to match framebuffer thumbnail quality
     size_t thumbPaletteSize = thumbWidth * thumbHeight;
     uint8_t* thumbPaletteBuffer = (uint8_t*)hal_psram_malloc(thumbPaletteSize);
     if (thumbPaletteBuffer == nullptr) {
@@ -345,7 +345,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    Serial.println("Scaling palette indices (mode of 4x4 blocks)...");
+    Serial.println("Scaling palette indices (direct sampling every 4th pixel, like framebuffer)...");
     uint32_t scaleStart = millis();
     const int scale = 4;
     
@@ -354,32 +354,13 @@ String generateThumbnailFromImageFile(const String& imagePath) {
             int sx = tx * scale;
             int sy = ty * scale;
             
-            // Count palette indices in 4x4 block (mode/majority vote)
-            uint8_t colorCounts[6] = {0};
-            
-            for (int dy = 0; dy < scale && (sy + dy) < (int)srcHeight; dy++) {
-                for (int dx = 0; dx < scale && (sx + dx) < (int)srcWidth; dx++) {
-                    int srcIdx = (sy + dy) * srcWidth + (sx + dx);
-                    if (srcIdx < (int)paletteSize) {
-                        uint8_t paletteIdx = paletteBuffer[srcIdx];
-                        if (paletteIdx < 6) {
-                            colorCounts[paletteIdx]++;
-                        }
-                    }
-                }
+            // Direct sampling (like framebuffer thumbnail) - just take the top-left pixel of each 4x4 block
+            int srcIdx = sy * srcWidth + sx;
+            if (srcIdx < (int)paletteSize) {
+                thumbPaletteBuffer[ty * thumbWidth + tx] = paletteBuffer[srcIdx];
+            } else {
+                thumbPaletteBuffer[ty * thumbWidth + tx] = 1;  // Default to white
             }
-            
-            // Find most common color (mode)
-            uint8_t bestColor = 1;  // Default to white
-            uint8_t maxCount = 0;
-            for (int i = 0; i < 6; i++) {
-                if (colorCounts[i] > maxCount) {
-                    maxCount = colorCounts[i];
-                    bestColor = i;
-                }
-            }
-            
-            thumbPaletteBuffer[ty * thumbWidth + tx] = bestColor;
         }
     }
     

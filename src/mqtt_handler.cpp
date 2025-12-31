@@ -1076,8 +1076,8 @@ static void publishMQTTThumbnailInternalImpl() {
     isARGBMode = display.isARGBMode();
 #endif
     
-    // Allocate buffer for palette indices (1 byte per pixel)
-    size_t thumbSize = thumbWidth * thumbHeight;
+    // Allocate buffer for RGB values (3 bytes per pixel) - we'll convert palette indices to RGB
+    size_t thumbSize = thumbWidth * thumbHeight * 3;
     uint8_t* thumbBuffer = (uint8_t*)hal_psram_malloc(thumbSize);
     if (thumbBuffer == nullptr) {
         Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for thumbnail buffer");
@@ -1087,7 +1087,17 @@ static void publishMQTTThumbnailInternalImpl() {
     Serial.printf("[Core 1] Generating native-size thumbnail: %dx%d (mode: %s, palette-based)\n", 
                   thumbWidth, thumbHeight, isARGBMode ? "ARGB8888" : "L8");
     
-    // Extract e-ink color indices directly from framebuffer (no scaling, no RGB conversion)
+    // Palette RGB values (matching useDefaultPalette() in EL133UF1_Color.cpp)
+    uint8_t paletteRGB[6][3] = {
+        {10, 10, 10},        // 0: BLACK
+        {245, 245, 235},      // 1: WHITE
+        {245, 210, 50},       // 2: YELLOW
+        {190, 60, 55},        // 3: RED
+        {45, 75, 160},        // 4: BLUE
+        {55, 140, 85}         // 5: GREEN
+    };
+    
+    // Extract e-ink color indices and convert to RGB values
     if (isARGBMode) {
 #if EL133UF1_USE_ARGB8888
         uint32_t* argbBuffer = display.getBufferARGB();
@@ -1110,7 +1120,11 @@ static void publishMQTTThumbnailInternalImpl() {
                         case 6: paletteIdx = 5; break; // GREEN
                         default: paletteIdx = 1; break; // Default to white
                     }
-                    thumbBuffer[y * thumbWidth + x] = paletteIdx;
+                    // Convert palette index to RGB
+                    int rgbIdx = (y * thumbWidth + x) * 3;
+                    thumbBuffer[rgbIdx + 0] = paletteRGB[paletteIdx][0]; // R
+                    thumbBuffer[rgbIdx + 1] = paletteRGB[paletteIdx][1]; // G
+                    thumbBuffer[rgbIdx + 2] = paletteRGB[paletteIdx][2]; // B
                 }
             }
         }
@@ -1133,7 +1147,11 @@ static void publishMQTTThumbnailInternalImpl() {
                         case 6: paletteIdx = 5; break; // GREEN
                         default: paletteIdx = 1; break; // Default to white
                     }
-                    thumbBuffer[y * thumbWidth + x] = paletteIdx;
+                    // Convert palette index to RGB
+                    int rgbIdx = (y * thumbWidth + x) * 3;
+                    thumbBuffer[rgbIdx + 0] = paletteRGB[paletteIdx][0]; // R
+                    thumbBuffer[rgbIdx + 1] = paletteRGB[paletteIdx][1]; // G
+                    thumbBuffer[rgbIdx + 2] = paletteRGB[paletteIdx][2]; // B
                 }
             }
         }
@@ -1150,7 +1168,7 @@ static void publishMQTTThumbnailInternalImpl() {
     // Configure color mode for palette
     state.info_png.color.colortype = LCT_PALETTE;
     state.info_png.color.bitdepth = 8; // 8-bit palette indices
-    state.info_raw.colortype = LCT_GREY; // Input is palette indices (1 byte per pixel)
+    state.info_raw.colortype = LCT_RGB; // Input is RGB888 (3 bytes per pixel)
     state.info_raw.bitdepth = 8;
     
     // Disable auto-convert to ensure palette mode is used
@@ -1165,7 +1183,7 @@ static void publishMQTTThumbnailInternalImpl() {
     lodepng_palette_add(&state.info_png.color, 45, 75, 160, 255);     // 4: BLUE
     lodepng_palette_add(&state.info_png.color, 55, 140, 85, 255);      // 5: GREEN
     
-    // Encode using palette mode
+    // Encode using palette mode - lodepng will convert RGB to palette indices
     unsigned error = lodepng_encode(&pngData, &pngSize, thumbBuffer, 
                                    (unsigned)thumbWidth, (unsigned)thumbHeight, 
                                    &state);

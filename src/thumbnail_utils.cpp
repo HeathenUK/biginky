@@ -450,16 +450,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    // Palette RGB values (matching lodepng palette)
-    static const uint8_t paletteRGB[6][3] = {
-        {10, 10, 10},        // 0: BLACK
-        {245, 245, 235},     // 1: WHITE
-        {245, 210, 50},      // 2: YELLOW
-        {190, 60, 55},       // 3: RED
-        {45, 75, 160},       // 4: BLUE
-        {55, 140, 85}        // 5: GREEN
-    };
-    
+    // Use paletteRGB already declared above
     for (size_t i = 0; i < thumbPaletteSize; i++) {
         uint8_t paletteIdx = thumbPaletteBuffer[i];
         if (paletteIdx >= 6) paletteIdx = 1;  // Default to white

@@ -800,13 +800,15 @@ function finalizePendingElements() {
     
     saveCanvasState();
     
+    // Clear selection BEFORE drawing to avoid drawing selection outline
+    selectedElement = null;
+    
     // Draw all pending elements to canvas
     for (const elem of pendingElements) {
         drawPendingElement(elem, true);
     }
     
     pendingElements = [];
-    selectedElement = null;
     draggingElement = null;
     redrawCanvas();
 }
@@ -1497,7 +1499,7 @@ function initializeCanvas() {
             indicatorId: 'drawColorIndicator',
             labelId: 'drawColorLabel',
             colorType: 'numeric',
-            defaultValue: '1',
+            defaultValue: '0',
             onChange: (colorValue) => setDrawColor(colorValue),
             closeOtherPickers: ['fillColorPalette', 'outlineColorPalette']
         });

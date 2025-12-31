@@ -597,7 +597,7 @@ async function handleThumbnailMessage(message) {
                 return;
             }
             thumb = payloadCopy;
-            console.log('Thumbnail message HMAC verified successfully (legacy unencrypted)');
+            // console.log('Thumbnail message HMAC verified successfully (legacy unencrypted)');
         } else {
             // No password configured or no HMAC - just display (for backward compatibility)
             if (!webUIPassword) {
@@ -833,7 +833,7 @@ async function publishMessage(payload) {
                 });
             }
             payload.id = pendingCommandId;
-            console.log('Generated command ID:', pendingCommandId, 'for command:', payload.command);
+            // console.log('Generated command ID:', pendingCommandId, 'for command:', payload.command);
         }
         
         // Encrypt the payload

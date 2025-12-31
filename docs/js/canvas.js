@@ -1084,17 +1084,19 @@ function startDraw(e) {
 }
 
 function draw(e) {
-    if (!isDrawing) {
-        console.log('[DEBUG] draw() called but isDrawing is false');
-        return;
-    }
-    e.preventDefault();
-    const coords = getCanvasCoordinates(e);
-    const tool = getCurrentTool();
-    
-    // Handle dragging pending elements
-    if (draggingElement) {
-        console.log('[DEBUG] Dragging element:', draggingElement.type, 'at coords:', coords);
+    try {
+        console.log('[DEBUG] draw() ENTRY, isDrawing:', isDrawing, 'draggingElement:', draggingElement);
+        if (!isDrawing) {
+            console.log('[DEBUG] draw() called but isDrawing is false');
+            return;
+        }
+        e.preventDefault();
+        const coords = getCanvasCoordinates(e);
+        const tool = getCurrentTool();
+        
+        // Handle dragging pending elements
+        if (draggingElement) {
+            console.log('[DEBUG] Dragging element:', draggingElement.type, 'at coords:', coords, 'dragOffset:', dragOffset);
         if (draggingElement.type === 'circle' || draggingElement.type === 'line') {
             // For circle/line, move the center to the new position
             const oldCenterX = (draggingElement.x + draggingElement.endX) / 2;
@@ -1147,12 +1149,15 @@ function draw(e) {
             draggingElement.x = coords.x - dragOffset.x;
             draggingElement.y = coords.y - dragOffset.y;
         }
-        console.log('[DEBUG] Redrawing after drag');
-        redrawCanvas();
-        return;
+            console.log('[DEBUG] Redrawing after drag, element position now:', draggingElement.x, draggingElement.y);
+            redrawCanvas();
+            return;
+        }
+        
+        console.log('[DEBUG] Not dragging, tool:', tool);
+    } catch (error) {
+        console.error('[DEBUG] Error in draw():', error);
     }
-    
-    console.log('[DEBUG] Not dragging, tool:', tool);
     if (tool === 'brush' || tool === 'eraser') {
         const x = coords.x;
         const y = coords.y;

@@ -795,7 +795,7 @@ function draw(e) {
     if (tool === 'brush' || tool === 'eraser') {
         const x = coords.x;
         const y = coords.y;
-        ctx.strokeStyle = tool === 'eraser' ? '#FFFFFF' : getDrawColor();
+        ctx.strokeStyle = tool === 'eraser' ? '#F5F5EB' : getDrawColor();
         ctx.lineWidth = getBrushSize();
         ctx.lineCap = 'round';
         ctx.beginPath();

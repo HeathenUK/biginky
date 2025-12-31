@@ -13,6 +13,7 @@
 #include "image_hal.h"  // For PPA-accelerated scaling
 #include <pngle.h>  // For PNG decoding
 #include <string.h>  // For memset
+#include <esp_heap_caps.h>  // For heap_caps_aligned_alloc
 #include "mqtt_handler.h"  // For processPngEncodeWork
 #include "lodepng_psram.h"  // For lodepng_free (must be before lodepng.h)
 #include "lodepng.h"  // For lodepng_error_text
@@ -76,20 +77,22 @@ static bool decodePNGToRGB(const uint8_t* pngData, size_t pngLen, uint8_t** rgbB
         return false;
     }
     
-    // Allocate RGB buffer
+    // Allocate RGB buffer (PPA requires cache-line alignment, so align it)
     size_t rgbSize = *width * *height * 3;
-    *rgbBuffer = (uint8_t*)hal_psram_malloc(rgbSize);
+    // Round up to cache line size for PPA compatibility (64 bytes on ESP32-P4)
+    size_t alignedRgbSize = (rgbSize + 63) & ~63;
+    *rgbBuffer = (uint8_t*)heap_caps_aligned_alloc(64, alignedRgbSize, MALLOC_CAP_SPIRAM);
     if (!*rgbBuffer) {
-        Serial.println("ERROR: Failed to allocate PSRAM for RGB buffer");
+        Serial.println("ERROR: Failed to allocate aligned PSRAM for RGB buffer");
         return false;
     }
-    memset(*rgbBuffer, 255, rgbSize);  // Initialize to white
+    memset(*rgbBuffer, 255, rgbSize);  // Initialize to white (only actual size, not padding)
     
     // Create pngle instance
     pngle_t* pngle = pngle_new();
     if (!pngle) {
         Serial.println("ERROR: Failed to create pngle instance");
-        hal_psram_free(*rgbBuffer);
+        heap_caps_free(*rgbBuffer);
         *rgbBuffer = nullptr;
         return false;
     }
@@ -108,7 +111,7 @@ static bool decodePNGToRGB(const uint8_t* pngData, size_t pngLen, uint8_t** rgbB
         g_pngToRGBContext.success = true;
     } else {
         Serial.printf("ERROR: PNG decode failed: %s\n", pngle_error(pngle));
-        hal_psram_free(*rgbBuffer);
+        heap_caps_free(*rgbBuffer);
         *rgbBuffer = nullptr;
     }
     
@@ -274,7 +277,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     
     if (!loaded || !rgbBuffer) {
         Serial.printf("ERROR: Failed to decode image %s for thumbnail generation\n", imagePath.c_str());
-        if (rgbBuffer) hal_psram_free(rgbBuffer);
+        if (rgbBuffer) heap_caps_free(rgbBuffer);
         return "";
     }
     
@@ -284,12 +287,17 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     const int thumbHeight = srcHeight / 4;  // Quarter height
     
     size_t thumbSize = thumbWidth * thumbHeight * 3;
-    uint8_t* thumbBuffer = (uint8_t*)hal_psram_malloc(thumbSize);
+    // PPA requires cache-line aligned buffers (64 bytes on ESP32-P4)
+    // Round up to cache line size for alignment
+    size_t alignedThumbSize = (thumbSize + 63) & ~63;
+    uint8_t* thumbBuffer = (uint8_t*)heap_caps_aligned_alloc(64, alignedThumbSize, MALLOC_CAP_SPIRAM);
     if (thumbBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate PSRAM for thumbnail buffer");
-        hal_psram_free(rgbBuffer);
+        Serial.println("ERROR: Failed to allocate aligned PSRAM for thumbnail buffer");
+        heap_caps_free(rgbBuffer);
         return "";
     }
+    // Clear the padding area
+    memset(thumbBuffer + thumbSize, 0, alignedThumbSize - thumbSize);
     
     // Try PPA-accelerated scaling first
     bool usedPPA = false;
@@ -361,7 +369,9 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         }
     }
     
-    hal_psram_free(rgbBuffer);
+    // Free RGB buffer (use aligned free since we used aligned alloc)
+    heap_caps_free(rgbBuffer);
+    rgbBuffer = nullptr;
     
     // Encode to PNG using processPngEncodeWork directly (we're already on Core 1)
     // This matches the approach used in Canvas save, but calls processPngEncodeWork directly
@@ -380,16 +390,18 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     if (!processPngEncodeWork(&encodeWork)) {
         Serial.printf("ERROR: PNG encoding failed: %u %s\n", 
                      encodeWork.error, encodeWork.error ? lodepng_error_text(encodeWork.error) : "unknown");
-        hal_psram_free(thumbBuffer);
+        heap_caps_free(thumbBuffer);
         return "";
     }
     
     // PNG encoding completed - PNG data is now available
     unsigned char* pngBuffer = encodeWork.pngData;
+    
     size_t pngSize = encodeWork.pngSize;
     
-    // Free RGB data (no longer needed)
-    hal_psram_free(thumbBuffer);
+    // Free thumbnail buffer (use aligned free since we used aligned alloc)
+    heap_caps_free(thumbBuffer);
+    thumbBuffer = nullptr;
     
     if (!pngBuffer || pngSize == 0) {
         Serial.println("ERROR: PNG encoding returned empty data");

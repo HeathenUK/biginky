@@ -3859,9 +3859,20 @@ bool handleWebInterfaceCommand(const String& jsonMessage) {
     }
     
     // For canvas_display commands, extract fields directly without full JSON parsing (too large)
-    // With increased MQTT task stack size (16KB), we can now process these directly in the MQTT task
+    // Note: These are now processed in the deferred path (after MQTT disconnect) to avoid
+    // stack overflow in MQTT task context. The command is deferred in mqttEventHandler.
+    // This check is here for backward compatibility but should not be reached for deferred commands.
     if (command == "canvas_display") {
-        return handleCanvasDisplayCommand(messageToProcess);
+        // This path should not be reached for deferred commands - they're handled in doMqttCheckCycle
+        // But if it is reached (non-deferred path), process it directly and publish completion
+        String cmdId = extractJsonStringField(messageToProcess, "id");
+        bool success = handleCanvasDisplayCommand(messageToProcess);
+        
+        // Publish completion status (will connect WiFi/MQTT if needed)
+        extern void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
+        publishMQTTCommandCompletion(cmdId, command, success);
+        
+        return success;
     }
     
     // For other commands, parse JSON using cJSON

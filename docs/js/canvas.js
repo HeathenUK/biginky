@@ -18,9 +18,9 @@ let currentOutlineColor = '0'; // Default to black
 
 // Pending elements system - elements that can be moved before finalization
 let pendingElements = [];
-let selectedElement = null; // Currently selected element (can be moved or deleted)
-let draggingElement = null;
-let dragOffset = { x: 0, y: 0 };
+let selectedElements = []; // Array of currently selected elements (can be moved or deleted)
+let draggingElements = []; // Array of elements being dragged
+let dragOffsets = new Map(); // Map of element -> drag offset
 
 const colorMap = {
     // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
@@ -801,7 +801,7 @@ function finalizePendingElements() {
     saveCanvasState();
     
     // Clear selection BEFORE drawing to avoid drawing selection outline
-    selectedElement = null;
+    selectedElements = [];
     
     // Draw all pending elements to canvas (without selection outline)
     for (const elem of pendingElements) {
@@ -809,12 +809,13 @@ function finalizePendingElements() {
     }
     
     pendingElements = [];
-    draggingElement = null;
+    draggingElements = [];
+    dragOffsets.clear();
 }
 
 // Draw a pending element (either as preview or finalized)
 function drawPendingElement(elem, finalized = false) {
-    const isSelected = (elem === selectedElement);
+    const isSelected = selectedElements.includes(elem);
     
     if (elem.type === 'text') {
         ctx.fillStyle = getDrawColor();
@@ -962,56 +963,77 @@ function startDraw(e) {
     const hit = getPendingElementAt(coords.x, coords.y);
     if (hit) {
         console.log('[DEBUG] Element hit:', hit.element.type, hit.element);
-        // Select the element
-        selectedElement = hit.element;
         
-        // Start dragging immediately
-        draggingElement = hit.element;
-        if (hit.element.type === 'circle' || hit.element.type === 'line') {
-            // For circle/line, calculate offset from the center of the shape
-            const centerX = (hit.element.x + hit.element.endX) / 2;
-            const centerY = (hit.element.y + hit.element.endY) / 2;
-            dragOffset.x = coords.x - centerX;
-            dragOffset.y = coords.y - centerY;
-        } else if (hit.element.type === 'rectangle' || hit.element.type === 'roundedRect') {
-            // For rectangles, calculate offset from the actual visual top-left corner
-            const visualX = Math.min(hit.element.x, hit.element.x + hit.element.width);
-            const visualY = Math.min(hit.element.y, hit.element.y + hit.element.height);
-            dragOffset.x = coords.x - visualX;
-            dragOffset.y = coords.y - visualY;
-        } else if (hit.element.type === 'text') {
-            // For text, calculate offset from the visual text position (accounting for alignment)
-            ctx.font = hit.element.fontSize + 'px ' + hit.element.fontFamily;
-            ctx.textAlign = hit.element.textAlign;
-            const metrics = ctx.measureText(hit.element.text);
-            const textWidth = metrics.width;
-            let textX = hit.element.x;
-            if (hit.element.textAlign === 'center') textX -= textWidth / 2;
-            else if (hit.element.textAlign === 'right') textX -= textWidth;
-            dragOffset.x = coords.x - textX;
-            dragOffset.y = coords.y - hit.element.y;
-            console.log('[DEBUG] Text drag offset calculated:', {
-                coords: {x: coords.x, y: coords.y},
-                textX: textX,
-                textY: hit.element.y,
-                dragOffset: {x: dragOffset.x, y: dragOffset.y},
-                alignment: hit.element.textAlign
-            });
+        // Check if Ctrl/Cmd key is held for multi-select
+        const isMultiSelect = e.ctrlKey || e.metaKey;
+        const isAlreadySelected = selectedElements.includes(hit.element);
+        
+        if (isMultiSelect) {
+            // Toggle selection
+            if (isAlreadySelected) {
+                // Remove from selection
+                const index = selectedElements.indexOf(hit.element);
+                selectedElements.splice(index, 1);
+            } else {
+                // Add to selection
+                selectedElements.push(hit.element);
+            }
         } else {
-            // Fallback for any other element types
-            dragOffset.x = coords.x - hit.element.x;
-            dragOffset.y = coords.y - hit.element.y;
+            // Single select - replace selection
+            if (!isAlreadySelected) {
+                selectedElements = [hit.element];
+            }
         }
+        
+        // Start dragging all selected elements
+        draggingElements = [...selectedElements];
+        dragOffsets.clear();
+        
+        for (const elem of draggingElements) {
+            let offset = { x: 0, y: 0 };
+            if (elem.type === 'circle' || elem.type === 'line') {
+                // For circle/line, calculate offset from the center of the shape
+                const centerX = (elem.x + elem.endX) / 2;
+                const centerY = (elem.y + elem.endY) / 2;
+                offset.x = coords.x - centerX;
+                offset.y = coords.y - centerY;
+            } else if (elem.type === 'rectangle' || elem.type === 'roundedRect') {
+                // For rectangles, calculate offset from the actual visual top-left corner
+                const visualX = Math.min(elem.x, elem.x + elem.width);
+                const visualY = Math.min(elem.y, elem.y + elem.height);
+                offset.x = coords.x - visualX;
+                offset.y = coords.y - visualY;
+            } else if (elem.type === 'text') {
+                // For text, calculate offset from the visual text position (accounting for alignment)
+                ctx.font = elem.fontSize + 'px ' + elem.fontFamily;
+                ctx.textAlign = elem.textAlign;
+                const metrics = ctx.measureText(elem.text);
+                const textWidth = metrics.width;
+                let textX = elem.x;
+                if (elem.textAlign === 'center') textX -= textWidth / 2;
+                else if (elem.textAlign === 'right') textX -= textWidth;
+                offset.x = coords.x - textX;
+                offset.y = coords.y - elem.y;
+            } else {
+                // Fallback for any other element types
+                offset.x = coords.x - elem.x;
+                offset.y = coords.y - elem.y;
+            }
+            dragOffsets.set(elem, offset);
+        }
+        
         isDrawing = true;
-        console.log('[DEBUG] Starting drag, isDrawing:', isDrawing, 'draggingElement:', draggingElement);
+        console.log('[DEBUG] Starting drag, isDrawing:', isDrawing, 'draggingElements:', draggingElements.length);
         redrawCanvas(); // Redraw to show selection
         return; // Don't create new element
     }
     
-    // Clicked elsewhere - deselect
-    if (selectedElement) {
-        selectedElement = null;
-        redrawCanvas();
+    // Clicked elsewhere - deselect all (unless Ctrl/Cmd is held for multi-select)
+    if (!e.ctrlKey && !e.metaKey) {
+        if (selectedElements.length > 0) {
+            selectedElements = [];
+            redrawCanvas();
+        }
     }
     
     // If clicking elsewhere and there are pending elements, finalize them first (for shape tools)
@@ -1086,7 +1108,7 @@ function startDraw(e) {
 
 function draw(e) {
     try {
-        console.log('[DEBUG] draw() ENTRY, isDrawing:', isDrawing, 'draggingElement:', draggingElement);
+        console.log('[DEBUG] draw() ENTRY, isDrawing:', isDrawing, 'draggingElements:', draggingElements.length);
         if (!isDrawing) {
             console.log('[DEBUG] draw() called but isDrawing is false');
             return;
@@ -1096,61 +1118,60 @@ function draw(e) {
         const tool = getCurrentTool();
         
         // Handle dragging pending elements
-        if (draggingElement) {
-            console.log('[DEBUG] Dragging element:', draggingElement.type, 'at coords:', coords, 'dragOffset:', dragOffset);
-        if (draggingElement.type === 'circle' || draggingElement.type === 'line') {
-            // For circle/line, move the center to the new position
-            const oldCenterX = (draggingElement.x + draggingElement.endX) / 2;
-            const oldCenterY = (draggingElement.y + draggingElement.endY) / 2;
-            const newCenterX = coords.x - dragOffset.x;
-            const newCenterY = coords.y - dragOffset.y;
-            const dx = newCenterX - oldCenterX;
-            const dy = newCenterY - oldCenterY;
-            draggingElement.x += dx;
-            draggingElement.y += dy;
-            draggingElement.endX += dx;
-            draggingElement.endY += dy;
-        } else if (draggingElement.type === 'rectangle' || draggingElement.type === 'roundedRect') {
-            // For rectangles, move the visual top-left corner
-            const oldVisualX = Math.min(draggingElement.x, draggingElement.x + draggingElement.width);
-            const oldVisualY = Math.min(draggingElement.y, draggingElement.y + draggingElement.height);
-            const newVisualX = coords.x - dragOffset.x;
-            const newVisualY = coords.y - dragOffset.y;
-            const dx = newVisualX - oldVisualX;
-            const dy = newVisualY - oldVisualY;
-            draggingElement.x += dx;
-            draggingElement.y += dy;
-        } else if (draggingElement.type === 'text') {
-            console.log('[DEBUG] Updating text position, dragOffset:', dragOffset);
-            // For text, move the position accounting for text alignment
-            ctx.font = draggingElement.fontSize + 'px ' + draggingElement.fontFamily;
-            ctx.textAlign = draggingElement.textAlign;
-            const metrics = ctx.measureText(draggingElement.text);
-            const textWidth = metrics.width;
-            // Calculate the new visual x position
-            const newVisualX = coords.x - dragOffset.x;
-            const oldX = draggingElement.x;
-            // Convert back to stored x position based on alignment
-            if (draggingElement.textAlign === 'center') {
-                draggingElement.x = newVisualX + textWidth / 2;
-            } else if (draggingElement.textAlign === 'right') {
-                draggingElement.x = newVisualX + textWidth;
-            } else {
-                draggingElement.x = newVisualX;
+        if (draggingElements.length > 0) {
+            console.log('[DEBUG] Dragging', draggingElements.length, 'elements at coords:', coords);
+            
+            for (const draggingElement of draggingElements) {
+                const dragOffset = dragOffsets.get(draggingElement);
+                if (!dragOffset) continue;
+                
+                if (draggingElement.type === 'circle' || draggingElement.type === 'line') {
+                    // For circle/line, move the center to the new position
+                    const oldCenterX = (draggingElement.x + draggingElement.endX) / 2;
+                    const oldCenterY = (draggingElement.y + draggingElement.endY) / 2;
+                    const newCenterX = coords.x - dragOffset.x;
+                    const newCenterY = coords.y - dragOffset.y;
+                    const dx = newCenterX - oldCenterX;
+                    const dy = newCenterY - oldCenterY;
+                    draggingElement.x += dx;
+                    draggingElement.y += dy;
+                    draggingElement.endX += dx;
+                    draggingElement.endY += dy;
+                } else if (draggingElement.type === 'rectangle' || draggingElement.type === 'roundedRect') {
+                    // For rectangles, move the visual top-left corner
+                    const oldVisualX = Math.min(draggingElement.x, draggingElement.x + draggingElement.width);
+                    const oldVisualY = Math.min(draggingElement.y, draggingElement.y + draggingElement.height);
+                    const newVisualX = coords.x - dragOffset.x;
+                    const newVisualY = coords.y - dragOffset.y;
+                    const dx = newVisualX - oldVisualX;
+                    const dy = newVisualY - oldVisualY;
+                    draggingElement.x += dx;
+                    draggingElement.y += dy;
+                } else if (draggingElement.type === 'text') {
+                    // For text, move the position accounting for text alignment
+                    ctx.font = draggingElement.fontSize + 'px ' + draggingElement.fontFamily;
+                    ctx.textAlign = draggingElement.textAlign;
+                    const metrics = ctx.measureText(draggingElement.text);
+                    const textWidth = metrics.width;
+                    // Calculate the new visual x position
+                    const newVisualX = coords.x - dragOffset.x;
+                    // Convert back to stored x position based on alignment
+                    if (draggingElement.textAlign === 'center') {
+                        draggingElement.x = newVisualX + textWidth / 2;
+                    } else if (draggingElement.textAlign === 'right') {
+                        draggingElement.x = newVisualX + textWidth;
+                    } else {
+                        draggingElement.x = newVisualX;
+                    }
+                    draggingElement.y = coords.y - dragOffset.y;
+                } else {
+                    // Fallback for any other element types
+                    draggingElement.x = coords.x - dragOffset.x;
+                    draggingElement.y = coords.y - dragOffset.y;
+                }
             }
-            draggingElement.y = coords.y - dragOffset.y;
-            console.log('[DEBUG] Text position updated:', {
-                oldX: oldX,
-                newX: draggingElement.x,
-                oldY: draggingElement.y - (coords.y - dragOffset.y - draggingElement.y),
-                newY: draggingElement.y
-            });
-        } else {
-            // Fallback for any other element types
-            draggingElement.x = coords.x - dragOffset.x;
-            draggingElement.y = coords.y - dragOffset.y;
-        }
-            console.log('[DEBUG] Redrawing after drag, element position now:', draggingElement.x, draggingElement.y);
+            
+            console.log('[DEBUG] Redrawing after drag');
             redrawCanvas();
             return;
         }
@@ -1172,8 +1193,8 @@ function draw(e) {
         lastX = x;
         lastY = y;
     } else if (tool === 'rectangle' || tool === 'roundedRect' || tool === 'circle' || tool === 'line') {
-        // Don't create new shapes if we're dragging an existing element
-        if (draggingElement) {
+        // Don't create new shapes if we're dragging existing elements
+        if (draggingElements.length > 0) {
             return;
         }
         
@@ -1239,8 +1260,9 @@ function stopDraw() {
     const tool = getCurrentTool();
     
     // Stop dragging if we were dragging
-    if (draggingElement) {
-        draggingElement = null;
+    if (draggingElements.length > 0) {
+        draggingElements = [];
+        dragOffsets.clear();
         return;
     }
     
@@ -1276,8 +1298,8 @@ if (document.readyState === 'loading') {
 }
 
 function selectNone() {
-    if (selectedElement) {
-        selectedElement = null;
+    if (selectedElements.length > 0) {
+        selectedElements = [];
         redrawCanvas();
         showStatus('canvasStatus', 'Selection cleared', false);
     }
@@ -1289,8 +1311,9 @@ function clearCanvas() {
     ctx.fillStyle = '#F5F5EB';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     pendingElements = [];
-    selectedElement = null;
-    draggingElement = null;
+    selectedElements = [];
+    draggingElements = [];
+    dragOffsets.clear();
     showStatus('canvasStatus', 'Canvas cleared', false);
 }
 
@@ -1314,8 +1337,9 @@ function handleImageFileSelect(event) {
             saveCanvasState();
             // Clear pending elements when loading new image
             pendingElements = [];
-            selectedElement = null;
-            draggingElement = null;
+            selectedElements = [];
+            draggingElements = [];
+            dragOffsets.clear();
             
             // Calculate scaling to fit canvas while maintaining aspect ratio
             const canvasAspect = canvas.width / canvas.height;
@@ -1391,8 +1415,9 @@ function loadFramebufferToCanvas() {
         img.onload = function() {
             // Clear pending elements when loading framebuffer
             pendingElements = [];
-            selectedElement = null;
-            draggingElement = null;
+            selectedElements = [];
+            draggingElements = [];
+            dragOffsets.clear();
             
             // Clear canvas
             ctx.fillStyle = '#F5F5EB';
@@ -1425,7 +1450,7 @@ function initializeCanvas() {
         // Set up event listeners
         canvas.addEventListener('mousedown', startDraw);
         canvas.addEventListener('mousemove', (e) => {
-            console.log('[DEBUG] mousemove event, isDrawing:', isDrawing, 'draggingElement:', draggingElement);
+            console.log('[DEBUG] mousemove event, isDrawing:', isDrawing, 'draggingElements:', draggingElements.length);
             if (!isDrawing) {
                 checkHover(e);
             } else {
@@ -1441,15 +1466,18 @@ function initializeCanvas() {
         
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
-            // Delete key to remove selected element
-            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElement) {
+            // Delete key to remove selected elements
+            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElements.length > 0) {
                 e.preventDefault();
-                const index = pendingElements.indexOf(selectedElement);
-                if (index >= 0) {
-                    pendingElements.splice(index, 1);
-                    selectedElement = null;
-                    redrawCanvas();
+                // Remove all selected elements from pendingElements
+                for (const elem of selectedElements) {
+                    const index = pendingElements.indexOf(elem);
+                    if (index >= 0) {
+                        pendingElements.splice(index, 1);
+                    }
                 }
+                selectedElements = [];
+                redrawCanvas();
             }
             // Enter to finalize pending elements
             if (e.key === 'Enter' && pendingElements.length > 0) {
@@ -1460,8 +1488,9 @@ function initializeCanvas() {
             if (e.key === 'Escape' && pendingElements.length > 0) {
                 e.preventDefault();
                 pendingElements = [];
-                selectedElement = null;
-                draggingElement = null;
+                selectedElements = [];
+                draggingElements = [];
+                dragOffsets.clear();
                 redrawCanvas();
             }
         });

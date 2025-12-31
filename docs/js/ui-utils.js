@@ -226,8 +226,13 @@ function updateBusyMessage() {
             msgEl.textContent = `Device is asleep. Command will be processed at ${wakeTimeStr} (in ${timeUntilWake})`;
         }
     } else {
-        // No next_wake time available - show generic message
-        msgEl.textContent = 'Command sent. Waiting for device response...';
+        // No next_wake time available - show generic message with sleep interval if known
+        let message = 'Command sent. Waiting for device response...';
+        if (sleepIntervalMinutes !== null && sleepIntervalMinutes !== undefined) {
+            const intervalText = sleepIntervalMinutes === 1 ? '1 minute' : `${sleepIntervalMinutes} minutes`;
+            message += ` (this may take up to ${intervalText})`;
+        }
+        msgEl.textContent = message;
     }
 }
 
@@ -264,10 +269,17 @@ function setBusyState(busy, message) {
                     }
                 }, 1000);
             } else if (message) {
-                // No next_wake time yet - use provided message
+                // No next_wake time yet - use provided message with sleep interval if available
                 // Will be updated when status message arrives with next_wake
                 if (msgEl) {
-                    msgEl.textContent = message;
+                    let finalMessage = message;
+                    // Add sleep interval info if available and message is the default
+                    if (sleepIntervalMinutes !== null && sleepIntervalMinutes !== undefined && 
+                        (message.includes('Command sent') && message.includes('waiting for device response'))) {
+                        const intervalText = sleepIntervalMinutes === 1 ? '1 minute' : `${sleepIntervalMinutes} minutes`;
+                        finalMessage += ` (this may take up to ${intervalText})`;
+                    }
+                    msgEl.textContent = finalMessage;
                 }
                 
                 // Set timeout: if no status message arrives within 5 seconds, check again

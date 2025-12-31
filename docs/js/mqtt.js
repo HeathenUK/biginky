@@ -289,6 +289,11 @@ async function handleStatusMessage(message) {
             }
         }
         
+        // Store sleep interval for busy state message
+        if (status.sleep_interval_minutes !== undefined) {
+            sleepIntervalMinutes = status.sleep_interval_minutes;
+        }
+        
         // Check for command completion status (using id field)
         if (status.command_completed === true && status.id) {
             console.log('Command completion received:', status.id, 'success:', status.success);

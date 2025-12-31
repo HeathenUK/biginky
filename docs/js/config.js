@@ -73,6 +73,7 @@ let isBusy = false;  // Busy state for command processing
 let busyTimeoutId = null;  // Timeout ID for busy state
 let busyCountdownInterval = null;  // Interval for updating countdown
 let nextWakeTime = null;  // Next wake time from status message (Date object)
+let sleepIntervalMinutes = null;  // Sleep interval in minutes from status message
 let autoReconnectEnabled = MQTT_CONFIG.connection.autoReconnect;
 let reconnectAttempts = 0;
 let reconnectTimeoutId = null;

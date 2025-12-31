@@ -107,7 +107,9 @@ function setTool(tool) {
     }
     // Update canvas cursor based on tool
     if (canvas) {
-        if (tool === 'eyedropper') {
+        if (tool === 'move') {
+            canvas.style.cursor = 'default'; // Will change to 'move' when hovering over elements
+        } else if (tool === 'eyedropper') {
             canvas.style.cursor = 'crosshair';
         } else {
             canvas.style.cursor = 'crosshair';
@@ -195,6 +197,13 @@ function updateToolOptions(tool) {
             fillColorContainer.style.display = 'none';
             outlineColorContainer.style.display = 'none';
         }
+    }
+    
+    // Move tool doesn't need any special options - all options should be hidden
+    if (tool === 'move') {
+        if (colorContainer) colorContainer.style.display = 'none';
+        if (fillColorContainer) fillColorContainer.style.display = 'none';
+        if (outlineColorContainer) outlineColorContainer.style.display = 'none';
     }
 }
 
@@ -707,12 +716,17 @@ function posterizeImage(x, y, width, height) {
 // Check for hover over pending elements (for cursor feedback)
 function checkHover(e) {
     if (!canvas) return;
+    const tool = getCurrentTool();
     const coords = getCanvasCoordinates(e);
-    const hit = getPendingElementAt(coords.x, coords.y);
-    if (hit && !isDrawing) {
-        canvas.style.cursor = 'move';
+    
+    if (tool === 'move') {
+        const hit = getPendingElementAt(coords.x, coords.y);
+        if (hit && !isDrawing) {
+            canvas.style.cursor = 'move';
+        } else if (!isDrawing) {
+            canvas.style.cursor = 'default';
+        }
     } else if (!isDrawing) {
-        const tool = getCurrentTool();
         canvas.style.cursor = (tool === 'eyedropper') ? 'crosshair' : 'crosshair';
     }
 }
@@ -887,27 +901,32 @@ function startDraw(e) {
     const coords = getCanvasCoordinates(e);
     const tool = getCurrentTool();
     
-    // Check if clicking on a pending element to drag it
-    const hit = getPendingElementAt(coords.x, coords.y);
-    if (hit) {
-        draggingElement = hit.element;
-        if (hit.element.type === 'circle' || hit.element.type === 'line') {
-            // For circle/line, calculate offset from the center of the shape
-            const centerX = (hit.element.x + hit.element.endX) / 2;
-            const centerY = (hit.element.y + hit.element.endY) / 2;
-            dragOffset.x = coords.x - centerX;
-            dragOffset.y = coords.y - centerY;
-        } else {
-            // For other elements, offset from top-left corner
-            dragOffset.x = coords.x - hit.element.x;
-            dragOffset.y = coords.y - hit.element.y;
+    // Move tool: only allow moving pending elements
+    if (tool === 'move') {
+        const hit = getPendingElementAt(coords.x, coords.y);
+        if (hit) {
+            draggingElement = hit.element;
+            if (hit.element.type === 'circle' || hit.element.type === 'line') {
+                // For circle/line, calculate offset from the center of the shape
+                const centerX = (hit.element.x + hit.element.endX) / 2;
+                const centerY = (hit.element.y + hit.element.endY) / 2;
+                dragOffset.x = coords.x - centerX;
+                dragOffset.y = coords.y - centerY;
+            } else {
+                // For other elements, offset from top-left corner
+                dragOffset.x = coords.x - hit.element.x;
+                dragOffset.y = coords.y - hit.element.y;
+            }
+            isDrawing = true;
         }
-        isDrawing = true;
+        // If no element hit in move mode, do nothing
         return;
     }
     
+    // Other tools: check if clicking on a pending element (only if move mode was just active)
+    // Actually, let's not allow moving when other tools are active - user must use move tool
     // If clicking elsewhere and there are pending elements, finalize them first
-    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper') {
+    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper' && tool !== 'move') {
         finalizePendingElements();
     }
     

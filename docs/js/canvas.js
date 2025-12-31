@@ -974,17 +974,21 @@ function startDraw(e) {
                 // Remove from selection
                 const index = selectedElements.indexOf(hit.element);
                 selectedElements.splice(index, 1);
+                console.log('[DEBUG] Removed from selection, now', selectedElements.length, 'selected');
             } else {
                 // Add to selection
                 selectedElements.push(hit.element);
+                console.log('[DEBUG] Added to selection, now', selectedElements.length, 'selected:', selectedElements.map(e => e.type));
             }
         } else {
             // Single select - always set selection to this element (even if already selected)
             selectedElements = [hit.element];
+            console.log('[DEBUG] Single select, now', selectedElements.length, 'selected');
         }
         
         // Start dragging all selected elements (always, even if already selected)
         draggingElements = [...selectedElements];
+        console.log('[DEBUG] Starting drag with', draggingElements.length, 'elements');
         dragOffsets.clear();
         
         for (const elem of draggingElements) {
@@ -1296,10 +1300,14 @@ if (document.readyState === 'loading') {
 }
 
 function selectNone() {
-    if (selectedElements.length > 0) {
+    console.log('[DEBUG] selectNone() called, selectedElements.length:', selectedElements.length, 'draggingElements.length:', draggingElements.length);
+    if (selectedElements.length > 0 || draggingElements.length > 0) {
         selectedElements = [];
+        draggingElements = [];
+        dragOffsets.clear();
         redrawCanvas();
         showStatus('canvasStatus', 'Selection cleared', false);
+        console.log('[DEBUG] selectNone() completed, cleared selection');
     }
 }
 

@@ -26,6 +26,7 @@
 #include "platform_hal.h"  // For PSRAM allocation (hal_psram_malloc)
 #include "lodepng_psram.h"  // Custom PSRAM allocators for lodepng (must be before lodepng.h)
 #include "lodepng.h"  // For PNG encoding
+#include "EL133UF1_Color.h"  // For spectra6Color global instance
 #include "miniz.h"    // For zlib decompression (tinfl_decompress_mem_to_mem)
 #include "cJSON.h"  // Pure C JSON library for building JSON (handles escaping, large payloads)
 
@@ -1617,33 +1618,114 @@ bool processPngEncodeWork(PngEncodeWorkData* work) {
         return false;
     }
     
-    Serial.printf("[Core 1] Encoding PNG: %ux%u, RGB data: %zu bytes\n", 
+    Serial.printf("[Core 1] Encoding PNG with palette: %ux%u, RGB data: %zu bytes\n", 
                   work->width, work->height, work->rgbDataLen);
     
-    // Encode RGB data as PNG using lodepng
+    uint32_t convertStart = millis();
+    
+    // Convert RGB888 to palette indices
+    // Map Spectra color codes to palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 5=BLUE, 6=GREEN
+    // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
+    static const uint8_t spectraToPaletteLUT[] = {
+        0,  // 0 → 0 (BLACK)
+        1,  // 1 → 1 (WHITE)
+        2,  // 2 → 2 (YELLOW)
+        3,  // 3 → 3 (RED)
+        1,  // 4 → 1 (WHITE, invalid e-ink color)
+        4,  // 5 → 4 (BLUE)
+        5,  // 6 → 5 (GREEN)
+        1   // 7 → 1 (WHITE, invalid e-ink color)
+    };
+    
+    // Ensure LUT is built if using custom palette
+    if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+        spectra6Color.buildLUT();
+    }
+    
+    // Allocate palette index buffer (1 byte per pixel)
+    size_t paletteSize = work->width * work->height;
+    uint8_t* paletteBuffer = (uint8_t*)hal_psram_malloc(paletteSize);
+    if (paletteBuffer == nullptr) {
+        Serial.println("[Core 1] ERROR: Failed to allocate PSRAM for palette buffer");
+        work->error = 1;
+        work->success = false;
+        return false;
+    }
+    
+    // Convert RGB888 to palette indices
+    const uint8_t* rgbData = work->rgbData;
+    for (size_t i = 0; i < paletteSize; i++) {
+        uint8_t r = rgbData[i * 3 + 0];
+        uint8_t g = rgbData[i * 3 + 1];
+        uint8_t b = rgbData[i * 3 + 2];
+        
+        // Map RGB to Spectra color code, then to palette index
+        uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
+        paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
+    }
+    
+    uint32_t convertTime = millis() - convertStart;
+    Serial.printf("[Core 1] RGB to palette conversion completed: %lu ms (processing %zu pixels)\n", 
+                  convertTime, paletteSize);
+    
+    // Encode to PNG using palette-based encoding (PNG8)
     unsigned char* pngData = nullptr;
     size_t pngSize = 0;
-    unsigned error = lodepng_encode24(&pngData, &pngSize, work->rgbData, work->width, work->height);
+    
+    uint32_t encodeStart = millis();
+    
+    // Set up LodePNGState with palette mode
+    LodePNGState state;
+    lodepng_state_init(&state);
+    
+    // Configure color mode for palette - input is palette indices
+    state.info_png.color.colortype = LCT_PALETTE;
+    state.info_png.color.bitdepth = 8; // 8-bit palette indices
+    state.info_raw.colortype = LCT_PALETTE; // Input is palette indices (1 byte per pixel)
+    state.info_raw.bitdepth = 8;
+    
+    // Disable auto-convert to ensure palette mode is used
+    state.encoder.auto_convert = 0;
+    
+    // Add 6 colors to palette (matching useDefaultPalette() in EL133UF1_Color.cpp)
+    lodepng_palette_clear(&state.info_png.color);
+    lodepng_palette_add(&state.info_png.color, 10, 10, 10, 255);      // 0: BLACK
+    lodepng_palette_add(&state.info_png.color, 245, 245, 235, 255);   // 1: WHITE
+    lodepng_palette_add(&state.info_png.color, 245, 210, 50, 255);    // 2: YELLOW
+    lodepng_palette_add(&state.info_png.color, 190, 60, 55, 255);     // 3: RED
+    lodepng_palette_add(&state.info_png.color, 45, 75, 160, 255);     // 4: BLUE
+    lodepng_palette_add(&state.info_png.color, 55, 140, 85, 255);      // 5: GREEN
+    
+    // Encode using palette mode
+    unsigned error = lodepng_encode(&pngData, &pngSize, paletteBuffer, 
+                                   (unsigned)work->width, (unsigned)work->height, 
+                                   &state);
+    
+    lodepng_state_cleanup(&state);
+    hal_psram_free(paletteBuffer);
     
     if (error) {
-        Serial.printf("[Core 1] ERROR: PNG encoding failed: %u %s\n", error, lodepng_error_text(error));
+        Serial.printf("[Core 1] ERROR: PNG palette encoding failed: %u %s\n", 
+                     error, lodepng_error_text(error));
         work->error = error;
         work->success = false;
         return false;
     }
     
     if (!pngData || pngSize == 0) {
-        Serial.println("[Core 1] ERROR: PNG encoding returned empty data");
+        Serial.println("[Core 1] ERROR: PNG palette encoding returned empty data");
         work->error = 1;
         work->success = false;
         return false;
     }
     
+    uint32_t encodeTime = millis() - encodeStart;
     work->pngData = pngData;
     work->pngSize = pngSize;
     work->error = 0;
     work->success = true;
-    Serial.printf("[Core 1] PNG encoded: %zu bytes\n", pngSize);
+    Serial.printf("[Core 1] PNG palette encoded successfully: %zu bytes (native %dx%d) in %lu ms\n", 
+                  pngSize, work->width, work->height, encodeTime);
     return true;
 }
 

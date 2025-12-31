@@ -289,11 +289,40 @@ async function handleStatusMessage(message) {
             }
         }
         
-        // Check for pending_action and update busy state
+        // Check for command completion status (new method using command_id)
+        if (status.command_completed === true && status.command_id) {
+            console.log('Command completion received:', status.command_id, 'success:', status.success);
+            
+            // Check if this is the command we're waiting for
+            if (pendingCommandId && status.command_id === pendingCommandId) {
+                console.log('Command completed! ID matches:', pendingCommandId);
+                pendingCommandId = null;  // Clear pending command ID
+                
+                // Clear busy state
+                clearTimeout(busyTimeoutId);
+                busyTimeoutId = null;
+                if (busyCountdownInterval) {
+                    clearInterval(busyCountdownInterval);
+                    busyCountdownInterval = null;
+                }
+                setBusyState(false);
+                
+                // Show success/failure message
+                if (status.success === false) {
+                    showStatus('commandStatus', 'Command failed: ' + (status.command || 'unknown'), true);
+                } else {
+                    showStatus('commandStatus', 'Command completed successfully: ' + (status.command || 'unknown'), false);
+                }
+            } else if (pendingCommandId) {
+                console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.command_id);
+            }
+        }
+        
+        // Check for pending_action and update busy state (legacy method)
         if (status.pending_action) {
             setBusyState(true, 'Device is processing: ' + status.pending_action);
-        } else if (isBusy) {
-            // No pending action means command completed
+        } else if (isBusy && !pendingCommandId) {
+            // No pending action and no pending command ID means command completed (legacy)
             clearTimeout(busyTimeoutId);
             busyTimeoutId = null;
             if (busyCountdownInterval) {
@@ -772,6 +801,15 @@ function disconnectMQTT() {
     }
 }
 
+// Generate UUID v4 for command tracking
+function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
 async function publishMessage(payload) {
     // Check if password is configured FIRST (before connection check)
     if (!webUIPassword || webUIPassword.length === 0) {
@@ -785,6 +823,13 @@ async function publishMessage(payload) {
     }
     
     try {
+        // Generate UUID for command tracking (if command field exists)
+        if (payload.command) {
+            pendingCommandId = generateUUID();
+            payload.id = pendingCommandId;
+            console.log('Generated command ID:', pendingCommandId, 'for command:', payload.command);
+        }
+        
         // Encrypt the payload
         const plaintext = JSON.stringify(payload);
         const encryptedPayload = await encryptMessage(plaintext);

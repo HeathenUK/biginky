@@ -85,3 +85,6 @@ let allImageFiles = [];
 // Framebuffer tracking
 let lastFramebufferUpdateTimestamp = 0;  // Last framebuffer update timestamp from status message
 let currentFramebufferData = null;  // Current framebuffer PNG data for loading onto canvas
+
+// Command tracking
+let pendingCommandId = null;  // UUID of the command we're waiting for completion

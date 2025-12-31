@@ -574,10 +574,10 @@ async function handleThumbnailMessage(message) {
                 const decoded = atob(payload.payload);
                 thumb = JSON.parse(decoded);
                 // console.log('Base64 decoded and parsed thumbnail:', { 
-                    width: thumb.width, 
-                    height: thumb.height, 
-                    format: thumb.format 
-                });
+                //     width: thumb.width, 
+                //     height: thumb.height, 
+                //     format: thumb.format 
+                // });
             } catch (decodeError) {
                 console.error('Failed to base64 decode or parse thumbnail message:', decodeError);
                 document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decode unencrypted thumbnail message.';

@@ -129,7 +129,12 @@ void hourScheduleLoadFromNVS() {
     
     NVSGuard guard(hourSchedulePrefs, "hours", true);  // Read-only
     if (!guard.isOpen()) {
-        Serial.println("WARNING: Failed to open NVS for hour schedule - using default (all hours enabled)");
+        // This is normal on first boot or after NVS clear - namespace doesn't exist yet
+        // We'll use defaults (all hours enabled) and the namespace will be created on first save
+        if (g_is_cold_boot) {
+            Serial.println("INFO: NVS namespace 'hours' not found or failed to open - using default (all hours enabled)");
+            Serial.println("      This is normal on first run or after NVS erase. Your schedule will be saved when you configure it.");
+        }
         return;
     }
     

@@ -28,6 +28,7 @@
 #include "lodepng.h"  // For PNG encoding
 #include "EL133UF1_Color.h"  // For spectra6Color global instance
 #include "miniz.h"    // For zlib decompression (tinfl_decompress_mem_to_mem)
+#include "chunked_processing.h"  // For chunked processing with automatic watchdog yielding
 #include "cJSON.h"  // Pure C JSON library for building JSON (handles escaping, large payloads)
 
 // MQTT configuration - hardcoded
@@ -500,9 +501,9 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     pendingWebUICommand = jsonMessage;
                     publishMQTTStatus();
                 } else {
-                    bool success = handleWebInterfaceCommand(jsonMessage);
-                    // Publish completion status with command ID
-                    publishMQTTCommandCompletion(cmdId, command, success);
+                    // Non-deferred command - handleWebInterfaceCommand will route through dispatcher
+                    // which will publish completion automatically for WEB_UI commands
+                    handleWebInterfaceCommand(jsonMessage);
                 }
             }
             
@@ -1108,32 +1109,29 @@ static void publishMQTTThumbnailInternalImpl() {
     
     // Optimization #3: Process in cache-friendly row-by-row order (already optimal)
     // Extract e-ink color indices and convert directly to palette indices (no RGB conversion)
+    // Use chunked processing to automatically yield to watchdog
     if (isARGBMode) {
 #if EL133UF1_USE_ARGB8888
         uint32_t* argbBuffer = display.getBufferARGB();
         if (argbBuffer != nullptr) {
-            for (int y = 0; y < thumbHeight; y++) {
-                for (int x = 0; x < thumbWidth; x++) {
-                    int srcIdx = y * srcWidth + x;
-                    uint32_t argb = argbBuffer[srcIdx];
-                    uint8_t einkColor = EL133UF1::argbToColor(argb);
-                    // Direct LUT lookup - no branching, no RGB conversion
-                    thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor & 0x07];
-                }
-            }
+            processImageChunked(thumbWidth, thumbHeight, [&](int x, int y) {
+                int srcIdx = y * srcWidth + x;
+                uint32_t argb = argbBuffer[srcIdx];
+                uint8_t einkColor = EL133UF1::argbToColor(argb);
+                // Direct LUT lookup - no branching, no RGB conversion
+                thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor & 0x07];
+            });
         }
 #endif
     } else {
         uint8_t* framebuffer = display.getBuffer();
         if (framebuffer != nullptr) {
-            for (int y = 0; y < thumbHeight; y++) {
-                for (int x = 0; x < thumbWidth; x++) {
-                    int srcIdx = y * srcWidth + x;
-                    uint8_t einkColor = framebuffer[srcIdx] & 0x07;
-                    // Direct LUT lookup - no branching, no RGB conversion
-                    thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor];
-                }
-            }
+            processImageChunked(thumbWidth, thumbHeight, [&](int x, int y) {
+                int srcIdx = y * srcWidth + x;
+                uint8_t einkColor = framebuffer[srcIdx] & 0x07;
+                // Direct LUT lookup - no branching, no RGB conversion
+                thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor];
+            });
         }
     }
     
@@ -1181,9 +1179,13 @@ static void publishMQTTThumbnailInternalImpl() {
     lodepng_palette_add(&state.info_raw, 55, 140, 85, 255);      // 5: GREEN
     
     // Encode using palette mode - input is already palette indices
+    // Note: lodepng_encode() is a blocking call that can take 8+ seconds for 1600x1200
+    // We can't yield during encoding, but we yield before and after to help the watchdog
+    vTaskDelay(1);  // Yield before long encoding operation
     unsigned error = lodepng_encode(&pngData, &pngSize, thumbBuffer, 
                                    (unsigned)thumbWidth, (unsigned)thumbHeight, 
                                    &state);
+    vTaskDelay(1);  // Yield after encoding completes
     
     lodepng_state_cleanup(&state);
     hal_psram_free(thumbBuffer);
@@ -1221,6 +1223,8 @@ static void publishMQTTThumbnailInternalImpl() {
     const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t base64Idx = 0;
     
+    // Base64 encoding can be large for 1600x1200 images - yield periodically
+    const size_t base64YieldInterval = 10000;  // Yield every 10KB of PNG data
     for (size_t i = 0; i < pngSize_u32; i += 3) {
         uint32_t b0 = pngBuffer[i];
         uint32_t b1 = (i + 1 < pngSize_u32) ? pngBuffer[i + 1] : 0;
@@ -1232,6 +1236,11 @@ static void publishMQTTThumbnailInternalImpl() {
             base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
             base64Buffer[base64Idx++] = (i + 1 < pngSize_u32) ? base64_chars[(value >> 6) & 0x3F] : '=';
             base64Buffer[base64Idx++] = (i + 2 < pngSize_u32) ? base64_chars[value & 0x3F] : '=';
+        }
+        
+        // Yield periodically during base64 encoding to prevent watchdog timeout
+        if ((i % base64YieldInterval) == 0 && i > 0) {
+            vTaskDelay(1);
         }
     }
     base64Buffer[base64Idx] = '\0';
@@ -1362,16 +1371,22 @@ void publishMQTTThumbnailAlways() {
     }
     
     // Connect to WiFi if not already connected
+    // Note: WiFi might have been disconnected by WiFiGuard after weather fetch,
+    // but wifiConnectPersistent() should reuse existing connection if still active
     bool wifiWasConnected = (WiFi.status() == WL_CONNECTED);
     
     if (!wifiWasConnected) {
         Serial.println("Connecting to WiFi for thumbnail publish...");
+        // Use persistent mode which should reuse existing connection if available
+        // This is faster than a full reconnect if WiFi is still in the process of disconnecting
         if (!wifiConnectPersistent(5, 20000, false)) {  // 5 retries, 20s per attempt, not required
             Serial.println("WARNING: WiFi connection failed, saving thumbnail to SD for later publish");
             thumbnailPendingPublish = true;
             return;
         }
         Serial.println("WiFi connected for thumbnail publish");
+    } else {
+        Serial.println("WiFi already connected, reusing for thumbnail publish");
     }
     
     // Load MQTT config and connect if needed
@@ -1390,10 +1405,9 @@ void publishMQTTThumbnailAlways() {
     }
     
     // Now publish the thumbnail
-    // Since we're already connected and this is called from display.update(),
-    // call the internal implementation directly (synchronous) to ensure it publishes immediately
-    // The thumbnail generation is CPU-intensive but we want it to complete before returning
-    publishMQTTThumbnailInternalImpl();
+    // Queue it to Core 1 worker task instead of calling directly
+    // This prevents blocking the calling task (which might be on Core 0) for 8+ seconds
+    publishMQTTThumbnail();
     
     // Note: We intentionally do NOT disconnect WiFi/MQTT here
     // This allows them to stay connected for subsequent operations
@@ -1663,9 +1677,9 @@ bool processPngEncodeWork(PngEncodeWorkData* work) {
         return false;
     }
     
-    // Convert RGB888 to palette indices
+    // Convert RGB888 to palette indices using chunked processing
     const uint8_t* rgbData = work->rgbData;
-    for (size_t i = 0; i < paletteSize; i++) {
+    processBufferChunked(paletteSize, [&](size_t i) {
         uint8_t r = rgbData[i * 3 + 0];
         uint8_t g = rgbData[i * 3 + 1];
         uint8_t b = rgbData[i * 3 + 2];
@@ -1673,7 +1687,7 @@ bool processPngEncodeWork(PngEncodeWorkData* work) {
         // Map RGB to Spectra color code, then to palette index
         uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
         paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
-    }
+    });
     
     uint32_t convertTime = millis() - convertStart;
     Serial.printf("[Core 1] RGB to palette conversion completed: %lu ms (processing %zu pixels)\n", 

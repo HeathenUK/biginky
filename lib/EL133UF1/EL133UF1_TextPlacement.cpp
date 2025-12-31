@@ -10,6 +10,10 @@
 #include "EL133UF1_TextPlacement.h"
 #include <string.h>
 #include <math.h>
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
 
 // Static member initialization
 uint8_t TextPlacementAnalyzer::_argbToLuminance[256];
@@ -83,7 +87,17 @@ bool TextPlacementAnalyzer::addExclusionZone(const ExclusionZone& zone) {
         Serial.println("[TextPlacement] Warning: Max exclusion zones reached!");
         return false;
     }
-    _exclusionZones[_numExclusionZones++] = zone;
+    
+    // Memory barrier before write to ensure previous writes are visible
+    __sync_synchronize();
+    
+    _exclusionZones[_numExclusionZones] = zone;
+    
+    // Memory barrier after write to ensure this write is visible to other cores
+    __sync_synchronize();
+    
+    _numExclusionZones++;
+    
     Serial.printf("[TextPlacement] Added exclusion zone %d: center=(%d,%d) size=%dx%d pad=%d\n",
                   _numExclusionZones, zone.x, zone.y, zone.width, zone.height, zone.padding);
     return true;
@@ -106,7 +120,14 @@ bool TextPlacementAnalyzer::getFirstExclusionZoneCenter(int16_t& outX, int16_t& 
 }
 
 bool TextPlacementAnalyzer::overlapsExclusionZone(int16_t x, int16_t y, int16_t w, int16_t h) const {
-    for (int i = 0; i < _numExclusionZones; i++) {
+    // Read _numExclusionZones once to avoid race condition if it changes during iteration
+    // (though it shouldn't change during parallel scoring - exclusion zones are added before scoring starts)
+    int numZones = _numExclusionZones;
+    
+    // Memory barrier to ensure we see the latest value
+    __sync_synchronize();
+    
+    for (int i = 0; i < numZones; i++) {
         if (_exclusionZones[i].overlaps(x, y, w, h)) {
             return true;
         }
@@ -427,6 +448,11 @@ TextPlacementRegion TextPlacementAnalyzer::findBestPosition(
             // Skip candidates marked as invalid (in keepout zone)
             if (scored[i].score < 0.0f) continue;
             
+            // Yield periodically to prevent watchdog timeout
+            if (i > 0 && (i % 50) == 0) {
+                vTaskDelay(1);  // Yield every 50 candidates
+            }
+            
             int16_t rx = scored[i].drawX();
             int16_t ry = scored[i].drawY();
             scored[i].score = scoreRegion(display, rx, ry, 
@@ -502,14 +528,15 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
     }
     
     // Calculate grid steps if not provided
-    // Aim for roughly 8-12 positions per axis for good coverage without being too slow
+    // Use MUCH finer grid for better spacing - aim for 20-30 positions per axis
+    // This ensures we can find positions that maximize spacing between elements
     if (gridStepX <= 0) {
         int16_t safeWidth = safeRight - safeLeft;
-        gridStepX = max((int16_t)50, (int16_t)(safeWidth / 10));
+        gridStepX = max((int16_t)25, (int16_t)(safeWidth / 25));  // Much finer: 25 positions instead of 10
     }
     if (gridStepY <= 0) {
         int16_t safeHeight = safeBottom - safeTop;
-        gridStepY = max((int16_t)50, (int16_t)(safeHeight / 8));
+        gridStepY = max((int16_t)25, (int16_t)(safeHeight / 20));  // Much finer: 20 positions instead of 8
     }
     
     // Count grid positions
@@ -572,6 +599,11 @@ TextPlacementRegion TextPlacementAnalyzer::scanForBestPosition(
 #endif
     {
         for (int i = 0; i < numCandidates; i++) {
+            // Yield periodically to prevent watchdog timeout
+            if (i > 0 && (i % 50) == 0) {
+                vTaskDelay(1);  // Yield every 50 candidates
+            }
+            
             int16_t rx = candidates[i].drawX();
             int16_t ry = candidates[i].drawY();
             candidates[i].score = scoreRegion(display, rx, ry, blockWidth, blockHeight,
@@ -725,27 +757,48 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
     if (metrics.overallScore < 0.0f) metrics.overallScore = 0.0f;
     if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
     
-    // STRONG bonus for positions that balance existing text elements
-    // If there's an exclusion zone (previous text), heavily prefer positions far from it
+    // STRONG bonus for positions that maximize spacing from existing text elements
+    // Calculate minimum distance to ALL exclusion zones (not just the first)
+    float minDistance = 0.0f;
     if (_numExclusionZones > 0) {
-        int16_t ex_cx = _exclusionZones[0].x;
-        int16_t ex_cy = _exclusionZones[0].y;
-        
-        // Calculate distance from this region center to exclusion zone center
         int16_t cx = x + w/2;
         int16_t cy = y + h/2;
-        float dx = (float)(cx - ex_cx);
-        float dy = (float)(cy - ex_cy);
-        float distance = sqrtf(dx*dx + dy*dy);
+        float maxPossibleDistance = sqrtf((float)(display->width() * display->width() + 
+                                                   display->height() * display->height()));
         
-        // Normalize distance (0-1 range, where 1 = far apart)
-        // Assume display is ~2000px diagonal
-        float normalizedDistance = distance / 2000.0f;
+        // Find minimum distance to any exclusion zone
+        float closestDistance = maxPossibleDistance;
+        for (int i = 0; i < _numExclusionZones; i++) {
+            int16_t ex_cx = _exclusionZones[i].x;
+            int16_t ex_cy = _exclusionZones[i].y;
+            
+            // Calculate distance from this region center to exclusion zone center
+            float dx = (float)(cx - ex_cx);
+            float dy = (float)(cy - ex_cy);
+            float distance = sqrtf(dx*dx + dy*dy);
+            
+            if (distance < closestDistance) {
+                closestDistance = distance;
+            }
+        }
+        
+        // Normalize distance (0-1 range, where 1 = maximum spacing)
+        // Use actual display diagonal for normalization
+        float normalizedDistance = closestDistance / maxPossibleDistance;
         if (normalizedDistance > 1.0f) normalizedDistance = 1.0f;
         
-        // VERY strong distance bonus (up to 50% score increase!)
-        // This heavily rewards spread-out compositions
-        float distanceBonus = normalizedDistance * 0.5f;
+        // Apply VERY STRONG bonus for maximum spacing (up to +200% score boost)
+        // This HEAVILY prioritizes positions that are far from other elements
+        // Use exponential curve to strongly favor maximum distance
+        float spacingBonus = normalizedDistance * normalizedDistance * 2.0f;  // Up to 200% bonus, exponential curve
+        metrics.overallScore = metrics.overallScore * (1.0f + spacingBonus);
+        
+        // Additional massive bonus: if distance is > 40% of max, add extra 100% boost
+        if (normalizedDistance > 0.4f) {
+            metrics.overallScore = metrics.overallScore * 2.0f;  // Double the score for far positions
+        }
+        
+        minDistance = closestDistance;
         
         // Extra bonus for opposite quadrants (diagonal placement)
         // Check if this position is in a different quadrant than existing text
@@ -753,19 +806,27 @@ RegionMetrics TextPlacementAnalyzer::analyzeRegion(EL133UF1* display,
         int16_t dispH = display->height();
         bool thisLeft = (cx < dispW/2);
         bool thisTop = (cy < dispH/2);
-        bool exLeft = (ex_cx < dispW/2);
-        bool exTop = (ex_cy < dispH/2);
         
-        // Diagonal bonus: if in opposite corners, add extra 15%
-        if ((thisLeft != exLeft) && (thisTop != exTop)) {
-            distanceBonus += 0.15f;
-        }
-        // Adjacent quadrant bonus: if in different quadrant (but not diagonal), add 5%
-        else if ((thisLeft != exLeft) || (thisTop != exTop)) {
-            distanceBonus += 0.05f;
+        // Check against all exclusion zones for quadrant diversity
+        float quadrantBonus = 0.0f;
+        for (int i = 0; i < _numExclusionZones; i++) {
+            int16_t ex_cx = _exclusionZones[i].x;
+            int16_t ex_cy = _exclusionZones[i].y;
+            bool exLeft = (ex_cx < dispW/2);
+            bool exTop = (ex_cy < dispH/2);
+            
+            // Diagonal bonus: if in opposite corners, add extra 15%
+            if ((thisLeft != exLeft) && (thisTop != exTop)) {
+                quadrantBonus = 0.15f;  // Use max bonus from any exclusion zone
+                break;  // Diagonal is best, no need to check others
+            }
+            // Adjacent quadrant bonus: if in different quadrant (but not diagonal), add 5%
+            else if ((thisLeft != exLeft) || (thisTop != exTop)) {
+                if (quadrantBonus < 0.05f) quadrantBonus = 0.05f;
+            }
         }
         
-        metrics.overallScore += distanceBonus;
+        metrics.overallScore += quadrantBonus;
         
         // Clamp again after bonus
         if (metrics.overallScore > 1.0f) metrics.overallScore = 1.0f;
@@ -1210,7 +1271,31 @@ struct ParallelScoreParams {
 static void parallelScoreTask(void* param) {
     ParallelScoreParams* p = (ParallelScoreParams*)param;
     
+    if (!p || !p->analyzer || !p->display || !p->regions) {
+        Serial.println("[TextPlacement] ERROR: Invalid parameters in parallelScoreTask");
+        if (p && p->doneSemaphore) {
+            xSemaphoreGive(p->doneSemaphore);
+        }
+        if (p) {
+            free(p);  // Free heap-allocated params
+        }
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // Yield immediately at start to reset watchdog
+    vTaskDelay(1);
+    
     for (int i = p->startIdx; i < p->endIdx; i++) {
+        // Yield very frequently to prevent watchdog timeout
+        // scoreRegion is very CPU-intensive (histogram, variance, edge detection)
+        // For large regions (1000x300+), each scoreRegion call can take 10-50ms
+        // Yield every 3 loop iterations to ensure watchdog is fed frequently
+        int loopIter = i - p->startIdx;
+        if (loopIter > 0 && (loopIter % 3) == 0) {
+            vTaskDelay(1);
+        }
+        
         // Skip candidates marked as invalid (in keepout zone)
         if (p->regions[i].score < 0.0f) continue;
         
@@ -1220,10 +1305,18 @@ static void parallelScoreTask(void* param) {
             p->display, rx, ry,
             p->regions[i].width, p->regions[i].height,
             p->textColor, p->outlineColor);
+        
+        // Also yield after each scoreRegion call for very large regions
+        // This helps when individual calls take a long time
+        if (p->regions[i].width > 800 || p->regions[i].height > 200) {
+            vTaskDelay(1);
+        }
     }
     
     // Signal completion
-    xSemaphoreGive(p->doneSemaphore);
+    SemaphoreHandle_t doneSem = p->doneSemaphore;
+    free(p);  // Free heap-allocated params before signaling
+    xSemaphoreGive(doneSem);
     vTaskDelete(NULL);
 }
 
@@ -1244,6 +1337,12 @@ void TextPlacementAnalyzer::scoreRegionsParallel(
         return;
     }
     
+    // CRITICAL: Memory barrier to ensure exclusion zones and keep-out map
+    // are fully written and visible to both cores before parallel scoring starts.
+    // Exclusion zones should NOT be modified during parallel scoring.
+    // The display buffer is read-only during scoring (analyzing already-drawn image).
+    __sync_synchronize();  // Full memory barrier (GCC builtin)
+    
     // Create semaphore for synchronization
     SemaphoreHandle_t doneSem = xSemaphoreCreateBinary();
     if (!doneSem) {
@@ -1261,12 +1360,30 @@ void TextPlacementAnalyzer::scoreRegionsParallel(
     // Split work: first half on core 1, second half on current core
     int mid = numRegions / 2;
     
-    ParallelScoreParams core1Params = {
-        this, display, regions,
-        mid, numRegions,  // Second half
-        textColor, outlineColor,
-        doneSem
-    };
+    // CRITICAL: Allocate params on heap, not stack, so they remain valid after function returns
+    // The task will free this memory when it completes
+    ParallelScoreParams* core1Params = (ParallelScoreParams*)malloc(sizeof(ParallelScoreParams));
+    if (!core1Params) {
+        // Fallback to sequential if allocation failed
+        vSemaphoreDelete(doneSem);
+        for (int i = 0; i < numRegions; i++) {
+            int16_t rx = regions[i].drawX();
+            int16_t ry = regions[i].drawY();
+            regions[i].score = scoreRegion(display, rx, ry,
+                                           regions[i].width, regions[i].height,
+                                           textColor, outlineColor);
+        }
+        return;
+    }
+    
+    core1Params->analyzer = this;
+    core1Params->display = display;
+    core1Params->regions = regions;
+    core1Params->startIdx = mid;
+    core1Params->endIdx = numRegions;
+    core1Params->textColor = textColor;
+    core1Params->outlineColor = outlineColor;
+    core1Params->doneSemaphore = doneSem;
     
     // Create task on core 1 for second half
     TaskHandle_t taskHandle = NULL;
@@ -1274,7 +1391,7 @@ void TextPlacementAnalyzer::scoreRegionsParallel(
         parallelScoreTask,
         "score_c1",
         4096,
-        &core1Params,
+        core1Params,  // Pass heap-allocated params
         5,  // Priority
         &taskHandle,
         1   // Core 1
@@ -1282,6 +1399,7 @@ void TextPlacementAnalyzer::scoreRegionsParallel(
     
     if (created != pdPASS) {
         // Fallback to sequential if task creation failed
+        free(core1Params);
         vSemaphoreDelete(doneSem);
         for (int i = 0; i < numRegions; i++) {
             int16_t rx = regions[i].drawX();
@@ -1302,11 +1420,20 @@ void TextPlacementAnalyzer::scoreRegionsParallel(
                                        textColor, outlineColor);
     }
     
-    // Wait for core 1 to finish (with timeout)
-    if (xSemaphoreTake(doneSem, pdMS_TO_TICKS(1000)) != pdTRUE) {
-        Serial.println("[TextPlacement] Warning: Core 1 task timeout");
+    // Wait for core 1 to finish (with longer timeout - scoring can take time)
+    // Use 10 seconds timeout instead of 1 second
+    if (xSemaphoreTake(doneSem, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        Serial.println("[TextPlacement] Warning: Core 1 task timeout - task may still be running");
+        // Don't free core1Params here - the task might still be using it
+        // The task will free it when it completes
+    } else {
+        // Task completed successfully - it already freed core1Params
     }
     
+    // Memory barrier after parallel scoring completes to ensure all writes are visible
+    __sync_synchronize();
+    
+    // Clean up semaphore (task already freed core1Params)
     vSemaphoreDelete(doneSem);
 }
 

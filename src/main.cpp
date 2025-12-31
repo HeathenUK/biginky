@@ -43,6 +43,8 @@
 #include "lodepng_psram.h"  // Custom PSRAM allocators for lodepng (must be before lodepng.h)
 #include "lodepng.h"  // For PNG encoding (canvas save functionality)
 #include "EL133UF1_TextPlacement.h"
+#include "text_layout.h"
+#include "text_elements.h"
 #include "OpenAIImage.h"
 
 #include "fonts/opensans.h"
@@ -76,6 +78,7 @@
 #include "mqtt_handler.h"  // MQTT connection, publishing, and message handling
 #include "command_dispatcher.h"  // Unified command dispatcher
 #include "canvas_handler.h"  // Canvas display and save functionality
+#include "display_manager.h"  // Unified display media with overlay
 // ArduinoJson removed - using cJSON instead (via json_utils.h)
 #include "cJSON.h"  // cJSON for JSON parsing (also available via json_utils.h)
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
@@ -268,7 +271,7 @@ static uint8_t* aiImageData = nullptr;
 static size_t aiImageLen = 0;
 
 // Last loaded image filename
-static String g_lastImagePath = "";
+String g_lastImagePath = "";  // Non-static for display_manager access
 
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
@@ -341,6 +344,7 @@ static TaskHandle_t g_auto_cycle_task = nullptr;
 static bool g_config_mode_needed = false;  // Flag to indicate config mode is needed
 bool g_is_cold_boot = false;  // Flag to indicate this is a cold boot (not deep sleep wake) (non-static for webui_crypto module access)
 static volatile bool g_ota_requested = false;  // Flag to indicate 'o' key was pressed for OTA mode
+static volatile bool g_manage_requested = false;  // Flag to indicate 'm' key was pressed for web interface
 static TaskHandle_t g_serial_monitor_task = nullptr;  // Task handle for serial monitor
 
 // Forward declarations (SDMMC is always enabled)
@@ -475,8 +479,8 @@ bool logInit();    // Initialize logging (mount SD and open log file)
 void logFlush();   // Flush log file to ensure data is written
 void logClose();   // Close log file (call before deep sleep)
 
-// Persistent WiFiGuard - stays alive until deep sleep
-static WiFiGuard* g_persistentWifiGuard = nullptr;
+// WiFi connection state - we keep WiFi connected from boot until deep sleep
+// No WiFiGuard needed - we just check WiFi.status() and connect if needed
 
 // Helper to ensure SD is mounted (simplifies conditional mounting logic)
 static inline bool ensureSDMounted() {
@@ -747,7 +751,7 @@ static bool audio_beep(uint32_t freq_hz, uint32_t duration_ms) {
     return true;
 }
 
-static void audio_stop() {
+void audio_stop() {  // Non-static for display_manager access
     g_audio_running = false;
     // task self-deletes
     // Note: ESP8266Audio's I2S is managed by the library, we don't need to delete it
@@ -843,15 +847,17 @@ static time_t calculateTargetWakeTime(time_t now) {
     return now + seconds_until_target;
 }
 
-// Forward declaration
+// Forward declarations
 static void checkAndStartOTA();
+static void checkAndStartManage();
 
 static void sleepNowSeconds(uint32_t seconds) {
     // Note: Target wake time calculation is done by the caller (sleepUntilNextMinuteOrFallback).
     // We only recalculate it right before sleep to account for cleanup delays.
     
-    // Check if OTA was requested before sleeping
+    // Check if OTA or web interface was requested before sleeping
     checkAndStartOTA();
+    checkAndStartManage();
     
     // ESP32-P4 can only wake from deep sleep using LP GPIOs (0-15) via ext1
     // Switch D is on GPIO51, which is NOT an LP GPIO
@@ -873,12 +879,7 @@ static void sleepNowSeconds(uint32_t seconds) {
     
     // Disconnect WiFi before deep sleep (but don't shut down ESP-Hosted completely)
     // Just disconnect from network - ESP-Hosted will handle its own state
-    // Destroy persistent WiFiGuard if it exists (will disconnect WiFi in destructor)
-    if (g_persistentWifiGuard != nullptr) {
-        Serial.println("Destroying persistent WiFiGuard before deep sleep (will disconnect WiFi)...");
-        delete g_persistentWifiGuard;
-        g_persistentWifiGuard = nullptr;
-    } else if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED) {
         Serial.println("Disconnecting WiFi before deep sleep...");
         WiFi.disconnect(true);
         // Reduced delay - WiFi.disconnect() is asynchronous but needs some time for cleanup
@@ -1152,8 +1153,8 @@ struct LoadedQuote {
     String author;
 };
 
-static std::vector<LoadedQuote> g_loaded_quotes;
-static bool g_quotes_loaded = false;
+std::vector<LoadedQuote> g_loaded_quotes;  // Non-static for display_manager access
+bool g_quotes_loaded = false;  // Non-static for display_manager access
 
 // Structure to hold image-to-audio mappings
 struct MediaMapping {
@@ -1799,10 +1800,10 @@ void enterConfigMode();  // Enter interactive configuration mode for WiFi creden
 // Encryption functions moved to webui_crypto.cpp/h module (Priority 1 refactoring)
 
 // MQTT command handling
-static String extractCommandFromMessage(const String& msg);
+String extractCommandFromMessage(const String& msg);  // Made non-static for thumbnail publishing
 String extractCommandParameter(const String& command);  // Made non-static for unified dispatcher
 static String extractFromFieldFromMessage(const String& msg);
-static bool handleMqttCommand(const String& command, const String& originalMessage = "");
+bool handleMqttCommand(const String& command, const String& originalMessage = "");  // Made non-static for thumbnail publishing
 bool handleWebInterfaceCommand(const String& jsonMessage);
 // Canvas handler functions are now in canvas_handler.h/cpp module
 static String decryptAndValidateWebUIMessage(const String& jsonMessage);
@@ -2191,114 +2192,8 @@ static void handleDisabledHour(int currentHour, struct tm& tm_utc) {
     // Never returns
 }
 
-/**
- * Load media for display (images, quotes, media.txt mappings)
- * Handles SD card mounting, configuration loading, and PNG image loading with retry logic
- * @param time_ok Whether time is valid (for error handling)
- * @param sd_ms Output parameter for SD read time in milliseconds
- * @param dec_ms Output parameter for decode/draw time in milliseconds
- * @return true if media loaded successfully, false otherwise
- */
-static bool loadMediaForDisplay(bool time_ok, uint32_t& sd_ms, uint32_t& dec_ms) {
-    sd_ms = 0;
-    dec_ms = 0;
-    bool ok = false;
-    
-    // AI image generation is ONLY available via !oai command - never auto-generate in hourly cycle
-    // Always use media.txt images from SD card for hourly updates
-    
-    // Load images from SD card
-
-    if (!ok) {
-        // Mount SD card first if not already mounted
-        if (!sdCardMounted) {
-            if (!sdInitDirect(false)) {
-                Serial.println("Failed to mount SD card!");
-                Serial.println("SDMMC disabled; cannot load config or images. Sleeping.");
-                if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
-                sleepNowSeconds(kCycleSleepSeconds);
-                return false;
-            }
-        }
-        
-        // Load configuration files from SD card (only once)
-        if (!g_quotes_loaded) {
-            loadQuotesFromSD();
-        }
-        
-        // ALWAYS try to load media.txt - retry if it fails
-        bool mediaLoadAttempted = false;
-        if (!g_media_mappings_loaded) {
-            Serial.println("Loading media.txt...");
-            int mappingsLoaded = loadMediaMappingsFromSD();
-            mediaLoadAttempted = true;
-            if (mappingsLoaded > 0) {
-                Serial.printf("Successfully loaded %d mappings from media.txt\n", mappingsLoaded);
-                usingMediaMappings = true;  // Mark that we're using media.txt
-            } else {
-                Serial.println("WARNING: Failed to load media.txt or file is empty");
-                // If we were previously using media.txt, keep trying - don't give up yet
-                if (usingMediaMappings) {
-                    Serial.println("Previously used media.txt - will retry loading on next attempt");
-                }
-            }
-        }
-        
-        // Now load the PNG - STRICTLY prefer media.txt mappings
-        int maxRetries = 5;  // Try up to 5 different images if one fails
-        
-        // If we have media.txt mappings (either just loaded or previously loaded), use ONLY those
-        // Never fall back to random unless media.txt was NEVER successfully loaded
-        if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-            Serial.println("Using images from media.txt (cycling through mapped images only)");
-            usingMediaMappings = true;
-            
-            // Ensure index is in bounds before starting retries
-            size_t mediaCount = g_media_mappings.size();
-            if (lastMediaIndex >= mediaCount) {
-                Serial.printf("WARNING: lastMediaIndex %lu out of bounds (max %zu), resetting to 0\n",
-                             (unsigned long)lastMediaIndex, mediaCount);
-                lastMediaIndex = 0;
-                mediaIndexSaveToNVS();
-            }
-            
-            for (int retry = 0; retry < maxRetries && !ok; retry++) {
-                ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
-                if (!ok && retry < maxRetries - 1) {
-                    Serial.printf("PNG load failed, trying next image from media.txt (attempt %d/%d)...\n", 
-                                 retry + 1, maxRetries);
-                    // pngDrawFromMediaMappings already increments lastMediaIndex internally,
-                    // so just call it again - no need to manually increment
-                }
-            }
-            
-            if (!ok) {
-                Serial.println("ERROR: Failed to load any image from media.txt after all retries");
-                Serial.println("Will sleep and retry on next wake - NOT falling back to random images");
-            }
-        } else if (usingMediaMappings) {
-            // We were using media.txt before but can't load it now - don't give up, just sleep
-            Serial.println("ERROR: media.txt was previously loaded but is now unavailable");
-            Serial.println("Will retry on next wake - NOT falling back to random images");
-            ok = false;  // Explicitly mark as failed
-        } else {
-            // Fallback: scan all PNG files on SD card (ONLY if media.txt was NEVER successfully loaded)
-            Serial.println("No media.txt mappings found, scanning all PNG files on SD card");
-            usingMediaMappings = false;
-            for (int retry = 0; retry < maxRetries && !ok; retry++) {
-                ok = pngDrawRandomToBuffer("/", &sd_ms, &dec_ms);
-                if (!ok && retry < maxRetries - 1) {
-                    Serial.printf("PNG load failed, trying next image (attempt %d/%d)...\n", 
-                                 retry + 1, maxRetries);
-                    // Advance to next image by incrementing the index
-                    lastImageIndex++;
-                }
-            }
-        }
-    }
-    
-    return ok;
-}
+// REMOVED: loadMediaForDisplay() - functionality now in displayMediaWithOverlay()
+// This function was duplicating logic that's already in display_manager.cpp
 
 // ============================================================================
 // Parallel Task Structures for Top-of-Hour Optimization
@@ -2325,52 +2220,56 @@ static void wifiMqttThumbnailTask(void* param) {
     if (wifiLoadCredentials()) {
         mqttLoadConfig();
         
-        // Connect to WiFi for thumbnail publishing (using RAII wrapper)
-        {
-            WiFiGuard wifiGuard(5, 20000, false, 100);  // 5 retries, 20s per attempt, not required, 100ms disconnect delay
-            if (wifiGuard.isConnected()) {
-                Serial.println("[Core 1] WiFi connected for thumbnail publish");
-                
-                // Connect to MQTT
-                {
-                    MQTTGuard guard;
-                    if (guard.isConnected()) {
-                        // Publish thumbnail (will load from SD if available, otherwise regenerate from framebuffer)
-                        Serial.println("[Core 1] Publishing thumbnail to MQTT...");
-                        publishMQTTThumbnail();
-                        
-                        // Check for SMS bridge commands after thumbnail publish (top-of-hour MQTT check)
-                        Serial.println("[Core 1] Checking for SMS bridge commands (top-of-hour)");
-                        if (mqttCheckMessages(100)) {
-                            String msg = mqttGetLastMessage();
-                            Serial.printf("[Core 1] New command received: %s\n", msg.c_str());
-                            
-                            // Extract command (but don't process yet - disconnect first)
-                            String command = extractCommandFromMessage(msg);
-                            if (command.length() > 0) {
-                                p->commandToProcess = command;  // Store for processing after disconnect
-                                p->originalMessageForCommand = msg;  // Store original message for commands that need it
-                            }
-                            
-                            // Message already processed and cleared in event handler
-                            // The blank retained message was published in the event handler
-                            // Note: delay(200) for blank message publish is handled by guard destructor
-                        } else {
-                            Serial.println("[Core 1] No retained messages");
-                        }
-                        // guard automatically handles delays and disconnect in destructor
-                        Serial.println("[Core 1] MQTT disconnected");
-                        p->success = true;
-                    } else {
-                        Serial.println("[Core 1] WARNING: Failed to connect to MQTT for thumbnail publish");
-                    }
-                }
-                
-                // WiFi will be automatically disconnected by WiFiGuard destructor
-            } else {
-                Serial.println("[Core 1] WARNING: Failed to connect to WiFi for thumbnail publish (continuing anyway)");
+        // Connect to WiFi if needed (WiFi should already be connected, but check anyway)
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[Core 1] WiFi not connected, attempting connection for thumbnail publish...");
+            if (!wifiConnectPersistent(5, 20000, false)) {  // 5 retries, 20s per attempt, not required
+                Serial.println("[Core 1] WARNING: WiFi connection failed for thumbnail publish (continuing anyway)");
             }
-        }  // WiFiGuard destructor disconnects WiFi here
+        }
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("[Core 1] WiFi connected for thumbnail publish");
+            
+            // Connect to MQTT
+            {
+                MQTTGuard guard;
+                if (guard.isConnected()) {
+                    // Publish thumbnail (will load from SD if available, otherwise regenerate from framebuffer)
+                    Serial.println("[Core 1] Publishing thumbnail to MQTT...");
+                    publishMQTTThumbnail();
+                    
+                    // Check for SMS bridge commands after thumbnail publish (top-of-hour MQTT check)
+                    Serial.println("[Core 1] Checking for SMS bridge commands (top-of-hour)");
+                    if (mqttCheckMessages(100)) {
+                        String msg = mqttGetLastMessage();
+                        Serial.printf("[Core 1] New command received: %s\n", msg.c_str());
+                        
+                        // Extract command (but don't process yet - disconnect first)
+                        String command = extractCommandFromMessage(msg);
+                        if (command.length() > 0) {
+                            p->commandToProcess = command;  // Store for processing after disconnect
+                            p->originalMessageForCommand = msg;  // Store original message for commands that need it
+                        }
+                        
+                        // Message already processed and cleared in event handler
+                        // The blank retained message was published in the event handler
+                        // Note: delay(200) for blank message publish is handled by guard destructor
+                    } else {
+                        Serial.println("[Core 1] No retained messages");
+                    }
+                    // guard automatically handles delays and disconnect in destructor
+                    Serial.println("[Core 1] MQTT disconnected");
+                    p->success = true;
+                } else {
+                    Serial.println("[Core 1] WARNING: Failed to connect to MQTT for thumbnail publish");
+                }
+            }
+            
+            // WiFi stays connected - NO DISCONNECT
+        } else {
+            Serial.println("[Core 1] WARNING: WiFi not connected for thumbnail publish (continuing anyway)");
+        }
     } else {
         Serial.println("[Core 1] WARNING: WiFi credentials not available, skipping thumbnail publish");
     }
@@ -2380,589 +2279,22 @@ static void wifiMqttThumbnailTask(void* param) {
     vTaskDelete(NULL);
 }
 
-/**
- * Perform display update cycle (top-of-hour)
- * Handles display initialization, media loading, time/date/quote overlay, refresh, audio, and thumbnail publishing
- */
-static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc) {
-    Serial.println("=== Display Update Cycle (top of hour) ===");
-    
-    // Initialize display now that we know we need it (saves time/power on non-hourly wakes)
-    // After deep sleep, SPI needs to be reinitialized
-    Serial.println("Initializing display...");
-    
-    // Reinitialize SPI (peripherals reset after deep sleep)
-    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
-    
-    // Always do full initialization (begin() includes reset and init sequence)
-    // This ensures clean state for every display update
-    if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
-        Serial.println("ERROR: Display initialization failed!");
-        // On error, sleep and try again next cycle
-        sleepNowSeconds(60);
-        return;
-    }
-    Serial.println("Display initialized");
-    
-    // Reinitialize PNG/TTF loaders after display init (they need display reference)
-    pngLoader.begin(&display);
-    ttf.begin(&display);
-    bmpLoader.begin(&display);
-    
-    // Clear the display buffer before drawing new content
-    Serial.println("Clearing display buffer...");
-    display.clear(EL133UF1_WHITE);
-    
-    // Load media (images, quotes, media.txt mappings) from SD card
-    uint32_t sd_ms = 0, dec_ms = 0;
-    if (!loadMediaForDisplay(time_ok, sd_ms, dec_ms)) {
-        Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
-        Serial.println("PNG draw failed after retries; sleeping anyway");
-        if (time_ok) sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
-        sleepNowSeconds(kCycleSleepSeconds);
-        return;  // Exit early if media loading failed
-    }
-    
-    Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
+// Forward declaration
 
-    // Overlay time/date with intelligent positioning
-    // Reuse time variables from earlier in function
-    now = time(nullptr);
-    gmtime_r(&now, &tm_utc);
-
-    char timeBuf[16];
-    char dateBuf[48];  // "Saturday 13th of December 2025" needs ~35 chars
-    bool timeValid = (now > 1577836800); // after 2020-01-01
-    if (timeValid) {
-        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
-        
-        // Format date as "Saturday 13th of December 2025"
-        char dayName[12], monthName[12];
-        strftime(dayName, sizeof(dayName), "%A", &tm_utc);      // Full day name
-        strftime(monthName, sizeof(monthName), "%B", &tm_utc);  // Full month name
-        
-        int day = tm_utc.tm_mday;
-        int year = tm_utc.tm_year + 1900;
-        
-        // Determine ordinal suffix (1st, 2nd, 3rd, 4th, etc.)
-        const char* suffix;
-        if (day >= 11 && day <= 13) {
-            suffix = "th";  // 11th, 12th, 13th are special cases
-        } else {
-            switch (day % 10) {
-                case 1: suffix = "st"; break;
-                case 2: suffix = "nd"; break;
-                case 3: suffix = "rd"; break;
-                default: suffix = "th"; break;
-            }
-        }
-        
-        snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
-                 dayName, day, suffix, monthName, year);
-    } else {
-        snprintf(timeBuf, sizeof(timeBuf), "--:--");
-        snprintf(dateBuf, sizeof(dateBuf), "time not set");
-    }
-
-    // Set keepout margins (areas not visible to user due to bezel/frame)
-    // Declare variables outside guard scope
-    float timeFontSize = 160.0f;
-    float dateFontSize = 48.0f;
-    const float minTimeFontSize = 80.0f;   // Don't go smaller than this
-    const float minDateFontSize = 24.0f;
-    const int16_t gapBetween = 20;
-    const int16_t timeOutline = 3;
-    const int16_t dateOutline = 2;
-    const float minAcceptableScore = 0.25f;  // Threshold for "good enough" placement
-    
-    TextPlacementRegion bestPos;
-    int16_t blockW, blockH;
-    int16_t timeW, timeH, dateW, dateH;  // Declare outside loop
-    int attempts = 0;
-    const int maxAttempts = 5;  // Try up to 5 different sizes
-    uint32_t analysisStart;  // Declare for reuse
-    
-    // Set keepout margins (areas not visible to user due to bezel/frame)
-    textPlacement.setKeepout(120);  // 120px margin on all sides (accounts for outline width)
-    
-    // Clear any previous exclusion zones (fresh start for this frame)
-    textPlacement.clearExclusionZones();
-    
-    // Get text dimensions for both time and date
-    // Adaptive sizing: try smaller sizes if keep-out areas block placement
-    do {
-        attempts++;
-        
-        timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
-        timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
-        dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
-        dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
-
-        // Combined block dimensions (time + gap + date)
-        blockW = max(timeW, dateW);
-        blockH = timeH + gapBetween + dateH;
-
-        // Scan the entire display to find the best position for time/date block
-        analysisStart = millis();
-        bestPos = textPlacement.scanForBestPosition(
-            &display, blockW, blockH,
-            EL133UF1_WHITE, EL133UF1_BLACK);
-        
-        Serial.printf("Time/date placement attempt %d: size=%.0f/%.0f, score=%.2f, pos=%d,%d\n",
-                      attempts, timeFontSize, dateFontSize, bestPos.score, bestPos.x, bestPos.y);
-        
-        // If score is good enough, we're done
-        if (bestPos.score >= minAcceptableScore) {
-            Serial.printf("  -> Acceptable placement found (score %.2f >= %.2f)\n", 
-                         bestPos.score, minAcceptableScore);
-            break;
-        }
-        
-        // If at minimum size, have to accept what we have
-        if (timeFontSize <= minTimeFontSize || dateFontSize <= minDateFontSize) {
-            Serial.printf("  -> At minimum size, using best available (score=%.2f)\n", bestPos.score);
-            break;
-        }
-        
-        // Reduce font size by 15% and try again
-        timeFontSize *= 0.85f;
-        dateFontSize *= 0.85f;
-        if (timeFontSize < minTimeFontSize) timeFontSize = minTimeFontSize;
-        if (dateFontSize < minDateFontSize) dateFontSize = minDateFontSize;
-        
-        Serial.printf("  -> Score too low, reducing font size to %.0f/%.0f\n", 
-                     timeFontSize, dateFontSize);
-        
-    } while (attempts < maxAttempts);
-    
-    Serial.printf("Time/date placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
-                  timeFontSize, dateFontSize, bestPos.score, attempts);
-    
-    // Ensure we use the final block dimensions (recalculate to be safe)
-    timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
-    timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
-    dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
-    dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
-    blockW = max(timeW, dateW);
-    blockH = timeH + gapBetween + dateH;
-    
-    // Debug: show what area was checked for keep-out
-    int16_t checkX = bestPos.x - blockW/2;
-    int16_t checkY = bestPos.y - blockH/2;
-    Serial.printf("[DEBUG] Time/Date block: x=%d, y=%d, w=%d, h=%d (center=%d,%d)\n",
-                  checkX, checkY, blockW, blockH, bestPos.x, bestPos.y);
-    Serial.printf("[DEBUG] Time text: w=%d, h=%d (outline=%d)\n", timeW, timeH, timeOutline);
-    Serial.printf("[DEBUG] Date text: w=%d, h=%d (outline=%d)\n", dateW, dateH, dateOutline);
-
-    // Calculate individual positions relative to the chosen block center
-    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
-    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
-
-    // Draw time and date at best position
-    Serial.printf("[DEBUG] Drawing time at (%d,%d) with size %.0f, outline %d\n", 
-                  bestPos.x, timeY, timeFontSize, timeOutline);
-    Serial.printf("[DEBUG] Drawing date at (%d,%d) with size %.0f, outline %d\n", 
-                  bestPos.x, dateY, dateFontSize, dateOutline);
-    
-    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
-    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
-    
-    // Add the time/date block as an exclusion zone so quote won't overlap
-    // CRITICAL: Calculate exclusion zone based on ACTUAL drawn bounds to ensure perfect coverage
-    // Time is drawn centered at (bestPos.x, timeY) with height timeH (includes outline)
-    // Date is drawn centered at (bestPos.x, dateY) with height dateH (includes outline)
-    int16_t timeTop = timeY - timeH/2;
-    int16_t timeBottom = timeY + timeH/2;
-    int16_t dateTop = dateY - dateH/2;
-    int16_t dateBottom = dateY + dateH/2;
-    
-    // Calculate actual bounds of the entire drawn block
-    int16_t actualTop = timeTop;
-    int16_t actualBottom = dateBottom;
-    int16_t actualDrawnHeight = actualBottom - actualTop;
-    int16_t actualDrawnCenterY = (actualTop + actualBottom) / 2;
-    
-    // For width, use the maximum extent (both text elements are centered at bestPos.x)
-    int16_t actualTimeWidth = ttf.getTextWidth(timeBuf, timeFontSize);
-    int16_t actualDateWidth = ttf.getTextWidth(dateBuf, dateFontSize);
-    int16_t maxTextWidth = max(actualTimeWidth, actualDateWidth);
-    int16_t actualDrawnWidth = maxTextWidth + (timeOutline * 2);  // Outline on both sides
-    
-    // Use actual drawn bounds for exclusion zone - MAXIMALIST rectangular keep-out area
-    // Add extra margin to ensure we capture the full extent of the text
-    int16_t safeBlockW = actualDrawnWidth + 40;  // Extra margin for maximalist bounds
-    int16_t safeBlockH = actualDrawnHeight + 40;  // Extra margin for maximalist bounds
-    
-    // Calculate padding needed to ensure minimum 250px distance from quote
-    // Padding = 250px (minimum distance) + estimated quote half-height (max ~300px) = 550px
-    // This ensures any quote placed will be at least 250px away from time/date block
-    const int16_t minDistanceFromTimeDate = 250;
-    const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate for quote block half-height
-    const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
-    
-    // Create exclusion zone centered at the actual drawn center with maximalist padding
-    TextPlacementRegion timeExclusion = {bestPos.x, actualDrawnCenterY, safeBlockW, safeBlockH, 0.0f};
-    bool zoneAdded = textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
-    Serial.printf("[DEBUG] Time block actual bounds: top=%d, bottom=%d, centerY=%d, height=%d\n",
-                  actualTop, actualBottom, actualDrawnCenterY, actualDrawnHeight);
-    Serial.printf("[DEBUG] Added time exclusion zone: center=(%d,%d), size=%dx%d, padding=150, success=%d\n",
-                  bestPos.x, actualDrawnCenterY, safeBlockW, safeBlockH, zoneAdded);
-    Serial.printf("[DEBUG] Exclusion zone bounds: left=%d, right=%d, top=%d, bottom=%d\n",
-                  bestPos.x - safeBlockW/2 - 150, bestPos.x + safeBlockW/2 + 150,
-                  actualDrawnCenterY - safeBlockH/2 - 150, actualDrawnCenterY + safeBlockH/2 + 150);
-
-    // ================================================================
-    // QUOTE - Intelligently positioned with automatic line wrapping
-    // ================================================================
-    
-    using Quote = TextPlacementAnalyzer::Quote;
-    Quote selectedQuote;
-    
-
-    // Try to use quotes from SD card first
-    if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
-        // Select a random quote from SD card
-        int randomIndex = random(g_loaded_quotes.size());
-        selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
-        selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
-        Serial.printf("Using SD card quote: \"%s\" - %s\n", selectedQuote.text, selectedQuote.author);
-    } else {
-        // Fallback: use hard-coded quotes
-        static const Quote fallbackQuotes[] = {
-            {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
-            {"The only way to do great work is to love what you do", "Steve Jobs"},
-            {"In the middle of difficulty lies opportunity", "Albert Einstein"},
-            {"Be yourself; everyone else is already taken", "Oscar Wilde"},
-            {"The future belongs to those who believe in the beauty of their dreams", "Eleanor Roosevelt"},
-            {"It is during our darkest moments that we must focus to see the light", "Aristotle"},
-            {"The best time to plant a tree was 20 years ago. The second best time is now", "Chinese Proverb"},
-            {"Life is what happens when you're busy making other plans", "John Lennon"},
-        };
-        static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
-        selectedQuote = fallbackQuotes[random(numQuotes)];
-        Serial.printf("Using fallback quote: \"%s\" - %s\n", selectedQuote.text, selectedQuote.author);
-    }
-    
-    // Adaptive sizing for quote as well (doubled from original 48/32)
-    float quoteFontSize = 96.0f;
-    float authorFontSize = 64.0f;
-    const float minQuoteFontSize = 56.0f;  // Doubled from 28
-    const float minAuthorFontSize = 40.0f;  // Doubled from 20
-    const float minAcceptableScoreQuote = 0.25f;  // Threshold for "good enough" placement
-    const int maxAttemptsQuote = 5;  // Try up to 5 different sizes
-    
-    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout;
-    attempts = 0;
-    
-    do {
-        attempts++;
-        
-        // Scan the entire display to find the best quote position
-        analysisStart = millis();
-        quoteLayout = textPlacement.scanForBestQuotePosition(
-            &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
-            EL133UF1_WHITE, EL133UF1_BLACK,
-            3,   // maxLines: try up to 3 lines
-            3);  // minWordsPerLine: at least 3 words per line
-        
-        Serial.printf("Quote placement attempt %d: size=%.0f/%.0f, score=%.2f, pos=%d,%d, %d lines\n",
-                      attempts, quoteFontSize, authorFontSize, quoteLayout.position.score,
-                      quoteLayout.position.x, quoteLayout.position.y, quoteLayout.quoteLines);
-        
-        // If score is good enough, we're done
-        if (quoteLayout.position.score >= minAcceptableScoreQuote) {
-            Serial.printf("  -> Acceptable quote placement found (score %.2f >= %.2f)\n", 
-                         quoteLayout.position.score, minAcceptableScoreQuote);
-            break;
-        }
-        
-        // If at minimum size, have to accept what we have
-        if (quoteFontSize <= minQuoteFontSize || authorFontSize <= minAuthorFontSize) {
-            Serial.printf("  -> At minimum size, using best available (score=%.2f)\n", 
-                         quoteLayout.position.score);
-            break;
-        }
-        
-        // Reduce font size by 15% and try again
-        quoteFontSize *= 0.85f;
-        authorFontSize *= 0.85f;
-        if (quoteFontSize < minQuoteFontSize) quoteFontSize = minQuoteFontSize;
-        if (authorFontSize < minAuthorFontSize) authorFontSize = minAuthorFontSize;
-        
-        Serial.printf("  -> Score too low, reducing font size to %.0f/%.0f\n", 
-                     quoteFontSize, authorFontSize);
-        
-    } while (attempts < maxAttemptsQuote);
-    
-    // Draw the quote with author using the helper function
-    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
-                            quoteFontSize, authorFontSize,
-                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
-    
-    // Add quote as MAXIMALIST exclusion zone for any future text elements
-    // Use large padding to create maximalist rectangular keep-out area
-    textPlacement.addExclusionZone(quoteLayout.position, 200);
-    
-    Serial.printf("Quote placement final: %.0f/%.0f size, score=%.2f after %d attempts\n",
-                  quoteFontSize, authorFontSize, quoteLayout.position.score, attempts);
-    Serial.printf("  Quote: \"%s\"\n", quoteLayout.wrappedQuote);
-    Serial.printf("  Author: %s\n", selectedQuote.author);
-    
-    // Verify minimum 250px distance from time/date block
-    int16_t dx = quoteLayout.position.x - bestPos.x;
-    int16_t dy = quoteLayout.position.y - actualDrawnCenterY;
-    int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
-    int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
-    int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
-    int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
-    
-    Serial.printf("[DEBUG] Quote-to-time/date distance check: distance=%d, required=%d (min 250px + half-diagonals)\n",
-                  distance, minRequiredDistance);
-    
-    if (distance < minRequiredDistance) {
-        Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
-        // Calculate direction vector from time/date to quote
-        float dirX = (float)dx / (distance > 0 ? distance : 1);
-        float dirY = (float)dy / (distance > 0 ? distance : 1);
-        
-        // Move quote further away to meet minimum distance
-        int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
-        int16_t newY = actualDrawnCenterY + (int16_t)(dirY * minRequiredDistance);
-        
-        // Clamp to display bounds
-        int displayW = display.width();
-        int displayH = display.height();
-        int keepout = 100;
-        int newX_int = (int)newX;
-        int newY_int = (int)newY;
-        newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
-        newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
-        newX = (int16_t)newX_int;
-        newY = (int16_t)newY_int;
-        
-        quoteLayout.position.x = newX;
-        quoteLayout.position.y = newY;
-        
-        Serial.printf("  Adjusted quote position to (%d,%d) to maintain minimum distance\n", newX, newY);
-    }
-    
-    // Quote drawing and exclusion zone already handled above
-
-    // Refresh display first (e-ink refresh takes 20-30 seconds)
-    // Ensure reset + init happen before update
-    // Only call begin() if display is not already initialized (prevents heap corruption from double-free)
-    Serial.println("Re-initializing display (reset + init) before update...");
-    displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
-    
-    // Check if display is already initialized - if so, just reconnect (safer than calling begin() again)
-    if (display.getBuffer() == nullptr) {
-        // Display not initialized - do full begin()
-        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
-            Serial.println("ERROR: Display initialization failed before update!");
-            return;
-        }
-    } else {
-        // Display already initialized - use reconnect() to reinitialize SPI/GPIO without freeing buffer
-        // This prevents heap corruption from double-free of the buffer
-        Serial.println("Display already initialized - reconnecting SPI/GPIO...");
-        if (!display.reconnect()) {
-            Serial.println("ERROR: Display reconnection failed before update!");
-            return;
-        }
-        // Note: reconnect() doesn't do reset+init, but that's OK - update() will handle init if needed
-        // The display controller should still be in a valid state from previous use
-    }
-    
-    Serial.println("Updating display (e-ink refresh - non-blocking, will take 20-30s on panel)...");
-    uint32_t refreshStart = millis();
-    // Thumbnail publishing happens automatically in update() from the framebuffer
-    display.update();  // Uses mutex to ensure _sendBuffer() completes before returning
-    Serial.println("Display update started (refresh happening on panel, ESP32 can continue)");
-    
-    // Save framebuffer to storage partition after display update
-    // safeDisplayUpdate() ensures _sendBuffer() has completed, so the buffer is safe to read
-
-    // PRIORITY 3 OPTIMIZATION: Start WiFi/MQTT thumbnail publish on Core 1 in parallel with display refresh
-    // This saves 4-9 seconds by doing network I/O (WiFi connect + MQTT connect + thumbnail publish) 
-    // while Core 0 waits for display refresh (20-30s hardware-bound operation)
-    Serial.println("Starting parallel WiFi/MQTT thumbnail publish on Core 1 (during display refresh)...");
-    SemaphoreHandle_t wifiMqttDoneSem = xSemaphoreCreateBinary();
-    WifiMqttThumbnailParams wifiMqttParams = {wifiMqttDoneSem, false, "", ""};
-    
-    TaskHandle_t wifiMqttTaskHandle = NULL;
-    BaseType_t taskCreated = pdFAIL;
-    if (wifiMqttDoneSem != NULL) {
-        taskCreated = xTaskCreatePinnedToCore(
-            wifiMqttThumbnailTask,
-            "wifi_mqtt",
-            16384,  // 16KB stack for WiFi/MQTT operations
-            &wifiMqttParams,
-            5,  // Priority same as main task
-            &wifiMqttTaskHandle,
-            1   // Core 1
-        );
-    }
-    
-    if (taskCreated != pdPASS) {
-        Serial.println("WARNING: Failed to create WiFi/MQTT parallel task, will do sequentially");
-        if (wifiMqttDoneSem != NULL) {
-            vSemaphoreDelete(wifiMqttDoneSem);
-            wifiMqttDoneSem = NULL;
-        }
-    }
-
-    // PRIORITY 5 OPTIMIZATION: Pre-load audio file during display refresh (on Core 0)
-    // This saves 1-2 seconds by reading audio file while display is refreshing
-    String audioFile = getAudioForImage(g_lastImagePath);
-    uint8_t* audioBuffer = nullptr;
-    size_t audioBufferSize = 0;
-    if (audioFile.length() > 0 && taskCreated == pdPASS) {
-        Serial.printf("[Core 0] Pre-loading audio file during display refresh: %s\n", audioFile.c_str());
-        // Note: Audio file reading will happen after display refresh completes
-        // We just identify the file here to save time later
-    }
-
-    // Wait for display update to complete before playing audio
-    // Audio should only play after the display refresh is done
-    Serial.println("Waiting for display refresh to complete before audio playback...");
-    display.waitForUpdate();
-    uint32_t refreshMs = millis() - refreshStart;
-    Serial.printf("Display refresh complete: %lu ms\n", (unsigned long)refreshMs);
-    
-    // Wait for WiFi/MQTT task to complete (if it was started)
-    if (taskCreated == pdPASS && wifiMqttDoneSem != NULL) {
-        Serial.println("Waiting for parallel WiFi/MQTT task to complete...");
-        if (xSemaphoreTake(wifiMqttDoneSem, pdMS_TO_TICKS(30000)) == pdTRUE) {
-            Serial.println("Parallel WiFi/MQTT task completed");
-            if (wifiMqttParams.success) {
-                Serial.println("WiFi/MQTT thumbnail publish succeeded (done in parallel)");
-            }
-        } else {
-            Serial.println("WARNING: WiFi/MQTT task timeout (30s)");
-        }
-        vSemaphoreDelete(wifiMqttDoneSem);
-    }
-
-    // ================================================================
-    // AUDIO - Play WAV file for this image (or fallback to beep)
-    // Now plays AFTER display refresh is complete
-    // Audio file was identified during display refresh (Priority 5 optimization)
-    // ================================================================
-    
-    if (audioFile.length() > 0) {
-        Serial.printf("Image %s has audio mapping: %s\n", g_lastImagePath.c_str(), audioFile.c_str());
-        // Store in RTC memory for instant playback on switch D wake
-        strncpy(lastAudioFile, audioFile.c_str(), sizeof(lastAudioFile) - 1);
-        lastAudioFile[sizeof(lastAudioFile) - 1] = '\0';
-        if (playWavFile(audioFile)) {
-            Serial.println("Audio playback complete");
-        } else {
-            // Try to play beep.wav from SD root, silently fail if not available
-            strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
-            playWavFile("beep.wav");  // Returns false if file missing/invalid, no sound
-        }
-    } else {
-        // Try to play beep.wav from SD root, silently fail if not available
-        strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
-        playWavFile("beep.wav");  // Returns false if file missing/invalid, no sound
-    }
-    audio_stop();
-
-    // Thumbnail was already published in parallel task on Core 1 during display refresh
-    // If parallel task failed or wasn't created, it was saved to SD card
-    // Process any commands that were received during parallel MQTT check
-    if (taskCreated == pdPASS && wifiMqttParams.commandToProcess.length() > 0) {
-        Serial.println("Processing SMS bridge command received during parallel MQTT check");
-        handleMqttCommand(wifiMqttParams.commandToProcess, wifiMqttParams.originalMessageForCommand);
-    } else if (taskCreated != pdPASS) {
-        // Fallback: If parallel task wasn't created, do WiFi/MQTT sequentially
-        Serial.println("=== Publishing thumbnail after top-of-hour update (sequential fallback) ===");
-        // Load WiFi and MQTT credentials
-        if (wifiLoadCredentials()) {
-            mqttLoadConfig();
-            
-            // Connect to WiFi for thumbnail publishing (using RAII wrapper)
-            {
-                WiFiGuard wifiGuard(5, 20000, false, 100);  // 5 retries, 20s per attempt, not required, 100ms disconnect delay
-                if (wifiGuard.isConnected()) {
-                    Serial.println("WiFi connected for thumbnail publish");
-                    
-                    // Connect to MQTT
-                    String commandToProcess = "";
-                    String originalMessageForCommand = "";
-                    {
-                        MQTTGuard guard;
-                        if (guard.isConnected()) {
-                            // Publish thumbnail (will load from SD if available, otherwise regenerate from framebuffer)
-                            Serial.println("Publishing thumbnail to MQTT...");
-                            publishMQTTThumbnail();
-                            
-                            // Check for SMS bridge commands after thumbnail publish (top-of-hour MQTT check)
-                            Serial.println("=== Checking for SMS bridge commands (top-of-hour) ===");
-                            if (mqttCheckMessages(100)) {
-                                String msg = mqttGetLastMessage();
-                                Serial.printf("New command received: %s\n", msg.c_str());
-                                
-                                // Extract command (but don't process yet - disconnect first)
-                                String command = extractCommandFromMessage(msg);
-                                if (command.length() > 0) {
-                                    commandToProcess = command;  // Store for processing after disconnect
-                                    originalMessageForCommand = msg;  // Store original message for commands that need it
-                                }
-                                
-                                // Message already processed and cleared in event handler
-                                // The blank retained message was published in the event handler
-                                // Note: delay(200) for blank message publish is handled by guard destructor
-                            } else {
-                                Serial.println("No retained messages");
-                            }
-                            // guard automatically handles delays and disconnect in destructor
-                            Serial.println("MQTT disconnected");
-                        } else {
-                            Serial.println("WARNING: Failed to connect to MQTT for thumbnail publish");
-                        }
-                    }
-                    
-                    // Process SMS bridge commands AFTER MQTT disconnect (to avoid stack issues)
-                    if (commandToProcess.length() > 0) {
-                        Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
-                        handleMqttCommand(commandToProcess, originalMessageForCommand);
-                    }
-                    
-                    // WiFi will be automatically disconnected by WiFiGuard destructor
-                } else {
-                    Serial.println("WARNING: Failed to connect to WiFi for thumbnail publish (continuing anyway)");
-                }
-            }  // WiFiGuard destructor disconnects WiFi here
-        } else {
-            Serial.println("WARNING: WiFi credentials not available, skipping thumbnail publish");
-        }
-    }
-
-    if (time_ok) {
-        Serial.println("Time is valid, calculating sleep until next minute...");
-        sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
-        // Never returns - device enters deep sleep
-    } else {
-        Serial.println("Time not valid, sleeping for fallback duration (60 seconds)");
-        sleepNowSeconds(kCycleSleepSeconds);
-    }
-    // Never returns - device enters deep sleep
-}
+// REMOVED: doDisplayUpdateCycle() - replaced with displayMediaWithOverlay()
+// The unified function handles all display operations consistently across all command sources.
+// Thumbnail publishing can be added to displayMediaWithOverlay() if needed.
 
 // Forward declarations
 static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour);
-static void doDisplayUpdateCycle(bool time_ok, time_t now, struct tm& tm_utc);
-static bool loadMediaForDisplay(bool time_ok, uint32_t& sd_ms, uint32_t& dec_ms);
 
 static void auto_cycle_task(void* arg) {
     (void)arg;
     g_cycle_count++;
     Serial.printf("\n=== Cycle #%lu ===\n", (unsigned long)g_cycle_count);
+
+    // Yield to watchdog at start of task
+    vTaskDelay(1);
 
     // Increment NTP sync counter
     ntpSyncCounter++;
@@ -2971,9 +2303,16 @@ static void auto_cycle_task(void* arg) {
     bool time_ok = false;
     time_t now = time(nullptr);
     struct tm tm_utc;
+    
+    // Yield before potentially long-running time sync
+    vTaskDelay(1);
+    
     if (!checkAndSyncTime(now, tm_utc, time_ok)) {
         return;  // checkAndSyncTime may have deleted the task or entered config mode
     }
+    
+    // Yield after time sync
+    vTaskDelay(1);
     
     // Get current time to check if it's the top of the hour
     bool isTopOfHour = (tm_utc.tm_min == 0);
@@ -2983,18 +2322,30 @@ static void auto_cycle_task(void* arg) {
     // Check for RTC drift compensation (may sleep and return)
     checkRtcDriftCompensation(now, tm_utc, time_ok);
     
+    // Yield before periodic operations
+    vTaskDelay(1);
+    
     // Periodic NTP resync every 5 wakes (to handle long-term drift)
     if (ntpSyncCounter > 0 && ntpSyncCounter % 5 == 0) {
         Serial.printf("\n=== Periodic NTP Resync (every 5 wakes, counter=%lu) ===\n", (unsigned long)ntpSyncCounter);
         
         // Load WiFi credentials
         if (wifiLoadCredentials()) {
+            // Yield before WiFi connection
+            vTaskDelay(1);
+            
             // Connect to WiFi (required for NTP sync)
             if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
                 Serial.println("WiFi connected for periodic NTP resync");
                 
+                // Yield before long-running NTP sync
+                vTaskDelay(1);
+                
                 // Force NTP sync using centralized function (with very persistent retries)
                 bool ntpSynced = performNtpSync(300000);  // 5 minute timeout
+                
+                // Yield after NTP sync
+                vTaskDelay(1);
                 if (ntpSynced) {
                     // Update time variables after NTP sync
                     now = time(nullptr);
@@ -3050,12 +2401,22 @@ static void auto_cycle_task(void* arg) {
         // Note: We don't use WiFiGuard here because WiFi needs to stay connected
         // for doMqttCheckCycle() to use. The wifiConnectPersistent() function
         // will reuse an existing connection if WiFi is already connected.
+        
+        // Yield before WiFi connection
+        vTaskDelay(1);
+        
         if (wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
             Serial.println("WiFi connected for NTP sync");
+            
+            // Yield before NTP sync
+            vTaskDelay(1);
             
             // Force NTP sync regardless of time validity (always sync on cold boot)
             // Use centralized NTP sync function
             bool ntpSynced = performNtpSync(60000);  // 60 second timeout
+            
+            // Yield after NTP sync
+            vTaskDelay(1);
             if (ntpSynced) {
                 time_ok = true;
             } else {
@@ -3078,6 +2439,9 @@ static void auto_cycle_task(void* arg) {
             currentHour = tm_utc.tm_hour;
             currentMinute = tm_utc.tm_min;
         }
+        
+        // Yield before MQTT check
+        vTaskDelay(1);
         
         // Force MQTT check regardless of hour schedule or top-of-hour status
         // This gives us a window to receive !manage commands
@@ -3118,6 +2482,9 @@ static void auto_cycle_task(void* arg) {
     
     // If NOT top of hour, do MQTT check instead of display update
     if (!isTopOfHour && time_ok) {
+        // Yield before MQTT check
+        vTaskDelay(1);
+        
         doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
         
         // Sleep until next minute
@@ -3131,8 +2498,29 @@ static void auto_cycle_task(void* arg) {
         return;
     }
     
-    // Top of hour: proceed with normal display update cycle
-    doDisplayUpdateCycle(time_ok, now, tm_utc);
+    // Yield before display update cycle
+    vTaskDelay(1);
+    
+    // Top of hour: use unified display function (same as !go and !next commands)
+    // This ensures consistent behavior across all command sources
+    bool ok = displayMediaWithOverlay(-1, 100);  // -1 = sequential next, 100 = keepout margin
+    if (!ok) {
+        Serial.println("ERROR: Failed to display media at top of hour");
+        // Sleep anyway and retry next cycle
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        return;  // Exit task
+    }
+    
+    // Sleep until next enabled hour (or next minute if time invalid)
+    if (time_ok) {
+        sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+    } else {
+        sleepNowSeconds(kCycleSleepSeconds);
+    }
     // Never returns - device enters deep sleep
 }
 
@@ -3167,23 +2555,17 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
     
     // Connect to WiFi - REQUIRED for MQTT, so be persistent (keep robust retry logic)
     // While Core 0 is connecting to WiFi (network I/O, blocking), Core 1 is preparing status JSON (CPU-bound)
-    // Use persistent WiFiGuard that stays alive until deep sleep
+    // WiFi stays connected from boot until deep sleep - no WiFiGuard needed
     {
-        // Create persistent WiFiGuard if it doesn't exist
-        if (g_persistentWifiGuard == nullptr) {
-            g_persistentWifiGuard = new WiFiGuard(10, 30000, true, 50);  // 10 retries, 30s per attempt, required, 50ms disconnect delay
-        }
-        
-        // Reconnect if not already connected
-        if (!g_persistentWifiGuard->isConnected() && WiFi.status() != WL_CONNECTED) {
-            // WiFiGuard already tried to connect in constructor, but if it failed or disconnected,
-            // we need to reconnect manually
-            if (wifiConnectPersistent(10, 30000, true)) {
-                // Connection successful - WiFiGuard will track it
+        // Connect WiFi if not already connected
+        if (WiFi.status() != WL_CONNECTED) {
+            if (!wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
+                Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
+                return;  // Can't proceed without WiFi
             }
         }
         
-        if (g_persistentWifiGuard->isConnected() || WiFi.status() == WL_CONNECTED) {
+        if (WiFi.status() == WL_CONNECTED) {
             // WiFi connected - check for OTA update notification ONLY on cold boot
             // This saves 2-5 seconds on every non-top-of-hour cycle
             if (g_is_cold_boot) {
@@ -3311,37 +2693,16 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                     if (webUICommandPending && pendingWebUICommand.length() > 0) {
                         Serial.println("Processing deferred web UI command after MQTT disconnect");
                         
-                        // Extract command ID for tracking
-                        extern String lastProcessedCommandId;
-                        String cmdId = extractJsonStringField(pendingWebUICommand, "id");
-                        String cmdName = extractJsonStringField(pendingWebUICommand, "command");
-                        
-                        // Debug: Log extraction results
-                        Serial.printf("Extracted command ID: '%s' (length: %d)\n", cmdId.c_str(), cmdId.length());
-                        Serial.printf("Extracted command name: '%s' (length: %d)\n", cmdName.c_str(), cmdName.length());
-                        Serial.printf("Pending command message length: %d\n", pendingWebUICommand.length());
-                        if (pendingWebUICommand.length() < 200) {
-                            Serial.printf("Pending command preview: %s\n", pendingWebUICommand.c_str());
-                        } else {
-                            Serial.printf("Pending command preview (first 200 chars): %s\n", pendingWebUICommand.substring(0, 200).c_str());
-                        }
-                        
-                        if (cmdId.length() > 0) {
-                            lastProcessedCommandId = cmdId;
-                        }
-                        
+                        // Process the command (handleWebInterfaceCommand handles decryption and completion publishing)
+                        // Completion publishing is now handled by the command dispatcher, so we don't need to do it here
                         bool success = handleWebInterfaceCommand(pendingWebUICommand);
                         
-                        // Publish completion status (will connect WiFi/MQTT if needed)
-                        extern void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
-                        publishMQTTCommandCompletion(cmdId, cmdName, success);
-                        
-                        // Wait a bit longer to ensure the completion message is actually sent
-                        // before WiFiGuard destructor disconnects WiFi
-                        delay(1000);  // 1 second should be enough for small messages
-                        
+                        // Clear the pending command flag
                         webUICommandPending = false;
                         pendingWebUICommand = "";
+                        
+                        // Wait a bit to ensure the completion message is sent
+                        delay(2000);  // 2 seconds should be enough for completion message to be sent
                     }
                     // Status already published above, no need to reconnect
                 } else {
@@ -3355,12 +2716,10 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                 checkAndStartOTA();
             }
             
-            // Keep WiFi connected - WiFiGuard stays alive until deep sleep
+            // Keep WiFi connected - will only disconnect before deep sleep
             Serial.println("Keeping WiFi connected (will disconnect only before deep sleep)");
-        } else {
-            Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
         }
-    }  // WiFiGuard stays alive - will be destroyed before deep sleep
+    }  // WiFi stays connected - will only disconnect before deep sleep
 }
 
 // ============================================================================
@@ -3535,7 +2894,7 @@ void checkAndNotifyOTAUpdate() {
  * Handles both plain text and JSON messages
  * Returns lowercase, trimmed command string
  */
-static String extractCommandFromMessage(const String& msg) {
+String extractCommandFromMessage(const String& msg) {
     String command = msg;
     command.toLowerCase();
     command.trim();
@@ -3610,7 +2969,7 @@ static String extractFromFieldFromMessage(const String& msg) {
 //   true  = command recognized and executed successfully
 //   false = command recognized but execution failed (error messages already printed)
 //   The function prints "Unknown command" itself if the command is not recognized
-static bool handleMqttCommand(const String& command, const String& originalMessage) {
+bool handleMqttCommand(const String& command, const String& originalMessage) {
     // Check if the sender number is allowed (all commands require this, including !newno)
     // The hardcoded number +447816969344 is always allowed, so it can add numbers without locking us out
     String senderNumber = extractFromFieldFromMessage(originalMessage);
@@ -3700,7 +3059,9 @@ static bool handleMqttCommand(const String& command, const String& originalMessa
     ctx.command = command;
     ctx.originalMessage = originalMessage;
     ctx.senderNumber = senderNumber;
+    ctx.commandId = "";  // MQTT/SMS commands don't have command IDs
     ctx.requiresAuth = true;
+    ctx.shouldPublishCompletion = false;  // MQTT/SMS commands don't publish completion
     
     return dispatchCommand(ctx);
 }
@@ -3899,13 +3260,18 @@ bool handleWebInterfaceCommand(const String& jsonMessage) {
     
     Serial.printf("Web interface command: %s (from JSON parse)\n", command.c_str());
     
+    // Extract command ID for completion tracking
+    String cmdId = extractJsonStringField(messageToProcess, "id");
+    
     // Use unified command dispatcher
     CommandContext ctx;
     ctx.source = CommandSource::WEB_UI;
     ctx.command = command;
     ctx.originalMessage = messageToProcess;  // Use decrypted message
     ctx.senderNumber = "";  // Web UI doesn't use phone numbers
+    ctx.commandId = cmdId;
     ctx.requiresAuth = true;  // Already validated by decryptAndValidateWebUIMessage
+    ctx.shouldPublishCompletion = true;  // Enable completion publishing for WEB_UI
     
     cJSON_Delete(root);  // Clean up cJSON root
     return dispatchCommand(ctx);
@@ -4140,6 +3506,7 @@ static void ota_server_task(void* arg) {
 static void serial_monitor_task(void* arg) {
     (void)arg;
     Serial.println("Serial monitor task started - press 'o' at any time to enter OTA mode");
+    Serial.println("  Press 'm' at any time to launch web interface");
     Serial.println("  Press 'E' for encryption status, 'e' to toggle encryption");
     
     while (true) {
@@ -4148,6 +3515,9 @@ static void serial_monitor_task(void* arg) {
             if (ch == 'o' || ch == 'O') {
                 g_ota_requested = true;
                 Serial.println("\n>>> 'o' key detected - OTA mode will start at next safe moment <<<");
+            } else if (ch == 'm' || ch == 'M') {
+                g_manage_requested = true;
+                Serial.println("\n>>> 'm' key detected - Web interface will start at next safe moment <<<");
             } else if (ch == 'E') {
                 // Show encryption status
                 bool enabled = isEncryptionEnabled();
@@ -4191,6 +3561,20 @@ static void checkAndStartOTA() {
             delay(100);
         }
         // If we reach here, OTA timed out or failed - continue with normal operation
+    }
+}
+
+/**
+ * Check if web interface was requested and start it if needed
+ * Call this at safe points in the code (after initialization, before sleep, etc.)
+ */
+static void checkAndStartManage() {
+    if (g_manage_requested) {
+        Serial.println("\n>>> Starting web interface (requested via serial) <<<");
+        g_manage_requested = false;  // Reset flag before starting
+        // Call handleManageCommand directly (it's blocking and handles everything)
+        handleManageCommand();
+        // After web interface exits, continue with normal operation
     }
 }
 
@@ -5266,14 +4650,16 @@ static void show_media_task(void* parameter) {
     // Use unified command dispatcher
     String jsonPayload = "{\"index\":\"" + String(data->index) + "\"}";
     
-    CommandContext ctx;
-    ctx.source = CommandSource::HTTP_API;
-    ctx.command = "/api/media/show";
-    ctx.originalMessage = jsonPayload;
-    ctx.senderNumber = "";
-    ctx.requiresAuth = false;  // HTTP API handles auth separately if needed
-    
-    bool dispatchResult = dispatchCommand(ctx);
+        CommandContext ctx;
+        ctx.source = CommandSource::HTTP_API;
+        ctx.command = "/api/media/show";
+        ctx.originalMessage = jsonPayload;
+        ctx.senderNumber = "";
+        ctx.commandId = "";  // HTTP API doesn't use command IDs
+        ctx.requiresAuth = false;  // HTTP API handles auth separately if needed
+        ctx.shouldPublishCompletion = false;  // HTTP API handles responses directly
+        
+        bool dispatchResult = dispatchCommand(ctx);
     
     // The dispatcher calls handleShowCommand, which should handle the display logic
     // But we still need to set nextIndex for the HTTP response
@@ -5325,7 +4711,7 @@ static void show_media_task(void* parameter) {
                 loadQuotesFromSD();
             }
             if (!g_media_mappings_loaded) {
-                loadMediaMappingsFromSD();
+                loadMediaMappingsFromSD(false);  // Don't auto-publish in command handlers
             }
             
             // Check if we have media mappings
@@ -5360,147 +4746,8 @@ static void show_media_task(void* parameter) {
                         Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", 
                                      (unsigned long)sd_ms, (unsigned long)dec_ms);
                         
-                        // Get current time for overlay
-                        time_t now = time(nullptr);
-                        struct tm tm_utc;
-                        gmtime_r(&now, &tm_utc);
-                        
-                        char timeBuf[16];
-                        char dateBuf[48];
-                        bool timeValid = (now > 1577836800);
-                        if (timeValid) {
-                            strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
-                            
-                            char dayName[12], monthName[12];
-                            strftime(dayName, sizeof(dayName), "%A", &tm_utc);
-                            strftime(monthName, sizeof(monthName), "%B", &tm_utc);
-                            
-                            int day = tm_utc.tm_mday;
-                            int year = tm_utc.tm_year + 1900;
-                            
-                            const char* suffix;
-                            if (day >= 11 && day <= 13) {
-                                suffix = "th";
-                            } else {
-                                switch (day % 10) {
-                                    case 1: suffix = "st"; break;
-                                    case 2: suffix = "nd"; break;
-                                    case 3: suffix = "rd"; break;
-                                    default: suffix = "th"; break;
-                                }
-                            }
-                            
-                            snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
-                                     dayName, day, suffix, monthName, year);
-                        } else {
-                            snprintf(timeBuf, sizeof(timeBuf), "--:--");
-                            snprintf(dateBuf, sizeof(dateBuf), "time not set");
-                        }
-                        
-                        // Set keepout margins and clear exclusion zones
-                        TextPlacementRegion bestPos;
-                        float timeFontSize = 160.0f;
-                        float dateFontSize = 48.0f;
-                        const int16_t gapBetween = 20;
-                        const int16_t timeOutline = 3;
-                        const int16_t dateOutline = 2;
-                        
-                        textPlacement.setKeepout(100);
-                        textPlacement.clearExclusionZones();
-                        
-                        // Draw time/date overlay
-                        int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
-                        int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
-                        int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
-                        int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
-                        
-                        int16_t blockW = max(timeW, dateW);
-                        int16_t blockH = timeH + gapBetween + dateH;
-                        
-                        bestPos = textPlacement.scanForBestPosition(
-                            &display, blockW, blockH,
-                            EL133UF1_WHITE, EL133UF1_BLACK);
-                        
-                        int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
-                        int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
-                        
-                        ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
-                                                    EL133UF1_WHITE, EL133UF1_BLACK,
-                                                    ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
-                        ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
-                                                    EL133UF1_WHITE, EL133UF1_BLACK,
-                                                    ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
-                        
-                        // Create MAXIMALIST exclusion zone for time/date block
-                        // Calculate padding to ensure minimum 250px distance from quote
-                        const int16_t minDistanceFromTimeDate = 250;
-                        const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate
-                        const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
-                        
-                        // Use maximalist bounds (add extra margin)
-                        int16_t safeBlockW = blockW + 40;
-                        int16_t safeBlockH = blockH + 40;
-                        TextPlacementRegion timeExclusion = {bestPos.x, bestPos.y, safeBlockW, safeBlockH, 0.0f};
-                        textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
-                        
-                        // Draw quote overlay
-                        using Quote = TextPlacementAnalyzer::Quote;
-                        Quote selectedQuote;
-                        
-                        if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
-                            int randomIndex = random(g_loaded_quotes.size());
-                            selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
-                            selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
-                        } else {
-                            static const Quote fallbackQuotes[] = {
-                                {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
-                                {"The only way to do great work is to love what you do", "Steve Jobs"},
-                                {"In the middle of difficulty lies opportunity", "Albert Einstein"},
-                                {"Be yourself; everyone else is already taken", "Oscar Wilde"},
-                            };
-                            static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
-                            selectedQuote = fallbackQuotes[random(numQuotes)];
-                        }
-                        
-                        float quoteFontSize = 96.0f;
-                        float authorFontSize = 64.0f;
-                        
-                        TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
-                            &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
-                            EL133UF1_WHITE, EL133UF1_BLACK,
-                            3, 3);
-                        
-                        // Verify minimum 250px distance from time/date block
-                        int16_t dx = quoteLayout.position.x - bestPos.x;
-                        int16_t dy = quoteLayout.position.y - bestPos.y;
-                        int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
-                        int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
-                        int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
-                        int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
-                        
-                        if (distance < minRequiredDistance) {
-                            Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
-                            float dirX = (float)dx / (distance > 0 ? distance : 1);
-                            float dirY = (float)dy / (distance > 0 ? distance : 1);
-                            int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
-                            int16_t newY = bestPos.y + (int16_t)(dirY * minRequiredDistance);
-                            int displayW = display.width();
-                            int displayH = display.height();
-                            int keepout = 100;
-                            int newX_int = (int)newX;
-                            int newY_int = (int)newY;
-                            newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
-                            newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
-                            quoteLayout.position.x = (int16_t)newX_int;
-                            quoteLayout.position.y = (int16_t)newY_int;
-                        }
-                        
-                        textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
-                                                quoteFontSize, authorFontSize,
-                                                EL133UF1_WHITE, EL133UF1_BLACK, 2);
-                        
-                        // Add quote as MAXIMALIST exclusion zone
-                        textPlacement.addExclusionZone(quoteLayout.position, 200);
+                        // Add text overlay (time/date/weather/quote) - centralized function
+                        addTextOverlayToDisplay(&display, &ttf, 100);
                         
                         // Update display
                         Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
@@ -5852,7 +5099,9 @@ bool handleManageCommand() {
             ctx.command = "/api/text/display";
             ctx.originalMessage = jsonPayload;
             ctx.senderNumber = "";
+            ctx.commandId = "";  // HTTP API doesn't use command IDs
             ctx.requiresAuth = false;  // HTTP API handles auth separately if needed
+            ctx.shouldPublishCompletion = false;  // HTTP API handles responses directly
             
             bool result = dispatchCommand(ctx);
             
@@ -6146,7 +5395,7 @@ bool handleManageCommand() {
         
         // Reload media mappings after writing
         if (success) {
-            loadMediaMappingsFromSD();
+            loadMediaMappingsFromSD(true);  // Auto-publish when media.txt is changed
         }
         
         String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
@@ -7469,7 +6718,8 @@ bool handleNextCommand() {
         loadQuotesFromSD();
     }
     if (!g_media_mappings_loaded) {
-        loadMediaMappingsFromSD();
+        // Don't auto-publish - we only want to publish on cold boot or when media.txt actually changes
+        loadMediaMappingsFromSD(false);
     }
     
     // Check if we have media mappings
@@ -7478,184 +6728,12 @@ bool handleNextCommand() {
         return false;
     }
     
-    // Advance to next media item (pngDrawFromMediaMappings will increment lastMediaIndex)
-    Serial.printf("Current media index: %lu (of %zu)\n", 
-                  (unsigned long)lastMediaIndex, g_media_mappings.size());
-    
-    // Load the next PNG from media.txt (this increments lastMediaIndex automatically)
-    uint32_t sd_ms = 0, dec_ms = 0;
-    bool ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+    // Use unified function for the complete flow (-1 = sequential next)
+    bool ok = displayMediaWithOverlay(-1, 100);
     if (!ok) {
-        Serial.println("ERROR: Failed to load next image from media.txt");
+        Serial.println("ERROR: Failed to display next image");
         return false;
     }
-    
-    Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
-    Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
-    
-    // Save updated index to NVS
-    mediaIndexSaveToNVS();
-    
-    // Get current time for overlay
-    time_t now = time(nullptr);
-    struct tm tm_utc;
-    gmtime_r(&now, &tm_utc);
-    
-    char timeBuf[16];
-    char dateBuf[48];
-    bool timeValid = (now > 1577836800); // after 2020-01-01
-    if (timeValid) {
-        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
-        
-        // Format date as "Saturday 13th of December 2025"
-        char dayName[12], monthName[12];
-        strftime(dayName, sizeof(dayName), "%A", &tm_utc);
-        strftime(monthName, sizeof(monthName), "%B", &tm_utc);
-        
-        int day = tm_utc.tm_mday;
-        int year = tm_utc.tm_year + 1900;
-        
-        const char* suffix;
-        if (day >= 11 && day <= 13) {
-            suffix = "th";
-        } else {
-            switch (day % 10) {
-                case 1: suffix = "st"; break;
-                case 2: suffix = "nd"; break;
-                case 3: suffix = "rd"; break;
-                default: suffix = "th"; break;
-            }
-        }
-        
-        snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
-                 dayName, day, suffix, monthName, year);
-    } else {
-        snprintf(timeBuf, sizeof(timeBuf), "--:--");
-        snprintf(dateBuf, sizeof(dateBuf), "time not set");
-    }
-    
-    // Set keepout margins and clear exclusion zones
-    textPlacement.setKeepout(100);
-    textPlacement.clearExclusionZones();
-    
-    // Draw time/date overlay (simplified version - reuse logic from hourly update)
-    float timeFontSize = 160.0f;
-    float dateFontSize = 48.0f;
-    const int16_t gapBetween = 20;
-    const int16_t timeOutline = 3;
-    const int16_t dateOutline = 2;
-    
-    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
-    int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
-    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
-    int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
-    
-    int16_t blockW = max(timeW, dateW);
-    int16_t blockH = timeH + gapBetween + dateH;
-    
-    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
-        &display, blockW, blockH,
-        EL133UF1_WHITE, EL133UF1_BLACK);
-    
-    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
-    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
-    
-    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
-    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
-    
-    // Create MAXIMALIST exclusion zone for time/date block
-    // Calculate padding to ensure minimum 250px distance from quote
-    const int16_t minDistanceFromTimeDate = 250;
-    const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate
-    const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
-    
-    // Use maximalist bounds (add extra margin)
-    int16_t safeBlockW = blockW + 40;
-    int16_t safeBlockH = blockH + 40;
-    TextPlacementRegion timeExclusion = {bestPos.x, bestPos.y, safeBlockW, safeBlockH, 0.0f};
-    textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
-    
-    // Draw quote overlay
-    using Quote = TextPlacementAnalyzer::Quote;
-    Quote selectedQuote;
-    
-    if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
-        int randomIndex = random(g_loaded_quotes.size());
-        selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
-        selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
-    } else {
-        static const Quote fallbackQuotes[] = {
-            {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
-            {"The only way to do great work is to love what you do", "Steve Jobs"},
-            {"In the middle of difficulty lies opportunity", "Albert Einstein"},
-            {"Be yourself; everyone else is already taken", "Oscar Wilde"},
-        };
-        static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
-        selectedQuote = fallbackQuotes[random(numQuotes)];
-    }
-    
-    float quoteFontSize = 96.0f;  // Doubled from 48.0f
-    float authorFontSize = 64.0f;  // Doubled from 32.0f
-    
-    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
-        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
-        EL133UF1_WHITE, EL133UF1_BLACK,
-        3, 3);
-    
-    // Verify minimum 250px distance from time/date block
-    int16_t dx = quoteLayout.position.x - bestPos.x;
-    int16_t dy = quoteLayout.position.y - bestPos.y;
-    int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
-    int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
-    int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
-    int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
-    
-    if (distance < minRequiredDistance) {
-        Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
-        float dirX = (float)dx / (distance > 0 ? distance : 1);
-        float dirY = (float)dy / (distance > 0 ? distance : 1);
-        int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
-        int16_t newY = bestPos.y + (int16_t)(dirY * minRequiredDistance);
-        int displayW = display.width();
-        int displayH = display.height();
-        int keepout = 100;
-        int newX_int = (int)newX;
-        int newY_int = (int)newY;
-        newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
-        newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
-        quoteLayout.position.x = (int16_t)newX_int;
-        quoteLayout.position.y = (int16_t)newY_int;
-    }
-    
-    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
-                            quoteFontSize, authorFontSize,
-                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
-    
-    // Add quote as MAXIMALIST exclusion zone
-    textPlacement.addExclusionZone(quoteLayout.position, 200);
-    
-    // Update display
-    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
-    display.update();
-    Serial.println("Display updated");
-    
-    // Play audio file for this image
-    String audioFile = getAudioForImage(g_lastImagePath);
-    if (audioFile.length() > 0) {
-        Serial.printf("Playing audio: %s\n", audioFile.c_str());
-        strncpy(lastAudioFile, audioFile.c_str(), sizeof(lastAudioFile) - 1);
-        lastAudioFile[sizeof(lastAudioFile) - 1] = '\0';
-        playWavFile(audioFile);
-    } else {
-        Serial.println("No audio file mapped for this image, playing beep.wav");
-        strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
-        playWavFile("beep.wav");
-    }
-    audio_stop();
     
     Serial.println("!next command completed successfully");
     return true;
@@ -7713,7 +6791,8 @@ bool handleGoCommand(const String& parameter) {
         loadQuotesFromSD();
     }
     if (!g_media_mappings_loaded) {
-        loadMediaMappingsFromSD();
+        // Don't auto-publish - we only want to publish on cold boot or when media.txt actually changes
+        loadMediaMappingsFromSD(false);
     }
     
     // Check if we have media mappings
@@ -7732,191 +6811,11 @@ bool handleGoCommand(const String& parameter) {
     
     Serial.printf("Jumping to media item %d of %zu (index %d)\n", userInput, mediaCount, targetIndex);
     
-    // Set the index directly (without incrementing)
-    // We need to set it to targetIndex-1 so that pngDrawFromMediaMappings increments it to targetIndex
-    size_t mediaCount_uint = g_media_mappings.size();
-    lastMediaIndex = (targetIndex - 1 + mediaCount_uint) % mediaCount_uint;
-    
-    uint32_t sd_ms = 0, dec_ms = 0;
-    bool ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+    // Use unified function for the complete flow
+    bool ok = displayMediaWithOverlay(targetIndex, 100);
     if (!ok) {
-        Serial.println("ERROR: Failed to load image from media.txt");
         return false;
     }
-    
-    // Verify we're at the correct index
-    if (lastMediaIndex != (size_t)targetIndex) {
-        Serial.printf("WARNING: Expected index %d but got %lu - correcting\n", 
-                      targetIndex, (unsigned long)lastMediaIndex);
-        lastMediaIndex = targetIndex;
-    }
-    
-    Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
-    Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
-    
-    // Save updated index to NVS
-    mediaIndexSaveToNVS();
-    
-    // Get current time for overlay
-    time_t now = time(nullptr);
-    struct tm tm_utc;
-    gmtime_r(&now, &tm_utc);
-    
-    char timeBuf[16];
-    char dateBuf[48];
-    bool timeValid = (now > 1577836800); // after 2020-01-01
-    if (timeValid) {
-        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tm_utc);
-        
-        // Format date as "Saturday 13th of December 2025"
-        char dayName[12], monthName[12];
-        strftime(dayName, sizeof(dayName), "%A", &tm_utc);
-        strftime(monthName, sizeof(monthName), "%B", &tm_utc);
-        
-        int day = tm_utc.tm_mday;
-        int year = tm_utc.tm_year + 1900;
-        
-        const char* suffix;
-        if (day >= 11 && day <= 13) {
-            suffix = "th";
-        } else {
-            switch (day % 10) {
-                case 1: suffix = "st"; break;
-                case 2: suffix = "nd"; break;
-                case 3: suffix = "rd"; break;
-                default: suffix = "th"; break;
-            }
-        }
-        
-        snprintf(dateBuf, sizeof(dateBuf), "%s %d%s of %s %d", 
-                 dayName, day, suffix, monthName, year);
-    } else {
-        snprintf(timeBuf, sizeof(timeBuf), "--:--");
-        snprintf(dateBuf, sizeof(dateBuf), "time not set");
-    }
-    
-    // Set keepout margins and clear exclusion zones
-    textPlacement.setKeepout(100);
-    textPlacement.clearExclusionZones();
-    
-    // Draw time/date overlay
-    float timeFontSize = 160.0f;
-    float dateFontSize = 48.0f;
-    const int16_t gapBetween = 20;
-    const int16_t timeOutline = 3;
-    const int16_t dateOutline = 2;
-    
-    int16_t timeW = ttf.getTextWidth(timeBuf, timeFontSize) + (timeOutline * 2);
-    int16_t timeH = ttf.getTextHeight(timeFontSize) + (timeOutline * 2);
-    int16_t dateW = ttf.getTextWidth(dateBuf, dateFontSize) + (dateOutline * 2);
-    int16_t dateH = ttf.getTextHeight(dateFontSize) + (dateOutline * 2);
-    
-    int16_t blockW = max(timeW, dateW);
-    int16_t blockH = timeH + gapBetween + dateH;
-    
-    TextPlacementRegion bestPos = textPlacement.scanForBestPosition(
-        &display, blockW, blockH,
-        EL133UF1_WHITE, EL133UF1_BLACK);
-    
-    int16_t timeY = bestPos.y - (blockH/2) + (timeH/2);
-    int16_t dateY = bestPos.y + (blockH/2) - (dateH/2);
-    
-    ttf.drawTextAlignedOutlined(bestPos.x, timeY, timeBuf, timeFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, timeOutline);
-    ttf.drawTextAlignedOutlined(bestPos.x, dateY, dateBuf, dateFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, dateOutline);
-    
-    // Create MAXIMALIST exclusion zone for time/date block
-    // Calculate padding to ensure minimum 250px distance from quote
-    const int16_t minDistanceFromTimeDate = 250;
-    const int16_t estimatedQuoteHalfHeight = 300;  // Conservative estimate
-    const int16_t timeDateExclusionPadding = minDistanceFromTimeDate + estimatedQuoteHalfHeight;
-    
-    // Use maximalist bounds (add extra margin)
-    int16_t safeBlockW = blockW + 40;
-    int16_t safeBlockH = blockH + 40;
-    TextPlacementRegion timeExclusion = {bestPos.x, bestPos.y, safeBlockW, safeBlockH, 0.0f};
-    textPlacement.addExclusionZone(timeExclusion, timeDateExclusionPadding);
-    
-    // Draw quote overlay
-    using Quote = TextPlacementAnalyzer::Quote;
-    Quote selectedQuote;
-    
-    if (g_quotes_loaded && g_loaded_quotes.size() > 0) {
-        int randomIndex = random(g_loaded_quotes.size());
-        selectedQuote.text = g_loaded_quotes[randomIndex].text.c_str();
-        selectedQuote.author = g_loaded_quotes[randomIndex].author.c_str();
-    } else {
-        static const Quote fallbackQuotes[] = {
-            {"Vulnerability is not weakness; it's our greatest measure of courage", "Brene Brown"},
-            {"The only way to do great work is to love what you do", "Steve Jobs"},
-            {"In the middle of difficulty lies opportunity", "Albert Einstein"},
-            {"Be yourself; everyone else is already taken", "Oscar Wilde"},
-        };
-        static const int numQuotes = sizeof(fallbackQuotes) / sizeof(fallbackQuotes[0]);
-        selectedQuote = fallbackQuotes[random(numQuotes)];
-    }
-    
-    float quoteFontSize = 96.0f;  // Doubled from 48.0f
-    float authorFontSize = 64.0f;  // Doubled from 32.0f
-    
-    TextPlacementAnalyzer::QuoteLayoutResult quoteLayout = textPlacement.scanForBestQuotePosition(
-        &display, &ttf, selectedQuote, quoteFontSize, authorFontSize,
-        EL133UF1_WHITE, EL133UF1_BLACK,
-        3, 3);
-    
-    // Verify minimum 250px distance from time/date block
-    int16_t dx = quoteLayout.position.x - bestPos.x;
-    int16_t dy = quoteLayout.position.y - bestPos.y;
-    int16_t distance = (int16_t)sqrt((float)(dx*dx + dy*dy));
-    int16_t timeDateHalfDiag = (int16_t)sqrt((float)((safeBlockW/2)*(safeBlockW/2) + (safeBlockH/2)*(safeBlockH/2)));
-    int16_t quoteHalfDiag = (int16_t)sqrt((float)((quoteLayout.position.width/2)*(quoteLayout.position.width/2) + (quoteLayout.position.height/2)*(quoteLayout.position.height/2)));
-    int16_t minRequiredDistance = 250 + timeDateHalfDiag + quoteHalfDiag;
-    
-    if (distance < minRequiredDistance) {
-        Serial.printf("WARNING: Quote too close to time/date (%d < %d), adjusting...\n", distance, minRequiredDistance);
-        float dirX = (float)dx / (distance > 0 ? distance : 1);
-        float dirY = (float)dy / (distance > 0 ? distance : 1);
-        int16_t newX = bestPos.x + (int16_t)(dirX * minRequiredDistance);
-        int16_t newY = bestPos.y + (int16_t)(dirY * minRequiredDistance);
-        int displayW = display.width();
-        int displayH = display.height();
-        int keepout = 100;
-        int newX_int = (int)newX;
-        int newY_int = (int)newY;
-        newX_int = max(keepout + (int)(quoteLayout.position.width/2), min(displayW - keepout - (int)(quoteLayout.position.width/2), newX_int));
-        newY_int = max(keepout + (int)(quoteLayout.position.height/2), min(displayH - keepout - (int)(quoteLayout.position.height/2), newY_int));
-        quoteLayout.position.x = (int16_t)newX_int;
-        quoteLayout.position.y = (int16_t)newY_int;
-    }
-    
-    textPlacement.drawQuote(&ttf, quoteLayout, selectedQuote.author,
-                            quoteFontSize, authorFontSize,
-                            EL133UF1_WHITE, EL133UF1_BLACK, 2);
-    
-    // Add quote as MAXIMALIST exclusion zone
-    textPlacement.addExclusionZone(quoteLayout.position, 200);
-    
-    // Update display
-    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
-    display.update();
-    Serial.println("Display updated");
-    
-    // Play audio file for this image
-    String audioFile = getAudioForImage(g_lastImagePath);
-    if (audioFile.length() > 0) {
-        Serial.printf("Playing audio: %s\n", audioFile.c_str());
-        strncpy(lastAudioFile, audioFile.c_str(), sizeof(lastAudioFile) - 1);
-        lastAudioFile[sizeof(lastAudioFile) - 1] = '\0';
-        playWavFile(audioFile);
-    } else {
-        Serial.println("No audio file mapped for this image, playing beep.wav");
-        strncpy(lastAudioFile, "beep.wav", sizeof(lastAudioFile) - 1);
-        playWavFile("beep.wav");
-    }
-    audio_stop();
     
     Serial.printf("!go command completed successfully - now at item %lu of %zu\n", 
                   (unsigned long)(lastMediaIndex + 1), mediaCount);
@@ -9131,7 +8030,7 @@ bool handleListNumbersCommand(const String& originalMessage) {
     
     // Load media mappings if not already loaded
     if (!g_media_mappings_loaded) {
-        loadMediaMappingsFromSD();
+        loadMediaMappingsFromSD(false);  // Don't auto-publish in command handlers
     }
     
     // Build response message
@@ -9402,6 +8301,15 @@ bool handleShowCommand(const String& parameter) {
     if (pres != PNG_OK) {
         Serial.printf("ERROR: PNG draw failed: %s\n", pngLoader.getErrorString(pres));
         return false;
+    }
+    
+    // Add text overlay (time/date/weather/quote) - centralized function
+    // This ensures !show commands also get live weather data, same as !go
+    EL133UF1_TTF ttf;
+    if (!ttf.begin(&display)) {
+        Serial.println("WARNING: TTF initialization failed, skipping text overlay");
+    } else {
+        addTextOverlayToDisplay(&display, &ttf, 100);
     }
     
     // Update display
@@ -10966,7 +9874,8 @@ void setup() {
         
         // Run auto-cycle in a dedicated task with a larger stack than Arduino loopTask,
         // since SD init and PNG decoding are stack-heavy.
-        xTaskCreatePinnedToCore(auto_cycle_task, "auto_cycle", 16384, nullptr, 5, &g_auto_cycle_task, 0);
+        // Pin to Core 1 to avoid blocking Core 0's IDLE task (which the watchdog monitors)
+        xTaskCreatePinnedToCore(auto_cycle_task, "auto_cycle", 16384, nullptr, 3, &g_auto_cycle_task, 1);
         return; // yield loopTask; auto_cycle_task will deep-sleep the device
     }
 

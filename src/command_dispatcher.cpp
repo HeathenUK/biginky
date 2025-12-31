@@ -8,6 +8,8 @@
 #include "json_utils.h"
 // ArduinoJson removed - using cJSON instead (via json_utils.h)
 
+#include "display_manager.h"  // Unified display media with overlay
+
 // Forward declarations of handler functions from main.cpp
 extern bool handleClearCommand();
 extern bool handleNextCommand();
@@ -125,31 +127,48 @@ static bool handleGoUnified(const CommandContext& ctx) {
 }
 
 static bool handleShowUnified(const CommandContext& ctx) {
-    String param = "";
     if (ctx.source == CommandSource::MQTT_SMS) {
-        param = extractCommandParameter(ctx.command);
-        // MQTT uses filename directly
+        // MQTT/SMS uses filename directly (for showing arbitrary files)
+        String param = extractCommandParameter(ctx.command);
         return handleShowCommand(param);
     } else if (ctx.source == CommandSource::WEB_UI) {
-        param = extractJsonStringField(ctx.originalMessage, "parameter");
-        return handleShowCommand(param);
+        // Web UI can use either index (for media mappings) or filename (for arbitrary files)
+        // Check if parameter is a number (index) or a string (filename)
+        String param = extractJsonStringField(ctx.originalMessage, "parameter");
+        if (param.length() == 0) {
+            // Try index field instead
+            String indexStr = extractJsonStringField(ctx.originalMessage, "index");
+            if (indexStr.length() > 0) {
+                int index = indexStr.toInt();
+                // Use unified function for media mappings
+                return displayMediaWithOverlay(index, 100);
+            }
+            return false;
+        }
+        // Check if it's a number (index)
+        bool isNumeric = true;
+        for (size_t i = 0; i < param.length(); i++) {
+            if (!isdigit(param.charAt(i))) {
+                isNumeric = false;
+                break;
+            }
+        }
+        if (isNumeric && param.length() > 0) {
+            // It's an index - use unified function
+            int index = param.toInt();
+            return displayMediaWithOverlay(index, 100);
+        } else {
+            // It's a filename - use handleShowCommand
+            return handleShowCommand(param);
+        }
     } else if (ctx.source == CommandSource::HTTP_API) {
-        // HTTP API uses index - need to convert to filename via media mappings
+        // HTTP API uses index for media mappings - use unified function
         String indexStr = extractJsonStringField(ctx.originalMessage, "index");
         if (indexStr.length() == 0) {
             return false;
         }
         int index = indexStr.toInt();
-        
-        // Access media mappings (extern from main.cpp)
-        
-        if (!g_media_mappings_loaded || index < 0 || index >= (int)g_media_mappings.size()) {
-            return false;
-        }
-        
-        // Convert index to filename
-        param = g_media_mappings[index].imageName;
-        return handleShowCommand(param);
+        return displayMediaWithOverlay(index, 100);
     }
     return false;
 }
@@ -549,12 +568,33 @@ bool dispatchCommand(const CommandContext& ctx) {
             }
             
             // Call handler
-            return entry.handler(ctx);
+            bool success = entry.handler(ctx);
+            
+            // Publish completion status for WEB_UI commands (if enabled and command ID provided)
+            if (ctx.shouldPublishCompletion && ctx.source == CommandSource::WEB_UI && ctx.commandId.length() > 0) {
+                extern void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
+                String commandName = normalized;
+                if (entry.webUIName != nullptr) {
+                    commandName = String(entry.webUIName);
+                }
+                Serial.printf("[Dispatcher] Publishing completion for WEB_UI command: id='%s', name='%s', success=%d\n",
+                             ctx.commandId.c_str(), commandName.c_str(), success ? 1 : 0);
+                publishMQTTCommandCompletion(ctx.commandId, commandName, success);
+            }
+            
+            return success;
         }
     }
     
     // Command not found
     Serial.printf("Unknown command: %s (source: %d)\n", ctx.command.c_str(), (int)ctx.source);
+    
+    // Publish completion for unknown commands too (so web UI knows it failed)
+    if (ctx.shouldPublishCompletion && ctx.source == CommandSource::WEB_UI && ctx.commandId.length() > 0) {
+        extern void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
+        publishMQTTCommandCompletion(ctx.commandId, normalized, false);
+    }
+    
     return false;
 }
 

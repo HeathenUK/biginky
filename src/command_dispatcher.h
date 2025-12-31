@@ -28,7 +28,9 @@ struct CommandContext {
     String command;              // Normalized command name (e.g., "clear", "next", "go")
     String originalMessage;       // Original message/JSON for parameter extraction
     String senderNumber;          // For MQTT/SMS: sender phone number
+    String commandId;             // Command ID for tracking completion (for Web UI/HTTP API)
     bool requiresAuth;            // Whether authentication is required
+    bool shouldPublishCompletion; // Whether to publish completion status (default: true for WEB_UI)
 };
 
 // Unified command handler function signature

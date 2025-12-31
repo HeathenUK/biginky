@@ -18,6 +18,7 @@
 #include "lodepng_psram.h"  // For lodepng_free (must be before lodepng.h)
 #include "lodepng.h"  // For lodepng_error_text
 #include "EL133UF1_Color.h"  // For spectra6Color global instance
+#include "chunked_processing.h"  // For chunked processing with automatic watchdog yielding
 
 // External dependencies from main file
 extern bool sdCardMounted;
@@ -352,7 +353,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         // Fast path: PNG was already paletted, RGB values should match our palette
         // Direct RGB matching (exact match with small tolerance for rounding)
         Serial.println("Fast path: PNG is paletted, using direct RGB matching...");
-        for (size_t i = 0; i < paletteSize; i++) {
+        processBufferChunked(paletteSize, [&](size_t i) {
             uint8_t r = rgbBuffer[i * 3 + 0];
             uint8_t g = rgbBuffer[i * 3 + 1];
             uint8_t b = rgbBuffer[i * 3 + 2];
@@ -375,7 +376,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
                 uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
                 paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
             }
-        }
+        });
     } else {
         // Normal path: RGB image, use color matching
         Serial.println("Normal path: RGB image, using color matching...");
@@ -383,7 +384,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
             spectra6Color.buildLUT();
         }
         
-        for (size_t i = 0; i < paletteSize; i++) {
+        processBufferChunked(paletteSize, [&](size_t i) {
             uint8_t r = rgbBuffer[i * 3 + 0];
             uint8_t g = rgbBuffer[i * 3 + 1];
             uint8_t b = rgbBuffer[i * 3 + 2];
@@ -391,7 +392,7 @@ String generateThumbnailFromImageFile(const String& imagePath) {
             // Map RGB to Spectra color code, then to palette index
             uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
             paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
-        }
+        });
     }
     
     uint32_t convertTime = millis() - convertStart;
@@ -416,20 +417,18 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     uint32_t scaleStart = millis();
     const int scale = 4;
     
-    for (int ty = 0; ty < thumbHeight; ty++) {
-        for (int tx = 0; tx < thumbWidth; tx++) {
-            int sx = tx * scale;
-            int sy = ty * scale;
-            
-            // Direct sampling (like framebuffer thumbnail) - just take the top-left pixel of each 4x4 block
-            int srcIdx = sy * srcWidth + sx;
-            if (srcIdx < (int)paletteSize) {
-                thumbPaletteBuffer[ty * thumbWidth + tx] = paletteBuffer[srcIdx];
-            } else {
-                thumbPaletteBuffer[ty * thumbWidth + tx] = 1;  // Default to white
-            }
+    processImageChunked(thumbWidth, thumbHeight, [&](int tx, int ty) {
+        int sx = tx * scale;
+        int sy = ty * scale;
+        
+        // Direct sampling (like framebuffer thumbnail) - just take the top-left pixel of each 4x4 block
+        int srcIdx = sy * srcWidth + sx;
+        if (srcIdx < (int)paletteSize) {
+            thumbPaletteBuffer[ty * thumbWidth + tx] = paletteBuffer[srcIdx];
+        } else {
+            thumbPaletteBuffer[ty * thumbWidth + tx] = 1;  // Default to white
         }
-    }
+    });
     
     uint32_t scaleTime = millis() - scaleStart;
     Serial.printf("Palette scaling completed: %lu ms\n", scaleTime);

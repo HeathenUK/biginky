@@ -3315,6 +3315,17 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                         extern String lastProcessedCommandId;
                         String cmdId = extractJsonStringField(pendingWebUICommand, "id");
                         String cmdName = extractJsonStringField(pendingWebUICommand, "command");
+                        
+                        // Debug: Log extraction results
+                        Serial.printf("Extracted command ID: '%s' (length: %d)\n", cmdId.c_str(), cmdId.length());
+                        Serial.printf("Extracted command name: '%s' (length: %d)\n", cmdName.c_str(), cmdName.length());
+                        Serial.printf("Pending command message length: %d\n", pendingWebUICommand.length());
+                        if (pendingWebUICommand.length() < 200) {
+                            Serial.printf("Pending command preview: %s\n", pendingWebUICommand.c_str());
+                        } else {
+                            Serial.printf("Pending command preview (first 200 chars): %s\n", pendingWebUICommand.substring(0, 200).c_str());
+                        }
+                        
                         if (cmdId.length() > 0) {
                             lastProcessedCommandId = cmdId;
                         }

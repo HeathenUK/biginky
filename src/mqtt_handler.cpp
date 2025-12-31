@@ -344,10 +344,15 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             
         case MQTT_EVENT_PUBLISHED:
             // Message was published successfully
+            Serial.printf("MQTT_EVENT_PUBLISHED: msg_id=%d, pending_msg_id=%d\n", 
+                         event->msg_id, mqttPendingPublishMsgId);
             if (mqttPublishSem != nullptr && event->msg_id == mqttPendingPublishMsgId) {
-                Serial.printf("MQTT message published (msg_id: %d)\n", event->msg_id);
+                Serial.printf("MQTT message published (msg_id: %d) - signaling semaphore\n", event->msg_id);
                 mqttPendingPublishMsgId = -1;
                 xSemaphoreGive(mqttPublishSem);
+            } else if (mqttPublishSem != nullptr) {
+                Serial.printf("MQTT_EVENT_PUBLISHED: msg_id mismatch (got %d, waiting for %d)\n", 
+                             event->msg_id, mqttPendingPublishMsgId);
             }
             break;
             

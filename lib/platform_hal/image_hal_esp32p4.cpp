@@ -192,6 +192,104 @@ bool hal_image_rotate(const image_desc_t* src, image_desc_t* dst,
     return true;
 }
 
+// ============================================================================
+// PPA-accelerated scaling
+// ============================================================================
+
+bool hal_image_scale(const image_desc_t* src, image_desc_t* dst, bool blocking) {
+    if (!src || !dst || !src->buffer || !dst->buffer) {
+        return false;
+    }
+
+    uint32_t start_us = micros();
+
+    // Check if we can use PPA
+    if (!hal_image_hw_accel_available()) {
+        s_last_hw_accel = false;
+        Serial.println("[IMAGE_HAL] PPA not available for scaling, software fallback not implemented");
+        return false;
+    }
+
+    // Map our format to PPA format
+    ppa_srm_color_mode_t ppa_color_mode;
+    switch (src->format) {
+        case IMAGE_FORMAT_L8:
+            s_last_hw_accel = false;
+            Serial.println("[IMAGE_HAL] L8 format requires software path for scaling");
+            return false;
+        case IMAGE_FORMAT_RGB565:
+            ppa_color_mode = PPA_SRM_COLOR_MODE_RGB565;
+            break;
+        case IMAGE_FORMAT_RGB888:
+            ppa_color_mode = PPA_SRM_COLOR_MODE_RGB888;
+            break;
+        case IMAGE_FORMAT_ARGB8888:
+            ppa_color_mode = PPA_SRM_COLOR_MODE_ARGB8888;
+            break;
+        default:
+            return false;
+    }
+
+    // Calculate scale factors
+    float scale_x = (float)dst->width / (float)src->width;
+    float scale_y = (float)dst->height / (float)src->height;
+
+    // Configure input picture
+    ppa_in_pic_blk_config_t in_config = {
+        .buffer = src->buffer,
+        .pic_w = src->width,
+        .pic_h = src->height,
+        .block_w = src->width,
+        .block_h = src->height,
+        .block_offset_x = 0,
+        .block_offset_y = 0,
+        .srm_cm = ppa_color_mode,
+    };
+
+    // Configure output picture
+    size_t bytes_per_pixel = (src->format == IMAGE_FORMAT_ARGB8888) ? 4 :
+                             (src->format == IMAGE_FORMAT_RGB888) ? 3 :
+                             (src->format == IMAGE_FORMAT_RGB565) ? 2 : 1;
+    size_t out_buffer_size = dst->width * dst->height * bytes_per_pixel;
+
+    ppa_out_pic_blk_config_t out_config = {
+        .buffer = dst->buffer,
+        .buffer_size = out_buffer_size,
+        .pic_w = dst->width,
+        .pic_h = dst->height,
+        .block_offset_x = 0,
+        .block_offset_y = 0,
+        .srm_cm = ppa_color_mode,
+    };
+
+    // Configure SRM operation (scale only, no rotation)
+    ppa_srm_oper_config_t srm_config = {
+        .in = in_config,
+        .out = out_config,
+        .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
+        .scale_x = scale_x,
+        .scale_y = scale_y,
+        .mirror_x = false,
+        .mirror_y = false,
+        .rgb_swap = false,
+        .byte_swap = false,
+        .mode = blocking ? PPA_TRANS_MODE_BLOCKING : PPA_TRANS_MODE_NON_BLOCKING,
+        .user_data = nullptr,
+    };
+
+    // Execute scaling
+    esp_err_t ret = ppa_do_scale_rotate_mirror(s_ppa_srm_client, &srm_config);
+    if (ret != ESP_OK) {
+        Serial.printf("[IMAGE_HAL] PPA scaling failed: %d\n", ret);
+        s_last_hw_accel = false;
+        return false;
+    }
+
+    s_last_operation_us = micros() - start_us;
+    s_last_hw_accel = true;
+    return true;
+}
+
 void hal_image_wait(void) {
     // For blocking mode, operation is already complete
     // For non-blocking, PPA provides callback mechanism

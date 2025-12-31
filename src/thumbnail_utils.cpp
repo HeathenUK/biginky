@@ -10,6 +10,7 @@
 #include "ff.h"  // FatFs for SD card operations
 #include "sdmmc_cmd.h"  // For sdmmc_card_t
 #include "platform_hal.h"  // For hal_psram_malloc/free
+#include "image_hal.h"  // For PPA-accelerated scaling
 #include <pngle.h>  // For PNG decoding
 #include <string.h>  // For memset
 #include "mqtt_handler.h"  // For processPngEncodeWork
@@ -281,7 +282,6 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     // Quarter size: 200x150 for 800x600, or 400x300 for 1600x1200
     const int thumbWidth = srcWidth / 4;   // Quarter width
     const int thumbHeight = srcHeight / 4;  // Quarter height
-    const int scale = 4;
     
     size_t thumbSize = thumbWidth * thumbHeight * 3;
     uint8_t* thumbBuffer = (uint8_t*)hal_psram_malloc(thumbSize);
@@ -291,33 +291,72 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    // Scale down by averaging 4x4 blocks from RGB buffer
-    for (int ty = 0; ty < thumbHeight; ty++) {
-        for (int tx = 0; tx < thumbWidth; tx++) {
-            int sx = tx * scale;
-            int sy = ty * scale;
-            
-            uint32_t rSum = 0, gSum = 0, bSum = 0;
-            int count = 0;
-            
-            for (int dy = 0; dy < scale && (sy + dy) < (int)srcHeight; dy++) {
-                for (int dx = 0; dx < scale && (sx + dx) < (int)srcWidth; dx++) {
-                    int srcIdx = ((sy + dy) * srcWidth + (sx + dx)) * 3;
-                    if (srcIdx + 2 < (int)(srcWidth * srcHeight * 3)) {
-                        rSum += rgbBuffer[srcIdx + 0];
-                        gSum += rgbBuffer[srcIdx + 1];
-                        bSum += rgbBuffer[srcIdx + 2];
-                        count++;
+    // Try PPA-accelerated scaling first
+    bool usedPPA = false;
+    if (hal_image_init() && hal_image_hw_accel_available()) {
+        // Prepare image descriptors for PPA scaling
+        image_desc_t srcDesc = {
+            .buffer = rgbBuffer,
+            .width = srcWidth,
+            .height = srcHeight,
+            .stride = srcWidth * 3,  // RGB888: 3 bytes per pixel
+            .format = IMAGE_FORMAT_RGB888
+        };
+        
+        image_desc_t dstDesc = {
+            .buffer = thumbBuffer,
+            .width = thumbWidth,
+            .height = thumbHeight,
+            .stride = thumbWidth * 3,  // RGB888: 3 bytes per pixel
+            .format = IMAGE_FORMAT_RGB888
+        };
+        
+        Serial.printf("Attempting PPA-accelerated scaling: %ux%u -> %ux%u\n", 
+                     srcWidth, srcHeight, thumbWidth, thumbHeight);
+        
+        uint32_t scaleStart = millis();
+        usedPPA = hal_image_scale(&srcDesc, &dstDesc, true);  // Blocking
+        uint32_t scaleTime = millis() - scaleStart;
+        
+        if (usedPPA) {
+            Serial.printf("PPA scaling successful: %lu ms (hardware-accelerated)\n", scaleTime);
+        } else {
+            Serial.printf("PPA scaling failed, falling back to software: %lu ms\n", scaleTime);
+        }
+    }
+    
+    // Fall back to software scaling if PPA failed
+    if (!usedPPA) {
+        Serial.println("Using software scaling (averaging 4x4 blocks)...");
+        const int scale = 4;
+        
+        for (int ty = 0; ty < thumbHeight; ty++) {
+            for (int tx = 0; tx < thumbWidth; tx++) {
+                int sx = tx * scale;
+                int sy = ty * scale;
+                
+                uint32_t rSum = 0, gSum = 0, bSum = 0;
+                int count = 0;
+                
+                for (int dy = 0; dy < scale && (sy + dy) < (int)srcHeight; dy++) {
+                    for (int dx = 0; dx < scale && (sx + dx) < (int)srcWidth; dx++) {
+                        int srcIdx = ((sy + dy) * srcWidth + (sx + dx)) * 3;
+                        if (srcIdx + 2 < (int)(srcWidth * srcHeight * 3)) {
+                            rSum += rgbBuffer[srcIdx + 0];
+                            gSum += rgbBuffer[srcIdx + 1];
+                            bSum += rgbBuffer[srcIdx + 2];
+                            count++;
+                        }
                     }
                 }
-            }
-            
-            if (count > 0) {
-                int thumbIdx = (ty * thumbWidth + tx) * 3;
-                // PNG encoder (lodepng) expects RGB888 format (R, G, B order)
-                thumbBuffer[thumbIdx + 0] = rSum / count;  // R
-                thumbBuffer[thumbIdx + 1] = gSum / count;  // G
-                thumbBuffer[thumbIdx + 2] = bSum / count;  // B
+                
+                if (count > 0) {
+                    int thumbIdx = (ty * thumbWidth + tx) * 3;
+                    // PNG encoder (lodepng) expects RGB888 format (R, G, B order)
+                    thumbBuffer[thumbIdx + 0] = rSum / count;  // R
+                    thumbBuffer[thumbIdx + 1] = gSum / count;  // G
+                    thumbBuffer[thumbIdx + 2] = bSum / count;  // B
+                }
             }
         }
     }

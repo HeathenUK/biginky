@@ -92,9 +92,25 @@ bool hal_image_rotate(const image_desc_t* src, image_desc_t* dst,
                       image_rotation_t rotation, bool blocking);
 
 /**
+ * @brief Scale an image
+ * 
+ * Scales the source image and writes to destination buffer.
+ * Source and destination must not overlap.
+ * 
+ * On ESP32-P4: Uses PPA SRM (Scale-Rotate-Mirror) engine
+ * 
+ * @param src Source image descriptor
+ * @param dst Destination image descriptor (dimensions should match scaled size)
+ * @param blocking If true, wait for operation to complete before returning
+ * 
+ * @return true if scaling started/completed successfully
+ */
+bool hal_image_scale(const image_desc_t* src, image_desc_t* dst, bool blocking);
+
+/**
  * @brief Wait for pending image operation to complete
  * 
- * Only needed if hal_image_rotate was called with blocking=false
+ * Only needed if hal_image_rotate or hal_image_scale was called with blocking=false
  */
 void hal_image_wait(void);
 

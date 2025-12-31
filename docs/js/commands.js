@@ -54,7 +54,8 @@ async function sendCanvasToDisplay() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-    const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
+    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
     const einkColorValues = [0,1,2,3,5,6];
     
     function findClosestColorIdx(r, g, b) {
@@ -233,7 +234,8 @@ async function sendCanvasToDisplayAndSave() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-    const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
+    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
     const einkColorValues = [0,1,2,3,5,6];
     
     function findClosestColorIdx(r, g, b) {
@@ -421,7 +423,8 @@ async function sendCanvasToSave() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-    const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
+    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
     const einkColorValues = [0,1,2,3,5,6];
     
     function findClosestColorIdx(r, g, b) {
@@ -654,7 +657,8 @@ async function sendCanvasAction() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-        const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+        // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
+    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
         const einkColorValues = [0,1,2,3,5,6];
         
         function findClosestColorIdx(r, g, b) {

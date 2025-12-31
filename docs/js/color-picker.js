@@ -4,25 +4,25 @@
 
 // Color definitions - supports both numeric (canvas) and string (text) color values
 const colorDefinitions = {
-    // Numeric colors (for canvas drawing)
+    // Numeric colors (for canvas drawing) - matching firmware palette from EL133UF1_Color.cpp
     numeric: {
-        '0': { hex: '#000000', name: 'Black' },
-        '1': { hex: '#FFFFFF', name: 'White' },
-        '2': { hex: '#FFFF00', name: 'Yellow' },
-        '3': { hex: '#FF0000', name: 'Red' },
-        '5': { hex: '#0000FF', name: 'Blue' },
-        '6': { hex: '#00FF00', name: 'Green' },
+        '0': { hex: '#0A0A0A', name: 'Black' },      // (10, 10, 10)
+        '1': { hex: '#F5F5EB', name: 'White' },      // (245, 245, 235)
+        '2': { hex: '#F5D232', name: 'Yellow' },      // (245, 210, 50)
+        '3': { hex: '#BE3C37', name: 'Red' },         // (190, 60, 55)
+        '5': { hex: '#2D4BA0', name: 'Blue' },        // (45, 75, 160)
+        '6': { hex: '#378C55', name: 'Green' },       // (55, 140, 85)
         'transparent': { hex: 'transparent', name: 'Transparent', gradient: 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)' }
     },
-    // String colors (for text display)
+    // String colors (for text display) - matching firmware palette from EL133UF1_Color.cpp
     string: {
-        'black': { hex: '#000000', name: 'Black' },
-        'white': { hex: '#FFFFFF', name: 'White' },
-        'yellow': { hex: '#FFFF00', name: 'Yellow' },
-        'red': { hex: '#FF0000', name: 'Red' },
-        'blue': { hex: '#0000FF', name: 'Blue' },
-        'green': { hex: '#00FF00', name: 'Green' },
-        'multi': { hex: 'linear-gradient(90deg,#000000 0%,#FFFF00 16.66%,#FF0000 33.33%,#0000FF 50%,#00FF00 66.66%,#FFFFFF 83.33%,#000000 100%)', name: 'Multi' }
+        'black': { hex: '#0A0A0A', name: 'Black' },      // (10, 10, 10)
+        'white': { hex: '#F5F5EB', name: 'White' },      // (245, 245, 235)
+        'yellow': { hex: '#F5D232', name: 'Yellow' },     // (245, 210, 50)
+        'red': { hex: '#BE3C37', name: 'Red' },          // (190, 60, 55)
+        'blue': { hex: '#2D4BA0', name: 'Blue' },        // (45, 75, 160)
+        'green': { hex: '#378C55', name: 'Green' },      // (55, 140, 85)
+        'multi': { hex: 'linear-gradient(90deg,#0A0A0A 0%,#F5D232 16.66%,#BE3C37 33.33%,#2D4BA0 50%,#378C55 66.66%,#F5F5EB 83.33%,#0A0A0A 100%)', name: 'Multi' }
     }
 };
 

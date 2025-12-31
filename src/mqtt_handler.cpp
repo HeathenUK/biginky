@@ -1211,6 +1211,7 @@ static void publishMQTTThumbnailInternalImpl() {
     unsigned char* pngBuffer = pngData;
     
     size_t pngSize_u32 = (size_t)pngSize;
+    // Base64 encoding: 4 output bytes for every 3 input bytes, rounded up
     size_t base64Size = ((pngSize_u32 + 2) / 3) * 4 + 1;
     char* base64Buffer = (char*)malloc(base64Size);
     if (base64Buffer == nullptr) {
@@ -1238,7 +1239,11 @@ static void publishMQTTThumbnailInternalImpl() {
     base64Buffer[base64Idx] = '\0';
     lodepng_free(pngBuffer);
     
-    size_t jsonSize = 55 + base64Idx + 1;
+    // Calculate JSON size more accurately:
+    // {"width":1600,"height":1200,"format":"png","palette":true,"data":"<base64>"}
+    // Overhead: ~70 bytes for JSON structure + width/height digits
+    // Add 20% safety margin for base64 length variations
+    size_t jsonSize = 70 + base64Idx + (base64Idx / 5) + 1;  // +20% margin
     char* jsonBuffer = (char*)malloc(jsonSize);
     if (jsonBuffer == nullptr) {
         Serial.println("ERROR: Failed to allocate JSON buffer");

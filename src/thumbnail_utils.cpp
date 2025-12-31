@@ -17,6 +17,7 @@
 #include "mqtt_handler.h"  // For processPngEncodeWork
 #include "lodepng_psram.h"  // For lodepng_free (must be before lodepng.h)
 #include "lodepng.h"  // For lodepng_error_text
+#include "EL133UF1_Color.h"  // For spectra6Color global instance
 
 // External dependencies from main file
 extern bool sdCardMounted;
@@ -286,92 +287,141 @@ String generateThumbnailFromImageFile(const String& imagePath) {
     const int thumbWidth = srcWidth / 4;   // Quarter width
     const int thumbHeight = srcHeight / 4;  // Quarter height
     
-    size_t thumbSize = thumbWidth * thumbHeight * 3;
-    // PPA requires cache-line aligned buffers (64 bytes on ESP32-P4)
-    // Round up to cache line size for alignment
-    size_t alignedThumbSize = (thumbSize + 63) & ~63;
-    uint8_t* thumbBuffer = (uint8_t*)heap_caps_aligned_alloc(64, alignedThumbSize, MALLOC_CAP_SPIRAM);
-    if (thumbBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate aligned PSRAM for thumbnail buffer");
+    Serial.printf("Converting full-size image to palette indices first (better quality)...\n");
+    
+    // Map Spectra color codes to palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 5=BLUE, 6=GREEN
+    // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
+    static const uint8_t spectraToPaletteLUT[] = {
+        0,  // 0 → 0 (BLACK)
+        1,  // 1 → 1 (WHITE)
+        2,  // 2 → 2 (YELLOW)
+        3,  // 3 → 3 (RED)
+        1,  // 4 → 1 (WHITE, invalid e-ink color)
+        4,  // 5 → 4 (BLUE)
+        5,  // 6 → 5 (GREEN)
+        1   // 7 → 1 (WHITE, invalid e-ink color)
+    };
+    
+    // Ensure LUT is built if using custom palette
+    if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+        spectra6Color.buildLUT();
+    }
+    
+    // Convert full-size RGB to palette indices first (better quality than scaling then converting)
+    uint32_t convertStart = millis();
+    size_t paletteSize = srcWidth * srcHeight;
+    uint8_t* paletteBuffer = (uint8_t*)hal_psram_malloc(paletteSize);
+    if (paletteBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate PSRAM for palette buffer");
         heap_caps_free(rgbBuffer);
         return "";
     }
-    // Clear the padding area
-    memset(thumbBuffer + thumbSize, 0, alignedThumbSize - thumbSize);
     
-    // Try PPA-accelerated scaling first
-    bool usedPPA = false;
-    if (hal_image_init() && hal_image_hw_accel_available()) {
-        // Prepare image descriptors for PPA scaling
-        image_desc_t srcDesc = {
-            .buffer = rgbBuffer,
-            .width = srcWidth,
-            .height = srcHeight,
-            .stride = srcWidth * 3,  // RGB888: 3 bytes per pixel
-            .format = IMAGE_FORMAT_RGB888
-        };
+    for (size_t i = 0; i < paletteSize; i++) {
+        uint8_t r = rgbBuffer[i * 3 + 0];
+        uint8_t g = rgbBuffer[i * 3 + 1];
+        uint8_t b = rgbBuffer[i * 3 + 2];
         
-        image_desc_t dstDesc = {
-            .buffer = thumbBuffer,
-            .width = thumbWidth,
-            .height = thumbHeight,
-            .stride = thumbWidth * 3,  // RGB888: 3 bytes per pixel
-            .format = IMAGE_FORMAT_RGB888
-        };
-        
-        Serial.printf("Attempting PPA-accelerated scaling: %ux%u -> %ux%u\n", 
-                     srcWidth, srcHeight, thumbWidth, thumbHeight);
-        
-        uint32_t scaleStart = millis();
-        usedPPA = hal_image_scale(&srcDesc, &dstDesc, true);  // Blocking
-        uint32_t scaleTime = millis() - scaleStart;
-        
-        if (usedPPA) {
-            Serial.printf("PPA scaling successful: %lu ms (hardware-accelerated)\n", scaleTime);
-        } else {
-            Serial.printf("PPA scaling failed, falling back to software: %lu ms\n", scaleTime);
-        }
+        // Map RGB to Spectra color code, then to palette index
+        uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
+        paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
     }
     
-    // Fall back to software scaling if PPA failed
-    if (!usedPPA) {
-        Serial.println("Using software scaling (averaging 4x4 blocks)...");
-        const int scale = 4;
-        
-        for (int ty = 0; ty < thumbHeight; ty++) {
-            for (int tx = 0; tx < thumbWidth; tx++) {
-                int sx = tx * scale;
-                int sy = ty * scale;
-                
-                uint32_t rSum = 0, gSum = 0, bSum = 0;
-                int count = 0;
-                
-                for (int dy = 0; dy < scale && (sy + dy) < (int)srcHeight; dy++) {
-                    for (int dx = 0; dx < scale && (sx + dx) < (int)srcWidth; dx++) {
-                        int srcIdx = ((sy + dy) * srcWidth + (sx + dx)) * 3;
-                        if (srcIdx + 2 < (int)(srcWidth * srcHeight * 3)) {
-                            rSum += rgbBuffer[srcIdx + 0];
-                            gSum += rgbBuffer[srcIdx + 1];
-                            bSum += rgbBuffer[srcIdx + 2];
-                            count++;
+    uint32_t convertTime = millis() - convertStart;
+    Serial.printf("RGB to palette conversion completed: %lu ms (processing %zu pixels)\n", 
+                  convertTime, paletteSize);
+    
+    // Free RGB buffer (no longer needed)
+    heap_caps_free(rgbBuffer);
+    rgbBuffer = nullptr;
+    
+    // Now scale palette indices (similar to framebuffer thumbnail approach)
+    // This preserves quality better than scaling RGB then converting
+    size_t thumbPaletteSize = thumbWidth * thumbHeight;
+    uint8_t* thumbPaletteBuffer = (uint8_t*)hal_psram_malloc(thumbPaletteSize);
+    if (thumbPaletteBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate PSRAM for thumbnail palette buffer");
+        hal_psram_free(paletteBuffer);
+        return "";
+    }
+    
+    Serial.println("Scaling palette indices (mode of 4x4 blocks)...");
+    uint32_t scaleStart = millis();
+    const int scale = 4;
+    
+    for (int ty = 0; ty < thumbHeight; ty++) {
+        for (int tx = 0; tx < thumbWidth; tx++) {
+            int sx = tx * scale;
+            int sy = ty * scale;
+            
+            // Count palette indices in 4x4 block (mode/majority vote)
+            uint8_t colorCounts[6] = {0};
+            
+            for (int dy = 0; dy < scale && (sy + dy) < (int)srcHeight; dy++) {
+                for (int dx = 0; dx < scale && (sx + dx) < (int)srcWidth; dx++) {
+                    int srcIdx = (sy + dy) * srcWidth + (sx + dx);
+                    if (srcIdx < (int)paletteSize) {
+                        uint8_t paletteIdx = paletteBuffer[srcIdx];
+                        if (paletteIdx < 6) {
+                            colorCounts[paletteIdx]++;
                         }
                     }
                 }
-                
-                if (count > 0) {
-                    int thumbIdx = (ty * thumbWidth + tx) * 3;
-                    // PNG encoder (lodepng) expects RGB888 format (R, G, B order)
-                    thumbBuffer[thumbIdx + 0] = rSum / count;  // R
-                    thumbBuffer[thumbIdx + 1] = gSum / count;  // G
-                    thumbBuffer[thumbIdx + 2] = bSum / count;  // B
+            }
+            
+            // Find most common color (mode)
+            uint8_t bestColor = 1;  // Default to white
+            uint8_t maxCount = 0;
+            for (int i = 0; i < 6; i++) {
+                if (colorCounts[i] > maxCount) {
+                    maxCount = colorCounts[i];
+                    bestColor = i;
                 }
             }
+            
+            thumbPaletteBuffer[ty * thumbWidth + tx] = bestColor;
         }
     }
     
-    // Free RGB buffer (use aligned free since we used aligned alloc)
-    heap_caps_free(rgbBuffer);
-    rgbBuffer = nullptr;
+    uint32_t scaleTime = millis() - scaleStart;
+    Serial.printf("Palette scaling completed: %lu ms\n", scaleTime);
+    
+    // Free full-size palette buffer
+    hal_psram_free(paletteBuffer);
+    paletteBuffer = nullptr;
+    
+    // Convert palette indices to RGB for processPngEncodeWork (it expects RGB input)
+    // Actually, wait - we should modify processPngEncodeWork to accept palette indices directly
+    // But for now, convert back to RGB
+    size_t thumbSize = thumbWidth * thumbHeight * 3;
+    size_t alignedThumbSize = (thumbSize + 63) & ~63;
+    uint8_t* thumbBuffer = (uint8_t*)heap_caps_aligned_alloc(64, alignedThumbSize, MALLOC_CAP_SPIRAM);
+    if (thumbBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate aligned PSRAM for thumbnail RGB buffer");
+        hal_psram_free(thumbPaletteBuffer);
+        return "";
+    }
+    
+    // Palette RGB values (matching lodepng palette)
+    static const uint8_t paletteRGB[6][3] = {
+        {10, 10, 10},        // 0: BLACK
+        {245, 245, 235},     // 1: WHITE
+        {245, 210, 50},      // 2: YELLOW
+        {190, 60, 55},       // 3: RED
+        {45, 75, 160},       // 4: BLUE
+        {55, 140, 85}        // 5: GREEN
+    };
+    
+    for (size_t i = 0; i < thumbPaletteSize; i++) {
+        uint8_t paletteIdx = thumbPaletteBuffer[i];
+        if (paletteIdx >= 6) paletteIdx = 1;  // Default to white
+        thumbBuffer[i * 3 + 0] = paletteRGB[paletteIdx][0];
+        thumbBuffer[i * 3 + 1] = paletteRGB[paletteIdx][1];
+        thumbBuffer[i * 3 + 2] = paletteRGB[paletteIdx][2];
+    }
+    
+    hal_psram_free(thumbPaletteBuffer);
+    thumbPaletteBuffer = nullptr;
     
     // Encode to PNG using processPngEncodeWork directly (we're already on Core 1)
     // This matches the approach used in Canvas save, but calls processPngEncodeWork directly

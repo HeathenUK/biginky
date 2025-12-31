@@ -1503,9 +1503,11 @@ function initializeCanvas() {
         // Set up event listeners
         canvas.addEventListener('mousedown', startDraw);
         canvas.addEventListener('mousemove', (e) => {
+            console.log('[DEBUG] mousemove event, isDrawing:', isDrawing, 'draggingElement:', draggingElement);
             if (!isDrawing) {
                 checkHover(e);
             } else {
+                console.log('[DEBUG] Calling draw() from mousemove');
                 draw(e);
             }
         });

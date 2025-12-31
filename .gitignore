@@ -53,11 +53,9 @@ __pycache__/
 # Uncomment if you don't want to commit generated files:
 # src/web_assets.h
 
-# ESLint configuration and Node.js dependencies (development tools)
-docs/eslint.config.js
+# ESLint cache and Node.js dependencies (development tools)
+.eslintcache
 node_modules/
-package.json
-package-lock.json
 
 # PlatformIO managed components (auto-downloaded by ESP-IDF)
 managed_components/

@@ -9631,38 +9631,6 @@ void drawTestPattern() {
     display.drawText(x3, h/2 + 80, line3, EL133UF1_BLACK, EL133UF1_WHITE, textSize);
 }
 
-void drawTTFTest() {
-    Serial.println("Drawing TTF test...");
-    
-    if (!ttf.loadFont(dancing_otf, dancing_otf_len)) {
-        Serial.println("ERROR: Failed to load TTF font!");
-        return;
-    }
-    
-    // Clear display
-    display.clear(EL133UF1_WHITE);
-    
-    // Draw TTF text at various sizes
-    ttf.drawTextAligned(display.width() / 2, 100, "ESP32-P4 + EL133UF1", 72.0,
-                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_TOP);
-    
-    ttf.drawTextAligned(display.width() / 2, 250, "Spectra 6 E-Ink Display", 48.0,
-                        EL133UF1_BLUE, ALIGN_CENTER, ALIGN_TOP);
-    
-    // Draw a large time display
-    ttf.drawTextAligned(display.width() / 2, display.height() / 2, "12:34:56", 160.0,
-                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
-    
-    // Draw some info at bottom
-    char buf[64];
-    snprintf(buf, sizeof(buf), "PSRAM: %lu KB | Heap: %lu KB", 
-             (unsigned long)(hal_psram_get_size() / 1024),
-             (unsigned long)(hal_heap_get_free() / 1024));
-    
-    ttf.drawTextAligned(display.width() / 2, display.height() - 50, buf, 32.0,
-                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_BOTTOM);
-}
-
 // ============================================================================
 // Setup and Loop
 // ============================================================================

@@ -33,6 +33,12 @@ button:disabled{background:#666;cursor:not-allowed;opacity:0.6;}
 .flex-row{display:flex;flex-wrap:wrap;gap:15px;align-items:flex-end;margin-top:15px;}
 .flex-item{flex:1;min-width:150px;}
 button.flex-shrink{flex-shrink:0;margin-top:0;}
+/* Canvas controls - optimized desktop layout */
+.canvas-controls-wrapper{display:flex;flex-direction:column;gap:12px;}
+.canvas-controls-primary{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;}
+.canvas-tools-group{flex:0 0 auto;}
+.canvas-colors-group{display:flex;gap:12px;flex-wrap:wrap;flex:1 1 auto;align-items:flex-start;}
+.canvas-controls-secondary{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;}
 .tool-btn{background:#333;border:2px solid #555;color:#e0e0e0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
 .tool-btn:hover{background:#444;border-color:#666;}
 .tool-btn.active{background:#4CAF50;border-color:#45a049;color:white;}
@@ -92,6 +98,14 @@ button.flex-shrink{width:100%;margin-top:10px;}
 /* Tool buttons - larger on mobile */
 .tool-btn{width:48px!important;height:48px!important;min-width:48px!important;min-height:48px!important;}
 .tool-btn-container{display:flex;gap:12px;flex-wrap:wrap;}
+/* Canvas controls - stack on mobile */
+.canvas-controls-wrapper{flex-direction:column!important;}
+.canvas-controls-primary{flex-direction:column!important;gap:15px!important;}
+.canvas-controls-secondary{flex-direction:column!important;gap:15px!important;}
+.canvas-tools-group{width:100%;}
+.canvas-colors-group{width:100%;flex-direction:column!important;gap:15px!important;}
+.canvas-colors-group > div{width:100%!important;}
+.canvas-controls-secondary > div{width:100%!important;}
 }
 @media (max-width:480px){
 body{padding:8px;}
@@ -286,27 +300,29 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
-<div style="margin-bottom:15px;">
-<label style="display:block;margin-bottom:8px;">Tool:</label>
-<div class="tool-btn-container" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">
-<button onclick="setTool('brush')" id="tool-brush" class="tool-btn active" title="Brush" style="width:44px;height:44px;padding:8px;font-size:20px;">🖌️</button>
-<button onclick="setTool('text')" id="tool-text" class="tool-btn" title="Text" style="width:44px;height:44px;padding:8px;font-size:20px;">T</button>
-<button onclick="setTool('fill')" id="tool-fill" class="tool-btn" title="Fill" style="width:44px;height:44px;padding:8px;font-size:20px;">🪣</button>
-<button onclick="setTool('rectangle')" id="tool-rectangle" class="tool-btn" title="Rectangle" style="width:44px;height:44px;padding:8px;font-size:20px;">▭</button>
-<button onclick="setTool('roundedRect')" id="tool-roundedRect" class="tool-btn" title="Rounded Rectangle" style="width:44px;height:44px;padding:8px;font-size:20px;">▢</button>
-<button onclick="setTool('circle')" id="tool-circle" class="tool-btn" title="Circle" style="width:44px;height:44px;padding:8px;font-size:20px;">○</button>
-<button onclick="setTool('line')" id="tool-line" class="tool-btn" title="Line" style="width:44px;height:44px;padding:8px;font-size:20px;">/</button>
-<button onclick="setTool('eraser')" id="tool-eraser" class="tool-btn" title="Eraser" style="width:44px;height:44px;padding:8px;font-size:20px;">🧹</button>
-<button onclick="setTool('eyedropper')" id="tool-eyedropper" class="tool-btn" title="Eyedropper" style="width:44px;height:44px;padding:8px;font-size:20px;">👁️</button>
+<div class="canvas-controls-wrapper" style="margin-bottom:15px;">
+<div class="canvas-controls-row canvas-controls-primary" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;margin-bottom:12px;">
+<div class="canvas-tools-group" style="flex:0 0 auto;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Tool:</label>
+<div class="tool-btn-container" style="display:flex;gap:6px;flex-wrap:wrap;">
+<button onclick="setTool('brush')" id="tool-brush" class="tool-btn active" title="Brush" style="width:40px;height:40px;padding:6px;font-size:18px;">🖌️</button>
+<button onclick="setTool('text')" id="tool-text" class="tool-btn" title="Text" style="width:40px;height:40px;padding:6px;font-size:18px;">T</button>
+<button onclick="setTool('fill')" id="tool-fill" class="tool-btn" title="Fill" style="width:40px;height:40px;padding:6px;font-size:18px;">🪣</button>
+<button onclick="setTool('rectangle')" id="tool-rectangle" class="tool-btn" title="Rectangle" style="width:40px;height:40px;padding:6px;font-size:18px;">▭</button>
+<button onclick="setTool('roundedRect')" id="tool-roundedRect" class="tool-btn" title="Rounded Rectangle" style="width:40px;height:40px;padding:6px;font-size:18px;">▢</button>
+<button onclick="setTool('circle')" id="tool-circle" class="tool-btn" title="Circle" style="width:40px;height:40px;padding:6px;font-size:18px;">○</button>
+<button onclick="setTool('line')" id="tool-line" class="tool-btn" title="Line" style="width:40px;height:40px;padding:6px;font-size:18px;">/</button>
+<button onclick="setTool('eraser')" id="tool-eraser" class="tool-btn" title="Eraser" style="width:40px;height:40px;padding:6px;font-size:18px;">🧹</button>
+<button onclick="setTool('eyedropper')" id="tool-eyedropper" class="tool-btn" title="Eyedropper" style="width:40px;height:40px;padding:6px;font-size:18px;">👁️</button>
 </div>
 <input type="hidden" id="drawTool" value="brush">
 </div>
-<div class="flex-row" style="margin-bottom:15px;">
-<div class="flex-item" id="colorContainer" style="min-width:150px;position:relative;">
-<label id="colorLabel">Colour:</label>
-<button type="button" id="drawColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select color">
-<span id="drawColorIndicator" style="display:inline-block;width:32px;height:32px;background:#1A1A1A;border:2px solid #333;margin:2px;"></span>
-<span id="drawColorLabel" style="margin-left:8px;">Black</span>
+<div class="canvas-colors-group" style="flex:0 0 auto;display:flex;gap:12px;flex-wrap:wrap;">
+<div id="colorContainer" style="width:140px;position:relative;flex-shrink:0;">
+<label id="colorLabel" style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Colour:</label>
+<button type="button" id="drawColorBtn" class="color-preview-btn" style="width:100%;height:38px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px 6px;" title="Click to select color">
+<span id="drawColorIndicator" style="display:inline-block;width:28px;height:28px;background:#1A1A1A;border:2px solid #333;margin:2px;flex-shrink:0;"></span>
+<span id="drawColorLabel" style="margin-left:6px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Black</span>
 </button>
 <div id="drawColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;top:100%;">
 <button class="palette-color-btn active" data-color="0" style="width:32px;height:32px;background:#1A1A1A;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
@@ -318,11 +334,11 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <input type="hidden" id="drawColor" value="0">
 </div>
-<div class="flex-item" id="fillColorContainer" style="min-width:150px;display:none;position:relative;">
-<label>Fill Colour:</label>
-<button type="button" id="fillColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select fill color">
-<span id="fillColorIndicator" style="display:inline-block;width:32px;height:32px;background:#F2F1E6;border:2px solid #333;margin:2px;"></span>
-<span id="fillColorLabel" style="margin-left:8px;">White</span>
+<div id="fillColorContainer" style="width:140px;display:none;position:relative;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Fill:</label>
+<button type="button" id="fillColorBtn" class="color-preview-btn" style="width:100%;height:38px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px 6px;" title="Click to select fill color">
+<span id="fillColorIndicator" style="display:inline-block;width:28px;height:28px;background:#F2F1E6;border:2px solid #333;margin:2px;flex-shrink:0;"></span>
+<span id="fillColorLabel" style="margin-left:6px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">White</span>
 </button>
 <div id="fillColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;top:100%;">
 <button class="palette-color-btn" data-color="transparent" style="width:32px;height:32px;background:linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);background-size:8px 8px;background-position:0 0, 0 4px, 4px -4px, -4px 0px;border:2px solid #555;cursor:pointer;margin:2px;" title="Transparent"></button>
@@ -335,11 +351,11 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <input type="hidden" id="fillColor" value="1">
 </div>
-<div class="flex-item" id="outlineColorContainer" style="min-width:150px;display:none;position:relative;">
-<label>Outline Colour:</label>
-<button type="button" id="outlineColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select outline color">
-<span id="outlineColorIndicator" style="display:inline-block;width:32px;height:32px;background:#1A1A1A;border:2px solid #333;margin:2px;"></span>
-<span id="outlineColorLabel" style="margin-left:8px;">Black</span>
+<div id="outlineColorContainer" style="width:140px;display:none;position:relative;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Outline:</label>
+<button type="button" id="outlineColorBtn" class="color-preview-btn" style="width:100%;height:38px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px 6px;" title="Click to select outline color">
+<span id="outlineColorIndicator" style="display:inline-block;width:28px;height:28px;background:#1A1A1A;border:2px solid #333;margin:2px;flex-shrink:0;"></span>
+<span id="outlineColorLabel" style="margin-left:6px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Black</span>
 </button>
 <div id="outlineColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;margin-top:4px;top:100%;">
 <button class="palette-color-btn" data-color="transparent" style="width:32px;height:32px;background:linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);background-size:8px 8px;background-position:0 0, 0 4px, 4px -4px, -4px 0px;border:2px solid #555;cursor:pointer;margin:2px;" title="Transparent"></button>
@@ -352,24 +368,33 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <input type="hidden" id="outlineColor" value="0">
 </div>
-<div class="flex-item" id="brushSizeContainer" style="min-width:120px;display:none;">
-<label>Brush Size:</label>
-<input type="range" id="brushSize" min="1" max="50" value="2" style="width:100%;">
-<span id="brushSizeDisplay">2px</span>
 </div>
-<div class="flex-item" id="lineWidthContainer" style="min-width:120px;display:none;">
-<label>Line Width:</label>
-<input type="range" id="lineWidth" min="1" max="50" value="2" style="width:100%;">
-<span id="lineWidthDisplay">2px</span>
 </div>
-<div class="flex-item" id="roundedRectRadiusContainer" style="min-width:120px;display:none;">
-<label>Corner Radius:</label>
-<input type="range" id="roundedRectRadius" min="0" max="100" value="20" style="width:100%;">
-<span id="roundedRectRadiusDisplay">20px</span>
+<div class="canvas-controls-row canvas-controls-secondary" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;">
+<div id="brushSizeContainer" style="width:180px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Brush Size:</label>
+<div style="display:flex;align-items:center;gap:8px;">
+<input type="range" id="brushSize" min="1" max="50" value="2" style="flex:1;min-width:0;">
+<span id="brushSizeDisplay" style="flex-shrink:0;min-width:50px;text-align:right;font-size:13px;">2px</span>
 </div>
-<div class="flex-item" id="textToolOptions" style="min-width:150px;display:none;">
-<label>Font Size:</label>
-<select id="textFontSize" style="width:100%;">
+</div>
+<div id="lineWidthContainer" style="width:180px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Line Width:</label>
+<div style="display:flex;align-items:center;gap:8px;">
+<input type="range" id="lineWidth" min="1" max="50" value="2" style="flex:1;min-width:0;">
+<span id="lineWidthDisplay" style="flex-shrink:0;min-width:50px;text-align:right;font-size:13px;">2px</span>
+</div>
+</div>
+<div id="roundedRectRadiusContainer" style="width:180px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Corner Radius:</label>
+<div style="display:flex;align-items:center;gap:8px;">
+<input type="range" id="roundedRectRadius" min="0" max="100" value="20" style="flex:1;min-width:0;">
+<span id="roundedRectRadiusDisplay" style="flex-shrink:0;min-width:50px;text-align:right;font-size:13px;">20px</span>
+</div>
+</div>
+<div id="textToolOptions" style="width:140px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Font Size:</label>
+<select id="textFontSize" style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:13px;">
 <option value="12">12px</option>
 <option value="16">16px</option>
 <option value="20">20px</option>
@@ -387,9 +412,9 @@ table th,table td{padding:6px;font-size:12px;}
 <option value="512">512px</option>
 </select>
 </div>
-<div class="flex-item" id="textFontFamilyContainer" style="min-width:150px;display:none;">
-<label>Font:</label>
-<select id="textFontFamily" style="width:100%;">
+<div id="textFontFamilyContainer" style="width:160px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Font:</label>
+<select id="textFontFamily" style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:13px;">
 <optgroup label="System Fonts">
 <option value="Arial" selected>Arial</option>
 <option value="Times New Roman">Times New Roman</option>
@@ -421,17 +446,18 @@ table th,table td{padding:6px;font-size:12px;}
 </optgroup>
 </select>
 </div>
-<div class="flex-item" id="textAlignContainer" style="min-width:120px;display:none;">
-<label>Alignment:</label>
-<select id="textAlign" style="width:100%;">
+<div id="textAlignContainer" style="width:140px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Alignment:</label>
+<select id="textAlign" style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:13px;">
 <option value="left" selected>Left</option>
 <option value="center">Center</option>
 <option value="right">Right</option>
 </select>
 </div>
-<div class="flex-item" id="textInputContainer" style="min-width:200px;display:none;">
-<label>Text:</label>
-<input type="text" id="canvasTextInput" placeholder="Enter text..." style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
+<div id="textInputContainer" style="width:200px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Text:</label>
+<input type="text" id="canvasTextInput" placeholder="Enter text..." style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:13px;">
+</div>
 </div>
 </div>
 <div class="canvas-actions-wrapper" style="margin-bottom:10px;">

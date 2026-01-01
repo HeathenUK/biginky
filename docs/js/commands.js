@@ -56,8 +56,8 @@ async function sendCanvasToDisplay() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
-    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
+    // Actual e-ink display palette colors (order: Black, White, Yellow, Red, Blue, Green)
+    const einkColors = [[26,26,26],[242,241,230],[240,224,80],[160,32,32],[80,128,184],[96,128,80]];
     const einkColorValues = [0,1,2,3,5,6];
     
     function findClosestColorIdx(r, g, b) {
@@ -236,8 +236,8 @@ async function sendCanvasToDisplayAndSave() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
-    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
+    // Actual e-ink display palette colors (order: Black, White, Yellow, Red, Blue, Green)
+    const einkColors = [[26,26,26],[242,241,230],[240,224,80],[160,32,32],[80,128,184],[96,128,80]];
     const einkColorValues = [0,1,2,3,5,6];
     
     function findClosestColorIdx(r, g, b) {
@@ -425,8 +425,8 @@ async function sendCanvasToSave() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
-    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
+    // Actual e-ink display palette colors (order: Black, White, Yellow, Red, Blue, Green)
+    const einkColors = [[26,26,26],[242,241,230],[240,224,80],[160,32,32],[80,128,184],[96,128,80]];
     const einkColorValues = [0,1,2,3,5,6];
     
     function findClosestColorIdx(r, g, b) {
@@ -666,8 +666,8 @@ async function sendCanvasAction() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
     
-        // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
-    const einkColors = [[10,10,10],[245,245,235],[245,210,50],[190,60,55],[45,75,160],[55,140,85]];
+        // Actual e-ink display palette colors (order: Black, White, Yellow, Red, Blue, Green)
+    const einkColors = [[26,26,26],[242,241,230],[240,224,80],[160,32,32],[80,128,184],[96,128,80]];
         const einkColorValues = [0,1,2,3,5,6];
         
         function findClosestColorIdx(r, g, b) {

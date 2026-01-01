@@ -25,18 +25,18 @@ let dragOffsets = new Map(); // Map of element -> drag offset
 let pendingImageData = null; // Stores {img, drawX, drawY, drawWidth, drawHeight} when image is loaded
 
 const colorMap = {
-    // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
-    0: '#0A0A0A',  // Black (10, 10, 10)
-    1: '#F5F5EB',  // White (245, 245, 235)
-    2: '#F5D232',  // Yellow (245, 210, 50)
-    3: '#BE3C37',  // Red (190, 60, 55)
-    5: '#2D4BA0',  // Blue (45, 75, 160)
-    6: '#378C55'   // Green (55, 140, 85)
+    // Actual e-ink display palette colors
+    0: '#1A1A1A',  // Black (26, 26, 26)
+    1: '#F2F1E6',  // White (242, 241, 230)
+    2: '#F0E050',  // Yellow (240, 224, 80)
+    3: '#A02020',  // Red (160, 32, 32)
+    5: '#5080B8',  // Blue (80, 128, 184)
+    6: '#608050'   // Green (96, 128, 80)
 };
 
 function getDrawColor() {
     const val = parseInt(currentDrawColor);
-    return colorMap[val] || '#0A0A0A';
+    return colorMap[val] || '#1A1A1A';
 }
 
 function getDrawColorValue() {
@@ -53,7 +53,7 @@ function getFillColor() {
         return 'transparent';
     }
     const numVal = parseInt(currentFillColor);
-    return colorMap[numVal] || '#F5F5EB';
+    return colorMap[numVal] || '#F2F1E6';
 }
 
 function getFillColorValue() {
@@ -70,7 +70,7 @@ function getOutlineColor() {
         return 'transparent';
     }
     const numVal = parseInt(currentOutlineColor);
-    return colorMap[numVal] || '#0A0A0A';
+    return colorMap[numVal] || '#1A1A1A';
 }
 
 function getOutlineColorValue() {
@@ -603,8 +603,9 @@ function adjustImageForEink(imageData, brightnessPercent = 10, contrastPercent =
     return imageData;
 }
 
-// E-ink color palette and color matching function
-const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+// E-ink color palette - actual display colors
+// Order: Black, White, Yellow, Red, Blue, Green (matching firmware indices 0, 1, 2, 3, 5, 6)
+const einkColors = [[26,26,26],[242,241,230],[240,224,80],[160,32,32],[80,128,184],[96,128,80]];
 
 // Precompute luma values for palette colors
 // Luma formula: (r * 250 + g * 350 + b * 400) / (255.0 * 1000)
@@ -759,7 +760,7 @@ function applyImageProcessing() {
     const enableDither = ditherCheckbox ? ditherCheckbox.checked : true;
     
     // Redraw the original image first
-    ctx.fillStyle = '#F5F5EB';
+    ctx.fillStyle = '#F2F1E6';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(pendingImageData.img, pendingImageData.drawX, pendingImageData.drawY, 
                   pendingImageData.drawWidth, pendingImageData.drawHeight);
@@ -1175,7 +1176,7 @@ function draw(e) {
         if (tool === 'brush' || tool === 'eraser') {
         const x = coords.x;
         const y = coords.y;
-        ctx.strokeStyle = tool === 'eraser' ? '#F5F5EB' : getDrawColor();
+        ctx.strokeStyle = tool === 'eraser' ? '#F2F1E6' : getDrawColor();
         ctx.lineWidth = getBrushSize();
         ctx.lineCap = 'round';
         ctx.beginPath();
@@ -1297,7 +1298,7 @@ if (document.readyState === 'loading') {
 function clearCanvas() {
     if (!canvas || !ctx) return;
     saveCanvasState();
-    ctx.fillStyle = '#F5F5EB';
+    ctx.fillStyle = '#F2F1E6';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     pendingElements = [];
     draggingElements = [];
@@ -1363,7 +1364,7 @@ function handleImageFileSelect(event) {
             }
             
             // Clear canvas and draw image centered (unprocessed)
-            ctx.fillStyle = '#F5F5EB';
+            ctx.fillStyle = '#F2F1E6';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
             
@@ -1427,7 +1428,7 @@ function loadFramebufferToCanvas() {
             dragOffsets.clear();
             
             // Clear canvas
-            ctx.fillStyle = '#F5F5EB';
+            ctx.fillStyle = '#F2F1E6';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             
             // Draw framebuffer at full size (canvas is 1600x1200, framebuffer should be 1600x1200)

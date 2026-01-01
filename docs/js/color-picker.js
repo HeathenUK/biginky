@@ -4,25 +4,25 @@
 
 // Color definitions - supports both numeric (canvas) and string (text) color values
 const colorDefinitions = {
-    // Numeric colors (for canvas drawing) - matching firmware palette from EL133UF1_Color.cpp
+    // Numeric colors (for canvas drawing) - actual e-ink display palette
     numeric: {
-        '0': { hex: '#0A0A0A', name: 'Black' },      // (10, 10, 10)
-        '1': { hex: '#F5F5EB', name: 'White' },      // (245, 245, 235)
-        '2': { hex: '#F5D232', name: 'Yellow' },      // (245, 210, 50)
-        '3': { hex: '#BE3C37', name: 'Red' },         // (190, 60, 55)
-        '5': { hex: '#2D4BA0', name: 'Blue' },        // (45, 75, 160)
-        '6': { hex: '#378C55', name: 'Green' },       // (55, 140, 85)
+        '0': { hex: '#1A1A1A', name: 'Black' },      // (26, 26, 26)
+        '1': { hex: '#F2F1E6', name: 'White' },      // (242, 241, 230)
+        '2': { hex: '#F0E050', name: 'Yellow' },     // (240, 224, 80)
+        '3': { hex: '#A02020', name: 'Red' },        // (160, 32, 32)
+        '5': { hex: '#5080B8', name: 'Blue' },       // (80, 128, 184)
+        '6': { hex: '#608050', name: 'Green' },      // (96, 128, 80)
         'transparent': { hex: 'transparent', name: 'Transparent', gradient: 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)' }
     },
-    // String colors (for text display) - matching firmware palette from EL133UF1_Color.cpp
+    // String colors (for text display) - actual e-ink display palette
     string: {
-        'black': { hex: '#0A0A0A', name: 'Black' },      // (10, 10, 10)
-        'white': { hex: '#F5F5EB', name: 'White' },      // (245, 245, 235)
-        'yellow': { hex: '#F5D232', name: 'Yellow' },     // (245, 210, 50)
-        'red': { hex: '#BE3C37', name: 'Red' },          // (190, 60, 55)
-        'blue': { hex: '#2D4BA0', name: 'Blue' },        // (45, 75, 160)
-        'green': { hex: '#378C55', name: 'Green' },      // (55, 140, 85)
-        'multi': { hex: 'linear-gradient(90deg,#0A0A0A 0%,#F5D232 16.66%,#BE3C37 33.33%,#2D4BA0 50%,#378C55 66.66%,#F5F5EB 83.33%,#0A0A0A 100%)', name: 'Multi' }
+        'black': { hex: '#1A1A1A', name: 'Black' },      // (26, 26, 26)
+        'white': { hex: '#F2F1E6', name: 'White' },      // (242, 241, 230)
+        'yellow': { hex: '#F0E050', name: 'Yellow' },    // (240, 224, 80)
+        'red': { hex: '#A02020', name: 'Red' },          // (160, 32, 32)
+        'blue': { hex: '#5080B8', name: 'Blue' },        // (80, 128, 184)
+        'green': { hex: '#608050', name: 'Green' },      // (96, 128, 80)
+        'multi': { hex: 'linear-gradient(90deg,#1A1A1A 0%,#F0E050 16.66%,#A02020 33.33%,#5080B8 50%,#608050 66.66%,#F2F1E6 83.33%,#1A1A1A 100%)', name: 'Multi' }
     }
 };
 

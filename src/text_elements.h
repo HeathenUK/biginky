@@ -18,7 +18,7 @@ class TextPlacementAnalyzer;
  */
 class TimeDateElement : public TextContentElement {
 public:
-    TimeDateElement(EL133UF1_TTF* ttf, const char* timeText, const char* dateText);
+    TimeDateElement(EL133UF1_TTF* ttf, const char* timeText, const char* dayText, const char* dateText);
     
     void getDimensions(int16_t& width, int16_t& height) override;
     void draw(int16_t centerX, int16_t centerY) override;
@@ -29,15 +29,19 @@ public:
     void getColors(uint8_t& textColor, uint8_t& outlineColor) const override;
     
     void setTimeText(const char* text) { _timeText = text; }
+    void setDayText(const char* text) { _dayText = text; }
     void setDateText(const char* text) { _dateText = text; }
     
 private:
     EL133UF1_TTF* _ttf;
     const char* _timeText;
+    const char* _dayText;
     const char* _dateText;
     float _timeFontSize;
+    float _dayFontSize;
     float _dateFontSize;
     int16_t _timeOutline;
+    int16_t _dayOutline;
     int16_t _dateOutline;
     int16_t _gapBetween;
     float _sizeScale;
@@ -45,6 +49,9 @@ private:
     void recalculateDimensions();
     int16_t _cachedWidth;
     int16_t _cachedHeight;
+    int16_t _cachedTimeH;
+    int16_t _cachedDayH;
+    int16_t _cachedDateH;
 };
 
 /**

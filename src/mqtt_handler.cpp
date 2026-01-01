@@ -461,17 +461,31 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                     String jsonMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);
                     Serial.printf("Received retained JSON message (web interface) on topic %s: %d bytes\n", mqttMessageTopic, mqttMessageBufferUsed);
                     
-                    String command = extractJsonStringField(jsonMessage, "command");
-                    if (command.length() > 0) {
-                        command.toLowerCase();
-                    }
-                    
-                    if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
-                        Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
-                        webUICommandPending = true;
-                        pendingWebUICommand = jsonMessage;
+                    // Check for duplicate command ID to prevent processing the same command twice
+                    extern String lastProcessedCommandId;
+                    String cmdId = extractJsonStringField(jsonMessage, "id");
+                    if (cmdId.length() > 0 && cmdId == lastProcessedCommandId) {
+                        Serial.printf("Skipping duplicate retained command (ID: %s) - already processed\n", cmdId.c_str());
+                        // Still clear the retained message, but skip processing
                     } else {
-                        handleWebInterfaceCommand(jsonMessage);
+                        // Update command ID before processing
+                        if (cmdId.length() > 0) {
+                            lastProcessedCommandId = cmdId;
+                            Serial.printf("Command ID: %s\n", cmdId.c_str());
+                        }
+                        
+                        String command = extractJsonStringField(jsonMessage, "command");
+                        if (command.length() > 0) {
+                            command.toLowerCase();
+                        }
+                        
+                        if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
+                            Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
+                            webUICommandPending = true;
+                            pendingWebUICommand = jsonMessage;
+                        } else {
+                            handleWebInterfaceCommand(jsonMessage);
+                        }
                     }
                 } else if (strcmp(mqttMessageTopic, mqttTopicSubscribe) == 0 || strcmp(topic, mqttTopicSubscribe) == 0) {
                     lastMqttMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);

@@ -2522,7 +2522,7 @@ static void auto_cycle_task(void* arg) {
     
     // Top of hour: use unified display function (same as !go and !next commands)
     // This ensures consistent behavior across all command sources
-    bool ok = displayMediaWithOverlay(-1, 100);  // -1 = sequential next, 100 = keepout margin
+    bool ok = displayMediaWithOverlay(-1, 50);  // -1 = sequential next, 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
     if (!ok) {
         Serial.println("ERROR: Failed to display media at top of hour");
         // Sleep anyway and retry next cycle
@@ -4766,7 +4766,7 @@ static void show_media_task(void* parameter) {
                                      (unsigned long)sd_ms, (unsigned long)dec_ms);
                         
                         // Add text overlay (time/date/weather/quote) - centralized function
-                        addTextOverlayToDisplay(&display, &ttf, 100);
+                        addTextOverlayToDisplay(&display, &ttf, 50);  // 50px = 25px margin each side, 50px top/bottom
                         
                         // Update display
                         Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
@@ -8471,7 +8471,7 @@ bool handleShowCommand(const String& parameter) {
     if (!ttf.begin(&display)) {
         Serial.println("WARNING: TTF initialization failed, skipping text overlay");
     } else {
-        addTextOverlayToDisplay(&display, &ttf, 100);
+        addTextOverlayToDisplay(&display, &ttf, 50);  // 50px = 25px margin each side, 50px top/bottom
     }
     
     // Update display

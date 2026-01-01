@@ -7,16 +7,18 @@
 #include "EL133UF1_TextPlacement.h"
 #include <string.h>
 #include <math.h>
+#include <Arduino.h>  // For String class
 
 // ============================================================================
 // TimeDateElement Implementation
 // ============================================================================
 
-TimeDateElement::TimeDateElement(EL133UF1_TTF* ttf, const char* timeText, const char* dateText)
-    : _ttf(ttf), _timeText(timeText), _dateText(dateText),
-      _timeFontSize(180.0f), _dateFontSize(96.0f),
-      _timeOutline(3), _dateOutline(2), _gapBetween(20),
-      _sizeScale(1.0f), _cachedWidth(0), _cachedHeight(0)
+TimeDateElement::TimeDateElement(EL133UF1_TTF* ttf, const char* timeText, const char* dayText, const char* dateText)
+    : _ttf(ttf), _timeText(timeText), _dayText(dayText), _dateText(dateText),
+      _timeFontSize(180.0f), _dayFontSize(96.0f), _dateFontSize(96.0f),
+      _timeOutline(3), _dayOutline(2), _dateOutline(2), _gapBetween(20),
+      _sizeScale(1.0f), _cachedWidth(0), _cachedHeight(0),
+      _cachedTimeH(0), _cachedDayH(0), _cachedDateH(0)
 {
     recalculateDimensions();
 }
@@ -28,15 +30,19 @@ void TimeDateElement::setAdaptiveSize(float scale) {
 
 void TimeDateElement::recalculateDimensions() {
     float timeSize = _timeFontSize * _sizeScale;
+    float daySize = _dayFontSize * _sizeScale;
     float dateSize = _dateFontSize * _sizeScale;
     
     int16_t timeW = _ttf->getTextWidth(_timeText, timeSize) + (_timeOutline * 2);
-    int16_t timeH = _ttf->getTextHeight(timeSize) + (_timeOutline * 2);
+    _cachedTimeH = _ttf->getTextHeight(timeSize) + (_timeOutline * 2);
+    int16_t dayW = _ttf->getTextWidth(_dayText, daySize) + (_dayOutline * 2);
+    _cachedDayH = _ttf->getTextHeight(daySize) + (_dayOutline * 2);
     int16_t dateW = _ttf->getTextWidth(_dateText, dateSize) + (_dateOutline * 2);
-    int16_t dateH = _ttf->getTextHeight(dateSize) + (_dateOutline * 2);
+    _cachedDateH = _ttf->getTextHeight(dateSize) + (_dateOutline * 2);
     
-    _cachedWidth = (timeW > dateW) ? timeW : dateW;
-    _cachedHeight = timeH + _gapBetween + dateH;
+    _cachedWidth = (timeW > dayW) ? timeW : dayW;
+    if (dateW > _cachedWidth) _cachedWidth = dateW;
+    _cachedHeight = _cachedTimeH + _gapBetween + _cachedDayH + _gapBetween + _cachedDateH;
 }
 
 void TimeDateElement::getDimensions(int16_t& width, int16_t& height) {
@@ -46,32 +52,94 @@ void TimeDateElement::getDimensions(int16_t& width, int16_t& height) {
 
 void TimeDateElement::draw(int16_t centerX, int16_t centerY) {
     float timeSize = _timeFontSize * _sizeScale;
+    float daySize = _dayFontSize * _sizeScale;
     float dateSize = _dateFontSize * _sizeScale;
     
-    int16_t timeW = _ttf->getTextWidth(_timeText, timeSize) + (_timeOutline * 2);
-    int16_t timeH = _ttf->getTextHeight(timeSize) + (_timeOutline * 2);
-    int16_t dateW = _ttf->getTextWidth(_dateText, dateSize) + (_dateOutline * 2);
-    int16_t dateH = _ttf->getTextHeight(dateSize) + (_dateOutline * 2);
+    // Calculate individual positions (3 lines: time, day, date)
+    int16_t timeY = centerY - (_cachedHeight / 2) + (_cachedTimeH / 2);
+    int16_t dayY = centerY - (_cachedHeight / 2) + _cachedTimeH + _gapBetween + (_cachedDayH / 2);
+    int16_t dateY = centerY + (_cachedHeight / 2) - (_cachedDateH / 2);
     
-    int16_t blockH = timeH + _gapBetween + dateH;
-    
-    // Calculate individual positions
-    int16_t timeY = centerY - (blockH/2) + (timeH/2);
-    int16_t dateY = centerY + (blockH/2) - (dateH/2);
-    
-    // Draw time and date
+    // Draw time and day
     _ttf->drawTextAlignedOutlined(centerX, timeY, _timeText, timeSize,
                                   EL133UF1_WHITE, EL133UF1_BLACK,
                                   ALIGN_CENTER, ALIGN_MIDDLE, _timeOutline);
-    _ttf->drawTextAlignedOutlined(centerX, dateY, _dateText, dateSize,
+    _ttf->drawTextAlignedOutlined(centerX, dayY, _dayText, daySize,
                                   EL133UF1_WHITE, EL133UF1_BLACK,
-                                  ALIGN_CENTER, ALIGN_MIDDLE, _dateOutline);
+                                  ALIGN_CENTER, ALIGN_MIDDLE, _dayOutline);
+    
+    // Draw date with superscript ordinal suffix (e.g., "1st", "2nd", "3rd", "4th")
+    // Parse date string: format is "DDsuffix of Month YYYY" (e.g., "13th of December 2025")
+    String dateStr(_dateText);
+    int spacePos = dateStr.indexOf(' ');
+    if (spacePos > 0) {
+        // Extract day number and suffix
+        String dayPart = dateStr.substring(0, spacePos);
+        String restPart = dateStr.substring(spacePos);  // " of Month YYYY"
+        
+        // Find where the suffix starts (first non-digit character after digits)
+        int suffixStart = 0;
+        for (int i = 0; i < dayPart.length(); i++) {
+            if (dayPart[i] < '0' || dayPart[i] > '9') {
+                suffixStart = i;
+                break;
+            }
+        }
+        
+        if (suffixStart > 0 && suffixStart < dayPart.length()) {
+            // Split into day number and suffix
+            String dayNum = dayPart.substring(0, suffixStart);
+            String suffix = dayPart.substring(suffixStart);  // "st", "nd", "rd", "th"
+            
+            // Calculate text widths to position elements correctly
+            float superscriptSize = dateSize * 0.65f;  // Superscript is 65% of normal size
+            int16_t dayNumW = _ttf->getTextWidth(dayNum.c_str(), dateSize);
+            int16_t suffixW = _ttf->getTextWidth(suffix.c_str(), superscriptSize);
+            int16_t restW = _ttf->getTextWidth(restPart.c_str(), dateSize);
+            int16_t totalW = dayNumW + suffixW + restW;
+            
+            // Calculate positions (centered)
+            int16_t startX = centerX - (totalW / 2);
+            int16_t dayNumX = startX;
+            int16_t suffixX = startX + dayNumW;
+            int16_t restX = startX + dayNumW + suffixW;
+            
+            // Calculate where the top of the day number text is (since it's ALIGN_MIDDLE at dateY)
+            int16_t dayNumHeight = _ttf->getTextHeight(dateSize);
+            int16_t dayNumTop = dateY - (dayNumHeight / 2);
+            
+            // Draw day number (centered vertically)
+            _ttf->drawTextAlignedOutlined(dayNumX, dateY, dayNum.c_str(), dateSize,
+                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         ALIGN_LEFT, ALIGN_MIDDLE, _dateOutline);
+            
+            // Draw suffix as superscript: align top of superscript with top of day number
+            _ttf->drawTextAlignedOutlined(suffixX, dayNumTop, suffix.c_str(), superscriptSize,
+                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         ALIGN_LEFT, ALIGN_TOP, (int16_t)(_dateOutline * 0.65f));
+            
+            // Draw rest of date (" of Month YYYY")
+            _ttf->drawTextAlignedOutlined(restX, dateY, restPart.c_str(), dateSize,
+                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         ALIGN_LEFT, ALIGN_MIDDLE, _dateOutline);
+        } else {
+            // Fallback: couldn't parse, draw normally
+            _ttf->drawTextAlignedOutlined(centerX, dateY, _dateText, dateSize,
+                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         ALIGN_CENTER, ALIGN_MIDDLE, _dateOutline);
+        }
+    } else {
+        // Fallback: couldn't parse, draw normally
+        _ttf->drawTextAlignedOutlined(centerX, dateY, _dateText, dateSize,
+                                     EL133UF1_WHITE, EL133UF1_BLACK,
+                                     ALIGN_CENTER, ALIGN_MIDDLE, _dateOutline);
+    }
 }
 
 ExclusionZone TimeDateElement::getExclusionZone(int16_t centerX, int16_t centerY) const {
     // MAXIMALIST exclusion zone: use cached dimensions with generous margins
-    // CRITICAL: _cachedWidth is max(timeW, dateW) and _cachedHeight is timeH + gap + dateH
-    // This ensures the exclusion zone covers BOTH time and date elements completely
+    // CRITICAL: _cachedWidth is max(timeW, dayW, dateW) and _cachedHeight is timeH + gap + dayH + gap + dateH
+    // This ensures the exclusion zone covers ALL three elements (time, day, date) completely
     
     // Add substantial extra margin to width/height to account for text extent
     int16_t extraWidthMargin = 100;   // Extra margin for text extent (outlines, kerning, etc.)
@@ -121,9 +189,10 @@ void QuoteElement::setAdaptiveSize(float scale) {
 void QuoteElement::wrapQuote() {
     // Use existing text placement analyzer for wrapping
     // Calculate available width (accounting for keepout and outline)
-    // Use standard display width (1600x1200) minus margins
+    // Quote is in half-screen area (full width x half height), so use full display width
+    // Use standard display width (1600x1200) with 25px margin on each side = 50px total
     int16_t displayWidth = 1600;  // Standard display width
-    int16_t availableWidth = displayWidth - 200 - (_outlineWidth * 4);  // 200px keepout, outline padding
+    int16_t availableWidth = displayWidth - 50 - (_outlineWidth * 4);  // 25px margin each side = 50px total, outline padding
     
     // Try different line counts (1-3 lines)
     float bestScore = -1.0f;
@@ -135,8 +204,9 @@ void QuoteElement::wrapQuote() {
         char testWrapped[512];
         int actualLines = 0;
         
-        int16_t targetWidth = (targetLines == 1) ? 0 : (availableWidth / targetLines) + 50;
-        if (targetWidth > availableWidth) targetWidth = availableWidth;
+        // Use full available width for all line counts - let wrapText decide optimal wrapping
+        // Don't artificially constrain to availableWidth/targetLines, use full width
+        int16_t targetWidth = availableWidth;
         
         int16_t wrappedW = TextPlacementAnalyzer::wrapText(_ttf, _quoteText, 
                                                   _quoteFontSize * _sizeScale,
@@ -294,7 +364,7 @@ void QuoteElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const {
 
 WeatherElement::WeatherElement(EL133UF1_TTF* ttf, const char* temperature, const char* condition, const char* location)
     : _ttf(ttf), _tempFontSize(180.0f), _conditionFontSize(96.0f), _locationFontSize(96.0f),
-      _gapBetween(20), _outlineWidth(2), _sizeScale(1.0f),
+      _gapBetween(20), _outlineWidth(3), _sizeScale(1.0f),  // Match time outline width (3)
       _cachedWidth(0), _cachedHeight(0),
       _cachedTempW(0), _cachedTempH(0),
       _cachedConditionW(0), _cachedConditionH(0),
@@ -342,8 +412,9 @@ void WeatherElement::draw(int16_t centerX, int16_t centerY) {
     float conditionSize = _conditionFontSize * _sizeScale;
     float locationSize = _locationFontSize * _sizeScale;
     
+    // Calculate individual positions (3 lines: temp, condition, location)
     int16_t tempY = centerY - (_cachedHeight / 2) + (_cachedTempH / 2);
-    int16_t conditionY = centerY;
+    int16_t conditionY = centerY - (_cachedHeight / 2) + _cachedTempH + _gapBetween + (_cachedConditionH / 2);
     int16_t locationY = centerY + (_cachedHeight / 2) - (_cachedLocationH / 2);
     
     // Draw temperature (large, centered)

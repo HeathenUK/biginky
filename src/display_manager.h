@@ -36,8 +36,8 @@ class EL133UF1_TTF;
  * 
  * @param display Display instance
  * @param ttf TTF renderer instance
- * @param keepoutMargin Keepout margin for text placement (default 100)
+ * @param keepoutMargin Keepout margin for text placement (default 50: 25px left/right, 50px top/bottom)
  */
-void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin = 100);
+void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin = 50);
 
 #endif // DISPLAY_MANAGER_H

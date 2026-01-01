@@ -67,9 +67,10 @@ extern bool wifiLoadCredentials();
 static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStrSize,
                              char* conditionStr, size_t conditionStrSize);
 static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize, 
+                              char* dayBuf, size_t dayBufSize,
                               char* dateBuf, size_t dateBufSize);
 static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
-                                  const char* timeBuf, const char* dateBuf,
+                                  const char* timeBuf, const char* dayBuf, const char* dateBuf,
                                   int16_t keepoutMargin);
 
 /**
@@ -202,6 +203,7 @@ static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStr
  * Returns true if time is valid, false otherwise
  */
 static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize, 
+                              char* dayBuf, size_t dayBufSize,
                               char* dateBuf, size_t dateBufSize) {
     time_t now = time(nullptr);
     struct tm tm_utc;
@@ -211,9 +213,11 @@ static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize,
     if (timeValid) {
         strftime(timeBuf, timeBufSize, "%H:%M", &tm_utc);
         
-        // Format date as "Saturday 13th of December 2025"
-        char dayName[12], monthName[12];
-        strftime(dayName, sizeof(dayName), "%A", &tm_utc);
+        // Format day name (e.g., "Saturday")
+        strftime(dayBuf, dayBufSize, "%A", &tm_utc);
+        
+        // Format date as "13th of December 2025"
+        char monthName[12];
         strftime(monthName, sizeof(monthName), "%B", &tm_utc);
         
         int day = tm_utc.tm_mday;
@@ -231,11 +235,12 @@ static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize,
             }
         }
         
-        snprintf(dateBuf, dateBufSize, "%s %d%s of %s %d", 
-                dayName, day, suffix, monthName, year);
+        snprintf(dateBuf, dateBufSize, "%d%s of %s %d", 
+                day, suffix, monthName, year);
     } else {
         snprintf(timeBuf, timeBufSize, "--:--");
-        snprintf(dateBuf, dateBufSize, "time not set");
+        snprintf(dayBuf, dayBufSize, "time not set");
+        snprintf(dateBuf, dateBufSize, "");
     }
     
     return timeValid;
@@ -246,7 +251,7 @@ static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize,
  * Randomly assign: which half (top/bottom), which quarter gets time/date (left/right)
  */
 static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf, 
-                                  const char* timeBuf, const char* dateBuf,
+                                  const char* timeBuf, const char* dayBuf, const char* dateBuf,
                                   int16_t keepoutMargin) {
     int16_t screenW = display->width();
     int16_t screenH = display->height();
@@ -387,7 +392,7 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
     }
     
     // Create elements
-    TimeDateElement timeDateElement(ttf, timeBuf, dateBuf);
+    TimeDateElement timeDateElement(ttf, timeBuf, dayBuf, dateBuf);
     WeatherElement weatherElement(ttf, weatherTemp, weatherCondition, weatherLocation);
     QuoteElement quoteElement(ttf, quoteText, quoteAuthor);
     
@@ -397,12 +402,12 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
     int16_t halfW = screenW;
     int16_t halfH_area = halfH;
     
-    // Scale time/date to fit quarter (with margin)
+    // Scale time/date to fit quarter (with reduced margins: 25px left/right, 50px top/bottom)
     int16_t timeDateW, timeDateH;
     timeDateElement.getDimensions(timeDateW, timeDateH);
     float timeDateScale = 1.0f;
-    if (timeDateW > (quarterW - 100) || timeDateH > (quarterH - 100)) {
-        float scaleW = (float)(quarterW - 100) / timeDateW;
+    if (timeDateW > (quarterW - 50) || timeDateH > (quarterH - 100)) {  // 25px margin each side = 50px total, 50px margin top/bottom = 100px total
+        float scaleW = (float)(quarterW - 50) / timeDateW;
         float scaleH = (float)(quarterH - 100) / timeDateH;
         timeDateScale = (scaleW < scaleH) ? scaleW : scaleH;
         if (timeDateScale < 0.5f) timeDateScale = 0.5f;  // Minimum 50% size
@@ -410,12 +415,12 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
         Serial.printf("[Layout] Scaled time/date to %.2f%% to fit quarter area\n", timeDateScale * 100.0f);
     }
     
-    // Scale weather to fit quarter (with margin)
+    // Scale weather to fit quarter (with reduced margins: 25px left/right, 50px top/bottom)
     int16_t weatherW, weatherH;
     weatherElement.getDimensions(weatherW, weatherH);
     float weatherScale = 1.0f;
-    if (weatherW > (quarterW - 100) || weatherH > (quarterH - 100)) {
-        float scaleW = (float)(quarterW - 100) / weatherW;
+    if (weatherW > (quarterW - 50) || weatherH > (quarterH - 100)) {  // 25px margin each side = 50px total, 50px margin top/bottom = 100px total
+        float scaleW = (float)(quarterW - 50) / weatherW;
         float scaleH = (float)(quarterH - 100) / weatherH;
         weatherScale = (scaleW < scaleH) ? scaleW : scaleH;
         if (weatherScale < 0.5f) weatherScale = 0.5f;  // Minimum 50% size
@@ -423,17 +428,18 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
         Serial.printf("[Layout] Scaled weather to %.2f%% to fit quarter area\n", weatherScale * 100.0f);
     }
     
-    // Scale quote to fit half area (with margin)
+    // Scale quote to fit half area (with reduced margins: 50px top/bottom, 25px left/right)
+    // Important: quoteH includes both quote text AND author, so scaling considers the full element
     int16_t quoteW, quoteH;
     quoteElement.getDimensions(quoteW, quoteH);
     float quoteScale = 1.0f;
-    if (quoteW > (halfW - 200) || quoteH > (halfH_area - 200)) {
-        float scaleW = (float)(halfW - 200) / quoteW;
-        float scaleH = (float)(halfH_area - 200) / quoteH;
+    if (quoteW > (halfW - 50) || quoteH > (halfH_area - 100)) {  // 25px margin each side = 50px total, 50px margin top/bottom = 100px total
+        float scaleW = (float)(halfW - 50) / quoteW;
+        float scaleH = (float)(halfH_area - 100) / quoteH;  // 50px margin top and bottom
         quoteScale = (scaleW < scaleH) ? scaleW : scaleH;
         if (quoteScale < 0.5f) quoteScale = 0.5f;  // Minimum 50% size
         quoteElement.setAdaptiveSize(quoteScale);
-        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area\n", quoteScale * 100.0f);
+        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area (width margin: 25px each side, height margin: 50px top/bottom)\n", quoteScale * 100.0f);
     }
     
     // Draw at fixed positions (centered in their assigned areas)
@@ -456,9 +462,10 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
  */
 void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin) {
     char timeBuf[16];
+    char dayBuf[16];
     char dateBuf[48];
-    formatTimeAndDate(timeBuf, sizeof(timeBuf), dateBuf, sizeof(dateBuf));
-    placeTimeDateAndQuote(display, ttf, timeBuf, dateBuf, keepoutMargin);
+    formatTimeAndDate(timeBuf, sizeof(timeBuf), dayBuf, sizeof(dayBuf), dateBuf, sizeof(dateBuf));
+    placeTimeDateAndQuote(display, ttf, timeBuf, dayBuf, dateBuf, keepoutMargin);
 }
 
 /**

@@ -6,8 +6,10 @@
 #include "display_manager.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
+#include "EL133UF1_PNG.h"  // For loading background image
 #include "text_elements.h"
 #include "wifi_manager.h"  // For wifiConnectPersistent (NOT wifi_guard.h - it disconnects WiFi!)
+#include "platform_hal.h"  // For hal_psram_malloc/free
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -17,11 +19,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <SPI.h>
+#include <stdio.h>  // For fopen, fread, etc.
 
 // External references to globals and functions from main.cpp
 extern SPIClass displaySPI;
 extern EL133UF1 display;
 extern EL133UF1_TTF ttf;
+extern EL133UF1_PNG pngLoader;  // For loading background image
 extern bool sdCardMounted;
 extern uint32_t lastMediaIndex;
 extern String g_lastImagePath;
@@ -632,18 +636,8 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
     return true;
 }
 
-/**
- * Happy weather scene configuration
- * Hardcoded configuration for 6 locations with coordinates, timezones, and text positions
- */
-struct HappyWeatherLocation {
-    const char* name;           // Display name (e.g., "Brienz")
-    float lat;                  // Latitude
-    float lon;                  // Longitude
-    int8_t timezoneOffset;      // UTC offset in hours (e.g., 0 for GMT, 1 for CET)
-    int16_t textX;              // X position for text overlay (center of panel)
-    int16_t textY;              // Y position for text overlay (center vertically)
-};
+// Happy weather scene configuration moved inline to displayHappyWeatherScene()
+// (no longer needed as a separate struct since layout is calculated dynamically)
 
 /**
  * Helper function to format time with timezone offset
@@ -673,21 +667,49 @@ static void formatTimeWithTimezone(int8_t timezoneOffset, char* timeBuf, size_t 
 /**
  * Display the Happy weather scene
  * Shows a blank background with 6 time/weather overlays (background image to be added later)
+ * Layout: 6 horizontal panels with 50px margins on left/right, 80px top, 100px bottom, 50px gaps between panels
  */
 bool displayHappyWeatherScene() {
     Serial.println("=== Happy Weather Scene ===");
     
-    // Hardcoded configuration for 6 locations
-    // Display is 1600x1200, divided into 6 horizontal panels (~267px each)
-    // Text positions are centered in each panel horizontally, centered vertically
-    static const HappyWeatherLocation locations[6] = {
-        {"Brienz",          46.75f,   8.03f,  1,  133, 600},   // Panel 1: 0-267px
-        {"Delden",          52.30f,   6.64f,  1,  400, 600},   // Panel 2: 267-534px
-        {"Portelet Beach",  49.17f,  -2.18f,  0,  667, 600},   // Panel 3: 534-801px
-        {"The Five Arrows", 51.85f,  -0.93f,  0,  933, 600},   // Panel 4: 801-1068px
-        {"Isle of Mull",    56.44f,  -6.03f,  0, 1200, 600},   // Panel 5: 1068-1335px
-        {"Bruvik",          60.48f,   5.68f,  1, 1467, 600}    // Panel 6: 1335-1600px
+    // Hardcoded configuration for 6 locations (coordinates and timezones only)
+    static const struct {
+        const char* name;
+        float lat;
+        float lon;
+        int8_t timezoneOffset;
+    } locations[6] = {
+        {"Brienz",          46.75f,   8.03f,  1},
+        {"Delden",          52.30f,   6.64f,  1},
+        {"Portelet Beach",  49.17f,  -2.18f,  0},
+        {"The Five Arrows", 51.85f,  -0.93f,  0},
+        {"Isle of Mull",    56.44f,  -6.03f,  0},
+        {"Bruvik",          60.48f,   5.68f,  1}
     };
+    
+    // Layout constants
+    const int16_t DISPLAY_WIDTH = 1600;
+    const int16_t DISPLAY_HEIGHT = 1200;
+    const int16_t MARGIN_TOP = 80;
+    const int16_t MARGIN_BOTTOM = 100;
+    const int16_t GAP_BETWEEN_PANELS = 25;
+    const int16_t NUM_PANELS = 6;
+    
+    // Custom panel widths (in pixels): 200, 280, 280, 280, 280, 190
+    const int16_t panelWidths[NUM_PANELS] = {200, 280, 280, 280, 280, 190};
+    
+    // Calculate total width to verify it fits (optional - for debugging)
+    int16_t totalWidth = panelWidths[0];
+    for (int i = 1; i < NUM_PANELS; i++) {
+        totalWidth += GAP_BETWEEN_PANELS + panelWidths[i];
+    }
+    
+    const int16_t availableHeight = DISPLAY_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
+    
+    Serial.printf("[Happy Weather] Layout: %dx%d display, %d panels (widths: %d,%d,%d,%d,%d,%d), total=%dpx, %dpx height available\n",
+                 DISPLAY_WIDTH, DISPLAY_HEIGHT, NUM_PANELS, 
+                 panelWidths[0], panelWidths[1], panelWidths[2], panelWidths[3], panelWidths[4], panelWidths[5],
+                 totalWidth, availableHeight);
     
     // Ensure display is initialized
     if (display.getBuffer() == nullptr) {
@@ -706,9 +728,61 @@ bool displayHappyWeatherScene() {
         return false;
     }
     
-    // Clear display buffer with white background (background image to be added later)
-    Serial.println("Clearing display buffer (white background)...");
-    display.clear(EL133UF1_WHITE);
+    // Load background image from LittleFS
+    Serial.println("Loading background image from LittleFS...");
+    const char* bgImagePath = "/littlefs/happy.png";
+    FILE* bgFile = fopen(bgImagePath, "rb");
+    if (bgFile != nullptr) {
+        // Get file size
+        fseek(bgFile, 0, SEEK_END);
+        long fileSize = ftell(bgFile);
+        fseek(bgFile, 0, SEEK_SET);
+        
+        if (fileSize > 0 && fileSize < 10 * 1024 * 1024) {  // Max 10MB
+            // Allocate buffer in PSRAM and read PNG data
+            uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+            if (pngData != nullptr) {
+                size_t bytesRead = fread(pngData, 1, fileSize, bgFile);
+                fclose(bgFile);
+                
+                if (bytesRead == (size_t)fileSize) {
+                    // Initialize PNG loader if not already done
+                    if (!pngLoader.begin(&display)) {
+                        Serial.println("[Happy Weather] WARNING: Failed to initialize PNG loader");
+                        display.clear(EL133UF1_WHITE);
+                    } else {
+                        // Draw background image (fullscreen, starting at 0,0)
+                        Serial.printf("[Happy Weather] Drawing background image (%ld bytes)...\n", fileSize);
+                        PNGResult result = pngLoader.draw(0, 0, pngData, fileSize);
+                        if (result == PNG_OK) {
+                            Serial.println("[Happy Weather] Background image drawn successfully");
+                        } else {
+                            Serial.printf("[Happy Weather] WARNING: Failed to draw background image: %s\n", 
+                                        pngLoader.getErrorString(result));
+                            // Fall back to white background
+                            display.clear(EL133UF1_WHITE);
+                        }
+                    }
+                } else {
+                    Serial.printf("[Happy Weather] WARNING: Failed to read complete background image (%zu of %ld bytes)\n", 
+                                bytesRead, fileSize);
+                    display.clear(EL133UF1_WHITE);
+                }
+                hal_psram_free(pngData);
+            } else {
+                Serial.println("[Happy Weather] WARNING: Failed to allocate memory for background image");
+                fclose(bgFile);
+                display.clear(EL133UF1_WHITE);
+            }
+        } else {
+            Serial.printf("[Happy Weather] WARNING: Invalid background image file size: %ld bytes\n", fileSize);
+            fclose(bgFile);
+            display.clear(EL133UF1_WHITE);
+        }
+    } else {
+        Serial.printf("[Happy Weather] WARNING: Failed to open background image: %s (using white background)\n", bgImagePath);
+        display.clear(EL133UF1_WHITE);
+    }
     
     // Connect WiFi if needed (for weather fetching)
     bool wifiConnected = false;
@@ -725,10 +799,34 @@ bool displayHappyWeatherScene() {
         }
     }
     
-    // Process each location
-    for (int i = 0; i < 6; i++) {
-        const HappyWeatherLocation& loc = locations[i];
-        Serial.printf("[Happy Weather] Processing location %d: %s\n", i + 1, loc.name);
+    // First pass: Calculate dimensions for all panels to find maximum sizes
+    // This ensures consistent sizing across all panels, with time maximized
+    struct PanelData {
+        String timeText;
+        String tempText;
+        String conditionText;
+        String locationName;
+        int16_t timeWidth;
+        int16_t locationWidth;
+        int16_t weatherWidth;
+        int16_t weatherHeight;
+    };
+    
+    PanelData panelData[NUM_PANELS];
+    int16_t maxTimeWidth = 0;
+    int16_t maxLocationWidth = 0;
+    int16_t maxWeatherWidth = 0;
+    int16_t maxWeatherHeight = 0;
+    float baseTimeFontSize = 200.0f;  // Start with larger base size to maximize time
+    float baseLocationFontSize = 64.0f;  // Ideal size for location name (64px)
+    const int16_t gapBetweenLocationAndTime = 15;
+    const int16_t gapBetweenTimeAndWeather = 20;
+    
+    Serial.println("[Happy Weather] First pass: Calculating dimensions for all panels...");
+    
+    for (int i = 0; i < NUM_PANELS; i++) {
+        const auto& loc = locations[i];
+        PanelData& data = panelData[i];
         
         vTaskDelay(1);  // Yield to watchdog
         
@@ -747,34 +845,255 @@ bool displayHappyWeatherScene() {
             Serial.printf("[Happy Weather] WiFi not connected, using fallback for %s\n", loc.name);
         }
         
+        // Store weather data
+        data.tempText = String(tempStr);
+        data.conditionText = String(conditionStr);
+        data.locationName = String(loc.name);
+        
         // Format time with timezone offset
         char timeBuf[16];
         formatTimeWithTimezone(loc.timezoneOffset, timeBuf, sizeof(timeBuf));
+        data.timeText = String(timeBuf);
         
-        // Get weather element dimensions to position time above it
-        WeatherElement weatherElement(&ttf, tempStr, conditionStr, loc.name);
-        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_WHITE);  // Black text, white outline
+        // Calculate time dimensions at base size
+        data.timeWidth = ttf.getTextWidth(data.timeText.c_str(), baseTimeFontSize) + (3 * 2);  // + outline
+        
+        // Calculate location name dimensions at base size (will wrap if needed)
+        // Check if location name fits in panel width; if not, we'll need to wrap or scale down
+        data.locationWidth = ttf.getTextWidth(data.locationName.c_str(), baseLocationFontSize) + (1 * 2);  // + outline (1px)
+        
+        // Create weather element at base size (scale 1.0) to get dimensions
+        // Note: We pass empty string for location since we'll draw it separately above time
+        WeatherElement weatherElement(&ttf, data.tempText.c_str(), data.conditionText.c_str(), "");
+        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_WHITE);
+        weatherElement.setAdaptiveSize(1.0f);  // Base size
+        
+        weatherElement.getDimensions(data.weatherWidth, data.weatherHeight);
+        
+        // Track maximum dimensions across all panels
+        if (data.timeWidth > maxTimeWidth) {
+            maxTimeWidth = data.timeWidth;
+        }
+        if (data.locationWidth > maxLocationWidth) {
+            maxLocationWidth = data.locationWidth;
+        }
+        if (data.weatherWidth > maxWeatherWidth) {
+            maxWeatherWidth = data.weatherWidth;
+        }
+        if (data.weatherHeight > maxWeatherHeight) {
+            maxWeatherHeight = data.weatherHeight;
+        }
+        
+        Serial.printf("[Happy Weather] Panel %d (%s): time='%s' width=%d, weather=%dx%d\n",
+                     i + 1, loc.name, data.timeText.c_str(), data.timeWidth, data.weatherWidth, data.weatherHeight);
+    }
+    
+    Serial.printf("[Happy Weather] Maximum dimensions: location width=%d, time width=%d, weather=%dx%d\n", 
+                 maxLocationWidth, maxTimeWidth, maxWeatherWidth, maxWeatherHeight);
+    
+    // Calculate scale factors to maximize time while ensuring everything fits
+    // Find the narrowest effective panel width for scaling calculations
+    // Column 6 (index 5) is treated as 18px narrower for sizing (was 14px, now 18px)
+    int16_t effectivePanelWidths[NUM_PANELS];
+    for (int i = 0; i < NUM_PANELS; i++) {
+        effectivePanelWidths[i] = panelWidths[i];
+        if (i == 5) {  // Sixth column: treat as 18px narrower
+            effectivePanelWidths[i] -= 18;
+        }
+    }
+    int16_t minPanelWidth = effectivePanelWidths[0];
+    for (int i = 1; i < NUM_PANELS; i++) {
+        if (effectivePanelWidths[i] < minPanelWidth) {
+            minPanelWidth = effectivePanelWidths[i];
+        }
+    }
+    
+    // Location names: use ideal 64px size, but scale down if text exceeds panel width
+    // (Wrapping could be implemented in the future for better text handling)
+    float locationScale = 1.0f;
+    if (maxLocationWidth > minPanelWidth) {
+        locationScale = (float)minPanelWidth / maxLocationWidth;
+    }
+    
+    // Start with time scale (maximize time, use narrowest panel)
+    float timeScale = 1.0f;
+    if (maxTimeWidth > minPanelWidth) {
+        timeScale = (float)minPanelWidth / maxTimeWidth;
+    }
+    
+    // Calculate heights at these scales
+    float finalLocationFontSize = baseLocationFontSize * locationScale + 5.0f;  // Add 5px to location font size
+    int16_t finalLocationHeight = ttf.getTextHeight(finalLocationFontSize);
+    float finalTimeFontSize = baseTimeFontSize * timeScale;
+    int16_t finalTimeHeight = ttf.getTextHeight(finalTimeFontSize);
+    
+    // Check if weather would fit at this time scale (considering width and total height, use narrowest panel)
+    float weatherScaleForWidth = 1.0f;
+    if (maxWeatherWidth > minPanelWidth) {
+        weatherScaleForWidth = (float)minPanelWidth / maxWeatherWidth;
+    }
+    
+    // Calculate total height with location, time, and weather at base size
+    int16_t totalHeightAtBaseWeather = finalLocationHeight + gapBetweenLocationAndTime + 
+                                       finalTimeHeight + gapBetweenTimeAndWeather + maxWeatherHeight;
+    float weatherScaleForHeight = 1.0f;
+    if (totalHeightAtBaseWeather > availableHeight) {
+        // Need to scale weather down to fit
+        int16_t availableHeightForWeather = availableHeight - finalLocationHeight - gapBetweenLocationAndTime - 
+                                           finalTimeHeight - gapBetweenTimeAndWeather;
+        weatherScaleForHeight = (float)availableHeightForWeather / maxWeatherHeight;
+    }
+    
+    // Use the smaller weather scale (most constraining)
+    float weatherScale = (weatherScaleForWidth < weatherScaleForHeight) ? weatherScaleForWidth : weatherScaleForHeight;
+    if (weatherScale < 0.3f) weatherScale = 0.3f;  // Minimum scale
+    if (weatherScale > 1.0f) weatherScale = 1.0f;
+    
+    // Recalculate with weather at weatherScale to get accurate total height
+    int16_t scaledWeatherHeight = (int16_t)(maxWeatherHeight * weatherScale);
+    int16_t finalTotalHeight = finalLocationHeight + gapBetweenLocationAndTime + 
+                               finalTimeHeight + gapBetweenTimeAndWeather + scaledWeatherHeight;
+    
+    // If total height still doesn't fit, we need to reduce time scale (and possibly location scale)
+    if (finalTotalHeight > availableHeight) {
+        // Calculate what height would be needed
+        int16_t availableHeightForLocationAndTime = availableHeight - gapBetweenLocationAndTime - 
+                                                    gapBetweenTimeAndWeather - scaledWeatherHeight;
+        // Try reducing time scale first (maximize time)
+        if (availableHeightForLocationAndTime > finalLocationHeight) {
+            int16_t availableHeightForTime = availableHeightForLocationAndTime - finalLocationHeight;
+            if (availableHeightForTime > 0 && availableHeightForTime < finalTimeHeight) {
+                float timeHeightScale = (float)availableHeightForTime / finalTimeHeight;
+                timeScale *= timeHeightScale;
+                finalTimeFontSize = baseTimeFontSize * timeScale;
+                finalTimeHeight = ttf.getTextHeight(finalTimeFontSize);
+                finalTotalHeight = finalLocationHeight + gapBetweenLocationAndTime + 
+                                 finalTimeHeight + gapBetweenTimeAndWeather + scaledWeatherHeight;
+            }
+        } else {
+            // If even location doesn't fit, scale everything proportionally
+            float totalHeightScale = (float)availableHeightForLocationAndTime / (finalLocationHeight + finalTimeHeight);
+            locationScale *= totalHeightScale;
+            timeScale *= totalHeightScale;
+            finalLocationFontSize = baseLocationFontSize * locationScale + 5.0f;  // Add 5px to location font size
+            finalLocationHeight = ttf.getTextHeight(finalLocationFontSize);
+            finalTimeFontSize = baseTimeFontSize * timeScale;
+            finalTimeHeight = ttf.getTextHeight(finalTimeFontSize);
+            finalTotalHeight = finalLocationHeight + gapBetweenLocationAndTime + 
+                             finalTimeHeight + gapBetweenTimeAndWeather + scaledWeatherHeight;
+        }
+    }
+    
+    Serial.printf("[Happy Weather] Final scales: location=%.2f (font size=%.1f), time=%.2f (font size=%.1f), weather=%.2f\n", 
+                 locationScale, finalLocationFontSize, timeScale, finalTimeFontSize, weatherScale);
+    
+    // Second pass: Draw all panels with consistent sizing
+    Serial.println("[Happy Weather] Second pass: Drawing all panels with uniform scales...");
+    
+    for (int i = 0; i < NUM_PANELS; i++) {
+        const auto& loc = locations[i];
+        const PanelData& data = panelData[i];
+        
+        vTaskDelay(1);  // Yield to watchdog
+        
+        // Calculate panel boundaries using custom widths
+        // First column starts with 13px margin, others start at 0
+        int16_t panelLeft = (i == 0) ? 13 : 0;
+        for (int j = 0; j < i; j++) {
+            panelLeft += panelWidths[j] + GAP_BETWEEN_PANELS;
+        }
+        
+        // Horizontal adjustments: nudge columns 4, 5, 6 left
+        int16_t horizontalOffset = 0;
+        switch (i) {
+            case 3:  // Fourth column: nudge 10px left (unchanged)
+                horizontalOffset = -10;
+                break;
+            case 4:  // Fifth column: nudge 20px left (was -15, now -20)
+                horizontalOffset = -20;
+                break;
+            case 5:  // Sixth column: nudge 20px left (was -18, now -20)
+                horizontalOffset = -20;
+                break;
+            default:
+                horizontalOffset = 0;
+                break;
+        }
+        
+        int16_t panelCenterX = panelLeft + panelWidths[i] / 2 + horizontalOffset;
+        
+        // Custom vertical positioning with 10px margins:
+        // Panel 0: bottom aligned, 10px margin from bottom
+        // Panel 1: top aligned, 10px margin from top
+        // Panel 2: top aligned, 10px margin from top (same as panel 1)
+        // Panel 3: bottom aligned, 10px margin from bottom
+        // Panel 4: top aligned, 10px margin from top
+        // Panel 5: top aligned, 10px margin from top (same as panel 4)
+        const int16_t VERTICAL_MARGIN = 10;
+        int16_t contentReferenceY;
+        switch (i) {
+            case 0:  // First column: bottom aligned, 10px margin from bottom
+                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN
+                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN;
+                break;
+            case 1:  // Second column: top aligned, 10px margin from top
+            case 2:  // Third column: top aligned, 10px margin from top (same as second)
+            case 4:  // Fifth column: top aligned, 10px margin from top
+            case 5:  // Sixth column: top aligned, 10px margin from top (same as fifth)
+                // Reference Y is at the top: MARGIN_TOP + VERTICAL_MARGIN
+                contentReferenceY = MARGIN_TOP + VERTICAL_MARGIN;
+                break;
+            case 3:  // Fourth column: bottom aligned, 10px margin from bottom
+                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN
+                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN;
+                break;
+            default:
+                contentReferenceY = MARGIN_TOP + (availableHeight / 2);  // Center (shouldn't happen)
+                break;
+        }
+        
+        // Create weather element with uniform weather scale (without location - we draw it separately)
+        WeatherElement weatherElement(&ttf, data.tempText.c_str(), data.conditionText.c_str(), "");
+        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_WHITE);
+        weatherElement.setAdaptiveSize(weatherScale);
         
         int16_t weatherW, weatherH;
         weatherElement.getDimensions(weatherW, weatherH);
         
-        // Draw time text above weather (use smaller font size to fit in panel)
-        // Position time above the weather element with some gap
-        float timeFontSize = 120.0f;  // Smaller font for compact display in panel
-        int16_t timeHeight = ttf.getTextHeight(timeFontSize);
-        int16_t gapBetweenTimeAndWeather = 30;
-        int16_t timeY = loc.textY - (weatherH / 2) - gapBetweenTimeAndWeather - (timeHeight / 2);
+        // Position content relative to reference Y (top or bottom aligned)
+        // For top-aligned panels, reference Y is at top; for bottom-aligned, it's at bottom
+        bool isTopAligned = (i == 1 || i == 2 || i == 4 || i == 5);
+        int16_t locationY, timeY, weatherY;
+        if (isTopAligned) {
+            // Top-aligned: reference Y is at top, position content from top
+            locationY = contentReferenceY + finalLocationHeight / 2;
+            timeY = contentReferenceY + finalLocationHeight + gapBetweenLocationAndTime + finalTimeHeight / 2;
+            weatherY = contentReferenceY + finalLocationHeight + gapBetweenLocationAndTime + 
+                      finalTimeHeight + gapBetweenTimeAndWeather + weatherH / 2;
+        } else {
+            // Bottom-aligned: reference Y is at bottom, position content from bottom
+            locationY = contentReferenceY - finalTotalHeight + finalLocationHeight / 2;
+            timeY = contentReferenceY - finalTotalHeight + finalLocationHeight + gapBetweenLocationAndTime + finalTimeHeight / 2;
+            weatherY = contentReferenceY - finalTotalHeight + finalLocationHeight + gapBetweenLocationAndTime + 
+                      finalTimeHeight + gapBetweenTimeAndWeather + weatherH / 2;
+        }
         
-        // Draw time text (centered horizontally, using enum values directly)
-        ttf.drawTextAlignedOutlined(loc.textX, timeY, timeBuf, timeFontSize,
+        // Draw location name (centered horizontally in panel) with 1px outline at ideal 64px size
+        // Note: If location name is too wide, it may extend beyond panel bounds (wrapping not yet implemented)
+        ttf.drawTextAlignedOutlined(panelCenterX, locationY, data.locationName.c_str(), finalLocationFontSize,
+                                    EL133UF1_BLACK, EL133UF1_WHITE,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 1);  // 1px outline
+        
+        // Draw time text (centered horizontally in panel) with maximized size
+        ttf.drawTextAlignedOutlined(panelCenterX, timeY, data.timeText.c_str(), finalTimeFontSize,
                                     EL133UF1_BLACK, EL133UF1_WHITE,
                                     ALIGN_CENTER, ALIGN_MIDDLE, 3);
         
-        // Draw weather element at specified position (centered)
-        weatherElement.draw(loc.textX, loc.textY);
+        // Draw weather element (centered horizontally in panel)
+        weatherElement.draw(panelCenterX, weatherY);
         
-        Serial.printf("[Happy Weather] Drew time '%s' and weather for %s at (%d, %d)\n", 
-                     timeBuf, loc.name, loc.textX, loc.textY);
+        Serial.printf("[Happy Weather] Panel %d (%s): drawn at (%d,%d), time='%s' (size=%.1f), weather scale=%.2f\n",
+                     i + 1, loc.name, panelCenterX, contentReferenceY, data.timeText.c_str(), finalTimeFontSize, weatherScale);
     }
     
     // Update display

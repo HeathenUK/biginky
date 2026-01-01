@@ -1832,7 +1832,7 @@ bool handleIpCommand(const String& originalMessage);  // Made non-static for uni
 bool handleNextCommand();  // Made non-static for unified dispatcher
 bool handleGoCommand(const String& parameter);  // Made non-static for unified dispatcher
 static bool handleTextCommand(const String& parameter);
-bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = EL133UF1_WHITE, const String& backgroundImage = "");  // Made non-static for unified dispatcher
+bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = EL133UF1_WHITE, const String& backgroundImage = "", const String& fontName = "");  // Made non-static for unified dispatcher
 bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = EL133UF1_WHITE);  // Made non-static for unified dispatcher
 // Wrapper functions for text commands with specific colors (for command registry)
 static bool handleTextCommandWhite(const String& param) { return handleTextCommandWithColor(param, EL133UF1_WHITE, EL133UF1_BLACK); }
@@ -6852,10 +6852,141 @@ static bool handleTextCommand(const String& parameter) {
 }
 
 /**
+ * Load a font by name or filename into the global ttf object
+ * Returns true if font was loaded successfully, false otherwise
+ * 
+ * Note: For LittleFS fonts, this function allocates memory that must be kept
+ * allocated for as long as the font is in use. The memory is freed when a new
+ * font is loaded (if it was dynamically allocated).
+ */
+static bool loadFontByName(const String& fontName) {
+    // Static variable to track dynamically allocated font data (from LittleFS)
+    // This needs to persist across function calls so we can free it when loading a new font
+    static uint8_t* s_allocatedFontData = nullptr;
+    
+    // Free previously allocated font data (if any) before loading a new font
+    if (s_allocatedFontData != nullptr) {
+        free(s_allocatedFontData);
+        s_allocatedFontData = nullptr;
+    }
+    if (fontName.length() == 0) {
+        // No font specified - use default OpenSans
+        Serial.println("[FONT] No font specified, using default OpenSans");
+        if (!ttf.begin(&display)) {
+            Serial.println("[FONT] ERROR: Failed to initialize TTF");
+            return false;
+        }
+        if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+            Serial.println("[FONT] ERROR: Failed to load OpenSans font");
+            return false;
+        }
+        Serial.println("[FONT] Loaded default OpenSans font");
+        return true;
+    }
+    
+    // Search for font in RTC list
+    for (uint8_t i = 0; i < g_rtcFontCount; i++) {
+        // Match by name or filename (case-insensitive)
+        String listName = String(g_rtcFontList[i].name);
+        String listFilename = String(g_rtcFontList[i].filename);
+        listName.toLowerCase();
+        listFilename.toLowerCase();
+        String searchName = fontName;
+        searchName.toLowerCase();
+        
+        if (listName == searchName || listFilename == searchName) {
+            Serial.printf("[FONT] Found font: %s (filename: %s, builtin: %s)\n", 
+                         g_rtcFontList[i].name, 
+                         g_rtcFontList[i].filename,
+                         g_rtcFontList[i].isBuiltin ? "yes" : "no");
+            
+            if (!ttf.begin(&display)) {
+                Serial.println("[FONT] ERROR: Failed to initialize TTF");
+                return false;
+            }
+            
+            if (g_rtcFontList[i].isBuiltin) {
+                // Built-in font (OpenSans)
+                if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+                    Serial.println("[FONT] ERROR: Failed to load OpenSans font");
+                    return false;
+                }
+                Serial.println("[FONT] Loaded built-in OpenSans font");
+                return true;
+            } else {
+                // Load from LittleFS
+                char fullPath[128];
+                snprintf(fullPath, sizeof(fullPath), "/littlefs/%s", g_rtcFontList[i].filename);
+                
+                FILE* fontFile = fopen(fullPath, "rb");
+                if (fontFile == nullptr) {
+                    Serial.printf("[FONT] ERROR: Failed to open font file: %s\n", fullPath);
+                    return false;
+                }
+                
+                // Get file size
+                fseek(fontFile, 0, SEEK_END);
+                long fileSize = ftell(fontFile);
+                fseek(fontFile, 0, SEEK_SET);
+                
+                if (fileSize <= 0 || fileSize > 10 * 1024 * 1024) {  // Max 10MB
+                    fclose(fontFile);
+                    Serial.printf("[FONT] ERROR: Invalid font file size: %ld bytes\n", fileSize);
+                    return false;
+                }
+                
+                // Allocate buffer and read font data
+                uint8_t* fontData = (uint8_t*)malloc(fileSize);
+                if (fontData == nullptr) {
+                    fclose(fontFile);
+                    Serial.println("[FONT] ERROR: Failed to allocate memory for font");
+                    return false;
+                }
+                
+                size_t bytesRead = fread(fontData, 1, fileSize, fontFile);
+                fclose(fontFile);
+                
+                if (bytesRead != (size_t)fileSize) {
+                    free(fontData);
+                    Serial.printf("[FONT] ERROR: Failed to read font file (read %zu/%ld bytes)\n", bytesRead, fileSize);
+                    return false;
+                }
+                
+                // Load font into TTF object
+                if (!ttf.loadFont(fontData, fileSize)) {
+                    free(fontData);
+                    Serial.println("[FONT] ERROR: Failed to load font data");
+                    return false;
+                }
+                
+                // Store pointer to allocated font data so we can free it later when loading a new font
+                // EL133UF1_TTF keeps a reference to this data, so we must not free it until we load a different font
+                s_allocatedFontData = fontData;
+                Serial.printf("[FONT] Loaded font from LittleFS: %s (%ld bytes)\n", g_rtcFontList[i].name, fileSize);
+                return true;
+            }
+        }
+    }
+    
+    // Font not found - fall back to default
+    Serial.printf("[FONT] WARNING: Font '%s' not found, using default OpenSans\n", fontName.c_str());
+    if (!ttf.begin(&display)) {
+        Serial.println("[FONT] ERROR: Failed to initialize TTF");
+        return false;
+    }
+    if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+        Serial.println("[FONT] ERROR: Failed to load OpenSans font");
+        return false;
+    }
+    Serial.println("[FONT] Loaded default OpenSans font (fallback)");
+    return true;
+}
+
+/**
  * Handle text command with specified fill and outline colors
  * Supports multi-line wrapping for optimal space usage
  */
-bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor, const String& backgroundImage) {
+bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor, const String& backgroundImage, const String& fontName) {
     Serial.println("Processing text command with color...");
     Serial.printf("[TEXT] Received colors: fillColor=%d (expected: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 5=BLUE, 6=GREEN), outlineColor=%d, bgColor=%d\n", 
                   fillColor, outlineColor, bgColor);
@@ -7030,6 +7161,12 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
         // No background image - use background color
         Serial.println("Clearing display buffer with background color...");
         display.clear(bgColor);
+    }
+    
+    // Load the requested font (or default if none specified)
+    if (!loadFontByName(fontName)) {
+        Serial.println("ERROR: Failed to load font, aborting text command");
+        return false;
     }
     
     // Get display dimensions

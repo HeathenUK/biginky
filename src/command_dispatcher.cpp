@@ -15,7 +15,7 @@ extern bool handleClearCommand();
 extern bool handleNextCommand();
 extern bool handleGoCommand(const String& parameter);
 extern bool handleShowCommand(const String& parameter);
-extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = 1, const String& backgroundImage = "");  // Default bgColor = 1 (EL133UF1_WHITE)
+extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = 1, const String& backgroundImage = "", const String& fontName = "");  // Default bgColor = 1 (EL133UF1_WHITE)
 extern bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = 0);
 extern bool handleListNumbersCommand(const String& originalMessage = "");
 #include "canvas_handler.h"  // Canvas command handlers
@@ -179,6 +179,7 @@ static bool handleTextUnified(const CommandContext& ctx) {
     uint8_t outlineColor = EL133UF1_BLACK;   // Default: black outline
     uint8_t bgColor = EL133UF1_WHITE;        // Default: white background (only used when no background image)
     String backgroundImage = "";
+    String fontName = "";  // Font name from web UI
     
     if (ctx.source == CommandSource::MQTT_SMS) {
         // MQTT: Extract from command string (!text <text>)
@@ -191,6 +192,7 @@ static bool handleTextUnified(const CommandContext& ctx) {
         String bgColorStr = extractJsonStringField(ctx.originalMessage, "backgroundColour");
         String outlineColorStr = extractJsonStringField(ctx.originalMessage, "outlineColour");
         backgroundImage = extractJsonStringField(ctx.originalMessage, "backgroundImage");
+        fontName = extractJsonStringField(ctx.originalMessage, "font");
         
         // Handle multi-color text
         if (colorStr == "multi") {
@@ -214,13 +216,16 @@ static bool handleTextUnified(const CommandContext& ctx) {
         }
         
         Serial.printf("[TEXT] Final colors: fillColor=%d, outlineColor=%d, bgColor=%d\n", fillColor, outlineColor, bgColor);
+        if (fontName.length() > 0) {
+            Serial.printf("[TEXT] Font requested: '%s'\n", fontName.c_str());
+        }
     }
     
     if (text.length() == 0) {
         return false;
     }
     
-    return handleTextCommandWithColor(text, fillColor, outlineColor, bgColor, backgroundImage);
+    return handleTextCommandWithColor(text, fillColor, outlineColor, bgColor, backgroundImage, fontName);
 }
 
 static bool handleListUnified(const CommandContext& ctx) {

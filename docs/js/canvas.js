@@ -739,6 +739,47 @@ function posterizeImageWithDithering(x, y, width, height) {
     ctx.putImageData(imageData, x, y);
 }
 
+// Disable all processing options (reset to defaults)
+function disableAllProcessing() {
+    const brightnessSlider = document.getElementById('imageBrightness');
+    const contrastSlider = document.getElementById('imageContrast');
+    const saturationSlider = document.getElementById('imageSaturation');
+    const posterizeCheckbox = document.getElementById('imagePosterize');
+    const ditherCheckbox = document.getElementById('imageDither');
+    const brightnessDisplay = document.getElementById('imageBrightnessDisplay');
+    const contrastDisplay = document.getElementById('imageContrastDisplay');
+    const saturationDisplay = document.getElementById('imageSaturationDisplay');
+    
+    if (brightnessSlider) {
+        brightnessSlider.value = 0;
+        if (brightnessDisplay) {
+            brightnessDisplay.textContent = '0%';
+        }
+    }
+    
+    if (contrastSlider) {
+        contrastSlider.value = 0;
+        if (contrastDisplay) {
+            contrastDisplay.textContent = '0%';
+        }
+    }
+    
+    if (saturationSlider) {
+        saturationSlider.value = 0;
+        if (saturationDisplay) {
+            saturationDisplay.textContent = '0%';
+        }
+    }
+    
+    if (posterizeCheckbox) {
+        posterizeCheckbox.checked = false;
+    }
+    
+    if (ditherCheckbox) {
+        ditherCheckbox.checked = false;
+    }
+}
+
 // Apply image processing with configurable settings
 function applyImageProcessing() {
     if (!pendingImageData) {

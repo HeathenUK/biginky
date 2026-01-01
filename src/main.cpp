@@ -48,7 +48,7 @@
 #include "OpenAIImage.h"
 
 #include "fonts/opensans.h"
-#include "fonts/dancing.h"
+//#include "fonts/dancing.h"
 
 #include "es8311_simple.h"
 #include <time.h>
@@ -9884,7 +9884,7 @@ void setup() {
     
     // Load font once (clock overlay uses it)
     if (!ttf.fontLoaded()) {
-        if (!ttf.loadFont(dancing_otf, dancing_otf_len)) {
+        if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
             if (g_is_cold_boot) {
                 Serial.println("WARNING: Failed to load TTF font");
             }

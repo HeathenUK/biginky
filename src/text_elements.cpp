@@ -252,7 +252,7 @@ void QuoteElement::recalculateDimensions() {
     
     // Calculate quote block dimensions
     int16_t quoteLineHeight = _ttf->getTextHeight(quoteSize);
-    int16_t quoteLineGap = quoteLineHeight / 4;
+    int16_t quoteLineGap = quoteLineHeight / 8;  // Reduced gap between quote lines (was /4)
     _quoteHeight = _quoteLines * quoteLineHeight + (_quoteLines - 1) * quoteLineGap;
     
     // Calculate author dimensions
@@ -277,7 +277,7 @@ void QuoteElement::draw(int16_t centerX, int16_t centerY) {
     float authorSize = _authorFontSize * _sizeScale;
     
     int16_t quoteLineHeight = _ttf->getTextHeight(quoteSize);
-    int16_t quoteLineGap = quoteLineHeight / 4;
+    int16_t quoteLineGap = quoteLineHeight / 8;  // Reduced gap between quote lines (was /4)
     int16_t gapBeforeAuthor = _ttf->getTextHeight(authorSize) / 2;
     
     // Calculate block edges (accounting for outline)

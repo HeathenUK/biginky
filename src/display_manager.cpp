@@ -66,6 +66,7 @@ extern String getAudioForImage(const String& imagePath);
 extern bool playWavFile(const String& audioPath);
 extern void audio_stop();
 extern bool wifiLoadCredentials();
+extern bool loadFontByName(const String& fontName);
 
 // Forward declarations for internal helper functions
 static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStrSize,
@@ -452,16 +453,19 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
     
     // Scale quote to fit half area (with reduced margins: 50px top/bottom, 25px left/right)
     // Important: quoteH includes both quote text AND author, so scaling considers the full element
+    // When quote is on bottom, add 10px extra to bottom margin (50px top, 60px bottom = 110px total)
     int16_t quoteW, quoteH;
     quoteElement.getDimensions(quoteW, quoteH);
     float quoteScale = 1.0f;
-    if (quoteW > (halfW - 50) || quoteH > (halfH_area - 100)) {  // 25px margin each side = 50px total, 50px margin top/bottom = 100px total
+    int16_t quoteHeightMargin = quoteOnTop ? 100 : 110;  // 50px top/bottom when on top, 50px top/60px bottom when on bottom
+    if (quoteW > (halfW - 50) || quoteH > (halfH_area - quoteHeightMargin)) {  // 25px margin each side = 50px total
         float scaleW = (float)(halfW - 50) / quoteW;
-        float scaleH = (float)(halfH_area - 100) / quoteH;  // 50px margin top and bottom
+        float scaleH = (float)(halfH_area - quoteHeightMargin) / quoteH;
         quoteScale = (scaleW < scaleH) ? scaleW : scaleH;
         if (quoteScale < 0.5f) quoteScale = 0.5f;  // Minimum 50% size
         quoteElement.setAdaptiveSize(quoteScale);
-        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area (width margin: 25px each side, height margin: 50px top/bottom)\n", quoteScale * 100.0f);
+        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area (width margin: 25px each side, height margin: %dpx total - %s)\n", 
+                     quoteScale * 100.0f, quoteHeightMargin, quoteOnTop ? "50px top/bottom" : "50px top/60px bottom");
     }
     
     // Draw at fixed positions (centered in their assigned areas)
@@ -566,10 +570,11 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
     // Yield before text placement
     vTaskDelay(1);
     
-    // Get colors and thickness from current media mapping
+    // Get colors, thickness, and font from current media mapping
     uint8_t textColor = EL133UF1_WHITE;
     uint8_t outlineColor = EL133UF1_BLACK;
     int16_t outlineThickness = 3;  // Default thickness
+    String fontName = "";  // Empty string = use default OpenSans
     if (lastMediaIndex < g_media_mappings.size()) {
         const MediaMapping& mapping = g_media_mappings[lastMediaIndex];
         if (mapping.foreground.length() > 0) {
@@ -581,6 +586,15 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
         if (mapping.thickness > 0) {
             outlineThickness = mapping.thickness;
         }
+        if (mapping.font.length() > 0) {
+            fontName = mapping.font;
+        }
+    }
+    
+    // Load the font specified in the mapping (falls back to OpenSans if not found)
+    if (!loadFontByName(fontName)) {
+        Serial.println("WARNING: Failed to load font, using default OpenSans");
+        // loadFontByName already falls back to OpenSans, so this is just for logging
     }
     
     // Add text overlay (time/date/weather/quote) - centralized function

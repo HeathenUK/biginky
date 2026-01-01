@@ -6958,7 +6958,7 @@ static bool handleTextCommand(const String& parameter) {
  * allocated for as long as the font is in use. The memory is freed when a new
  * font is loaded (if it was dynamically allocated).
  */
-static bool loadFontByName(const String& fontName) {
+bool loadFontByName(const String& fontName) {
     // Static variable to track dynamically allocated font data (from LittleFS)
     // This needs to persist across function calls so we can free it when loading a new font
     static uint8_t* s_allocatedFontData = nullptr;

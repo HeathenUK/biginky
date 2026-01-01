@@ -318,6 +318,16 @@ async function handleStatusMessage(message) {
                 } else {
                     showStatus('commandStatus', 'Command completed successfully: ' + (status.command || 'unknown'), false);
                 }
+                
+                // Handle media_replace command completion - firmware will republish mappings automatically
+                if (status.command === 'media_replace') {
+                    if (status.success) {
+                        showStatus('mediaMappingsStatus', 'Media mappings updated successfully. Waiting for updated mappings...', false);
+                        // Firmware will automatically republish media mappings after update, which will trigger handleMediaMessage
+                    } else {
+                        showStatus('mediaMappingsStatus', 'Failed to update media mappings: ' + (status.error || 'unknown error'), true);
+                    }
+                }
             } else if (pendingCommandId) {
                 // console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.id);
             }
@@ -793,8 +803,23 @@ async function handleMediaMessage(message) {
             console.log('Media mappings payload does not contain fonts array');
         }
         
+        // Store current mappings for editing
+        currentMediaMappings = mediaData.mappings || [];
+        
+        // Store audio files list if present
+        if (mediaData.allAudioFiles && Array.isArray(mediaData.allAudioFiles)) {
+            allAudioFiles = mediaData.allAudioFiles;
+            console.log(`Loaded ${allAudioFiles.length} audio files for media mapping editor`);
+        }
+        
+        // Store fonts list if present
+        if (mediaData.fonts && Array.isArray(mediaData.fonts)) {
+            allFonts = mediaData.fonts;
+            console.log(`Loaded ${allFonts.length} fonts for media mapping editor`);
+        }
+        
         // Display media mappings table
-        updateMediaMappingsTable(mediaData.mappings);
+        updateMediaMappingsTable(currentMediaMappings);
     } catch (e) {
         console.error('Failed to parse/decrypt media mappings message:', e);
         document.getElementById('mediaMappingsStatus').textContent = 'Error parsing media mappings message: ' + e.message;

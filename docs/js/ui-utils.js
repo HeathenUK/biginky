@@ -45,7 +45,7 @@ function updateConnectionStatus(status, message) {
 // Update UI state based on password status
 function updatePasswordStatus() {
     const hasPassword = (webUIPassword && webUIPassword.length > 0);
-    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'connectBtn'];
+    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'connectBtn', 'addMediaBtn'];
     
     buttons.forEach(id => {
         const btn = document.getElementById(id);

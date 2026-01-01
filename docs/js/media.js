@@ -46,9 +46,11 @@ function updateMediaMappingsTable(mappings) {
         // Audio column - allow text wrapping
         html += `<td style="padding:8px;border:1px solid #555;word-wrap:break-word;overflow-wrap:break-word;">${mapping.audio || '<span style="color:#888;">(none)</span>'}</td>`;
         
-        // Actions column - Show button
+        // Actions column - Show, Edit, Delete buttons
         html += '<td style="padding:8px;border:1px solid #555;text-align:center;vertical-align:middle;">';
-        html += `<button onclick="showMediaItem(${displayIndex})" style="padding:6px 12px;font-size:14px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Show</button>`;
+        html += `<button onclick="showMediaItem(${displayIndex})" style="padding:6px 12px;font-size:14px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;margin:2px;">Show</button>`;
+        html += `<button onclick="editMediaMapping(${i})" style="padding:6px 12px;font-size:14px;background:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;margin:2px;">Edit</button>`;
+        html += `<button onclick="deleteMediaMapping(${i})" style="padding:6px 12px;font-size:14px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;margin:2px;">Delete</button>`;
         html += '</td>';
         
         html += '</tr>';
@@ -336,3 +338,212 @@ function populateBackgroundImageDropdown() {
     }
 }
 
+// Media mapping editor functions
+function addMediaMapping() {
+    editMediaMapping(-1);  // -1 means new mapping
+}
+
+function editMediaMapping(index) {
+    // Create or show modal for editing
+    let modal = document.getElementById('mediaMappingModal');
+    if (!modal) {
+        // Create modal
+        modal = document.createElement('div');
+        modal.id = 'mediaMappingModal';
+        modal.style.cssText = 'display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center;';
+        modal.innerHTML = `
+            <div style="background:#2a2a2a;padding:30px;border-radius:8px;max-width:600px;width:90%;max-height:90vh;overflow-y:auto;border:2px solid #555;">
+                <h2 style="color:#4CAF50;margin-top:0;">Edit Media Mapping</h2>
+                <form id="mediaMappingForm">
+                    <label style="display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;">Image: *</label>
+                    <select id="editMappingImage" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;"></select>
+                    <label style="display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;">Audio:</label>
+                    <select id="editMappingAudio" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
+                        <option value="">(none)</option>
+                    </select>
+                    <label style="display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;">Foreground Color:</label>
+                    <select id="editMappingForeground" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
+                        <option value="">(default)</option>
+                        <option value="black">Black</option>
+                        <option value="white">White</option>
+                        <option value="yellow">Yellow</option>
+                        <option value="red">Red</option>
+                        <option value="blue">Blue</option>
+                        <option value="green">Green</option>
+                    </select>
+                    <label style="display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;">Outline Color:</label>
+                    <select id="editMappingOutline" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
+                        <option value="">(default)</option>
+                        <option value="black">Black</option>
+                        <option value="white">White</option>
+                        <option value="yellow">Yellow</option>
+                        <option value="red">Red</option>
+                        <option value="blue">Blue</option>
+                        <option value="green">Green</option>
+                    </select>
+                    <label style="display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;">Font:</label>
+                    <select id="editMappingFont" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
+                        <option value="">(default)</option>
+                    </select>
+                    <label style="display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;">Outline Thickness:</label>
+                    <input type="number" id="editMappingThickness" min="1" max="10" value="3" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
+                    <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end;">
+                        <button type="button" onclick="closeMediaMappingModal()" style="padding:10px 20px;background:#666;color:white;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
+                        <button type="button" onclick="saveMediaMapping()" style="padding:10px 20px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Save</button>
+                    </div>
+                    <input type="hidden" id="editMappingIndex" value="-1">
+                </form>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        modal.onclick = function(e) {
+            if (e.target === modal) {
+                closeMediaMappingModal();
+            }
+        };
+    }
+    
+    // Populate dropdowns
+    const imageSelect = document.getElementById('editMappingImage');
+    imageSelect.innerHTML = '<option value="">Select image...</option>';
+    if (allImageFiles && allImageFiles.length > 0) {
+        allImageFiles.forEach(file => {
+            const option = document.createElement('option');
+            option.value = file;
+            option.textContent = file;
+            imageSelect.appendChild(option);
+        });
+    }
+    
+    const audioSelect = document.getElementById('editMappingAudio');
+    audioSelect.innerHTML = '<option value="">(none)</option>';
+    if (allAudioFiles && allAudioFiles.length > 0) {
+        allAudioFiles.forEach(file => {
+            const option = document.createElement('option');
+            option.value = file;
+            option.textContent = file;
+            audioSelect.appendChild(option);
+        });
+    }
+    
+    const fontSelect = document.getElementById('editMappingFont');
+    fontSelect.innerHTML = '<option value="">(default)</option>';
+    if (allFonts && allFonts.length > 0) {
+        allFonts.forEach(font => {
+            const option = document.createElement('option');
+            const fontName = font.name || font.filename || font.family || 'Unknown';
+            option.value = fontName;
+            const displayName = (font.family || font.name || font.filename) + (font.type === 'builtin' ? ' (Built-in)' : '');
+            option.textContent = displayName;
+            fontSelect.appendChild(option);
+        });
+    }
+    
+    // Populate form if editing existing mapping
+    if (index >= 0 && index < currentMediaMappings.length) {
+        const mapping = currentMediaMappings[index];
+        imageSelect.value = mapping.image || '';
+        audioSelect.value = mapping.audio || '';
+        document.getElementById('editMappingForeground').value = mapping.foreground || '';
+        document.getElementById('editMappingOutline').value = mapping.outline || '';
+        document.getElementById('editMappingFont').value = mapping.font || '';
+        document.getElementById('editMappingThickness').value = mapping.thickness || 3;
+        document.getElementById('editMappingIndex').value = index;
+    } else {
+        // New mapping - clear form
+        imageSelect.value = '';
+        audioSelect.value = '';
+        document.getElementById('editMappingForeground').value = '';
+        document.getElementById('editMappingOutline').value = '';
+        document.getElementById('editMappingFont').value = '';
+        document.getElementById('editMappingThickness').value = 3;
+        document.getElementById('editMappingIndex').value = -1;
+    }
+    
+    modal.style.display = 'flex';
+}
+
+function closeMediaMappingModal() {
+    const modal = document.getElementById('mediaMappingModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function deleteMediaMapping(index) {
+    if (index < 0 || index >= currentMediaMappings.length) {
+        showStatus('mediaMappingsStatus', 'Invalid mapping index', true);
+        return;
+    }
+    
+    if (!confirm(`Are you sure you want to delete mapping ${index + 1} (${currentMediaMappings[index].image || 'unknown image'})?`)) {
+        return;
+    }
+    
+    // Remove the mapping
+    currentMediaMappings.splice(index, 1);
+    
+    // Save the updated mappings
+    saveMediaMappingsToDevice();
+}
+
+async function saveMediaMapping() {
+    const index = parseInt(document.getElementById('editMappingIndex').value);
+    const image = document.getElementById('editMappingImage').value;
+    
+    if (!image || image.trim() === '') {
+        alert('Image is required');
+        return;
+    }
+    
+    const mapping = {
+        image: image,
+        audio: document.getElementById('editMappingAudio').value || '',
+        foreground: document.getElementById('editMappingForeground').value || '',
+        outline: document.getElementById('editMappingOutline').value || '',
+        font: document.getElementById('editMappingFont').value || '',
+        thickness: parseInt(document.getElementById('editMappingThickness').value) || 3
+    };
+    
+    if (index >= 0 && index < currentMediaMappings.length) {
+        // Update existing mapping
+        currentMediaMappings[index] = mapping;
+    } else {
+        // Add new mapping
+        currentMediaMappings.push(mapping);
+    }
+    
+    closeMediaMappingModal();
+    
+    // Save the updated mappings
+    saveMediaMappingsToDevice();
+}
+
+async function saveMediaMappingsToDevice() {
+    if (!currentMediaMappings || currentMediaMappings.length === 0) {
+        showStatus('mediaMappingsStatus', 'Cannot save: no mappings to save', true);
+        return;
+    }
+    
+    // Build payload with mappings array
+    const payload = {
+        command: 'media_replace',
+        mappings: currentMediaMappings.map(m => ({
+            image: m.image || '',
+            audio: m.audio || '',
+            foreground: m.foreground || '',
+            outline: m.outline || '',
+            font: m.font || '',
+            thickness: m.thickness || 3
+        }))
+    };
+    
+    showStatus('mediaMappingsStatus', 'Saving media mappings...', false);
+    
+    if (await publishMessage(payload)) {
+        showStatus('mediaMappingsStatus', 'Media mappings update sent. Waiting for confirmation...', false);
+        setBusyState(true, 'Updating media mappings... Please wait for device to respond.');
+    } else {
+        showStatus('mediaMappingsStatus', 'Failed to send media mappings update', true);
+    }
+}

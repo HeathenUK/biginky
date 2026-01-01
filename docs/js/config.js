@@ -82,6 +82,9 @@ const INITIAL_RECONNECT_DELAY = MQTT_CONFIG.connection.initialReconnectDelay;
 
 // Global image files list (populated from media mappings allImages field)
 let allImageFiles = [];
+let currentMediaMappings = [];  // Store current media mappings for editing
+let allAudioFiles = [];  // Store audio file list for media mapping editor
+let allFonts = [];  // Store font list for media mapping editor
 
 // Framebuffer tracking
 let lastFramebufferUpdateTimestamp = 0;  // Last framebuffer update timestamp from status message

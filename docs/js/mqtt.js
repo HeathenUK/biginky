@@ -265,28 +265,6 @@ async function handleStatusMessage(message) {
         // Display status
         updateDeviceStatus(status);
         
-        // Debug: Log font information from status message
-        console.log('=== Font Debug Info ===');
-        console.log('status.fonts exists:', 'fonts' in status);
-        console.log('status.fonts value:', status.fonts);
-        console.log('status.fonts is array:', Array.isArray(status.fonts));
-        if (status.fonts && Array.isArray(status.fonts)) {
-            console.log('status.fonts length:', status.fonts.length);
-            console.log('status.fonts contents:', JSON.stringify(status.fonts, null, 2));
-        } else {
-            console.log('WARNING: status.fonts is missing or not an array');
-            console.log('Full status object keys:', Object.keys(status));
-        }
-        console.log('======================');
-        
-        // Update font list from status
-        if (status.fonts && Array.isArray(status.fonts)) {
-            console.log('Calling updateFontList with:', status.fonts);
-            updateFontList(status.fonts);
-        } else {
-            console.log('Skipping updateFontList - fonts array not available');
-        }
-        
         // Store next wake time for busy state countdown
         let wakeTimeUpdated = false;
         if (status.next_wake) {
@@ -805,6 +783,14 @@ async function handleMediaMessage(message) {
         } else {
             console.warn('Media mappings payload does not contain allImages array');
             allImageFiles = [];
+        }
+        
+        // Update font list from media mappings (fonts are now in media mappings, not status)
+        if (mediaData.fonts && Array.isArray(mediaData.fonts)) {
+            console.log('Calling updateFontList with fonts from media mappings:', mediaData.fonts);
+            updateFontList(mediaData.fonts);
+        } else {
+            console.log('Media mappings payload does not contain fonts array');
         }
         
         // Display media mappings table

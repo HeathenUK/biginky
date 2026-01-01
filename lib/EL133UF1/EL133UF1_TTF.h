@@ -100,6 +100,14 @@ public:
     bool fontLoaded() { return _fontLoaded; }
     
     /**
+     * @brief Get the font family name from the loaded font
+     * @param nameBuffer Output buffer for the font name
+     * @param bufferSize Size of the output buffer
+     * @return true if name was successfully extracted, false otherwise
+     */
+    bool getFontName(char* nameBuffer, size_t bufferSize);
+    
+    /**
      * @brief Draw text centered within a given width
      * @param x X coordinate of left edge
      * @param y Y coordinate (top of text)

@@ -39,6 +39,7 @@
 #include "EL133UF1_BMP.h"
 #include "EL133UF1_PNG.h"
 #include "EL133UF1_Color.h"
+
 #include <pngle.h>  // For direct PNG decoding to RGB buffer
 #include "lodepng_psram.h"  // Custom PSRAM allocators for lodepng (must be before lodepng.h)
 #include "lodepng.h"  // For PNG encoding (canvas save functionality)
@@ -9687,38 +9688,83 @@ void setup() {
     if (ret != ESP_OK) {
         Serial.printf("Failed to initialize LittleFS partition (%s)\n", esp_err_to_name(ret));
     } else {
-        Serial.println("LittleFS partition mounted at /littlefs");
-        
-        // List directory contents
+        // Scan for TTF/OTF fonts and print their names
         DIR* dir = opendir("/littlefs");
         if (dir != nullptr) {
-            Serial.println("LittleFS directory contents:");
             struct dirent* entry;
-            int fileCount = 0;
+            std::vector<String> fontFiles;
+            
+            // Collect all .ttf and .otf files
             while ((entry = readdir(dir)) != nullptr) {
-                Serial.printf("  %s", entry->d_name);
-                // Get file info
-                char fullPath[128];
-                snprintf(fullPath, sizeof(fullPath), "/littlefs/%s", entry->d_name);
-                struct stat statBuf;
-                if (stat(fullPath, &statBuf) == 0) {
-                    if (S_ISDIR(statBuf.st_mode)) {
-                        Serial.printf(" [DIR]");
-                    } else {
-                        Serial.printf(" [%lu bytes]", (unsigned long)statBuf.st_size);
-                    }
+                String filename = String(entry->d_name);
+                filename.toLowerCase();
+                if (filename.endsWith(".ttf") || filename.endsWith(".otf")) {
+                    fontFiles.push_back(String(entry->d_name));
                 }
-                Serial.println();
-                fileCount++;
             }
             closedir(dir);
-            if (fileCount == 0) {
-                Serial.println("  (empty)");
-            } else {
-                Serial.printf("Total: %d file(s)\n", fileCount);
+            
+            // Process each font file
+            if (fontFiles.size() > 0) {
+                Serial.println("Fonts found on LittleFS:");
+                for (const String& fontFilename : fontFiles) {
+                    char fullPath[128];
+                    snprintf(fullPath, sizeof(fullPath), "/littlefs/%s", fontFilename.c_str());
+                    
+                    // Open and read font file
+                    FILE* fontFile = fopen(fullPath, "rb");
+                    if (fontFile == nullptr) {
+                        Serial.printf("  %s: Failed to open\n", fontFilename.c_str());
+                        continue;
+                    }
+                    
+                    // Get file size
+                    fseek(fontFile, 0, SEEK_END);
+                    long fileSize = ftell(fontFile);
+                    fseek(fontFile, 0, SEEK_SET);
+                    
+                    if (fileSize <= 0 || fileSize > 10 * 1024 * 1024) {  // Max 10MB font file
+                        fclose(fontFile);
+                        Serial.printf("  %s: Invalid size (%ld bytes)\n", fontFilename.c_str(), fileSize);
+                        continue;
+                    }
+                    
+                    // Allocate buffer and read font data
+                    uint8_t* fontData = (uint8_t*)malloc(fileSize);
+                    if (fontData == nullptr) {
+                        fclose(fontFile);
+                        Serial.printf("  %s: Failed to allocate memory\n", fontFilename.c_str());
+                        continue;
+                    }
+                    
+                    size_t bytesRead = fread(fontData, 1, fileSize, fontFile);
+                    fclose(fontFile);
+                    
+                    if (bytesRead != (size_t)fileSize) {
+                        free(fontData);
+                        Serial.printf("  %s: Failed to read file\n", fontFilename.c_str());
+                        continue;
+                    }
+                    
+                    // Use TTF library to validate font and get font name
+                    EL133UF1_TTF tempTTF;
+                    if (!tempTTF.loadFont(fontData, fileSize)) {
+                        free(fontData);
+                        Serial.printf("  %s: Invalid font file\n", fontFilename.c_str());
+                        continue;
+                    }
+                    
+                    // Get font name using the TTF library method
+                    char fontNameBuf[256];
+                    if (tempTTF.getFontName(fontNameBuf, sizeof(fontNameBuf))) {
+                        Serial.printf("  %s: %s\n", fontFilename.c_str(), fontNameBuf);
+                    } else {
+                        Serial.printf("  %s\n", fontFilename.c_str());
+                    }
+                    
+                    free(fontData);
+                }
             }
-        } else {
-            Serial.println("Failed to open LittleFS directory");
         }
     }
 

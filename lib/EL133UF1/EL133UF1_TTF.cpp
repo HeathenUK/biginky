@@ -242,6 +242,80 @@ bool EL133UF1_TTF::loadFont(const uint8_t* fontData, size_t fontDataSize) {
     return true;
 }
 
+bool EL133UF1_TTF::getFontName(char* nameBuffer, size_t bufferSize) {
+    if (!_fontLoaded || _fontInfo == nullptr || nameBuffer == nullptr || bufferSize == 0) {
+        return false;
+    }
+    
+    stbtt_fontinfo* info = (stbtt_fontinfo*)_fontInfo;
+    
+    // Try to get font family name (nameID 1)
+    // Try Microsoft Unicode first (most common)
+    int nameLength = 0;
+    const char* fontName = stbtt_GetFontNameString(info, &nameLength, 
+                                                    3,  // STBTT_PLATFORM_ID_MICROSOFT
+                                                    1,  // STBTT_MS_EID_UNICODE_BMP
+                                                    0x0409,  // STBTT_MS_LANG_ENGLISH
+                                                    1);  // nameID 1 = Font Family
+    
+    // If not found, try Unicode platform
+    if (fontName == nullptr || nameLength == 0) {
+        fontName = stbtt_GetFontNameString(info, &nameLength,
+                                           0,  // STBTT_PLATFORM_ID_UNICODE
+                                           3,  // STBTT_UNICODE_EID_UNICODE_2_0_BMP
+                                           0,  // Language ID 0 for Unicode
+                                           1);
+    }
+    
+    // If still not found, try Mac platform
+    if (fontName == nullptr || nameLength == 0) {
+        fontName = stbtt_GetFontNameString(info, &nameLength,
+                                           1,  // STBTT_PLATFORM_ID_MAC
+                                           0,  // STBTT_MAC_EID_ROMAN
+                                           0,  // STBTT_MAC_LANG_ENGLISH
+                                           1);
+    }
+    
+    if (fontName == nullptr || nameLength == 0) {
+        return false;
+    }
+    
+    // Convert UTF-16BE to UTF-8 or use as-is if already UTF-8
+    int copyLen = (nameLength < (int)(bufferSize - 1)) ? nameLength : (int)(bufferSize - 1);
+    
+    // Check if it's UTF-16BE (first byte is 0 and second is non-zero)
+    if (copyLen >= 2 && fontName[0] == 0 && fontName[1] != 0) {
+        // UTF-16BE: convert to UTF-8
+        size_t outPos = 0;
+        for (int i = 0; i < copyLen - 1 && outPos < bufferSize - 1; i += 2) {
+            uint16_t u16 = ((unsigned char)fontName[i] << 8) | (unsigned char)fontName[i + 1];
+            if (u16 < 0x80) {
+                if (outPos < bufferSize - 1) {
+                    nameBuffer[outPos++] = (char)u16;
+                }
+            } else if (u16 < 0x800) {
+                if (outPos < bufferSize - 2) {
+                    nameBuffer[outPos++] = (char)(0xC0 | (u16 >> 6));
+                    nameBuffer[outPos++] = (char)(0x80 | (u16 & 0x3F));
+                }
+            } else if (u16 < 0xD800 || u16 >= 0xE000) {  // Valid BMP (not surrogate)
+                if (outPos < bufferSize - 3) {
+                    nameBuffer[outPos++] = (char)(0xE0 | (u16 >> 12));
+                    nameBuffer[outPos++] = (char)(0x80 | ((u16 >> 6) & 0x3F));
+                    nameBuffer[outPos++] = (char)(0x80 | (u16 & 0x3F));
+                }
+            }
+        }
+        nameBuffer[outPos] = '\0';
+    } else {
+        // Assume it's already UTF-8 or ASCII
+        memcpy(nameBuffer, fontName, copyLen);
+        nameBuffer[copyLen] = '\0';
+    }
+    
+    return true;
+}
+
 // ============================================================================
 // Font Metrics
 // ============================================================================

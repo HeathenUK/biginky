@@ -603,59 +603,90 @@ function adjustImageForEink(imageData, brightnessPercent = 10, contrastPercent =
     return imageData;
 }
 
-// Posterize image to match e-ink colors using Atkinson dithering
+// E-ink color palette and color matching function
+const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
+
+// Precompute luma values for palette colors
+// Luma formula: (r * 250 + g * 350 + b * 400) / (255.0 * 1000)
+const paletteLuma = einkColors.map(c => (c[0] * 250 + c[1] * 350 + c[2] * 400) / (255.0 * 1000));
+
+function findClosestColorIdx(r, g, b) {
+    // Calculate luma for input pixel
+    const luma1 = (r * 250 + g * 350 + b * 400) / (255.0 * 1000);
+    
+    let minDist = Infinity;
+    let closestIdx = 0;
+    
+    for (let i = 0; i < einkColors.length; i++) {
+        const ec = einkColors[i];
+        
+        // RGB component distance with weighted channels
+        // Weights: R*0.250, G*0.350, B*0.400 (compensates for human eye sensitivity and e-ink display)
+        const diffR = r - ec[0];
+        const diffG = g - ec[1];
+        const diffB = b - ec[2];
+        const rgbDist = (diffR * diffR * 0.250 + diffG * diffG * 0.350 + diffB * diffB * 0.400) * 0.75 / (255.0 * 255.0);
+        
+        // Luma distance
+        const lumaDiff = luma1 - paletteLuma[i];
+        const lumaDist = lumaDiff * lumaDiff;
+        
+        // Total distance: RGB distance weighted more heavily (hue errors are more important)
+        const totalDist = 1.5 * rgbDist + 0.60 * lumaDist;
+        
+        if (totalDist < minDist) {
+            minDist = totalDist;
+            closestIdx = i;
+        }
+    }
+    return closestIdx;
+}
+
+// Posterize image to match e-ink colors (quantize without dithering)
 // Based on: https://github.com/Toon-nooT/PhotoPainter-E-Ink-Spectra-6-image-converter
 function posterizeImage(x, y, width, height) {
-    const einkColors = [[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];
-    
-    // Precompute luma values for palette colors
-    // Luma formula: (r * 250 + g * 350 + b * 400) / (255.0 * 1000)
-    const paletteLuma = einkColors.map(c => (c[0] * 250 + c[1] * 350 + c[2] * 400) / (255.0 * 1000));
-    
-    function findClosestColorIdx(r, g, b) {
-        // Calculate luma for input pixel
-        const luma1 = (r * 250 + g * 350 + b * 400) / (255.0 * 1000);
-        
-        let minDist = Infinity;
-        let closestIdx = 0;
-        
-        for (let i = 0; i < einkColors.length; i++) {
-            const ec = einkColors[i];
-            
-            // RGB component distance with weighted channels
-            // Weights: R*0.250, G*0.350, B*0.400 (compensates for human eye sensitivity and e-ink display)
-            const diffR = r - ec[0];
-            const diffG = g - ec[1];
-            const diffB = b - ec[2];
-            const rgbDist = (diffR * diffR * 0.250 + diffG * diffG * 0.350 + diffB * diffB * 0.400) * 0.75 / (255.0 * 255.0);
-            
-            // Luma distance
-            const lumaDiff = luma1 - paletteLuma[i];
-            const lumaDist = lumaDiff * lumaDiff;
-            
-            // Total distance: RGB distance weighted more heavily (hue errors are more important)
-            const totalDist = 1.5 * rgbDist + 0.60 * lumaDist;
-            
-            if (totalDist < minDist) {
-                minDist = totalDist;
-                closestIdx = i;
-            }
-        }
-        return closestIdx;
-    }
-    
     const imageData = ctx.getImageData(x, y, width, height);
     const data = imageData.data;
     
-    // Atkinson dithering (distributes 75% of error to 6 neighbors, 1/8 each)
+    // Simply quantize each pixel to the closest e-ink color
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        
+        // Find closest e-ink color
+        const closestIdx = findClosestColorIdx(r, g, b);
+        const targetColor = einkColors[closestIdx];
+        
+        // Set pixel to target color
+        data[i] = targetColor[0];
+        data[i + 1] = targetColor[1];
+        data[i + 2] = targetColor[2];
+    }
+    
+    ctx.putImageData(imageData, x, y);
+}
+
+// Apply Atkinson dithering to already posterized image
+// Based on: https://github.com/Toon-nooT/PhotoPainter-E-Ink-Spectra-6-image-converter
+function applyDithering(x, y, width, height) {
+    const imageData = ctx.getImageData(x, y, width, height);
+    const data = imageData.data;
+    
+    // Create a temporary copy to read original values while modifying
+    const originalData = new Uint8ClampedArray(data);
+    
+    // Atkinson dithering (distributes error to 6 neighbors, 5/8 total)
     for (let py = 0; py < height; py++) {
         for (let px = 0; px < width; px++) {
             const idx = (py * width + px) * 4;
+            
+            // Get current pixel values (these may have been modified by previous dithering)
             let r = data[idx];
             let g = data[idx + 1];
             let b = data[idx + 2];
             
-            // Find closest e-ink color
+            // Find closest e-ink color for current (possibly dithered) pixel
             const closestIdx = findClosestColorIdx(r, g, b);
             const targetColor = einkColors[closestIdx];
             
@@ -671,7 +702,6 @@ function posterizeImage(x, y, width, height) {
             
             // Distribute error to neighboring pixels (Atkinson: 5/8 total, standard pattern)
             // Pattern: Right: 1/8, Bottom-left: 1/8, Bottom: 1/4, Bottom-right: 1/8
-            // Based on: https://github.com/Toon-nooT/PhotoPainter-E-Ink-Spectra-6-image-converter
             
             // Right (1/8)
             if (px < width - 1) {
@@ -723,11 +753,13 @@ function applyImageProcessing() {
     const contrastSlider = document.getElementById('imageContrast');
     const saturationSlider = document.getElementById('imageSaturation');
     const posterizeCheckbox = document.getElementById('imagePosterize');
+    const ditherCheckbox = document.getElementById('imageDither');
     
     const brightness = brightnessSlider ? parseInt(brightnessSlider.value) : 10;
     const contrast = contrastSlider ? parseInt(contrastSlider.value) : 20;
     const saturation = saturationSlider ? parseInt(saturationSlider.value) : 20;
     const enablePosterize = posterizeCheckbox ? posterizeCheckbox.checked : true;
+    const enableDither = ditherCheckbox ? ditherCheckbox.checked : true;
     
     // Redraw the original image first
     ctx.fillStyle = '#F5F5EB';
@@ -741,10 +773,16 @@ function applyImageProcessing() {
     adjustImageForEink(imageData, brightness, contrast, saturation);
     ctx.putImageData(imageData, pendingImageData.drawX, pendingImageData.drawY);
     
-    // Apply posterization/dithering if enabled
-    if (enablePosterize) {
+    // Apply posterization if enabled, or if dithering is enabled (dithering requires posterization)
+    if (enablePosterize || enableDither) {
         posterizeImage(pendingImageData.drawX, pendingImageData.drawY, 
                       pendingImageData.drawWidth, pendingImageData.drawHeight);
+        
+        // Apply dithering if enabled (requires posterization, which we just did)
+        if (enableDither) {
+            applyDithering(pendingImageData.drawX, pendingImageData.drawY, 
+                          pendingImageData.drawWidth, pendingImageData.drawHeight);
+        }
     }
     
     // Clear pending image data and hide panel
@@ -754,9 +792,19 @@ function applyImageProcessing() {
         processingPanel.style.display = 'none';
     }
     
-    const statusMsg = enablePosterize 
-        ? `Image processed: brightness ${brightness > 0 ? '+' : ''}${brightness}%, contrast ${contrast > 0 ? '+' : ''}${contrast}%, saturation ${saturation > 0 ? '+' : ''}${saturation}%, posterized with dithering`
-        : `Image processed: brightness ${brightness > 0 ? '+' : ''}${brightness}%, contrast ${contrast > 0 ? '+' : ''}${contrast}%, saturation ${saturation > 0 ? '+' : ''}${saturation}% (no posterization)`;
+    // Build status message
+    const statusParts = [
+        `brightness ${brightness > 0 ? '+' : ''}${brightness}%`,
+        `contrast ${contrast > 0 ? '+' : ''}${contrast}%`,
+        `saturation ${saturation > 0 ? '+' : ''}${saturation}%`
+    ];
+    if (enablePosterize || enableDither) {
+        statusParts.push('posterized');
+        if (enableDither) {
+            statusParts.push('dithered');
+        }
+    }
+    const statusMsg = `Image processed: ${statusParts.join(', ')}`;
     
     showStatus('canvasStatus', statusMsg, false);
 }

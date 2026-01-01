@@ -24,6 +24,9 @@ let dragOffsets = new Map(); // Map of element -> drag offset
 // Pending image data for processing
 let pendingImageData = null; // Stores {img, drawX, drawY, drawWidth, drawHeight} when image is loaded
 
+// Text input modal state
+let pendingTextCoords = null; // Stores {x, y} coordinates where text should be placed
+
 const colorMap = {
     // Actual e-ink display palette colors
     0: '#1A1A1A',  // Black (26, 26, 26)
@@ -222,8 +225,28 @@ function getCanvasCoordinates(e) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    const clientX = e.clientX !== undefined ? e.clientX : e.touches[0].clientX;
-    const clientY = e.clientY !== undefined ? e.clientY : e.touches[0].clientY;
+    
+    // Handle both mouse and touch events
+    // For touch events, only use the first touch point (ignore multi-touch)
+    let clientX, clientY;
+    if (e.clientX !== undefined && e.clientY !== undefined) {
+        // Mouse event
+        clientX = e.clientX;
+        clientY = e.clientY;
+    } else if (e.touches && e.touches.length > 0) {
+        // Touch event - use first touch only
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+    } else if (e.changedTouches && e.changedTouches.length > 0) {
+        // Touch end event - use first changed touch
+        clientX = e.changedTouches[0].clientX;
+        clientY = e.changedTouches[0].clientY;
+    } else {
+        // Fallback (shouldn't happen)
+        console.warn('getCanvasCoordinates: Unable to determine coordinates', e);
+        return { x: 0, y: 0 };
+    }
+    
     return {
         x: (clientX - rect.left) * scaleX,
         y: (clientY - rect.top) * scaleY
@@ -1084,26 +1107,15 @@ function startDraw(e) {
     }
     
     if (tool === 'text') {
-        const text = document.getElementById('canvasTextInput').value.trim();
-        if (text) {
-            const fontSize = document.getElementById('textFontSize').value;
-            const fontFamily = document.getElementById('textFontFamily') ? document.getElementById('textFontFamily').value : 'Arial';
-            const textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
-            
-            // Create pending text element
-            saveCanvasState();
-            const textElem = {
-                type: 'text',
-                text: text,
-                x: coords.x,
-                y: coords.y,
-                fontSize: fontSize,
-                fontFamily: fontFamily,
-                textAlign: textAlign
-            };
-            pendingElements.push(textElem);
-            redrawCanvas();
-        }
+        // Store coordinates for text placement
+        pendingTextCoords = { x: coords.x, y: coords.y };
+        
+        // Check if we have text already in the inline input (desktop workflow)
+        const inlineTextInput = document.getElementById('canvasTextInput');
+        const text = inlineTextInput ? inlineTextInput.value.trim() : '';
+        
+        // Show modal for text input (better UX on mobile, also works on desktop)
+        showTextInputModal(text);
         return;
     }
     
@@ -1507,9 +1519,47 @@ function initializeCanvas() {
         });
         canvas.addEventListener('mouseup', stopDraw);
         canvas.addEventListener('mouseleave', stopDraw);
-        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDraw(e); });
-        canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); });
-        canvas.addEventListener('touchend', (e) => { e.preventDefault(); stopDraw(); });
+        // Touch event handlers with multi-touch protection
+        canvas.addEventListener('touchstart', (e) => {
+            // Only handle single touch - ignore if multiple touches
+            if (e.touches.length === 1) {
+                e.preventDefault();
+                startDraw(e);
+            } else if (e.touches.length > 1) {
+                // Multiple touches - stop any ongoing drawing to prevent issues
+                if (isDrawing) {
+                    stopDraw();
+                }
+                e.preventDefault();
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            // Only handle single touch - ignore multi-touch gestures
+            if (e.touches.length === 1 && isDrawing) {
+                e.preventDefault();
+                draw(e);
+            } else if (e.touches.length > 1) {
+                // Multi-touch detected - stop drawing
+                if (isDrawing) {
+                    stopDraw();
+                }
+                e.preventDefault();
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener('touchend', (e) => {
+            // Handle touch end - stop drawing if we were drawing
+            if (isDrawing || e.changedTouches.length > 0) {
+                e.preventDefault();
+                stopDraw();
+            }
+        }, { passive: false });
+        
+        // Prevent context menu on long press (interferes with drawing)
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
         
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
@@ -1627,6 +1677,102 @@ function initializeCanvas() {
             closeOtherPickers: ['drawColorPalette', 'fillColorPalette']
         });
     }
+}
+
+// Show text input modal for mobile-friendly text entry
+function showTextInputModal(initialText = '') {
+    const modal = document.getElementById('textInputModal');
+    const modalInput = document.getElementById('modalTextInput');
+    
+    if (modal && modalInput) {
+        modalInput.value = initialText;
+        modal.style.display = 'flex';
+        
+        // Close modal when clicking outside (on overlay)
+        const closeOnOverlayClick = (e) => {
+            if (e.target === modal) {
+                cancelTextInput();
+                modal.removeEventListener('click', closeOnOverlayClick);
+            }
+        };
+        modal.addEventListener('click', closeOnOverlayClick);
+        
+        // Handle Enter key to confirm (Shift+Enter for new line)
+        const handleKeyDown = (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                confirmTextInput();
+                modalInput.removeEventListener('keydown', handleKeyDown);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelTextInput();
+                modalInput.removeEventListener('keydown', handleKeyDown);
+            }
+        };
+        modalInput.addEventListener('keydown', handleKeyDown);
+        
+        // Focus the input after a brief delay to ensure modal is visible
+        setTimeout(() => {
+            modalInput.focus();
+            // Move cursor to end of text
+            modalInput.setSelectionRange(modalInput.value.length, modalInput.value.length);
+        }, 100);
+    }
+}
+
+// Cancel text input modal
+function cancelTextInput() {
+    const modal = document.getElementById('textInputModal');
+    const modalInput = document.getElementById('modalTextInput');
+    
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    if (modalInput) {
+        modalInput.value = '';
+        // Remove any event listeners by cloning and replacing
+        const newInput = modalInput.cloneNode(true);
+        modalInput.parentNode.replaceChild(newInput, modalInput);
+    }
+    pendingTextCoords = null;
+}
+
+// Confirm text input and place on canvas
+function confirmTextInput() {
+    const modalInput = document.getElementById('modalTextInput');
+    const text = modalInput ? modalInput.value.trim() : '';
+    
+    if (!text || !pendingTextCoords) {
+        cancelTextInput();
+        return;
+    }
+    
+    const fontSize = document.getElementById('textFontSize') ? document.getElementById('textFontSize').value : '96';
+    const fontFamily = document.getElementById('textFontFamily') ? document.getElementById('textFontFamily').value : 'Arial';
+    const textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
+    
+    // Also update inline text input for consistency
+    const inlineTextInput = document.getElementById('canvasTextInput');
+    if (inlineTextInput) {
+        inlineTextInput.value = text;
+    }
+    
+    // Create pending text element
+    saveCanvasState();
+    const textElem = {
+        type: 'text',
+        text: text,
+        x: pendingTextCoords.x,
+        y: pendingTextCoords.y,
+        fontSize: fontSize,
+        fontFamily: fontFamily,
+        textAlign: textAlign
+    };
+    pendingElements.push(textElem);
+    redrawCanvas();
+    
+    // Clear modal and coordinates
+    cancelTextInput();
 }
 
 if (document.readyState === 'loading') {

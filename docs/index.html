@@ -50,11 +50,17 @@ h2::after{content:'▼';position:absolute;right:0;font-size:14px;opacity:0.7;tra
 h2.collapsed::after{transform:rotate(-90deg);}
 .section-content{overflow:hidden;transition:max-height 0.3s ease-out;}
 .section-content.collapsed{display:none;}
-canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;}
+canvas{border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;-ms-touch-action:none;touch-action:none;}
 .busy-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;z-index:10000;flex-direction:column;}
 .busy-overlay.active{display:flex;}
 .busy-overlay .message{color:#fff;font-size:18px;margin-top:20px;text-align:center;}
 .spinner{border:4px solid rgba(255,255,255,0.3);border-top:4px solid #4CAF50;border-radius:50%;width:50px;height:50px;animation:spin 1s linear infinite;}
+.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:20000;padding:20px;box-sizing:border-box;}
+.modal-content{background:#2a2a2a;border-radius:8px;padding:20px;max-width:500px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 4px 20px rgba(0,0,0,0.5);}
+@media (max-width:768px){
+.modal-content{padding:15px;max-width:95%;max-height:90vh;}
+.modal-overlay{padding:10px;}
+}
 @keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
 /* Responsive design for mobile devices */
 @media (max-width:768px){
@@ -110,6 +116,16 @@ table th,table td{padding:6px;font-size:12px;}
 <div id="busyOverlay" class="busy-overlay">
 <div class="spinner"></div>
 <div class="message">Processing command... Please wait for device to respond.</div>
+</div>
+<div id="textInputModal" class="modal-overlay" style="display:none;">
+<div class="modal-content">
+<h3 style="color:#4CAF50;margin-top:0;">Enter Text</h3>
+<textarea id="modalTextInput" placeholder="Enter text to place on canvas..." style="width:100%;min-height:100px;padding:10px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:16px;resize:vertical;margin-bottom:15px;"></textarea>
+<div style="display:flex;gap:10px;justify-content:flex-end;">
+<button onclick="cancelTextInput()" style="background:#666;">Cancel</button>
+<button onclick="confirmTextInput()" style="background:#4CAF50;">Place Text</button>
+</div>
+</div>
 </div>
 <h1>BigInky Remote Control</h1>
 <div class="section">

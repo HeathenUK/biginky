@@ -104,6 +104,7 @@ function createColorPicker(config) {
             palette.style.visibility = 'hidden';
             const paletteRect = palette.getBoundingClientRect();
             const paletteHeight = paletteRect.height || 120;
+            const paletteWidth = paletteRect.width || 200;
             palette.style.visibility = '';
             
             // Check if there's enough space below, if not position above
@@ -117,7 +118,37 @@ function createColorPicker(config) {
                 // Position below the button (default)
                 palette.style.top = (buttonRect.bottom + 4) + 'px';
             }
-            palette.style.left = buttonRect.left + 'px';
+            
+            // Handle horizontal positioning to prevent overflow
+            const viewportWidth = window.innerWidth;
+            const padding = 10; // Padding from viewport edges
+            
+            let leftPosition = buttonRect.left;
+            
+            // Check if palette would overflow on the right
+            if (leftPosition + paletteWidth > viewportWidth - padding) {
+                // Try positioning from the right edge
+                leftPosition = viewportWidth - paletteWidth - padding;
+                
+                // If that puts it off the left edge, center it or position at padding
+                if (leftPosition < padding) {
+                    // Ensure palette doesn't exceed viewport width
+                    if (paletteWidth > viewportWidth - (padding * 2)) {
+                        // Palette too wide, make it fit viewport with padding
+                        palette.style.width = (viewportWidth - (padding * 2)) + 'px';
+                        palette.style.maxWidth = (viewportWidth - (padding * 2)) + 'px';
+                        leftPosition = padding;
+                    } else {
+                        // Center it or position at minimum padding
+                        leftPosition = padding;
+                    }
+                }
+            } else if (leftPosition < padding) {
+                // Palette would overflow on the left, position at padding
+                leftPosition = padding;
+            }
+            
+            palette.style.left = leftPosition + 'px';
         } else {
             palette.style.display = 'none';
             // Reset position for next time (will be set to fixed when shown)

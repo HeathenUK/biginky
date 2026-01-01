@@ -90,6 +90,8 @@
 #define WIFI_ENABLED 0
 #endif
 
+#include "esp_littlefs.h"
+
 // MQTT support using ESP-IDF esp-mqtt component
 #include "mqtt_client.h"
 #include "esp_crt_bundle.h"
@@ -7122,6 +7124,7 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
     // Update display (thumbnail publishing happens automatically in display.update())
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
+    display.waitForUpdate();  // Wait for actual refresh to complete
     Serial.println("Display updated");
     
     Serial.println("Text command completed successfully");
@@ -7304,6 +7307,7 @@ bool handleMultiTextCommand(const String& parameter, uint8_t bgColor) {
     // Update display (thumbnail publishing happens automatically in display.update())
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
+    display.waitForUpdate();  // Wait for actual refresh to complete
     Serial.println("Display updated");
     
     Serial.println("!multi_text command completed successfully");
@@ -7551,6 +7555,7 @@ static bool handleMultiFadeTextCommand(const String& parameter, uint8_t bgColor)
     // Update display (thumbnail publishing happens automatically in display.update())
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
+    display.waitForUpdate();  // Wait for actual refresh to complete
     Serial.println("Display updated");
     
     Serial.println("!multi_fade_text command completed successfully");
@@ -8315,6 +8320,7 @@ bool handleShowCommand(const String& parameter) {
     // Update display
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
+    display.waitForUpdate();  // Wait for actual refresh to complete
     Serial.println("Display updated");
     
     Serial.println("!show command completed successfully");
@@ -9696,6 +9702,15 @@ void setup() {
     // Normal boot path - initialize everything
     Serial.begin(115200);
     
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = "/littlefs",
+        .partition_label = "littlefs",
+        .format_if_mount_failed = true,
+        .dont_mount = false,
+    };
+
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
+
     // Print chip information at boot
     // Check if we woke from deep sleep (non-switch-D wake) - set global flag early
     g_is_cold_boot = (wakeCause == ESP_SLEEP_WAKEUP_UNDEFINED);  // Set global flag early for use in print statements

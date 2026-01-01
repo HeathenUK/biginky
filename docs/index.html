@@ -304,8 +304,8 @@ table th,table td{padding:6px;font-size:12px;}
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
 <div class="canvas-controls-wrapper" style="margin-bottom:15px;">
-<div class="canvas-controls-row canvas-controls-primary" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;margin-bottom:12px;">
-<div class="canvas-tools-group" style="flex:0 0 auto;">
+<div class="canvas-controls-row canvas-controls-primary" style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin-bottom:12px;">
+<div class="canvas-tools-group" style="flex:0 0 auto;display:flex;flex-direction:column;">
 <label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Tool:</label>
 <div class="tool-btn-container" style="display:flex;gap:6px;flex-wrap:wrap;">
 <button onclick="setTool('brush')" id="tool-brush" class="tool-btn active" title="Brush" style="width:40px;height:40px;padding:6px;font-size:18px;">🖌️</button>
@@ -320,7 +320,14 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <input type="hidden" id="drawTool" value="brush">
 </div>
-<div class="canvas-colors-group" style="flex:0 0 auto;display:flex;gap:12px;flex-wrap:wrap;">
+<div class="canvas-colors-group" style="flex:0 0 auto;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+<div id="brushSizeContainer" style="width:160px;display:none;flex-shrink:0;">
+<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Brush Size:</label>
+<div style="display:flex;align-items:center;gap:8px;">
+<input type="range" id="brushSize" min="1" max="50" value="2" style="flex:1;min-width:0;">
+<span id="brushSizeDisplay" style="flex-shrink:0;min-width:50px;text-align:right;font-size:13px;">2px</span>
+</div>
+</div>
 <div id="colorContainer" style="width:140px;position:relative;flex-shrink:0;">
 <label id="colorLabel" style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Colour:</label>
 <button type="button" id="drawColorBtn" class="color-preview-btn" style="width:100%;height:38px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px 6px;" title="Click to select color">
@@ -374,21 +381,14 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 <div class="canvas-controls-row canvas-controls-secondary" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;">
-<div id="brushSizeContainer" style="width:180px;display:none;flex-shrink:0;">
-<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Brush Size:</label>
-<div style="display:flex;align-items:center;gap:8px;">
-<input type="range" id="brushSize" min="1" max="50" value="2" style="flex:1;min-width:0;">
-<span id="brushSizeDisplay" style="flex-shrink:0;min-width:50px;text-align:right;font-size:13px;">2px</span>
-</div>
-</div>
-<div id="lineWidthContainer" style="width:180px;display:none;flex-shrink:0;">
+<div id="lineWidthContainer" style="width:160px;display:none;flex-shrink:0;">
 <label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Line Width:</label>
 <div style="display:flex;align-items:center;gap:8px;">
 <input type="range" id="lineWidth" min="1" max="50" value="2" style="flex:1;min-width:0;">
 <span id="lineWidthDisplay" style="flex-shrink:0;min-width:50px;text-align:right;font-size:13px;">2px</span>
 </div>
 </div>
-<div id="roundedRectRadiusContainer" style="width:180px;display:none;flex-shrink:0;">
+<div id="roundedRectRadiusContainer" style="width:160px;display:none;flex-shrink:0;">
 <label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Corner Radius:</label>
 <div style="display:flex;align-items:center;gap:8px;">
 <input type="range" id="roundedRectRadius" min="0" max="100" value="20" style="flex:1;min-width:0;">

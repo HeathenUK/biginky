@@ -570,3 +570,38 @@ std::vector<String> listImageFilesVector() {
     return files;
 }
 
+
+std::vector<String> listAudioFilesVector() {
+    std::vector<String> files;
+    
+    if (!sdCardMounted) {
+        Serial.println("ERROR: SD card not mounted, cannot list audio files");
+        return files;
+    }
+    
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, "0:/audio");
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
+            // Check if it's a file (not directory) and has audio extension
+            if (!(fno.fattrib & AM_DIR)) {
+                String filename = String(fno.fname);
+                String filenameLower = filename;
+                filenameLower.toLowerCase();
+                if (filenameLower.endsWith(".wav") || filenameLower.endsWith(".mp3")) {
+                    files.push_back(filename);  // Just the filename, not the full path
+                }
+            }
+        }
+        f_closedir(&dir);
+    } else {
+        Serial.printf("ERROR: Failed to open audio directory for audio listing: %d\n", res);
+    }
+    
+    return files;
+}

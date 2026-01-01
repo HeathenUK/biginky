@@ -36,5 +36,11 @@ String generateThumbnailFromImageFile(const String& imagePath);
  */
 std::vector<String> listImageFilesVector();
 
+/**
+ * List all audio files on SD card
+ * @return Vector of audio filenames (e.g., "waves.wav", "beep.wav")
+ */
+std::vector<String> listAudioFilesVector();
+
 #endif // THUMBNAIL_UTILS_H
 

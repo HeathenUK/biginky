@@ -1957,6 +1957,11 @@ static void publishMQTTMediaMappingsInternalImpl() {
     std::vector<String> allImages = listImageFilesVector();
     Serial.printf("[Core 1] Found %zu image files on SD card\n", allImages.size());
     
+    // List all audio files
+    Serial.println("[Core 1] Listing all audio files from SD card for allAudioFiles array...");
+    std::vector<String> allAudioFiles = listAudioFilesVector();
+    Serial.printf("[Core 1] Found %zu audio files on SD card\n", allAudioFiles.size());
+    
     // Create root JSON object
     cJSON* root = cJSON_CreateObject();
     if (!root) {
@@ -1996,6 +2001,24 @@ static void publishMQTTMediaMappingsInternalImpl() {
             cJSON_AddStringToObject(mappingObj, "audio", mm.audioFile.c_str());
         }
         
+        // Add foreground color if present
+        if (mm.foreground.length() > 0) {
+            cJSON_AddStringToObject(mappingObj, "foreground", mm.foreground.c_str());
+        }
+        
+        // Add outline color if present
+        if (mm.outline.length() > 0) {
+            cJSON_AddStringToObject(mappingObj, "outline", mm.outline.c_str());
+        }
+        
+        // Add font if present
+        if (mm.font.length() > 0) {
+            cJSON_AddStringToObject(mappingObj, "font", mm.font.c_str());
+        }
+        
+        // Add thickness (always include, even if 0, so UI knows the value)
+        cJSON_AddNumberToObject(mappingObj, "thickness", (double)mm.thickness);
+        
         // Add thumbnail if present
         if (thumbnailBase64.length() > 0) {
             cJSON_AddStringToObject(mappingObj, "thumbnail", thumbnailBase64.c_str());
@@ -2022,6 +2045,25 @@ static void publishMQTTMediaMappingsInternalImpl() {
         cJSON_AddItemToArray(allImagesArray, imageItem);
     }
     cJSON_AddItemToObject(root, "allImages", allImagesArray);
+    
+    // Create allAudioFiles array
+    cJSON* allAudioFilesArray = cJSON_CreateArray();
+    if (!allAudioFilesArray) {
+        Serial.println("[Core 1] ERROR: Failed to create allAudioFiles array");
+        cJSON_Delete(root);
+        return;
+    }
+    
+    for (size_t i = 0; i < allAudioFiles.size(); i++) {
+        cJSON* audioItem = cJSON_CreateString(allAudioFiles[i].c_str());
+        if (!audioItem) {
+            Serial.printf("[Core 1] ERROR: Failed to create audio string for index %zu\n", i);
+            cJSON_Delete(root);
+            return;
+        }
+        cJSON_AddItemToArray(allAudioFilesArray, audioItem);
+    }
+    cJSON_AddItemToObject(root, "allAudioFiles", allAudioFilesArray);
     
     // Add fonts array
     cJSON* fontsArray = cJSON_CreateArray();

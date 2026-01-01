@@ -11,7 +11,9 @@ h1{color:#e0e0e0;border-bottom:2px solid #4CAF50;padding-bottom:10px;}
 h2{color:#4CAF50;margin-top:0;}
 label{display:block;margin:10px 0 5px 0;font-weight:bold;color:#e0e0e0;}
 textarea{width:100%;min-height:100px;font-family:monospace;padding:10px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
-select{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
+select{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;transition:background-color 0.2s;}
+select:hover{background-color:#333;}
+select:focus{background-color:#333;outline:none;border-color:#666;}
 input[type="text"]{width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;}
 button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;min-height:44px;touch-action:manipulation;-webkit-tap-highlight-color:rgba(76,175,80,0.3);}
 button:hover{background:#45a049;}
@@ -238,7 +240,7 @@ table th,table td{padding:6px;font-size:12px;}
 <label>Text Colour:</label>
 <button type="button" id="textColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select text color">
 <span id="textColorIndicator" style="display:inline-block;width:32px;height:32px;background:#1A1A1A;border:2px solid #333;margin:2px;"></span>
-<span id="textColorLabel" style="margin-left:8px;">Black</span>
+<span id="textColorLabel" style="margin-left:8px;font-size:14px;">Black</span>
 </button>
 <div id="textColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;top:100%;left:0;">
 <button class="palette-color-btn active" data-color="black" style="width:32px;height:32px;background:#1A1A1A;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
@@ -255,7 +257,7 @@ table th,table td{padding:6px;font-size:12px;}
 <label>Background Colour:</label>
 <button type="button" id="textBackgroundColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select background color">
 <span id="textBackgroundColorIndicator" style="display:inline-block;width:32px;height:32px;background:#F2F1E6;border:2px solid #333;margin:2px;"></span>
-<span id="textBackgroundColorLabel" style="margin-left:8px;">White</span>
+<span id="textBackgroundColorLabel" style="margin-left:8px;font-size:14px;">White</span>
 </button>
 <div id="textBackgroundColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;top:100%;left:0;">
 <button class="palette-color-btn" data-color="black" style="width:32px;height:32px;background:#1A1A1A;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
@@ -269,7 +271,7 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <div class="flex-item">
 <label>Background Image:</label>
-<select id="textBackgroundImage" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;height:40px;">
+<select id="textBackgroundImage" style="width:100%;padding:8px;border:2px solid #555;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;height:41px;font-size:14px;">
 <option value="">(Use background color)</option>
 </select>
 </div>
@@ -277,7 +279,7 @@ table th,table td{padding:6px;font-size:12px;}
 <label>Outline Colour:</label>
 <button type="button" id="textOutlineColorBtn" class="color-preview-btn" style="width:100%;height:40px;border:2px solid #555;cursor:pointer;background:#2a2a2a;display:flex;align-items:center;padding:4px;" title="Click to select outline color">
 <span id="textOutlineColorIndicator" style="display:inline-block;width:32px;height:32px;background:#1A1A1A;border:2px solid #333;margin:2px;"></span>
-<span id="textOutlineColorLabel" style="margin-left:8px;">Black</span>
+<span id="textOutlineColorLabel" style="margin-left:8px;font-size:14px;">Black</span>
 </button>
 <div id="textOutlineColorPalette" class="color-palette-popup" style="display:none;position:absolute;background:#2a2a2a;padding:8px;border:2px solid #555;border-radius:4px;z-index:1000;top:100%;left:0;">
 <button class="palette-color-btn active" data-color="black" style="width:32px;height:32px;background:#1A1A1A;border:2px solid #555;cursor:pointer;margin:2px;" title="Black"></button>
@@ -291,7 +293,7 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <div class="flex-item">
 <label>Font:</label>
-<select id="textFont" style="width:100%;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;height:40px;">
+<select id="textFont" style="width:100%;padding:8px;border:2px solid #555;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;height:41px;font-size:14px;">
 <option value="OpenSans" selected>OpenSans (Default)</option>
 </select>
 </div>

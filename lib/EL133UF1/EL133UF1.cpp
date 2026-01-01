@@ -251,6 +251,12 @@ bool EL133UF1::begin(int8_t cs0Pin, int8_t cs1Pin, int8_t dcPin,
     digitalWrite(_dcPin, LOW);
     digitalWrite(_resetPin, HIGH);
 
+    // Power-on delay for cold boot - display needs time to stabilize after power-on
+    // This is critical for cold boot reliability
+    Serial.println("  Waiting for display power stabilization (cold boot)...");
+    Serial.flush();
+    delay(500);  // 500ms power-on stabilization delay for cold boot
+
     // Initialize SPI
     Serial.println("  Starting SPI...");
     _spi->begin();
@@ -1322,7 +1328,10 @@ void EL133UF1::update(bool skipInit) {
 }
 
 void EL133UF1::updateAsync(bool skipInit) {
-    if (!_initialized || _asyncInProgress) return;
+    if (!_initialized || _asyncInProgress) {
+        Serial.println("EL133UF1::updateAsync: Skipping - not initialized or update in progress");
+        return;
+    }
 
     // Run init sequence only if not already done this boot session
     if (!_initDone) {
@@ -1330,26 +1339,34 @@ void EL133UF1::updateAsync(bool skipInit) {
         _initDone = true;
     }
     
-    // Send buffer data
+    // Send buffer data (this may fail, but we continue anyway to attempt refresh)
     _sendBuffer();
 
-    // ALWAYS generate thumbnail and publish after display update
-    // Connects WiFi and MQTT if needed to ensure thumbnail is always published
-    // This ensures thumbnails are always published after every display update
-#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
-    extern void publishMQTTThumbnailAlways();
-    publishMQTTThumbnailAlways();  // Always connects and publishes thumbnail
-#endif
-
-    // Power on
+    // CRITICAL: Send refresh commands IMMEDIATELY after buffer send
+    // These commands MUST be sent even if thumbnail publishing fails or blocks
+    // Order: CMD_PON -> wait -> CMD_DRF -> set flag
+    Serial.println("EL133UF1::updateAsync: Sending critical refresh commands...");
+    
+    // Power on - CRITICAL COMMAND
     _sendCommand(CMD_PON, CS_BOTH_SEL);
     _busyWait(200);
 
-    // Start display refresh (non-blocking after this)
+    // Start display refresh - CRITICAL COMMAND
+    // This must execute even if thumbnail publishing fails later
     const uint8_t drf[] = {0x00};
     _sendCommand(CMD_DRF, CS_BOTH_SEL, drf, sizeof(drf));
     
+    // Set flag IMMEDIATELY after CMD_DRF is sent
+    // This ensures waitForUpdate() will work correctly even if thumbnail publishing fails
     _asyncInProgress = true;
+    Serial.println("EL133UF1::updateAsync: Critical refresh commands sent, refresh started");
+
+    // NOW do thumbnail publishing (non-critical, can fail without affecting display refresh)
+    // This runs after the critical commands are sent, so refresh will proceed even if this fails
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+    extern void publishMQTTThumbnailAlways();
+    publishMQTTThumbnailAlways();  // Non-critical: can fail without affecting display
+#endif
 }
 
 bool EL133UF1::isUpdateComplete() {

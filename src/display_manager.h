@@ -44,4 +44,13 @@ class EL133UF1_TTF;
  */
 void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin = 50, uint8_t textColor = EL133UF1_WHITE, uint8_t outlineColor = EL133UF1_BLACK, int16_t outlineThickness = 3);
 
+/**
+ * Display the Happy weather scene
+ * Shows a static background image from LittleFS with 6 time/weather overlays
+ * Each overlay represents a different geographic location
+ * 
+ * @return true if successful, false otherwise
+ */
+bool displayHappyWeatherScene();
+
 #endif // DISPLAY_MANAGER_H

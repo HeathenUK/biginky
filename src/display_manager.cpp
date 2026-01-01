@@ -631,3 +631,157 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
     
     return true;
 }
+
+/**
+ * Happy weather scene configuration
+ * Hardcoded configuration for 6 locations with coordinates, timezones, and text positions
+ */
+struct HappyWeatherLocation {
+    const char* name;           // Display name (e.g., "Brienz")
+    float lat;                  // Latitude
+    float lon;                  // Longitude
+    int8_t timezoneOffset;      // UTC offset in hours (e.g., 0 for GMT, 1 for CET)
+    int16_t textX;              // X position for text overlay (center of panel)
+    int16_t textY;              // Y position for text overlay (center vertically)
+};
+
+/**
+ * Helper function to format time with timezone offset
+ * Returns formatted time string (HH:MM format)
+ */
+static void formatTimeWithTimezone(int8_t timezoneOffset, char* timeBuf, size_t timeBufSize) {
+    time_t now = time(nullptr);
+    
+    if (now <= 1577836800) {  // before 2020-01-01, time not set
+        snprintf(timeBuf, timeBufSize, "--:--");
+        return;
+    }
+    
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    
+    // Apply timezone offset to hour (simple addition with wrap-around)
+    int hour = tm_utc.tm_hour + timezoneOffset;
+    // Handle wrap-around (hour can be negative or >= 24)
+    while (hour < 0) hour += 24;
+    while (hour >= 24) hour -= 24;
+    
+    // Format time
+    snprintf(timeBuf, timeBufSize, "%02d:%02d", hour, tm_utc.tm_min);
+}
+
+/**
+ * Display the Happy weather scene
+ * Shows a blank background with 6 time/weather overlays (background image to be added later)
+ */
+bool displayHappyWeatherScene() {
+    Serial.println("=== Happy Weather Scene ===");
+    
+    // Hardcoded configuration for 6 locations
+    // Display is 1600x1200, divided into 6 horizontal panels (~267px each)
+    // Text positions are centered in each panel horizontally, centered vertically
+    static const HappyWeatherLocation locations[6] = {
+        {"Brienz",          46.75f,   8.03f,  1,  133, 600},   // Panel 1: 0-267px
+        {"Delden",          52.30f,   6.64f,  1,  400, 600},   // Panel 2: 267-534px
+        {"Portelet Beach",  49.17f,  -2.18f,  0,  667, 600},   // Panel 3: 534-801px
+        {"The Five Arrows", 51.85f,  -0.93f,  0,  933, 600},   // Panel 4: 801-1068px
+        {"Isle of Mull",    56.44f,  -6.03f,  0, 1200, 600},   // Panel 5: 1068-1335px
+        {"Bruvik",          60.48f,   5.68f,  1, 1467, 600}    // Panel 6: 1335-1600px
+    };
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+    // Ensure TTF is initialized
+    if (!ttf.begin(&display)) {
+        Serial.println("ERROR: TTF initialization failed!");
+        return false;
+    }
+    
+    // Clear display buffer with white background (background image to be added later)
+    Serial.println("Clearing display buffer (white background)...");
+    display.clear(EL133UF1_WHITE);
+    
+    // Connect WiFi if needed (for weather fetching)
+    bool wifiConnected = false;
+    if (wifiLoadCredentials()) {
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.printf("[Happy Weather] WiFi already connected (IP: %s)\n", WiFi.localIP().toString().c_str());
+            wifiConnected = true;
+        } else {
+            Serial.println("[Happy Weather] Connecting WiFi for weather data...");
+            if (wifiConnectPersistent(3, 20000, false)) {
+                Serial.printf("[Happy Weather] WiFi connected (IP: %s)\n", WiFi.localIP().toString().c_str());
+                wifiConnected = true;
+            }
+        }
+    }
+    
+    // Process each location
+    for (int i = 0; i < 6; i++) {
+        const HappyWeatherLocation& loc = locations[i];
+        Serial.printf("[Happy Weather] Processing location %d: %s\n", i + 1, loc.name);
+        
+        vTaskDelay(1);  // Yield to watchdog
+        
+        // Fetch weather data
+        char tempStr[16] = "N/A";
+        char conditionStr[64] = "N/A";
+        
+        if (wifiConnected) {
+            if (fetchWeatherData(loc.lat, loc.lon, tempStr, sizeof(tempStr), 
+                                conditionStr, sizeof(conditionStr))) {
+                Serial.printf("[Happy Weather] Weather for %s: %s, %s\n", loc.name, tempStr, conditionStr);
+            } else {
+                Serial.printf("[Happy Weather] Failed to fetch weather for %s, using fallback\n", loc.name);
+            }
+        } else {
+            Serial.printf("[Happy Weather] WiFi not connected, using fallback for %s\n", loc.name);
+        }
+        
+        // Format time with timezone offset
+        char timeBuf[16];
+        formatTimeWithTimezone(loc.timezoneOffset, timeBuf, sizeof(timeBuf));
+        
+        // Get weather element dimensions to position time above it
+        WeatherElement weatherElement(&ttf, tempStr, conditionStr, loc.name);
+        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_WHITE);  // Black text, white outline
+        
+        int16_t weatherW, weatherH;
+        weatherElement.getDimensions(weatherW, weatherH);
+        
+        // Draw time text above weather (use smaller font size to fit in panel)
+        // Position time above the weather element with some gap
+        float timeFontSize = 120.0f;  // Smaller font for compact display in panel
+        int16_t timeHeight = ttf.getTextHeight(timeFontSize);
+        int16_t gapBetweenTimeAndWeather = 30;
+        int16_t timeY = loc.textY - (weatherH / 2) - gapBetweenTimeAndWeather - (timeHeight / 2);
+        
+        // Draw time text (centered horizontally, using enum values directly)
+        ttf.drawTextAlignedOutlined(loc.textX, timeY, timeBuf, timeFontSize,
+                                    EL133UF1_BLACK, EL133UF1_WHITE,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 3);
+        
+        // Draw weather element at specified position (centered)
+        weatherElement.draw(loc.textX, loc.textY);
+        
+        Serial.printf("[Happy Weather] Drew time '%s' and weather for %s at (%d, %d)\n", 
+                     timeBuf, loc.name, loc.textX, loc.textY);
+    }
+    
+    // Update display
+    Serial.println("Updating display...");
+    display.update();
+    display.waitForUpdate();
+    Serial.println("Display updated");
+    
+    return true;
+}

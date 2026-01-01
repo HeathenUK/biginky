@@ -364,6 +364,7 @@ static bool g_config_mode_needed = false;  // Flag to indicate config mode is ne
 bool g_is_cold_boot = false;  // Flag to indicate this is a cold boot (not deep sleep wake) (non-static for webui_crypto module access)
 static volatile bool g_ota_requested = false;  // Flag to indicate 'o' key was pressed for OTA mode
 static volatile bool g_manage_requested = false;  // Flag to indicate 'm' key was pressed for web interface
+static volatile bool g_happy_weather_requested = false;  // Flag to indicate 'h' key was pressed for Happy weather scene
 static TaskHandle_t g_serial_monitor_task = nullptr;  // Task handle for serial monitor
 
 // Forward declarations (SDMMC is always enabled)
@@ -869,14 +870,16 @@ static time_t calculateTargetWakeTime(time_t now) {
 // Forward declarations
 static void checkAndStartOTA();
 static void checkAndStartManage();
+static void checkAndStartHappyWeather();
 
 static void sleepNowSeconds(uint32_t seconds) {
     // Note: Target wake time calculation is done by the caller (sleepUntilNextMinuteOrFallback).
     // We only recalculate it right before sleep to account for cleanup delays.
     
-    // Check if OTA or web interface was requested before sleeping
+    // Check if OTA, web interface, or Happy weather scene was requested before sleeping
     checkAndStartOTA();
     checkAndStartManage();
+    checkAndStartHappyWeather();
     
     // ESP32-P4 can only wake from deep sleep using LP GPIOs (0-15) via ext1
     // Switch D is on GPIO51, which is NOT an LP GPIO
@@ -2842,8 +2845,9 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                     delay(50);
                 }
                 
-                // Check if OTA was requested before sleeping
+                // Check if OTA or Happy weather scene was requested before sleeping
                 checkAndStartOTA();
+                checkAndStartHappyWeather();
             }
             
             // Keep WiFi connected - will only disconnect before deep sleep
@@ -3637,6 +3641,7 @@ static void serial_monitor_task(void* arg) {
     (void)arg;
     Serial.println("Serial monitor task started - press 'o' at any time to enter OTA mode");
     Serial.println("  Press 'm' at any time to launch web interface");
+    Serial.println("  Press 'h' at any time to display Happy weather scene");
     Serial.println("  Press 'E' for encryption status, 'e' to toggle encryption");
     
     while (true) {
@@ -3648,6 +3653,9 @@ static void serial_monitor_task(void* arg) {
             } else if (ch == 'm' || ch == 'M') {
                 g_manage_requested = true;
                 Serial.println("\n>>> 'm' key detected - Web interface will start at next safe moment <<<");
+            } else if (ch == 'h' || ch == 'H') {
+                g_happy_weather_requested = true;
+                Serial.println("\n>>> 'h' key detected - Happy weather scene will display at next safe moment <<<");
             } else if (ch == 'E') {
                 // Show encryption status
                 bool enabled = isEncryptionEnabled();
@@ -3705,6 +3713,20 @@ static void checkAndStartManage() {
         // Call handleManageCommand directly (it's blocking and handles everything)
         handleManageCommand();
         // After web interface exits, continue with normal operation
+    }
+}
+
+/**
+ * Check if Happy weather scene was requested and display it if needed
+ * Call this at safe points in the code (after initialization, before sleep, etc.)
+ */
+static void checkAndStartHappyWeather() {
+    if (g_happy_weather_requested) {
+        Serial.println("\n>>> Displaying Happy weather scene (requested via serial) <<<");
+        g_happy_weather_requested = false;  // Reset flag before starting
+        // Call displayHappyWeatherScene directly (it's blocking and handles everything)
+        displayHappyWeatherScene();
+        // After scene is displayed, continue with normal operation
     }
 }
 

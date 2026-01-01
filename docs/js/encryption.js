@@ -200,8 +200,11 @@ async function encryptMessage(plaintext) {
         combined.set(iv, 0);
         combined.set(new Uint8Array(ciphertext), 16);
         
-        // Base64 encode
-        const binaryString = String.fromCharCode.apply(null, combined);
+        // Base64 encode (avoid spread operator for large arrays to prevent "too many arguments" error)
+        let binaryString = '';
+        for (let i = 0; i < combined.length; i++) {
+            binaryString += String.fromCharCode(combined[i]);
+        }
         const base64 = btoa(binaryString);
         
         return base64;

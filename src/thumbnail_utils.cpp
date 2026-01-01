@@ -249,8 +249,8 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         Serial.println("SD card mounted successfully for thumbnail generation");
     }
     
-    // Load image file from SD into memory
-    String fullPath = "0:/" + imagePath;
+    // Load image file from SD into memory (images are in images/ subdirectory)
+    String fullPath = "0:/images/" + imagePath;
     
     FILINFO fno;
     FRESULT res = f_stat(fullPath.c_str(), &fno);
@@ -544,7 +544,7 @@ std::vector<String> listImageFilesVector() {
     
     FF_DIR dir;
     FILINFO fno;
-    FRESULT res = f_opendir(&dir, "0:/");
+    FRESULT res = f_opendir(&dir, "0:/images");
     
     if (res == FR_OK) {
         while (true) {
@@ -558,13 +558,13 @@ std::vector<String> listImageFilesVector() {
                 filenameLower.toLowerCase();
                 if (filenameLower.endsWith(".png") || filenameLower.endsWith(".bmp") || 
                     filenameLower.endsWith(".jpg") || filenameLower.endsWith(".jpeg")) {
-                    files.push_back(filename);
+                    files.push_back(filename);  // Just the filename, not the full path
                 }
             }
         }
         f_closedir(&dir);
     } else {
-        Serial.printf("ERROR: Failed to open SD card directory for image listing: %d\n", res);
+        Serial.printf("ERROR: Failed to open images directory for image listing: %d\n", res);
     }
     
     return files;

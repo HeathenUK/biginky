@@ -305,7 +305,7 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
-<div class="canvas-controls-wrapper" style="margin-bottom:15px;">
+<div class="canvas-controls-wrapper" style="margin-bottom:8px;">
 <div class="canvas-controls-row canvas-controls-primary" style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin-bottom:12px;">
 <div class="canvas-tools-group" style="flex:0 0 auto;display:flex;flex-direction:column;">
 <label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Tool:</label>
@@ -323,7 +323,7 @@ table th,table td{padding:6px;font-size:12px;}
 <input type="hidden" id="drawTool" value="brush">
 </div>
 <div class="canvas-colors-group" style="flex:0 0 auto;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
-<div id="brushSizeContainer" style="width:160px;display:none;flex-shrink:0;">
+<div id="brushSizeContainer" style="width:160px;display:none;flex-shrink:0;margin-top:-3px;">
 <label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Brush Size:</label>
 <div style="display:flex;align-items:center;gap:8px;">
 <input type="range" id="brushSize" min="1" max="50" value="2" style="flex:1;min-width:0;">
@@ -465,8 +465,8 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 </div>
-<div class="canvas-actions-wrapper" style="margin-bottom:10px;">
-<div class="canvas-actions-primary">
+<div class="canvas-actions-wrapper" style="margin-bottom:10px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;">
+<div class="canvas-actions-primary" style="display:flex;flex-wrap:wrap;gap:8px;flex:1 1 auto;">
 <button onclick="clearCanvas()">Clear Canvas</button>
 <button onclick="undoCanvas()" id="undoBtn" disabled>Undo</button>
 <button onclick="redoCanvas()" id="redoBtn" disabled>Redo</button>
@@ -474,9 +474,9 @@ table th,table td{padding:6px;font-size:12px;}
 <button onclick="loadFramebufferToCanvas()" id="loadFrameBtn" disabled>Load Frame</button>
 <input type="file" id="imageFileInput" accept="image/*" capture="environment" style="display:none;" onchange="handleImageFileSelect(event)">
 </div>
-<div class="canvas-actions-secondary">
+<div class="canvas-actions-secondary" style="display:flex;gap:8px;align-items:center;flex-shrink:0;margin-left:auto;">
 <input type="text" id="canvasFilenameInput" placeholder="canvas_2025-12-30T12-00-00.png" class="canvas-filename-input" style="width:220px;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;display:none;">
-<select id="canvasActionSelect" class="canvas-action-select" style="padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;">
+<select id="canvasActionSelect" class="canvas-action-select" style="padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;min-width:180px;">
 <option value="display" selected>Display on Panel</option>
 <option value="display-save">Display on Panel & Save</option>
 <option value="save">Save</option>

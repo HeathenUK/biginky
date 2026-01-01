@@ -6840,6 +6840,8 @@ static bool handleTextCommand(const String& parameter) {
  */
 bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor, const String& backgroundImage) {
     Serial.println("Processing text command with color...");
+    Serial.printf("[TEXT] Received colors: fillColor=%d (expected: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 5=BLUE, 6=GREEN), outlineColor=%d, bgColor=%d\n", 
+                  fillColor, outlineColor, bgColor);
     
     // Check if parameter was provided
     if (parameter.length() == 0) {
@@ -7109,6 +7111,7 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
         
         // Draw this line centered with specified colors
         int16_t lineY = startY + i * (lineHeight + lineGap);
+        Serial.printf("[TEXT] Drawing line %d with fillColor=%d, outlineColor=%d\n", i, fillColor, outlineColor);
         ttf.drawTextAlignedOutlined(centerX, lineY, line, bestFontSize,
                                     fillColor, outlineColor,
                                     ALIGN_CENTER, ALIGN_MIDDLE, outlineWidth);

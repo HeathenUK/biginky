@@ -1348,18 +1348,22 @@ void EL133UF1::updateAsync(bool skipInit) {
     Serial.println("EL133UF1::updateAsync: Sending critical refresh commands...");
     
     // Power on - CRITICAL COMMAND
+    Serial.println("EL133UF1::updateAsync: Sending CMD_PON (0x04) - Power On");
     _sendCommand(CMD_PON, CS_BOTH_SEL);
+    Serial.println("EL133UF1::updateAsync: CMD_PON sent, waiting 200ms...");
     _busyWait(200);
 
     // Start display refresh - CRITICAL COMMAND
     // This must execute even if thumbnail publishing fails later
     const uint8_t drf[] = {0x00};
+    Serial.println("EL133UF1::updateAsync: Sending CMD_DRF (0x12) - Display Refresh");
     _sendCommand(CMD_DRF, CS_BOTH_SEL, drf, sizeof(drf));
+    Serial.println("EL133UF1::updateAsync: CMD_DRF sent successfully");
     
     // Set flag IMMEDIATELY after CMD_DRF is sent
     // This ensures waitForUpdate() will work correctly even if thumbnail publishing fails
     _asyncInProgress = true;
-    Serial.println("EL133UF1::updateAsync: Critical refresh commands sent, refresh started");
+    Serial.println("EL133UF1::updateAsync: Critical refresh commands sent, refresh started (_asyncInProgress=true)");
 
     // NOW do thumbnail publishing (non-critical, can fail without affecting display refresh)
     // This runs after the critical commands are sent, so refresh will proceed even if this fails

@@ -15,7 +15,7 @@ extern bool handleClearCommand();
 extern bool handleNextCommand();
 extern bool handleGoCommand(const String& parameter);
 extern bool handleShowCommand(const String& parameter);
-extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = 0, const String& backgroundImage = "");
+extern bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint8_t outlineColor, uint8_t bgColor = 1, const String& backgroundImage = "");  // Default bgColor = 1 (EL133UF1_WHITE)
 extern bool handleMultiTextCommand(const String& parameter, uint8_t bgColor = 0);
 extern bool handleListNumbersCommand(const String& originalMessage = "");
 #include "canvas_handler.h"  // Canvas command handlers
@@ -41,13 +41,13 @@ struct MediaMapping {
 extern std::vector<MediaMapping> g_media_mappings;
 extern bool g_media_mappings_loaded;
 
-// Color constants (from EL133UF1)
-#define EL133UF1_WHITE 0
-#define EL133UF1_BLACK 1
-#define EL133UF1_YELLOW 2
-#define EL133UF1_RED 3
-#define EL133UF1_BLUE 4
-#define EL133UF1_GREEN 5
+// Color constants (from EL133UF1.h - MUST MATCH EXACTLY)
+#define EL133UF1_BLACK   0
+#define EL133UF1_WHITE   1
+#define EL133UF1_YELLOW  2
+#define EL133UF1_RED     3
+#define EL133UF1_BLUE    5  // Note: 4 is not used, goes directly to 5
+#define EL133UF1_GREEN   6
 
 // Helper to extract text parameter from command/message
 static String extractTextParameterForCommand(const String& command, const String& originalMessage, const char* cmdName) {
@@ -202,13 +202,18 @@ static bool handleTextUnified(const CommandContext& ctx) {
         // Defaults: black text, black outline, white background
         if (colorStr.length() > 0) {
             fillColor = parseColorString(colorStr);
+            Serial.printf("[TEXT] Parsed color string '%s' -> fillColor=%d\n", colorStr.c_str(), fillColor);
         }
         if (bgColorStr.length() > 0) {
             bgColor = parseColorString(bgColorStr);
+            Serial.printf("[TEXT] Parsed backgroundColour string '%s' -> bgColor=%d\n", bgColorStr.c_str(), bgColor);
         }
         if (outlineColorStr.length() > 0) {
             outlineColor = parseColorString(outlineColorStr);
+            Serial.printf("[TEXT] Parsed outlineColour string '%s' -> outlineColor=%d\n", outlineColorStr.c_str(), outlineColor);
         }
+        
+        Serial.printf("[TEXT] Final colors: fillColor=%d, outlineColor=%d, bgColor=%d\n", fillColor, outlineColor, bgColor);
     }
     
     if (text.length() == 0) {

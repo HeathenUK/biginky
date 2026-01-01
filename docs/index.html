@@ -68,7 +68,7 @@ body{padding:10px;}
 .section{padding:15px;margin:15px 0;}
 h1{font-size:24px;}
 h2{font-size:20px;}
-button{font-size:14px;padding:8px 16px;margin:3px;}
+button{font-size:14px;padding:8px 16px;margin:3px;min-height:48px;}
 .flex-row{gap:10px;}
 .flex-item{min-width:100%;}
 /* Make tables horizontally scrollable on mobile */
@@ -81,6 +81,17 @@ table th,table td{padding:8px;font-size:13px;}
 .flex-row{flex-direction:column;}
 .flex-item{width:100%;}
 button.flex-shrink{width:100%;margin-top:10px;}
+/* Canvas action buttons - stack vertically on mobile */
+.canvas-actions-wrapper{display:flex;flex-direction:column;gap:10px;}
+.canvas-actions-primary{display:flex;flex-wrap:wrap;gap:8px;}
+.canvas-actions-primary button{flex:1 1 auto;min-width:calc(50% - 4px);}
+.canvas-actions-secondary{display:flex;flex-direction:column;gap:8px;width:100%;}
+.canvas-filename-input{width:100%!important;}
+.canvas-action-select{width:100%;}
+.canvas-action-go{width:100%;}
+/* Tool buttons - larger on mobile */
+.tool-btn{width:48px!important;height:48px!important;min-width:48px!important;min-height:48px!important;}
+.tool-btn-container{display:flex;gap:12px;flex-wrap:wrap;}
 }
 @media (max-width:480px){
 body{padding:8px;}
@@ -92,6 +103,20 @@ table{min-width:500px;font-size:12px;}
 table th,table td{padding:6px;font-size:12px;}
 .media-thumbnail{max-width:120px!important;max-height:90px!important;}
 .busy-overlay .message{font-size:16px;padding:0 20px;}
+}
+/* Image processing panel mobile optimization */
+@media (max-width:768px){
+.image-processing-panel .image-processing-controls{flex-direction:column;align-items:stretch!important;gap:15px;}
+.image-processing-slider{width:100%!important;min-width:100%!important;}
+.processing-slider{height:32px;cursor:pointer;-webkit-appearance:none;appearance:none;background:transparent;}
+.processing-slider::-webkit-slider-thumb{height:20px;width:20px;-webkit-appearance:none;appearance:none;background:#4CAF50;border-radius:50%;cursor:pointer;}
+.processing-slider::-moz-range-thumb{height:20px;width:20px;background:#4CAF50;border-radius:50%;cursor:pointer;border:none;}
+.processing-value{display:inline-block;min-width:60px;text-align:left;font-weight:bold;}
+.image-processing-checkbox{width:100%!important;min-width:100%!important;}
+.checkbox-label{width:100%;padding:12px!important;border:1px solid #444;border-radius:4px;background:#1a1a1a;}
+.checkbox-label:hover{background:#333;}
+.image-processing-actions{width:100%!important;flex-direction:column;}
+.image-processing-actions button{width:100%;}
 }
 </style>
 <script src="https://cdn.jsdelivr.net/gh/eclipse/paho.mqtt.javascript@master/src/paho-mqtt.js" onerror="loadPahoFallback()"></script>
@@ -263,7 +288,7 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section-content" id="section-canvas">
 <div style="margin-bottom:15px;">
 <label style="display:block;margin-bottom:8px;">Tool:</label>
-<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">
+<div class="tool-btn-container" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">
 <button onclick="setTool('brush')" id="tool-brush" class="tool-btn active" title="Brush" style="width:44px;height:44px;padding:8px;font-size:20px;">🖌️</button>
 <button onclick="setTool('text')" id="tool-text" class="tool-btn" title="Text" style="width:44px;height:44px;padding:8px;font-size:20px;">T</button>
 <button onclick="setTool('fill')" id="tool-fill" class="tool-btn" title="Fill" style="width:44px;height:44px;padding:8px;font-size:20px;">🪣</button>
@@ -409,58 +434,58 @@ table th,table td{padding:6px;font-size:12px;}
 <input type="text" id="canvasTextInput" placeholder="Enter text..." style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;">
 </div>
 </div>
-<div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-<div style="flex:0 0 auto;">
+<div class="canvas-actions-wrapper" style="margin-bottom:10px;">
+<div class="canvas-actions-primary">
 <button onclick="clearCanvas()">Clear Canvas</button>
 <button onclick="undoCanvas()" id="undoBtn" disabled>Undo</button>
 <button onclick="redoCanvas()" id="redoBtn" disabled>Redo</button>
 <button onclick="loadImageToCanvas()" id="loadImageBtn">Load Image</button>
 <button onclick="loadFramebufferToCanvas()" id="loadFrameBtn" disabled>Load Frame</button>
-<input type="file" id="imageFileInput" accept="image/*" style="display:none;" onchange="handleImageFileSelect(event)">
+<input type="file" id="imageFileInput" accept="image/*" capture="environment" style="display:none;" onchange="handleImageFileSelect(event)">
 </div>
-<div style="flex:0 0 auto;display:flex;gap:8px;align-items:center;">
-<input type="text" id="canvasFilenameInput" placeholder="canvas_2025-12-30T12-00-00.png" style="width:220px;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;display:none;">
-<select id="canvasActionSelect" style="padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;">
+<div class="canvas-actions-secondary">
+<input type="text" id="canvasFilenameInput" placeholder="canvas_2025-12-30T12-00-00.png" class="canvas-filename-input" style="width:220px;padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;display:none;">
+<select id="canvasActionSelect" class="canvas-action-select" style="padding:8px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:14px;">
 <option value="display" selected>Display on Panel</option>
 <option value="display-save">Display on Panel & Save</option>
 <option value="save">Save</option>
 </select>
-<button onclick="sendCanvasAction()" id="canvasActionBtn" disabled style="min-width:44px;padding:8px 12px;">Go</button>
+<button onclick="sendCanvasAction()" id="canvasActionBtn" disabled class="canvas-action-go" style="min-width:48px;padding:8px 12px;min-height:44px;">Go</button>
 </div>
 </div>
-<div id="imageProcessingPanel" style="display:none;margin-bottom:15px;padding:15px;background:#2a2a2a;border-radius:8px;border:1px solid #444;">
+<div id="imageProcessingPanel" class="image-processing-panel" style="display:none;margin-bottom:15px;padding:15px;background:#2a2a2a;border-radius:8px;border:1px solid #444;">
 <h3 style="color:#4CAF50;margin-top:0;margin-bottom:15px;font-size:16px;">Image Processing Options</h3>
-<div class="flex-row" style="align-items:flex-end;">
-<div class="flex-item" style="min-width:150px;">
+<div class="flex-row image-processing-controls" style="align-items:flex-end;">
+<div class="flex-item image-processing-slider" style="min-width:150px;">
 <label>Brightness:</label>
-<input type="range" id="imageBrightness" min="-50" max="50" value="10" style="width:100%;">
-<span id="imageBrightnessDisplay">+10%</span>
+<input type="range" id="imageBrightness" min="-50" max="50" value="10" class="processing-slider" style="width:100%;">
+<span id="imageBrightnessDisplay" class="processing-value">+10%</span>
 </div>
-<div class="flex-item" style="min-width:150px;">
+<div class="flex-item image-processing-slider" style="min-width:150px;">
 <label>Contrast:</label>
-<input type="range" id="imageContrast" min="-50" max="50" value="20" style="width:100%;">
-<span id="imageContrastDisplay">+20%</span>
+<input type="range" id="imageContrast" min="-50" max="50" value="20" class="processing-slider" style="width:100%;">
+<span id="imageContrastDisplay" class="processing-value">+20%</span>
 </div>
-<div class="flex-item" style="min-width:150px;">
+<div class="flex-item image-processing-slider" style="min-width:150px;">
 <label>Saturation:</label>
-<input type="range" id="imageSaturation" min="-50" max="50" value="20" style="width:100%;">
-<span id="imageSaturationDisplay">+20%</span>
+<input type="range" id="imageSaturation" min="-50" max="50" value="20" class="processing-slider" style="width:100%;">
+<span id="imageSaturationDisplay" class="processing-value">+20%</span>
 </div>
-<div class="flex-item" style="min-width:150px;display:flex;align-items:center;gap:8px;">
-<label style="margin:0;">
-<input type="checkbox" id="imagePosterize" checked style="width:auto;margin-right:5px;">
-Posterize
+<div class="flex-item image-processing-checkbox" style="min-width:150px;display:flex;align-items:center;gap:8px;">
+<label class="checkbox-label" style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px;user-select:none;">
+<input type="checkbox" id="imagePosterize" checked class="processing-checkbox" style="width:20px;height:20px;margin:0;cursor:pointer;">
+<span>Posterize</span>
 </label>
 </div>
-<div class="flex-item" style="min-width:150px;display:flex;align-items:center;gap:8px;">
-<label style="margin:0;">
-<input type="checkbox" id="imageDither" checked style="width:auto;margin-right:5px;">
-Dither
+<div class="flex-item image-processing-checkbox" style="min-width:150px;display:flex;align-items:center;gap:8px;">
+<label class="checkbox-label" style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px;user-select:none;">
+<input type="checkbox" id="imageDither" checked class="processing-checkbox" style="width:20px;height:20px;margin:0;cursor:pointer;">
+<span>Dither</span>
 </label>
 </div>
-<div class="flex-item" style="flex-shrink:0;display:flex;gap:8px;">
-<button onclick="disableAllProcessing()" id="disableAllProcessingBtn" style="min-height:44px;background:#666;">Disable All</button>
-<button onclick="applyImageProcessing()" id="applyProcessingBtn" style="min-height:44px;">Apply Processing</button>
+<div class="flex-item image-processing-actions" style="flex-shrink:0;display:flex;gap:8px;">
+<button onclick="disableAllProcessing()" id="disableAllProcessingBtn" style="min-height:48px;background:#666;">Disable All</button>
+<button onclick="applyImageProcessing()" id="applyProcessingBtn" style="min-height:48px;">Apply Processing</button>
 </div>
 </div>
 </div>

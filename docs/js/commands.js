@@ -12,6 +12,7 @@ async function sendTextDisplay() {
     const bgColor = document.getElementById('textBackgroundColor').value;
     const bgImage = document.getElementById('textBackgroundImage').value;
     const outlineColor = document.getElementById('textOutlineColor').value;
+    const font = document.getElementById('textFont').value;
     
     showStatus('textStatus', 'Sending text display command...', false);
     
@@ -20,7 +21,8 @@ async function sendTextDisplay() {
         text: text,
         color: color,
         backgroundColour: bgColor,
-        outlineColour: outlineColor
+        outlineColour: outlineColor,
+        font: font
     };
     
     // Add backgroundImage if an image is selected (takes precedence over backgroundColour)

@@ -265,6 +265,11 @@ async function handleStatusMessage(message) {
         // Display status
         updateDeviceStatus(status);
         
+        // Update font list from status
+        if (status.fonts && Array.isArray(status.fonts)) {
+            updateFontList(status.fonts);
+        }
+        
         // Store next wake time for busy state countdown
         let wakeTimeUpdated = false;
         if (status.next_wake) {
@@ -901,3 +906,30 @@ function cancelReconnect() {
     reconnectAttempts = 0;
 }
 
+// Update font dropdown from fonts array in status message
+function updateFontList(fonts) {
+    if (!fonts || !Array.isArray(fonts)) return;
+    
+    const select = document.getElementById('textFont');
+    if (!select) return;
+    
+    const currentValue = select.value;
+    select.innerHTML = '';
+    
+    fonts.forEach(font => {
+        const option = document.createElement('option');
+        option.value = font.name || font.filename || 'OpenSans';
+        const displayName = (font.family || font.name || font.filename) + 
+                          (font.type === 'builtin' ? ' (Built-in)' : '');
+        option.textContent = displayName;
+        if (option.value === currentValue) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+    });
+    
+    // If current selection is no longer valid, select first option
+    if (!select.value && fonts.length > 0) {
+        select.value = fonts[0].name || fonts[0].filename;
+    }
+}

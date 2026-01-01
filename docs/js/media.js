@@ -12,14 +12,14 @@ function updateMediaMappingsTable(mappings) {
     
     statusEl.textContent = `Loaded ${mappings.length} media mapping(s) (updated ${new Date().toLocaleTimeString()})`;
     
-    // Create table with optimized column widths
+    // Create table with optimized column widths (more efficient space usage)
     let html = '<table style="width:100%;border-collapse:collapse;margin-top:10px;table-layout:fixed;">';
     html += '<thead><tr style="background:#333;color:#e0e0e0;">';
-    html += '<th style="padding:8px;text-align:center;border:1px solid #555;width:5%;">#</th>';
-    html += '<th style="padding:8px;text-align:center;border:1px solid #555;width:25%;">Thumbnail</th>';
-    html += '<th style="padding:8px;text-align:left;border:1px solid #555;width:30%;">Image</th>';
-    html += '<th style="padding:8px;text-align:left;border:1px solid #555;width:30%;">Audio</th>';
-    html += '<th style="padding:8px;text-align:center;border:1px solid #555;width:10%;">Actions</th>';
+    html += '<th style="padding:8px;text-align:center;border:1px solid #555;width:4%;">#</th>';
+    html += '<th style="padding:8px;text-align:center;border:1px solid #555;width:30%;">Thumbnail</th>';
+    html += '<th style="padding:8px;text-align:left;border:1px solid #555;width:20%;">Image</th>';
+    html += '<th style="padding:8px;text-align:left;border:1px solid #555;width:20%;">Audio</th>';
+    html += '<th style="padding:8px;text-align:center;border:1px solid #555;width:14%;">Actions</th>';
     html += '</tr></thead><tbody>';
     
     for (let i = 0; i < mappings.length; i++) {
@@ -40,11 +40,19 @@ function updateMediaMappingsTable(mappings) {
         }
         html += '</td>';
         
-        // Image column - allow text wrapping
-        html += `<td style="padding:8px;border:1px solid #555;word-wrap:break-word;overflow-wrap:break-word;">${mapping.image || 'N/A'}</td>`;
+        // Image column - truncate long filenames with ellipsis, show full on hover
+        const imageFile = mapping.image || 'N/A';
+        const imageDisplay = imageFile.length > 30 ? imageFile.substring(0, 27) + '...' : imageFile;
+        html += `<td style="padding:8px;border:1px solid #555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;" title="${imageFile}">${imageDisplay}</td>`;
         
-        // Audio column - allow text wrapping
-        html += `<td style="padding:8px;border:1px solid #555;word-wrap:break-word;overflow-wrap:break-word;">${mapping.audio || '<span style="color:#888;">(none)</span>'}</td>`;
+        // Audio column - truncate long filenames with ellipsis, show full on hover
+        const audioFile = mapping.audio || '';
+        if (audioFile) {
+            const audioDisplay = audioFile.length > 30 ? audioFile.substring(0, 27) + '...' : audioFile;
+            html += `<td style="padding:8px;border:1px solid #555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;" title="${audioFile}">${audioDisplay}</td>`;
+        } else {
+            html += `<td style="padding:8px;border:1px solid #555;color:#888;font-size:12px;">(none)</td>`;
+        }
         
         // Actions column - Show, Edit, Delete buttons
         html += '<td style="padding:8px;border:1px solid #555;text-align:center;vertical-align:middle;">';

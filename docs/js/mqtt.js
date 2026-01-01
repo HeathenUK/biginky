@@ -265,9 +265,26 @@ async function handleStatusMessage(message) {
         // Display status
         updateDeviceStatus(status);
         
+        // Debug: Log font information from status message
+        console.log('=== Font Debug Info ===');
+        console.log('status.fonts exists:', 'fonts' in status);
+        console.log('status.fonts value:', status.fonts);
+        console.log('status.fonts is array:', Array.isArray(status.fonts));
+        if (status.fonts && Array.isArray(status.fonts)) {
+            console.log('status.fonts length:', status.fonts.length);
+            console.log('status.fonts contents:', JSON.stringify(status.fonts, null, 2));
+        } else {
+            console.log('WARNING: status.fonts is missing or not an array');
+            console.log('Full status object keys:', Object.keys(status));
+        }
+        console.log('======================');
+        
         // Update font list from status
         if (status.fonts && Array.isArray(status.fonts)) {
+            console.log('Calling updateFontList with:', status.fonts);
             updateFontList(status.fonts);
+        } else {
+            console.log('Skipping updateFontList - fonts array not available');
         }
         
         // Store next wake time for busy state countdown
@@ -908,22 +925,36 @@ function cancelReconnect() {
 
 // Update font dropdown from fonts array in status message
 function updateFontList(fonts) {
-    if (!fonts || !Array.isArray(fonts)) return;
+    console.log('updateFontList called with:', fonts);
+    console.log('updateFontList - fonts type:', typeof fonts);
+    console.log('updateFontList - is array:', Array.isArray(fonts));
+    
+    if (!fonts || !Array.isArray(fonts)) {
+        console.log('updateFontList: Invalid fonts parameter, returning early');
+        return;
+    }
     
     const select = document.getElementById('textFont');
-    if (!select) return;
+    if (!select) {
+        console.log('updateFontList: textFont select element not found');
+        return;
+    }
     
+    console.log('updateFontList: Found textFont select, processing', fonts.length, 'fonts');
     const currentValue = select.value;
     select.innerHTML = '';
     
-    fonts.forEach(font => {
+    fonts.forEach((font, index) => {
+        console.log(`updateFontList: Processing font ${index}:`, font);
         const option = document.createElement('option');
         option.value = font.name || font.filename || 'OpenSans';
         const displayName = (font.family || font.name || font.filename) + 
                           (font.type === 'builtin' ? ' (Built-in)' : '');
         option.textContent = displayName;
+        console.log(`updateFontList: Created option - value: "${option.value}", text: "${displayName}"`);
         if (option.value === currentValue) {
             option.selected = true;
+            console.log(`updateFontList: Selected option matches current value: "${currentValue}"`);
         }
         select.appendChild(option);
     });
@@ -931,5 +962,9 @@ function updateFontList(fonts) {
     // If current selection is no longer valid, select first option
     if (!select.value && fonts.length > 0) {
         select.value = fonts[0].name || fonts[0].filename;
+        console.log('updateFontList: No valid selection, set to first font:', select.value);
     }
+    
+    console.log('updateFontList: Complete. Final select value:', select.value);
+    console.log('updateFontList: Final select options count:', select.options.length);
 }

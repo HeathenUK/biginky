@@ -909,7 +909,7 @@ function cancelReconnect() {
     reconnectAttempts = 0;
 }
 
-// Update font dropdown from fonts array in status message
+// Update font dropdown from fonts array (from media mappings message)
 function updateFontList(fonts) {
     console.log('updateFontList called with:', fonts);
     console.log('updateFontList - fonts type:', typeof fonts);

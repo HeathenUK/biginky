@@ -9,6 +9,8 @@
 // ArduinoJson removed - using cJSON instead (via json_utils.h)
 
 #include "display_manager.h"  // Unified display media with overlay
+#include "cJSON.h"  // For JSON parsing
+#include "ff.h"  // For FatFs file operations (FIL, FRESULT, f_open, f_write, f_close, etc.)
 
 // Forward declarations of handler functions from main.cpp
 extern bool handleClearCommand();
@@ -315,6 +317,167 @@ static bool handleCanvasSaveUnified(const CommandContext& ctx) {
     return handleCanvasSaveCommand(ctx.originalMessage);
 }
 
+// Helper function to escape CSV field (wrap in quotes if contains comma or quote, escape quotes)
+static String escapeCSVField(const String& field) {
+    // If field contains comma, quote, or newline, wrap in quotes and escape quotes
+    bool needsQuoting = (field.indexOf(',') >= 0 || field.indexOf('"') >= 0 || field.indexOf('\n') >= 0);
+    
+    if (!needsQuoting) {
+        return field;
+    }
+    
+    // Escape quotes by doubling them, then wrap entire field in quotes
+    String escaped = "\"";
+    for (size_t i = 0; i < field.length(); i++) {
+        if (field.charAt(i) == '"') {
+            escaped += "\"\"";  // Double quote
+        } else {
+            escaped += field.charAt(i);
+        }
+    }
+    escaped += "\"";
+    return escaped;
+}
+
+// Handler for media_replace command
+static bool handleMediaReplaceUnified(const CommandContext& ctx) {
+    // Only WEB_UI source is supported (MQTT command via JSON)
+    if (ctx.source != CommandSource::WEB_UI) {
+        Serial.println("[MEDIA_REPLACE] ERROR: Only WEB_UI source supported");
+        return false;
+    }
+    
+    // Parse JSON to extract mappings array
+    String json = ctx.originalMessage;
+    if (!json.startsWith("{")) {
+        Serial.println("[MEDIA_REPLACE] ERROR: Invalid JSON format");
+        return false;
+    }
+    
+    cJSON* root = cJSON_Parse(json.c_str());
+    if (!root) {
+        Serial.println("[MEDIA_REPLACE] ERROR: Failed to parse JSON");
+        return false;
+    }
+    
+    cJSON* mappingsArray = cJSON_GetObjectItem(root, "mappings");
+    if (!mappingsArray || !cJSON_IsArray(mappingsArray)) {
+        Serial.println("[MEDIA_REPLACE] ERROR: 'mappings' field missing or not an array");
+        cJSON_Delete(root);
+        return false;
+    }
+    
+    // Check SD card is mounted
+    extern bool sdCardMounted;
+    if (!sdCardMounted) {
+        Serial.println("[MEDIA_REPLACE] ERROR: SD card not mounted");
+        cJSON_Delete(root);
+        return false;
+    }
+    
+    // Generate CSV content
+    String csvContent = "Image,Audio,Foreground,Outline,Font,Thickness\n";
+    
+    int arraySize = cJSON_GetArraySize(mappingsArray);
+    Serial.printf("[MEDIA_REPLACE] Processing %d mappings\n", arraySize);
+    
+    for (int i = 0; i < arraySize; i++) {
+        cJSON* mappingObj = cJSON_GetArrayItem(mappingsArray, i);
+        if (!mappingObj || !cJSON_IsObject(mappingObj)) {
+            Serial.printf("[MEDIA_REPLACE] WARNING: Mapping %d is not an object, skipping\n", i);
+            continue;
+        }
+        
+        // Extract fields (all optional except image)
+        String image = "";
+        String audio = "";
+        String foreground = "";
+        String outline = "";
+        String font = "";
+        int thickness = 0;
+        
+        cJSON* item = cJSON_GetObjectItem(mappingObj, "image");
+        if (item && cJSON_IsString(item)) {
+            image = String(cJSON_GetStringValue(item));
+        }
+        
+        // Image is mandatory
+        if (image.length() == 0) {
+            Serial.printf("[MEDIA_REPLACE] WARNING: Mapping %d missing image field, skipping\n", i);
+            continue;
+        }
+        
+        item = cJSON_GetObjectItem(mappingObj, "audio");
+        if (item && cJSON_IsString(item)) {
+            audio = String(cJSON_GetStringValue(item));
+        }
+        
+        item = cJSON_GetObjectItem(mappingObj, "foreground");
+        if (item && cJSON_IsString(item)) {
+            foreground = String(cJSON_GetStringValue(item));
+        }
+        
+        item = cJSON_GetObjectItem(mappingObj, "outline");
+        if (item && cJSON_IsString(item)) {
+            outline = String(cJSON_GetStringValue(item));
+        }
+        
+        item = cJSON_GetObjectItem(mappingObj, "font");
+        if (item && cJSON_IsString(item)) {
+            font = String(cJSON_GetStringValue(item));
+        }
+        
+        item = cJSON_GetObjectItem(mappingObj, "thickness");
+        if (item && cJSON_IsNumber(item)) {
+            thickness = (int)cJSON_GetNumberValue(item);
+        }
+        
+        // Build CSV line
+        csvContent += escapeCSVField(image);
+        csvContent += ",";
+        csvContent += escapeCSVField(audio);
+        csvContent += ",";
+        csvContent += escapeCSVField(foreground);
+        csvContent += ",";
+        csvContent += escapeCSVField(outline);
+        csvContent += ",";
+        csvContent += escapeCSVField(font);
+        csvContent += ",";
+        csvContent += String(thickness);
+        csvContent += "\n";
+    }
+    
+    cJSON_Delete(root);
+    
+    // Write to SD card using FatFs
+    FIL file;
+    FRESULT res = f_open(&file, "0:/media.csv", FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) {
+        Serial.printf("[MEDIA_REPLACE] ERROR: Failed to open media.csv for writing (error %d)\n", res);
+        return false;
+    }
+    
+    UINT bytesWritten;
+    res = f_write(&file, csvContent.c_str(), csvContent.length(), &bytesWritten);
+    f_close(&file);
+    
+    if (res != FR_OK || bytesWritten != csvContent.length()) {
+        Serial.printf("[MEDIA_REPLACE] ERROR: Failed to write media.csv (wrote %u/%zu, error %d)\n",
+                     bytesWritten, csvContent.length(), res);
+        return false;
+    }
+    
+    Serial.printf("[MEDIA_REPLACE] Successfully wrote %u bytes to media.csv\n", bytesWritten);
+    
+    // Reload mappings and republish (this will also trigger MQTT republish)
+    extern int loadMediaMappingsFromSD(bool autoPublish);
+    extern void publishMQTTMediaMappings();
+    loadMediaMappingsFromSD(true);  // Auto-publish enabled
+    
+    Serial.println("[MEDIA_REPLACE] Media mappings updated and republished");
+    return true;
+}
+
 // Command registry
 static const UnifiedCommandEntry commandRegistry[] = {
     // Clear display
@@ -495,6 +658,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleCanvasSaveUnified,  // TODO: implement handleCanvasSaveUnified
         .requiresAuth = true,
         .description = "Save canvas to SD without displaying (large image data)"
+    },
+    
+    // Media replace (full replacement of media mappings)
+    {
+        .mqttName = nullptr,
+        .webUIName = "media_replace",
+        .httpEndpoint = nullptr,
+        .handler = handleMediaReplaceUnified,
+        .requiresAuth = true,
+        .description = "Replace all media mappings with new set"
     }
 };
 

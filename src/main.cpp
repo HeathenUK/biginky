@@ -53,6 +53,8 @@
 #include "es8311_simple.h"
 #include <time.h>
 #include <sys/time.h>
+#include <sys/stat.h>  // For stat() in LittleFS directory listing
+#include <dirent.h>    // For opendir/readdir/closedir in LittleFS directory listing
 #include <stdio.h>
 #include <stdarg.h>  // For va_list in logging functions
 
@@ -9713,6 +9715,44 @@ void setup() {
     };
 
     esp_err_t ret = esp_vfs_littlefs_register(&conf);
+
+    if (ret != ESP_OK) {
+        Serial.printf("Failed to initialize LittleFS partition (%s)\n", esp_err_to_name(ret));
+    } else {
+        Serial.println("LittleFS partition mounted at /littlefs");
+        
+        // List directory contents
+        DIR* dir = opendir("/littlefs");
+        if (dir != nullptr) {
+            Serial.println("LittleFS directory contents:");
+            struct dirent* entry;
+            int fileCount = 0;
+            while ((entry = readdir(dir)) != nullptr) {
+                Serial.printf("  %s", entry->d_name);
+                // Get file info
+                char fullPath[128];
+                snprintf(fullPath, sizeof(fullPath), "/littlefs/%s", entry->d_name);
+                struct stat statBuf;
+                if (stat(fullPath, &statBuf) == 0) {
+                    if (S_ISDIR(statBuf.st_mode)) {
+                        Serial.printf(" [DIR]");
+                    } else {
+                        Serial.printf(" [%lu bytes]", (unsigned long)statBuf.st_size);
+                    }
+                }
+                Serial.println();
+                fileCount++;
+            }
+            closedir(dir);
+            if (fileCount == 0) {
+                Serial.println("  (empty)");
+            } else {
+                Serial.printf("Total: %d file(s)\n", fileCount);
+            }
+        } else {
+            Serial.println("Failed to open LittleFS directory");
+        }
+    }
 
     // Print chip information at boot
     // Check if we woke from deep sleep (non-switch-D wake) - set global flag early

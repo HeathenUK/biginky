@@ -21,6 +21,9 @@ let pendingElements = [];
 let draggingElements = []; // Array of elements being dragged
 let dragOffsets = new Map(); // Map of element -> drag offset
 
+// Pending image data for processing
+let pendingImageData = null; // Stores {img, drawX, drawY, drawWidth, drawHeight} when image is loaded
+
 const colorMap = {
     // Matching firmware palette from EL133UF1_Color.cpp useDefaultPalette()
     0: '#0A0A0A',  // Black (10, 10, 10)
@@ -515,32 +518,35 @@ function getPixelColor(data, x, y, width) {
     };
 }
 
-// Adjust image for e-ink display: brightness +10%, contrast +20%, saturation +20%
-function adjustImageForEink(imageData) {
+// Adjust image for e-ink display with configurable brightness, contrast, and saturation
+// brightnessPercent: -50 to 50 (default: 10)
+// contrastPercent: -50 to 50 (default: 20)
+// saturationPercent: -50 to 50 (default: 20)
+function adjustImageForEink(imageData, brightnessPercent = 10, contrastPercent = 20, saturationPercent = 20) {
     const data = imageData.data;
     
-    // Brightness: +10% (multiply by 1.1)
-    // Contrast: +20% (using standard contrast formula)
-    // Saturation: +20% (convert RGB to HSL, adjust, convert back)
+    // Convert percentages to multipliers
+    const brightness = 1.0 + (brightnessPercent / 100.0);
+    const contrast = contrastPercent / 100.0;
+    const saturation = 1.0 + (saturationPercent / 100.0);
     
     for (let i = 0; i < data.length; i += 4) {
         let r = data[i];
         let g = data[i + 1];
         let b = data[i + 2];
         
-        // Apply brightness (+10%)
-        r = Math.min(255, Math.max(0, r * 1.1));
-        g = Math.min(255, Math.max(0, g * 1.1));
-        b = Math.min(255, Math.max(0, b * 1.1));
+        // Apply brightness
+        r = Math.min(255, Math.max(0, r * brightness));
+        g = Math.min(255, Math.max(0, g * brightness));
+        b = Math.min(255, Math.max(0, b * brightness));
         
-        // Apply contrast (+20%)
+        // Apply contrast
         // Contrast formula: new = (old - 128) * (1 + contrast) + 128
-        const contrast = 0.20;
         r = Math.min(255, Math.max(0, (r - 128) * (1 + contrast) + 128));
         g = Math.min(255, Math.max(0, (g - 128) * (1 + contrast) + 128));
         b = Math.min(255, Math.max(0, (b - 128) * (1 + contrast) + 128));
         
-        // Apply saturation (+20%)
+        // Apply saturation
         // Convert RGB to HSL
         r /= 255;
         g /= 255;
@@ -565,8 +571,8 @@ function adjustImageForEink(imageData) {
             }
         }
         
-        // Increase saturation by 20%
-        s = Math.min(1, s * 1.20);
+        // Apply saturation adjustment
+        s = Math.min(1, Math.max(0, s * saturation));
         
         // Convert HSL back to RGB
         if (s === 0) {
@@ -703,6 +709,56 @@ function posterizeImage(x, y, width, height) {
     }
     
     ctx.putImageData(imageData, x, y);
+}
+
+// Apply image processing with configurable settings
+function applyImageProcessing() {
+    if (!pendingImageData) {
+        showStatus('canvasStatus', 'Error: No image loaded. Please load an image first.', true);
+        return;
+    }
+    
+    // Get processing parameters from UI
+    const brightnessSlider = document.getElementById('imageBrightness');
+    const contrastSlider = document.getElementById('imageContrast');
+    const saturationSlider = document.getElementById('imageSaturation');
+    const posterizeCheckbox = document.getElementById('imagePosterize');
+    
+    const brightness = brightnessSlider ? parseInt(brightnessSlider.value) : 10;
+    const contrast = contrastSlider ? parseInt(contrastSlider.value) : 20;
+    const saturation = saturationSlider ? parseInt(saturationSlider.value) : 20;
+    const enablePosterize = posterizeCheckbox ? posterizeCheckbox.checked : true;
+    
+    // Redraw the original image first
+    ctx.fillStyle = '#F5F5EB';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(pendingImageData.img, pendingImageData.drawX, pendingImageData.drawY, 
+                  pendingImageData.drawWidth, pendingImageData.drawHeight);
+    
+    // Apply adjustments
+    const imageData = ctx.getImageData(pendingImageData.drawX, pendingImageData.drawY, 
+                                       pendingImageData.drawWidth, pendingImageData.drawHeight);
+    adjustImageForEink(imageData, brightness, contrast, saturation);
+    ctx.putImageData(imageData, pendingImageData.drawX, pendingImageData.drawY);
+    
+    // Apply posterization/dithering if enabled
+    if (enablePosterize) {
+        posterizeImage(pendingImageData.drawX, pendingImageData.drawY, 
+                      pendingImageData.drawWidth, pendingImageData.drawHeight);
+    }
+    
+    // Clear pending image data and hide panel
+    pendingImageData = null;
+    const processingPanel = document.getElementById('imageProcessingPanel');
+    if (processingPanel) {
+        processingPanel.style.display = 'none';
+    }
+    
+    const statusMsg = enablePosterize 
+        ? `Image processed: brightness ${brightness > 0 ? '+' : ''}${brightness}%, contrast ${contrast > 0 ? '+' : ''}${contrast}%, saturation ${saturation > 0 ? '+' : ''}${saturation}%, posterized with dithering`
+        : `Image processed: brightness ${brightness > 0 ? '+' : ''}${brightness}%, contrast ${contrast > 0 ? '+' : ''}${contrast}%, saturation ${saturation > 0 ? '+' : ''}${saturation}% (no posterization)`;
+    
+    showStatus('canvasStatus', statusMsg, false);
 }
 
 // Check for hover over pending elements (for cursor feedback)
@@ -1202,6 +1258,14 @@ function clearCanvas() {
     pendingElements = [];
     draggingElements = [];
     dragOffsets.clear();
+    pendingImageData = null;
+    
+    // Hide processing panel
+    const processingPanel = document.getElementById('imageProcessingPanel');
+    if (processingPanel) {
+        processingPanel.style.display = 'none';
+    }
+    
     showStatus('canvasStatus', 'Canvas cleared', false);
 }
 
@@ -1228,6 +1292,12 @@ function handleImageFileSelect(event) {
             draggingElements = [];
             dragOffsets.clear();
             
+            // Hide processing panel if it was showing from a previous image
+            const processingPanel = document.getElementById('imageProcessingPanel');
+            if (processingPanel) {
+                processingPanel.style.display = 'none';
+            }
+            
             // Calculate scaling to fit canvas while maintaining aspect ratio
             const canvasAspect = canvas.width / canvas.height;
             const imgAspect = img.width / img.height;
@@ -1248,20 +1318,27 @@ function handleImageFileSelect(event) {
                 drawY = 0;
             }
             
-            // Clear canvas and draw image centered
+            // Clear canvas and draw image centered (unprocessed)
             ctx.fillStyle = '#F5F5EB';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
             
-            // Adjust image for e-ink display (brightness +10%, contrast +20%, saturation +20%)
-            const imageData = ctx.getImageData(drawX, drawY, drawWidth, drawHeight);
-            adjustImageForEink(imageData);
-            ctx.putImageData(imageData, drawX, drawY);
+            // Store image data for processing
+            pendingImageData = {
+                img: img,
+                drawX: drawX,
+                drawY: drawY,
+                drawWidth: drawWidth,
+                drawHeight: drawHeight
+            };
             
-            // Posterize image to match e-ink colors using Atkinson dithering
-            posterizeImage(drawX, drawY, drawWidth, drawHeight);
+            // Show processing panel
+            const processingPanel = document.getElementById('imageProcessingPanel');
+            if (processingPanel) {
+                processingPanel.style.display = 'block';
+            }
             
-            showStatus('canvasStatus', `Image loaded and posterized: ${img.width}x${img.height} (scaled to fit ${Math.round(drawWidth)}x${Math.round(drawHeight)})`, false);
+            showStatus('canvasStatus', `Image loaded: ${img.width}x${img.height} (scaled to fit ${Math.round(drawWidth)}x${Math.round(drawHeight)}). Adjust settings and click 'Apply Processing'.`, false);
         };
         img.onerror = function() {
             showStatus('canvasStatus', 'Error: Failed to load image', true);
@@ -1393,6 +1470,34 @@ function initializeCanvas() {
     if (roundedRectRadiusSlider && roundedRectRadiusDisplay) {
         roundedRectRadiusSlider.addEventListener('input', (e) => {
             roundedRectRadiusDisplay.textContent = e.target.value + 'px';
+        });
+    }
+    
+    // Set up image processing sliders
+    const imageBrightnessSlider = document.getElementById('imageBrightness');
+    const imageBrightnessDisplay = document.getElementById('imageBrightnessDisplay');
+    if (imageBrightnessSlider && imageBrightnessDisplay) {
+        imageBrightnessSlider.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value);
+            imageBrightnessDisplay.textContent = (val > 0 ? '+' : '') + val + '%';
+        });
+    }
+    
+    const imageContrastSlider = document.getElementById('imageContrast');
+    const imageContrastDisplay = document.getElementById('imageContrastDisplay');
+    if (imageContrastSlider && imageContrastDisplay) {
+        imageContrastSlider.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value);
+            imageContrastDisplay.textContent = (val > 0 ? '+' : '') + val + '%';
+        });
+    }
+    
+    const imageSaturationSlider = document.getElementById('imageSaturation');
+    const imageSaturationDisplay = document.getElementById('imageSaturationDisplay');
+    if (imageSaturationSlider && imageSaturationDisplay) {
+        imageSaturationSlider.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value);
+            imageSaturationDisplay.textContent = (val > 0 ? '+' : '') + val + '%';
         });
     }
     

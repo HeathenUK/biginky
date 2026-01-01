@@ -308,6 +308,20 @@ RTC_DATA_ATTR char cachedWifiPSK[65] = "";
 RTC_DATA_ATTR bool wifiCredentialsCached = false;  // Flag to indicate if credentials are cached
 RTC_DATA_ATTR char lastAudioFile[64] = "";  // Last audio file path for instant playback on switch D wake
 
+// Font list stored in RTC memory (scanned once at cold boot)
+#define MAX_FONTS_IN_RTC 32
+#define MAX_FONT_NAME_LEN 63
+#define MAX_FONT_FILENAME_LEN 63
+
+struct FontInfo {
+    char name[MAX_FONT_NAME_LEN + 1];      // Font family name
+    char filename[MAX_FONT_FILENAME_LEN + 1];  // Font filename
+    bool isBuiltin;  // true for built-in fonts (OpenSans), false for LittleFS fonts
+};
+
+RTC_DATA_ATTR FontInfo g_rtcFontList[MAX_FONTS_IN_RTC];
+RTC_DATA_ATTR uint8_t g_rtcFontCount = 0;  // Number of fonts in the list
+
 // ============================================================================
 // Audio: ES8311 + I2S test tone
 // ============================================================================
@@ -9687,27 +9701,54 @@ void setup() {
 
     if (ret != ESP_OK) {
         Serial.printf("Failed to initialize LittleFS partition (%s)\n", esp_err_to_name(ret));
-    } else {
-        // Scan for TTF/OTF fonts and print their names
-        DIR* dir = opendir("/littlefs");
-        if (dir != nullptr) {
-            struct dirent* entry;
-            std::vector<String> fontFiles;
-            
-            // Collect all .ttf and .otf files
-            while ((entry = readdir(dir)) != nullptr) {
-                String filename = String(entry->d_name);
-                filename.toLowerCase();
-                if (filename.endsWith(".ttf") || filename.endsWith(".otf")) {
-                    fontFiles.push_back(String(entry->d_name));
+    }
+    
+    // Print chip information at boot
+    // Check if we woke from deep sleep (non-switch-D wake) - set global flag early
+    g_is_cold_boot = (wakeCause == ESP_SLEEP_WAKEUP_UNDEFINED);  // Set global flag early for use in print statements
+    
+    // Scan for fonts only at cold boot (not after deep sleep wake)
+    if (g_is_cold_boot) {
+        // Initialize font list with built-in OpenSans first
+        g_rtcFontCount = 0;
+        memset(g_rtcFontList, 0, sizeof(g_rtcFontList));
+        
+        // Add built-in OpenSans font
+        if (g_rtcFontCount < MAX_FONTS_IN_RTC) {
+            strncpy(g_rtcFontList[g_rtcFontCount].name, "Open Sans", MAX_FONT_NAME_LEN);
+            g_rtcFontList[g_rtcFontCount].name[MAX_FONT_NAME_LEN] = '\0';
+            strncpy(g_rtcFontList[g_rtcFontCount].filename, "OpenSans", MAX_FONT_FILENAME_LEN);
+            g_rtcFontList[g_rtcFontCount].filename[MAX_FONT_FILENAME_LEN] = '\0';
+            g_rtcFontList[g_rtcFontCount].isBuiltin = true;
+            g_rtcFontCount++;
+            Serial.println("Fonts found on LittleFS:");
+            Serial.printf("  OpenSans: Open Sans (Built-in)\n");
+        }
+        
+        // Scan LittleFS for additional fonts
+        if (ret == ESP_OK) {
+            DIR* dir = opendir("/littlefs");
+            if (dir != nullptr) {
+                struct dirent* entry;
+                std::vector<String> fontFiles;
+                
+                // Collect all .ttf and .otf files
+                while ((entry = readdir(dir)) != nullptr) {
+                    String filename = String(entry->d_name);
+                    filename.toLowerCase();
+                    if (filename.endsWith(".ttf") || filename.endsWith(".otf")) {
+                        fontFiles.push_back(String(entry->d_name));
+                    }
                 }
-            }
-            closedir(dir);
-            
-            // Process each font file
-            if (fontFiles.size() > 0) {
-                Serial.println("Fonts found on LittleFS:");
+                closedir(dir);
+                
+                // Process each font file
                 for (const String& fontFilename : fontFiles) {
+                    if (g_rtcFontCount >= MAX_FONTS_IN_RTC) {
+                        Serial.printf("  WARNING: Font limit reached (%d), skipping %s\n", MAX_FONTS_IN_RTC, fontFilename.c_str());
+                        continue;
+                    }
+                    
                     char fullPath[128];
                     snprintf(fullPath, sizeof(fullPath), "/littlefs/%s", fontFilename.c_str());
                     
@@ -9756,21 +9797,39 @@ void setup() {
                     
                     // Get font name using the TTF library method
                     char fontNameBuf[256];
-                    if (tempTTF.getFontName(fontNameBuf, sizeof(fontNameBuf))) {
+                    bool gotName = tempTTF.getFontName(fontNameBuf, sizeof(fontNameBuf));
+                    
+                    // Store in RTC memory
+                    if (gotName) {
+                        strncpy(g_rtcFontList[g_rtcFontCount].name, fontNameBuf, MAX_FONT_NAME_LEN);
+                        g_rtcFontList[g_rtcFontCount].name[MAX_FONT_NAME_LEN] = '\0';
                         Serial.printf("  %s: %s\n", fontFilename.c_str(), fontNameBuf);
                     } else {
+                        // Use filename as name if we couldn't extract the font name
+                        strncpy(g_rtcFontList[g_rtcFontCount].name, fontFilename.c_str(), MAX_FONT_NAME_LEN);
+                        g_rtcFontList[g_rtcFontCount].name[MAX_FONT_NAME_LEN] = '\0';
                         Serial.printf("  %s\n", fontFilename.c_str());
                     }
+                    
+                    strncpy(g_rtcFontList[g_rtcFontCount].filename, fontFilename.c_str(), MAX_FONT_FILENAME_LEN);
+                    g_rtcFontList[g_rtcFontCount].filename[MAX_FONT_FILENAME_LEN] = '\0';
+                    g_rtcFontList[g_rtcFontCount].isBuiltin = false;
+                    g_rtcFontCount++;
                     
                     free(fontData);
                 }
             }
         }
+    } else {
+        // Warm boot from deep sleep - font list already in RTC, just log it
+        Serial.println("Fonts available (from RTC memory):");
+        for (uint8_t i = 0; i < g_rtcFontCount; i++) {
+            Serial.printf("  %s: %s%s\n", 
+                         g_rtcFontList[i].filename, 
+                         g_rtcFontList[i].name,
+                         g_rtcFontList[i].isBuiltin ? " (Built-in)" : "");
+        }
     }
-
-    // Print chip information at boot
-    // Check if we woke from deep sleep (non-switch-D wake) - set global flag early
-    g_is_cold_boot = (wakeCause == ESP_SLEEP_WAKEUP_UNDEFINED);  // Set global flag early for use in print statements
     
     // Only print chip info on cold boot
     if (g_is_cold_boot) {

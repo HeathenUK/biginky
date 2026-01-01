@@ -822,6 +822,17 @@ static bool g_statusPrepared = false;
 static TaskHandle_t g_statusPrepTaskHandle = nullptr;
 static TaskHandle_t g_mainTaskHandle = nullptr;  // Main task that waits for status preparation
 
+// FontInfo structure definition (must match main.cpp)
+// Note: These constants and struct must match exactly with main.cpp
+#define MAX_FONT_NAME_LEN 63
+#define MAX_FONT_FILENAME_LEN 63
+struct FontInfo {
+    char name[MAX_FONT_NAME_LEN + 1];
+    char filename[MAX_FONT_FILENAME_LEN + 1];
+    bool isBuiltin;
+};
+
+
 // Task function to prepare status JSON on Core 1 (runs in parallel with WiFi/MQTT connection)
 static void statusPreparationTask(void* arg) {
     (void)arg;
@@ -1993,6 +2004,33 @@ static void publishMQTTMediaMappingsInternalImpl() {
         cJSON_AddItemToArray(allImagesArray, imageItem);
     }
     cJSON_AddItemToObject(root, "allImages", allImagesArray);
+    
+    // Add fonts array
+    cJSON* fontsArray = cJSON_CreateArray();
+    if (!fontsArray) {
+        Serial.println("[Core 1] ERROR: Failed to create fonts array");
+        cJSON_Delete(root);
+        return;
+    }
+    
+    for (uint8_t i = 0; i < g_rtcFontCount; i++) {
+        cJSON* fontObj = cJSON_CreateObject();
+        if (!fontObj) {
+            Serial.printf("[Core 1] ERROR: Failed to create font object for index %d\n", i);
+            cJSON_Delete(root);
+            return;
+        }
+        
+        cJSON_AddStringToObject(fontObj, "name", g_rtcFontList[i].name);
+        cJSON_AddStringToObject(fontObj, "filename", g_rtcFontList[i].filename);
+        if (g_rtcFontList[i].isBuiltin) {
+            cJSON_AddStringToObject(fontObj, "type", "builtin");
+        }
+        
+        cJSON_AddItemToArray(fontsArray, fontObj);
+    }
+    cJSON_AddItemToObject(root, "fonts", fontsArray);
+    Serial.printf("[Core 1] Added fonts array with %d fonts to media mappings JSON\n", g_rtcFontCount);
     
     // Print JSON to string (cJSON_Print handles memory allocation)
     // Use cJSON_PrintBuffered with custom malloc for PSRAM

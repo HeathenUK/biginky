@@ -32,6 +32,12 @@ extern bool g_media_mappings_loaded;
 extern uint32_t lastMediaIndex;
 extern uint8_t g_sleep_interval_minutes;
 
+// Font list from RTC memory (scanned at cold boot)
+// FontInfo struct is defined in main.cpp - forward declare here
+struct FontInfo;
+extern FontInfo g_rtcFontList[];
+extern uint8_t g_rtcFontCount;
+
 // Forward declarations for functions from main file
 bool sdInitDirect(bool mode1bit);
 bool handleWebInterfaceCommand(const String& jsonMessage);  // Returns bool, not void

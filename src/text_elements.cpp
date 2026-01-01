@@ -104,7 +104,7 @@ void TimeDateElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const
 
 QuoteElement::QuoteElement(EL133UF1_TTF* ttf, const char* quoteText, const char* authorText)
     : _ttf(ttf), _quoteText(quoteText), _authorText(authorText),
-      _quoteFontSize(128.0f), _authorFontSize(96.0f), _outlineWidth(2),
+      _quoteFontSize(200.0f), _authorFontSize(128.0f), _outlineWidth(2),
       _sizeScale(1.0f), _quoteLines(1),
       _quoteWidth(0), _quoteHeight(0), _authorWidth(0), _authorHeight(0),
       _totalWidth(0), _totalHeight(0)
@@ -294,7 +294,7 @@ void QuoteElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const {
 
 WeatherElement::WeatherElement(EL133UF1_TTF* ttf, const char* temperature, const char* condition, const char* location)
     : _ttf(ttf), _tempFontSize(180.0f), _conditionFontSize(96.0f), _locationFontSize(96.0f),
-      _gapBetween(15), _outlineWidth(2), _sizeScale(1.0f),
+      _gapBetween(20), _outlineWidth(2), _sizeScale(1.0f),
       _cachedWidth(0), _cachedHeight(0),
       _cachedTempW(0), _cachedTempH(0),
       _cachedConditionW(0), _cachedConditionH(0),

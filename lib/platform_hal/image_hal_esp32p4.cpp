@@ -18,10 +18,23 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <string.h>
+#include <stdint.h>
 
 // ESP-IDF PPA driver
 #include "driver/ppa.h"
 #include "hal/ppa_types.h"
+
+// Cache line size for alignment requirements
+// Use CONFIG_CACHE_L2_CACHE_LINE_SIZE from sdkconfig if available, otherwise default to 64
+// PPA requires both buffer address and buffer_size to be aligned to cache line boundaries
+#ifdef CONFIG_CACHE_L2_CACHE_LINE_SIZE
+#define PPA_CACHE_LINE_SIZE CONFIG_CACHE_L2_CACHE_LINE_SIZE
+#else
+#define PPA_CACHE_LINE_SIZE 64  // Fallback: ESP32-P4 default is 64 bytes
+#endif
+
+// Helper macro to align size to cache line boundaries
+#define ALIGN_TO_CACHE_LINE(size) (((size) + (PPA_CACHE_LINE_SIZE - 1)) & ~(PPA_CACHE_LINE_SIZE - 1))
 
 // PPA client handles
 static ppa_client_handle_t s_ppa_srm_client = nullptr;
@@ -130,6 +143,14 @@ bool hal_image_rotate(const image_desc_t* src, image_desc_t* dst,
             return false;
     }
 
+    // Verify input buffer address is aligned (PPA requirement)
+    if (((uintptr_t)src->buffer) & (PPA_CACHE_LINE_SIZE - 1)) {
+        Serial.printf("[IMAGE_HAL] ERROR: Input buffer address %p is not %d-byte aligned!\n", 
+                     src->buffer, PPA_CACHE_LINE_SIZE);
+        s_last_hw_accel = false;
+        return false;
+    }
+
     // Configure input picture
     ppa_in_pic_blk_config_t in_config = {
         .buffer = src->buffer,
@@ -153,6 +174,24 @@ bool hal_image_rotate(const image_desc_t* src, image_desc_t* dst,
                              (src->format == IMAGE_FORMAT_RGB888) ? 3 :
                              (src->format == IMAGE_FORMAT_RGB565) ? 2 : 1;
     size_t out_buffer_size = out_w * out_h * bytes_per_pixel;
+    // PPA requires buffer_size to be aligned to cache line boundaries
+    out_buffer_size = ALIGN_TO_CACHE_LINE(out_buffer_size);
+    
+    // Verify output buffer address is aligned (PPA requirement)
+    if (((uintptr_t)dst->buffer) & (PPA_CACHE_LINE_SIZE - 1)) {
+        Serial.printf("[IMAGE_HAL] ERROR: Output buffer address %p is not %d-byte aligned!\n", 
+                     dst->buffer, PPA_CACHE_LINE_SIZE);
+        s_last_hw_accel = false;
+        return false;
+    }
+    
+    // Verify buffer_size is aligned (PPA requirement)  
+    if (out_buffer_size & (PPA_CACHE_LINE_SIZE - 1)) {
+        Serial.printf("[IMAGE_HAL] ERROR: Output buffer_size %zu is not %d-byte aligned!\n", 
+                     out_buffer_size, PPA_CACHE_LINE_SIZE);
+        s_last_hw_accel = false;
+        return false;
+    }
 
     ppa_out_pic_blk_config_t out_config = {
         .buffer = dst->buffer,
@@ -251,6 +290,8 @@ bool hal_image_scale(const image_desc_t* src, image_desc_t* dst, bool blocking) 
                              (src->format == IMAGE_FORMAT_RGB888) ? 3 :
                              (src->format == IMAGE_FORMAT_RGB565) ? 2 : 1;
     size_t out_buffer_size = dst->width * dst->height * bytes_per_pixel;
+    // PPA requires buffer_size to be aligned to cache line boundaries
+    out_buffer_size = ALIGN_TO_CACHE_LINE(out_buffer_size);
 
     ppa_out_pic_blk_config_t out_config = {
         .buffer = dst->buffer,

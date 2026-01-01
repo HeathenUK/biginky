@@ -667,30 +667,26 @@ function posterizeImage(x, y, width, height) {
     ctx.putImageData(imageData, x, y);
 }
 
-// Apply Atkinson dithering to already posterized image
+// Posterize image to match e-ink colors with Atkinson dithering in one pass
+// This is the original combined approach that works correctly
 // Based on: https://github.com/Toon-nooT/PhotoPainter-E-Ink-Spectra-6-image-converter
-function applyDithering(x, y, width, height) {
+function posterizeImageWithDithering(x, y, width, height) {
     const imageData = ctx.getImageData(x, y, width, height);
     const data = imageData.data;
     
-    // Create a temporary copy to read original values while modifying
-    const originalData = new Uint8ClampedArray(data);
-    
-    // Atkinson dithering (distributes error to 6 neighbors, 5/8 total)
+    // Atkinson dithering (distributes 75% of error to 6 neighbors, 1/8 each)
     for (let py = 0; py < height; py++) {
         for (let px = 0; px < width; px++) {
             const idx = (py * width + px) * 4;
-            
-            // Get current pixel values (these may have been modified by previous dithering)
             let r = data[idx];
             let g = data[idx + 1];
             let b = data[idx + 2];
             
-            // Find closest e-ink color for current (possibly dithered) pixel
+            // Find closest e-ink color
             const closestIdx = findClosestColorIdx(r, g, b);
             const targetColor = einkColors[closestIdx];
             
-            // Calculate error
+            // Calculate error from original continuous color
             const errorR = r - targetColor[0];
             const errorG = g - targetColor[1];
             const errorB = b - targetColor[2];
@@ -702,6 +698,7 @@ function applyDithering(x, y, width, height) {
             
             // Distribute error to neighboring pixels (Atkinson: 5/8 total, standard pattern)
             // Pattern: Right: 1/8, Bottom-left: 1/8, Bottom: 1/4, Bottom-right: 1/8
+            // Based on: https://github.com/Toon-nooT/PhotoPainter-E-Ink-Spectra-6-image-converter
             
             // Right (1/8)
             if (px < width - 1) {
@@ -773,16 +770,16 @@ function applyImageProcessing() {
     adjustImageForEink(imageData, brightness, contrast, saturation);
     ctx.putImageData(imageData, pendingImageData.drawX, pendingImageData.drawY);
     
-    // Apply posterization if enabled, or if dithering is enabled (dithering requires posterization)
-    if (enablePosterize || enableDither) {
+    // Apply posterization and/or dithering
+    if (enableDither) {
+        // If dithering is enabled, do posterization + dithering in one pass
+        // This is necessary because dithering needs to calculate errors from original continuous colors
+        posterizeImageWithDithering(pendingImageData.drawX, pendingImageData.drawY, 
+                                   pendingImageData.drawWidth, pendingImageData.drawHeight);
+    } else if (enablePosterize) {
+        // If only posterization is enabled (no dithering), just quantize
         posterizeImage(pendingImageData.drawX, pendingImageData.drawY, 
                       pendingImageData.drawWidth, pendingImageData.drawHeight);
-        
-        // Apply dithering if enabled (requires posterization, which we just did)
-        if (enableDither) {
-            applyDithering(pendingImageData.drawX, pendingImageData.drawY, 
-                          pendingImageData.drawWidth, pendingImageData.drawHeight);
-        }
     }
     
     // Clear pending image data and hide panel
@@ -798,11 +795,10 @@ function applyImageProcessing() {
         `contrast ${contrast > 0 ? '+' : ''}${contrast}%`,
         `saturation ${saturation > 0 ? '+' : ''}${saturation}%`
     ];
-    if (enablePosterize || enableDither) {
+    if (enableDither) {
+        statusParts.push('posterized and dithered');
+    } else if (enablePosterize) {
         statusParts.push('posterized');
-        if (enableDither) {
-            statusParts.push('dithered');
-        }
     }
     const statusMsg = `Image processed: ${statusParts.join(', ')}`;
     

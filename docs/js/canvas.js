@@ -1293,7 +1293,7 @@ function handleImageFileSelect(event) {
             dragOffsets.clear();
             
             // Hide processing panel if it was showing from a previous image
-            const processingPanel = document.getElementById('imageProcessingPanel');
+            let processingPanel = document.getElementById('imageProcessingPanel');
             if (processingPanel) {
                 processingPanel.style.display = 'none';
             }
@@ -1333,7 +1333,7 @@ function handleImageFileSelect(event) {
             };
             
             // Show processing panel
-            const processingPanel = document.getElementById('imageProcessingPanel');
+            processingPanel = document.getElementById('imageProcessingPanel');
             if (processingPanel) {
                 processingPanel.style.display = 'block';
             }

@@ -2,6 +2,7 @@
 .pio/
 .pioenvs/
 .piolibdeps/
+data/
 
 # Local configuration (contains WiFi credentials - DO NOT COMMIT)
 platformio_local.ini

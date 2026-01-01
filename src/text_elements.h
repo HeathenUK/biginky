@@ -31,6 +31,7 @@ public:
     void setTimeText(const char* text) { _timeText = text; }
     void setDayText(const char* text) { _dayText = text; }
     void setDateText(const char* text) { _dateText = text; }
+    void setColors(uint8_t textColor, uint8_t outlineColor) { _textColor = textColor; _outlineColor = outlineColor; }
     
 private:
     EL133UF1_TTF* _ttf;
@@ -45,6 +46,8 @@ private:
     int16_t _dateOutline;
     int16_t _gapBetween;
     float _sizeScale;
+    uint8_t _textColor;
+    uint8_t _outlineColor;
     
     void recalculateDimensions();
     int16_t _cachedWidth;
@@ -71,6 +74,8 @@ public:
     
     void setQuoteText(const char* text) { _quoteText = text; }
     void setAuthorText(const char* text) { _authorText = text; }
+    void setColors(uint8_t textColor, uint8_t outlineColor) { _textColor = textColor; _outlineColor = outlineColor; }
+    void setOutlineThickness(int16_t thickness);
     
 private:
     EL133UF1_TTF* _ttf;
@@ -80,6 +85,8 @@ private:
     float _authorFontSize;
     int16_t _outlineWidth;
     float _sizeScale;
+    uint8_t _textColor;
+    uint8_t _outlineColor;
     
     // Wrapping state
     char _wrappedQuote[512];
@@ -109,6 +116,7 @@ public:
     void setAdaptiveSize(float scale) override;
     ExclusionZone getExclusionZone(int16_t centerX, int16_t centerY) const override;
     void getColors(uint8_t& textColor, uint8_t& outlineColor) const override;
+    void setColors(uint8_t textColor, uint8_t outlineColor) { _textColor = textColor; _outlineColor = outlineColor; }
     
 private:
     EL133UF1_TTF* _ttf;
@@ -121,6 +129,8 @@ private:
     const int16_t _gapBetween;
     const int16_t _outlineWidth;
     float _sizeScale;
+    uint8_t _textColor;
+    uint8_t _outlineColor;
     
     // Cached dimensions
     int16_t _cachedWidth;

@@ -16,8 +16,9 @@
 TimeDateElement::TimeDateElement(EL133UF1_TTF* ttf, const char* timeText, const char* dayText, const char* dateText)
     : _ttf(ttf), _timeText(timeText), _dayText(dayText), _dateText(dateText),
       _timeFontSize(180.0f), _dayFontSize(96.0f), _dateFontSize(96.0f),
-      _timeOutline(3), _dayOutline(2), _dateOutline(2), _gapBetween(20),
-      _sizeScale(1.0f), _cachedWidth(0), _cachedHeight(0),
+      _timeOutline(3), _dayOutline(3), _dateOutline(3), _gapBetween(20),
+      _sizeScale(1.0f), _textColor(EL133UF1_WHITE), _outlineColor(EL133UF1_BLACK),
+      _cachedWidth(0), _cachedHeight(0),
       _cachedTimeH(0), _cachedDayH(0), _cachedDateH(0)
 {
     recalculateDimensions();
@@ -62,10 +63,10 @@ void TimeDateElement::draw(int16_t centerX, int16_t centerY) {
     
     // Draw time and day
     _ttf->drawTextAlignedOutlined(centerX, timeY, _timeText, timeSize,
-                                  EL133UF1_WHITE, EL133UF1_BLACK,
+                                  _textColor, _outlineColor,
                                   ALIGN_CENTER, ALIGN_MIDDLE, _timeOutline);
     _ttf->drawTextAlignedOutlined(centerX, dayY, _dayText, daySize,
-                                  EL133UF1_WHITE, EL133UF1_BLACK,
+                                  _textColor, _outlineColor,
                                   ALIGN_CENTER, ALIGN_MIDDLE, _dayOutline);
     
     // Draw date with superscript ordinal suffix (e.g., "1st", "2nd", "3rd", "4th")
@@ -110,28 +111,29 @@ void TimeDateElement::draw(int16_t centerX, int16_t centerY) {
             
             // Draw day number (centered vertically)
             _ttf->drawTextAlignedOutlined(dayNumX, dateY, dayNum.c_str(), dateSize,
-                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         _textColor, _outlineColor,
                                          ALIGN_LEFT, ALIGN_MIDDLE, _dateOutline);
             
             // Draw suffix as superscript: align top of superscript with top of day number
+            // Use same outline width as date text (3) to match weather/location text thickness
             _ttf->drawTextAlignedOutlined(suffixX, dayNumTop, suffix.c_str(), superscriptSize,
-                                         EL133UF1_WHITE, EL133UF1_BLACK,
-                                         ALIGN_LEFT, ALIGN_TOP, (int16_t)(_dateOutline * 0.65f));
+                                         _textColor, _outlineColor,
+                                         ALIGN_LEFT, ALIGN_TOP, _dateOutline);
             
             // Draw rest of date (" of Month YYYY")
             _ttf->drawTextAlignedOutlined(restX, dateY, restPart.c_str(), dateSize,
-                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         _textColor, _outlineColor,
                                          ALIGN_LEFT, ALIGN_MIDDLE, _dateOutline);
         } else {
             // Fallback: couldn't parse, draw normally
             _ttf->drawTextAlignedOutlined(centerX, dateY, _dateText, dateSize,
-                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         _textColor, _outlineColor,
                                          ALIGN_CENTER, ALIGN_MIDDLE, _dateOutline);
         }
     } else {
         // Fallback: couldn't parse, draw normally
         _ttf->drawTextAlignedOutlined(centerX, dateY, _dateText, dateSize,
-                                     EL133UF1_WHITE, EL133UF1_BLACK,
+                                     _textColor, _outlineColor,
                                      ALIGN_CENTER, ALIGN_MIDDLE, _dateOutline);
     }
 }
@@ -162,8 +164,8 @@ ExclusionZone TimeDateElement::getExclusionZone(int16_t centerX, int16_t centerY
 }
 
 void TimeDateElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const {
-    textColor = EL133UF1_WHITE;
-    outlineColor = EL133UF1_BLACK;
+    textColor = _textColor;
+    outlineColor = _outlineColor;
 }
 
 // ============================================================================
@@ -172,8 +174,9 @@ void TimeDateElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const
 
 QuoteElement::QuoteElement(EL133UF1_TTF* ttf, const char* quoteText, const char* authorText)
     : _ttf(ttf), _quoteText(quoteText), _authorText(authorText),
-      _quoteFontSize(200.0f), _authorFontSize(128.0f), _outlineWidth(2),
-      _sizeScale(1.0f), _quoteLines(1),
+      _quoteFontSize(200.0f), _authorFontSize(128.0f), _outlineWidth(3),
+      _sizeScale(1.0f), _textColor(EL133UF1_WHITE), _outlineColor(EL133UF1_BLACK),
+      _quoteLines(1),
       _quoteWidth(0), _quoteHeight(0), _authorWidth(0), _authorHeight(0),
       _totalWidth(0), _totalHeight(0)
 {
@@ -286,7 +289,7 @@ void QuoteElement::draw(int16_t centerX, int16_t centerY) {
     if (_quoteLines == 1) {
         int16_t quoteY = blockTop + quoteLineHeight / 2;
         _ttf->drawTextAlignedOutlined(blockLeft, quoteY, _wrappedQuote, quoteSize,
-                                     EL133UF1_WHITE, EL133UF1_BLACK,
+                                     _textColor, _outlineColor,
                                      ALIGN_LEFT, ALIGN_MIDDLE, _outlineWidth);
     } else {
         // Multi-line: draw each line
@@ -305,7 +308,7 @@ void QuoteElement::draw(int16_t centerX, int16_t centerY) {
             
             int16_t lineY = startY + i * (quoteLineHeight + quoteLineGap);
             _ttf->drawTextAlignedOutlined(blockLeft, lineY, line, quoteSize,
-                                         EL133UF1_WHITE, EL133UF1_BLACK,
+                                         _textColor, _outlineColor,
                                          ALIGN_LEFT, ALIGN_MIDDLE, _outlineWidth);
             
             if (nextLine) {
@@ -322,7 +325,7 @@ void QuoteElement::draw(int16_t centerX, int16_t centerY) {
     int16_t authorY = blockTop + _quoteHeight + gapBeforeAuthor + _authorHeight / 2;
     
     _ttf->drawTextAlignedOutlined(blockRight, authorY, authorText, authorSize,
-                                 EL133UF1_WHITE, EL133UF1_BLACK,
+                                 _textColor, _outlineColor,
                                  ALIGN_RIGHT, ALIGN_MIDDLE, _outlineWidth);
 }
 
@@ -354,8 +357,13 @@ ExclusionZone QuoteElement::getExclusionZone(int16_t centerX, int16_t centerY) c
 }
 
 void QuoteElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const {
-    textColor = EL133UF1_WHITE;
-    outlineColor = EL133UF1_BLACK;
+    textColor = _textColor;
+    outlineColor = _outlineColor;
+}
+
+void QuoteElement::setOutlineThickness(int16_t thickness) {
+    _outlineWidth = thickness;
+    recalculateDimensions();
 }
 
 // ============================================================================
@@ -365,6 +373,7 @@ void QuoteElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const {
 WeatherElement::WeatherElement(EL133UF1_TTF* ttf, const char* temperature, const char* condition, const char* location)
     : _ttf(ttf), _tempFontSize(180.0f), _conditionFontSize(96.0f), _locationFontSize(96.0f),
       _gapBetween(20), _outlineWidth(3), _sizeScale(1.0f),  // Match time outline width (3)
+      _textColor(EL133UF1_WHITE), _outlineColor(EL133UF1_BLACK),
       _cachedWidth(0), _cachedHeight(0),
       _cachedTempW(0), _cachedTempH(0),
       _cachedConditionW(0), _cachedConditionH(0),
@@ -419,17 +428,17 @@ void WeatherElement::draw(int16_t centerX, int16_t centerY) {
     
     // Draw temperature (large, centered)
     _ttf->drawTextAlignedOutlined(centerX, tempY, _temperature, tempSize,
-                                  EL133UF1_WHITE, EL133UF1_BLACK,
+                                  _textColor, _outlineColor,
                                   ALIGN_CENTER, ALIGN_MIDDLE, _outlineWidth);
     
     // Draw condition (medium, centered)
     _ttf->drawTextAlignedOutlined(centerX, conditionY, _condition, conditionSize,
-                                  EL133UF1_WHITE, EL133UF1_BLACK,
+                                  _textColor, _outlineColor,
                                   ALIGN_CENTER, ALIGN_MIDDLE, _outlineWidth);
     
     // Draw location (small, centered)
     _ttf->drawTextAlignedOutlined(centerX, locationY, _location, locationSize,
-                                  EL133UF1_WHITE, EL133UF1_BLACK,
+                                  _textColor, _outlineColor,
                                   ALIGN_CENTER, ALIGN_MIDDLE, _outlineWidth);
 }
 
@@ -450,6 +459,6 @@ ExclusionZone WeatherElement::getExclusionZone(int16_t centerX, int16_t centerY)
 }
 
 void WeatherElement::getColors(uint8_t& textColor, uint8_t& outlineColor) const {
-    textColor = EL133UF1_WHITE;
-    outlineColor = EL133UF1_BLACK;
+    textColor = _textColor;
+    outlineColor = _outlineColor;
 }

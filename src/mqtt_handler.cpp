@@ -104,6 +104,10 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
 struct MediaMapping {
     String imageName;
     String audioFile;
+    String foreground;
+    String outline;
+    String font;
+    int thickness;
 };
 extern int loadMediaMappingsFromSD(bool autoPublish);
 extern bool sdInitDirect(bool mode1bit);

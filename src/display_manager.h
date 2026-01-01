@@ -11,6 +11,7 @@
 #define DISPLAY_MANAGER_H
 
 #include <Arduino.h>
+#include "EL133UF1.h"  // For color constants
 
 /**
  * Unified function to display media from media mappings with text overlay and audio
@@ -37,7 +38,10 @@ class EL133UF1_TTF;
  * @param display Display instance
  * @param ttf TTF renderer instance
  * @param keepoutMargin Keepout margin for text placement (default 50: 25px left/right, 50px top/bottom)
+ * @param textColor Text color (default EL133UF1_WHITE)
+ * @param outlineColor Outline color (default EL133UF1_BLACK)
+ * @param outlineThickness Outline thickness for quote/author text (default 3)
  */
-void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin = 50);
+void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin = 50, uint8_t textColor = EL133UF1_WHITE, uint8_t outlineColor = EL133UF1_BLACK, int16_t outlineThickness = 3);
 
 #endif // DISPLAY_MANAGER_H

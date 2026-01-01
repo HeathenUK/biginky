@@ -37,6 +37,10 @@ extern String extractJsonStringField(const String& json, const String& fieldName
 struct MediaMapping {
     String imageName;
     String audioFile;
+    String foreground;
+    String outline;
+    String font;
+    int thickness;
 };
 extern std::vector<MediaMapping> g_media_mappings;
 extern bool g_media_mappings_loaded;

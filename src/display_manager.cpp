@@ -39,6 +39,10 @@ extern bool g_quotes_loaded;
 struct MediaMapping {
     String imageName;
     String audioFile;
+    String foreground;
+    String outline;
+    String font;
+    int thickness;
 };
 extern std::vector<MediaMapping> g_media_mappings;
 extern bool g_media_mappings_loaded;
@@ -71,7 +75,7 @@ static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize,
                               char* dateBuf, size_t dateBufSize);
 static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
                                   const char* timeBuf, const char* dayBuf, const char* dateBuf,
-                                  int16_t keepoutMargin);
+                                  int16_t keepoutMargin, uint8_t textColor, uint8_t outlineColor, int16_t outlineThickness);
 
 /**
  * Fetch weather data from OpenWeatherMap API
@@ -247,12 +251,26 @@ static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize,
 }
 
 /**
+ * Helper function to parse color string to color constant
+ */
+static uint8_t parseColorString(const String& colorStr) {
+    String lower = colorStr;
+    lower.toLowerCase();
+    if (lower == "yellow") return EL133UF1_YELLOW;
+    if (lower == "red") return EL133UF1_RED;
+    if (lower == "blue") return EL133UF1_BLUE;
+    if (lower == "green") return EL133UF1_GREEN;
+    if (lower == "black") return EL133UF1_BLACK;
+    return EL133UF1_WHITE;  // Default
+}
+
+/**
  * Simple fixed-layout function: divide screen into 3 areas (one half + two quarters)
  * Randomly assign: which half (top/bottom), which quarter gets time/date (left/right)
  */
-static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf, 
+static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
                                   const char* timeBuf, const char* dayBuf, const char* dateBuf,
-                                  int16_t keepoutMargin) {
+                                  int16_t keepoutMargin, uint8_t textColor, uint8_t outlineColor, int16_t outlineThickness = 3) {
     int16_t screenW = display->width();
     int16_t screenH = display->height();
     
@@ -393,8 +411,12 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
     
     // Create elements
     TimeDateElement timeDateElement(ttf, timeBuf, dayBuf, dateBuf);
+    timeDateElement.setColors(textColor, outlineColor);
     WeatherElement weatherElement(ttf, weatherTemp, weatherCondition, weatherLocation);
+    weatherElement.setColors(textColor, outlineColor);
     QuoteElement quoteElement(ttf, quoteText, quoteAuthor);
+    quoteElement.setColors(textColor, outlineColor);
+    quoteElement.setOutlineThickness(outlineThickness);
     
     // Scale elements to fit their assigned areas
     // Quarter areas: quarterW x quarterH (800x600 for 1600x1200 display)
@@ -460,12 +482,12 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
  * Add text overlay (time/date/weather/quote) to an already-drawn display
  * This centralizes the logic so all commands (!go, !show, web UI, etc.) use the same code
  */
-void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin) {
+void addTextOverlayToDisplay(EL133UF1* display, EL133UF1_TTF* ttf, int16_t keepoutMargin, uint8_t textColor, uint8_t outlineColor, int16_t outlineThickness) {
     char timeBuf[16];
     char dayBuf[16];
     char dateBuf[48];
     formatTimeAndDate(timeBuf, sizeof(timeBuf), dayBuf, sizeof(dayBuf), dateBuf, sizeof(dateBuf));
-    placeTimeDateAndQuote(display, ttf, timeBuf, dayBuf, dateBuf, keepoutMargin);
+    placeTimeDateAndQuote(display, ttf, timeBuf, dayBuf, dateBuf, keepoutMargin, textColor, outlineColor, outlineThickness);
 }
 
 /**
@@ -534,12 +556,9 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
     
-    // For GO command: after showing target index, advance to next index for future cycles
-    if (targetIndex >= 0) {
-        size_t mediaCount = g_media_mappings.size();
-        lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
-        Serial.printf("GO command: Advanced index to %lu (next item for future cycles)\n", (unsigned long)lastMediaIndex);
-    }
+    // When showing a specific target index, lastMediaIndex should remain at that index
+    // (not advance) so the web UI correctly shows the next item as (targetIndex + 1)
+    // The increment happens naturally on the next sequential cycle via pngDrawFromMediaMappings
     
     // Save updated index to NVS
     mediaIndexSaveToNVS();
@@ -547,8 +566,25 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
     // Yield before text placement
     vTaskDelay(1);
     
+    // Get colors and thickness from current media mapping
+    uint8_t textColor = EL133UF1_WHITE;
+    uint8_t outlineColor = EL133UF1_BLACK;
+    int16_t outlineThickness = 3;  // Default thickness
+    if (lastMediaIndex < g_media_mappings.size()) {
+        const MediaMapping& mapping = g_media_mappings[lastMediaIndex];
+        if (mapping.foreground.length() > 0) {
+            textColor = parseColorString(mapping.foreground);
+        }
+        if (mapping.outline.length() > 0) {
+            outlineColor = parseColorString(mapping.outline);
+        }
+        if (mapping.thickness > 0) {
+            outlineThickness = mapping.thickness;
+        }
+    }
+    
     // Add text overlay (time/date/weather/quote) - centralized function
-    addTextOverlayToDisplay(&display, &ttf, keepoutMargin);
+    addTextOverlayToDisplay(&display, &ttf, keepoutMargin, textColor, outlineColor, outlineThickness);
     
     // Yield after text placement
     vTaskDelay(1);

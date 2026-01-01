@@ -281,7 +281,7 @@ String g_lastImagePath = "";  // Non-static for display_manager access
 // Deep sleep boot counter (persists in RTC memory across deep sleep)
 RTC_DATA_ATTR uint32_t sleepBootCount = 0;
 RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for sequential cycling
-uint32_t lastMediaIndex = 0;  // Track last displayed image from media.txt (stored in NVS)
+uint32_t lastMediaIndex = 0;  // Track last displayed image from media.csv (stored in NVS)
 static bool showOperationInProgress = false;  // Lock to prevent concurrent show operations
 
 // MQTT state - moved to mqtt_handler.cpp
@@ -300,7 +300,7 @@ struct ShowMediaTaskData {
     SemaphoreHandle_t completionSem;
 };
 RTC_DATA_ATTR uint32_t ntpSyncCounter = 0;  // Counter for periodic NTP resync
-RTC_DATA_ATTR bool usingMediaMappings = false;  // Track if we're using media.txt or scanning all PNGs
+RTC_DATA_ATTR bool usingMediaMappings = false;  // Track if we're using media.csv or scanning all PNGs
 
 // Cached WiFi credentials in RTC memory (survives deep sleep, avoids NVS reads)
 RTC_DATA_ATTR char cachedWifiSSID[33] = "";
@@ -1175,10 +1175,14 @@ struct LoadedQuote {
 std::vector<LoadedQuote> g_loaded_quotes;  // Non-static for display_manager access
 bool g_quotes_loaded = false;  // Non-static for display_manager access
 
-// Structure to hold image-to-audio mappings
+// Structure to hold image-to-audio mappings (now supports CSV format)
 struct MediaMapping {
-    String imageName;  // e.g., "sunset.png"
-    String audioFile;  // e.g., "ocean.wav"
+    String imageName;     // e.g., "sunset.png" (mandatory)
+    String audioFile;     // e.g., "ocean.wav" (optional)
+    String foreground;    // Optional foreground color for text overlay
+    String outline;       // Optional outline color for text overlay
+    String font;          // Optional font name for text overlay
+    int thickness;        // Optional outline thickness (default: 3 if 0 or missing)
 };
 
 std::vector<MediaMapping> g_media_mappings;
@@ -1209,6 +1213,52 @@ static bool f_read_line(FIL* fp, char* buffer, size_t bufsize) {
     
     buffer[pos] = '\0';
     return true;
+}
+
+/**
+ * Parse a CSV line into fields
+ * Handles quoted fields, escaped quotes, and commas within quotes
+ * @param line Input CSV line
+ * @param fields Output array of field strings (max 16 fields)
+ * @param maxFields Maximum number of fields to parse
+ * @return Number of fields parsed
+ */
+static int parseCSVLine(const String& line, String* fields, int maxFields) {
+    int fieldCount = 0;
+    int pos = 0;
+    bool inQuotes = false;
+    String currentField = "";
+    
+    while (pos < (int)line.length() && fieldCount < maxFields) {
+        char ch = line[pos];
+        
+        if (ch == '"') {
+            if (inQuotes && pos + 1 < (int)line.length() && line[pos + 1] == '"') {
+                // Escaped quote (double quote)
+                currentField += '"';
+                pos += 2;
+            } else {
+                // Toggle quote state
+                inQuotes = !inQuotes;
+                pos++;
+            }
+        } else if (ch == ',' && !inQuotes) {
+            // Field separator
+            fields[fieldCount++] = currentField;
+            currentField = "";
+            pos++;
+        } else {
+            currentField += ch;
+            pos++;
+        }
+    }
+    
+    // Add the last field
+    if (fieldCount < maxFields) {
+        fields[fieldCount++] = currentField;
+    }
+    
+    return fieldCount;
 }
 
 /**
@@ -1319,9 +1369,15 @@ int loadQuotesFromSD() {
 }
 
 /**
- * Load image-to-audio mappings from /media.txt on SD card
- * Format (one mapping per line):
- *   image.png,audio.wav
+ * Load image-to-audio mappings from /media.csv on SD card
+ * CSV Format with header line:
+ *   Image,Audio,Foreground,Outline,Font,Thickness
+ *   coast.png,waves.wav,,,,
+ *   sunset.png,ocean.wav,black,blue,Open Sans,3
+ * 
+ * Only the first field (Image) is mandatory. All other fields are optional.
+ * Fields can be quoted if they contain commas: "Font, with comma"
+ * Quotes within fields are escaped as double quotes: "He said ""Hello"""
  * 
  * Returns: number of mappings loaded
  */
@@ -1336,29 +1392,31 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
         return 0;
     }
     
-    String mediaPath = "0:/media.txt";
+    String mediaPath = "0:/media.csv";
     
     // Check if file exists
     FILINFO fno;
     FRESULT res = f_stat(mediaPath.c_str(), &fno);
     if (res != FR_OK) {
-        Serial.println("  /media.txt not found (using fallback beep)");
+        Serial.println("  /media.csv not found (using fallback beep)");
         return 0;
     }
     
-    Serial.printf("  Found media.txt (%lu bytes)\n", (unsigned long)fno.fsize);
+    Serial.printf("  Found media.csv (%lu bytes)\n", (unsigned long)fno.fsize);
     
     // Open file
     FIL mediaFile;
     res = f_open(&mediaFile, mediaPath.c_str(), FA_READ);
     if (res != FR_OK) {
-        Serial.printf("  Failed to open media.txt: %d\n", res);
+        Serial.printf("  Failed to open media.csv: %d\n", res);
         return 0;
     }
     
     // Read file line by line
-    char line[256];
+    char line[512];  // Increased buffer size for CSV with longer fields
     int lineNum = 0;
+    bool headerRead = false;
+    String fields[16];  // Support up to 16 CSV fields
     
     while (f_read_line(&mediaFile, line, sizeof(line))) {
         lineNum++;
@@ -1371,59 +1429,109 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
             continue;
         }
         
-        // Parse format: image.png,audio.wav
-        // Also allow: image.png (no comma = no audio, will use fallback beep)
-        int commaPos = trimmed.indexOf(',');
-        if (commaPos > 0 && commaPos < (int)trimmed.length() - 1) {
-            // Format: image.png,audio.wav
-            String imageName = trimmed.substring(0, commaPos);
-            String audioFile = trimmed.substring(commaPos + 1);
-            imageName.trim();
-            audioFile.trim();
-            
-            // Extract just the filename (remove path if present)
-            int slashPos = imageName.lastIndexOf('/');
-            if (slashPos >= 0) {
-                imageName = imageName.substring(slashPos + 1);
-            }
-            
-            MediaMapping mm;
-            mm.imageName = imageName;
-            mm.audioFile = audioFile;
-            g_media_mappings.push_back(mm);
-            
-            Serial.printf("  [%d] %s -> %s\n", g_media_mappings.size(),
-                         imageName.c_str(), audioFile.c_str());
-        } else if (commaPos < 0 && trimmed.length() > 0) {
-            // Format: image.png (no comma = image only, no audio mapping)
-            // This allows explicitly listing images that should be shown but use fallback beep
-            String imageName = trimmed;
-            imageName.trim();
-            
-            // Extract just the filename (remove path if present)
-            int slashPos = imageName.lastIndexOf('/');
-            if (slashPos >= 0) {
-                imageName = imageName.substring(slashPos + 1);
-            }
-            
-            // Check if it looks like an image file
-            if (imageName.length() > 0 && 
-                (imageName.endsWith(".png") || imageName.endsWith(".bmp") || 
-                 imageName.endsWith(".jpg") || imageName.endsWith(".jpeg"))) {
-                MediaMapping mm;
-                mm.imageName = imageName;
-                mm.audioFile = "";  // Empty audio = will use fallback beep
-                g_media_mappings.push_back(mm);
-                
-                Serial.printf("  [%d] %s -> (no audio, will use fallback beep)\n", 
-                             g_media_mappings.size(), imageName.c_str());
-            } else {
-                Serial.printf("  Warning: Invalid format on line %d: %s (expected image filename)\n", 
-                             lineNum, line);
-            }
-        } else {
-            Serial.printf("  Warning: Invalid format on line %d: %s\n", lineNum, line);
+        // Parse CSV line
+        int fieldCount = parseCSVLine(trimmed, fields, 16);
+        
+        if (fieldCount == 0) {
+            continue;
         }
+        
+        // First non-empty, non-comment line is the header
+        if (!headerRead) {
+            headerRead = true;
+            Serial.printf("  CSV Header: %s\n", trimmed.c_str());
+            continue;  // Skip header line
+        }
+        
+        // Parse data row - image is mandatory (first field)
+        if (fieldCount < 1) {
+            Serial.printf("  Warning: Line %d has no fields, skipping\n", lineNum);
+            continue;
+        }
+        
+        String imageName = fields[0];
+        imageName.trim();
+        
+        // Extract just the filename (remove path if present)
+        int slashPos = imageName.lastIndexOf('/');
+        if (slashPos >= 0) {
+            imageName = imageName.substring(slashPos + 1);
+        }
+        
+        // Validate image filename
+        if (imageName.length() == 0) {
+            Serial.printf("  Warning: Line %d has empty image field, skipping\n", lineNum);
+            continue;
+        }
+        
+        // Check if it looks like an image file
+        String imageLower = imageName;
+        imageLower.toLowerCase();
+        if (!(imageLower.endsWith(".png") || imageLower.endsWith(".bmp") || 
+              imageLower.endsWith(".jpg") || imageLower.endsWith(".jpeg"))) {
+            Serial.printf("  Warning: Line %d image '%s' doesn't look like an image file, skipping\n", 
+                         lineNum, imageName.c_str());
+            continue;
+        }
+        
+        // Create mapping
+        MediaMapping mm;
+        mm.imageName = imageName;
+        if (fieldCount > 1) {
+            mm.audioFile = fields[1];
+            mm.audioFile.trim();
+        } else {
+            mm.audioFile = "";
+        }
+        if (fieldCount > 2) {
+            mm.foreground = fields[2];
+            mm.foreground.trim();
+        } else {
+            mm.foreground = "";
+        }
+        if (fieldCount > 3) {
+            mm.outline = fields[3];
+            mm.outline.trim();
+        } else {
+            mm.outline = "";
+        }
+        if (fieldCount > 4) {
+            mm.font = fields[4];
+            mm.font.trim();
+        } else {
+            mm.font = "";
+        }
+        // Parse thickness (field 5, index 5) with safe default of 3
+        mm.thickness = 3;  // Default value
+        if (fieldCount > 5) {
+            String thicknessStr = fields[5];
+            thicknessStr.trim();
+            if (thicknessStr.length() > 0) {
+                int parsedThickness = thicknessStr.toInt();
+                // Validate: must be between 1 and 10 (reasonable range)
+                if (parsedThickness >= 1 && parsedThickness <= 10) {
+                    mm.thickness = parsedThickness;
+                } else if (parsedThickness != 0) {
+                    // Invalid value, use default
+                    Serial.printf("  Warning: Invalid thickness value '%s' (must be 1-10), using default 3\n", thicknessStr.c_str());
+                }
+            }
+        }
+        
+        g_media_mappings.push_back(mm);
+        
+        // Log the mapping
+        Serial.printf("  [%d] %s", g_media_mappings.size(), imageName.c_str());
+        if (mm.audioFile.length() > 0) {
+            Serial.printf(" -> %s", mm.audioFile.c_str());
+        } else {
+            Serial.printf(" -> (no audio)");
+        }
+        if (mm.foreground.length() > 0 || mm.outline.length() > 0 || mm.font.length() > 0 || mm.thickness != 3) {
+            Serial.printf(" [fg:%s,out:%s,font:%s,thickness:%d]", 
+                         mm.foreground.c_str(), mm.outline.c_str(), mm.font.c_str(), mm.thickness);
+        }
+        Serial.println();
     }
     
     f_close(&mediaFile);
@@ -1432,7 +1540,7 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
         g_media_mappings_loaded = true;
         Serial.printf("  Loaded %d media mappings from SD card\n", g_media_mappings.size());
         
-        // Publish media mappings if MQTT is connected (media.txt was changed/reloaded)
+        // Publish media mappings if MQTT is connected (media.csv was changed/reloaded)
         // BUT only if autoPublish is true (to avoid double-publishing when called from publishMQTTMediaMappings)
         if (autoPublish && isMqttConnected() && getMqttClient() != nullptr) {
             Serial.println("  Media mappings changed - publishing to MQTT...");
@@ -1522,12 +1630,15 @@ bool playWavFile(const String& audioPath) {
         return false;
     }
     
-    // Build FatFs path
-    String fatfsPath = "0:";
-    if (!audioPath.startsWith("/")) {
-        fatfsPath += "/";
+    // Build FatFs path (audio files are in audio/ subdirectory)
+    // If audioPath is just a filename (no path separators), prepend "audio/"
+    String fullAudioPath = audioPath;
+    if (fullAudioPath.indexOf('/') < 0) {
+        // Just a filename, prepend audio/ directory
+        fullAudioPath = "audio/" + fullAudioPath;
     }
-    fatfsPath += audioPath;
+    
+    String fatfsPath = "0:/" + fullAudioPath;
     
     // Check if file exists
     FILINFO fno;
@@ -3395,7 +3506,7 @@ bool handleOAICommand(const String& parameter) {
                 return false;
             }
             
-            // Save image to SD card in separate directory to avoid mixing with media.txt images
+            // Save image to SD card in separate directory to avoid mixing with media.csv images
 
             if (sdCardMounted || sdInitDirect(false)) {
                 const char* aiDir = "/ai_generated";
@@ -4126,7 +4237,7 @@ static String listImageFiles() {
     
     FF_DIR dir;
     FILINFO fno;
-    FRESULT res = f_opendir(&dir, "0:/");
+    FRESULT res = f_opendir(&dir, "0:/images");
     
     if (res == FR_OK) {
         while (true) {
@@ -4140,7 +4251,7 @@ static String listImageFiles() {
                 if (filename.endsWith(".png") || filename.endsWith(".bmp") || 
                     filename.endsWith(".jpg") || filename.endsWith(".jpeg")) {
                     if (!first) json += ",";
-                    json += "\"" + String(fno.fname) + "\"";
+                    json += "\"" + String(fno.fname) + "\"";  // Just the filename, not the full path
                     first = false;
                 }
             }
@@ -4158,7 +4269,7 @@ static String listAudioFiles() {
     
     FF_DIR dir;
     FILINFO fno;
-    FRESULT res = f_opendir(&dir, "0:/");
+    FRESULT res = f_opendir(&dir, "0:/audio");
     
     if (res == FR_OK) {
         while (true) {
@@ -4171,7 +4282,7 @@ static String listAudioFiles() {
                 filename.toLowerCase();
                 if (filename.endsWith(".wav") || filename.endsWith(".mp3")) {
                     if (!first) json += ",";
-                    json += "\"" + String(fno.fname) + "\"";
+                    json += "\"" + String(fno.fname) + "\"";  // Just the filename, not the full path
                     first = false;
                 }
             }
@@ -4183,25 +4294,60 @@ static String listAudioFiles() {
     return json;
 }
 
-static String listAllFiles() {
+static String listAllFiles(const String& dirPath = "") {
     String json = "[";
     bool first = true;
     
+    // Build full directory path
+    String fullPath = "0:/";
+    if (dirPath.length() > 0) {
+        fullPath += dirPath;
+        // Ensure path ends with /
+        if (!fullPath.endsWith("/")) {
+            fullPath += "/";
+        }
+    }
+    
     FF_DIR dir;
     FILINFO fno;
-    FRESULT res = f_opendir(&dir, "0:/");
+    FRESULT res = f_opendir(&dir, fullPath.c_str());
     
     if (res == FR_OK) {
         while (true) {
             res = f_readdir(&dir, &fno);
             if (res != FR_OK || fno.fname[0] == 0) break;
             
-            // Only list files (not directories)
+            // Skip . and .. entries
+            if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
+                continue;
+            }
+            
+            if (!first) json += ",";
+            
+            // Build relative path for this entry
+            String entryPath = dirPath;
+            if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
+                entryPath += "/";
+            }
+            entryPath += String(fno.fname);
+            
+            json += "{\"name\":\"";
+            // Escape JSON string
+            String name = String(fno.fname);
+            name.replace("\\", "\\\\");
+            name.replace("\"", "\\\"");
+            json += name;
+            json += "\",\"path\":\"";
+            String path = entryPath;
+            path.replace("\\", "\\\\");
+            path.replace("\"", "\\\"");
+            json += path;
+            json += "\",\"isDir\":";
+            json += (fno.fattrib & AM_DIR) ? "true" : "false";
+            
             if (!(fno.fattrib & AM_DIR)) {
-                if (!first) json += ",";
-                json += "{\"name\":\"";
-                json += String(fno.fname);
-                json += "\",\"size\":";
+                // File: include size and modified time
+                json += ",\"size\":";
                 json += String(fno.fsize);
                 
                 // Extract date/time from FatFs format
@@ -4234,9 +4380,13 @@ static String listAllFiles() {
                 
                 json += ",\"modified\":";
                 json += String(timestamp);
-                json += "}";
-                first = false;
+            } else {
+                // Directory: no size or modified time
+                json += ",\"size\":0,\"modified\":0";
             }
+            
+            json += "}";
+            first = false;
         }
         f_closedir(&dir);
     }
@@ -4329,297 +4479,7 @@ static bool updateDeviceSettings(const String& json) {
     return true;
 }
 
-#if 0
-// OLD HTML GENERATION CODE - REMOVED (now using embedded WEB_HTML_CONTENT from web_assets.h)
-// Helper function to write HTML chunk to stream
-static void writeHTMLChunk(PsychicStreamResponse& stream, const char* str) {
-    size_t len = strlen(str);
-    stream.write((const uint8_t*)str, len);
-}
 
-// Generate and stream HTML management interface directly to response
-static void generateAndStreamManagementHTML(PsychicStreamResponse& stream) {
-    writeHTMLChunk(stream, "<!DOCTYPE html><html><head><meta charset='UTF-8'>");
-    writeHTMLChunk(stream, "<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
-    writeHTMLChunk(stream, "<title>Device Management</title>");
-    writeHTMLChunk(stream, "<style>");
-    writeHTMLChunk(stream, "body{font-family:Arial,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5;}");
-    writeHTMLChunk(stream, "h1{color:#333;border-bottom:2px solid #4CAF50;padding-bottom:10px;}");
-    writeHTMLChunk(stream, ".section{background:white;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}");
-    writeHTMLChunk(stream, "h2{color:#4CAF50;margin-top:0;}");
-    writeHTMLChunk(stream, "textarea{width:100%;min-height:200px;font-family:monospace;padding:10px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}");
-    writeHTMLChunk(stream, "input[type='number']{width:100px;padding:8px;border:1px solid #ddd;border-radius:4px;}");
-    writeHTMLChunk(stream, "select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}");
-    writeHTMLChunk(stream, "button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;}");
-    writeHTMLChunk(stream, "button:hover{background:#45a049;}");
-    writeHTMLChunk(stream, "button.delete{background:#f44336;padding:5px 10px;font-size:12px;}");
-    writeHTMLChunk(stream, "button.delete:hover{background:#d32f2f;}");
-    writeHTMLChunk(stream, ".status{color:#4CAF50;margin:10px 0;font-weight:bold;}");
-    writeHTMLChunk(stream, ".error{color:#f44336;}");
-    writeHTMLChunk(stream, "label{display:block;margin:10px 0 5px 0;font-weight:bold;}");
-    writeHTMLChunk(stream, ".form-group{margin:15px 0;}");
-    writeHTMLChunk(stream, "td{padding:5px;}");
-    writeHTMLChunk(stream, "</style></head><body>");
-    writeHTMLChunk(stream, "<h1>Device Configuration Management</h1>");
-    
-    // Quotes section
-    writeHTMLChunk(stream, "<div class='section'><h2>Quotes Configuration (quotes.txt)</h2>");
-    writeHTMLChunk(stream, "<p>Format: Quote text on one or more lines, followed by ~Author on the next line. Separate quotes with blank lines.</p>");
-    writeHTMLChunk(stream, "<textarea id='quotesContent' placeholder='Loading quotes.txt...'></textarea><br>");
-    writeHTMLChunk(stream, "<button onclick='loadQuotes()'>Load from Device</button>");
-    writeHTMLChunk(stream, "<button onclick='saveQuotes()'>Save to Device</button>");
-    writeHTMLChunk(stream, "<div id='quotesStatus'></div></div>");
-    
-    // Media section
-    writeHTMLChunk(stream, "<div class='section'><h2>Media Mappings (media.txt)</h2>");
-    writeHTMLChunk(stream, "<p>Select image and audio file combinations. Leave audio empty for no audio. Check the 'Next' box to set which item will be displayed next. Click 'Show' to display the image and play audio on the panel.</p>");
-    writeHTMLChunk(stream, "<table id='mediaTable' style='width:100%;border-collapse:collapse;margin:10px 0;'>");
-    writeHTMLChunk(stream, "<thead><tr style='background:#f0f0f0;'><th style='padding:10px;text-align:left;width:30%;'>Image File</th><th style='padding:10px;text-align:left;width:30%;'>Audio File</th><th style='padding:10px;text-align:center;width:10%;'>Next</th><th style='padding:10px;text-align:center;width:15%;'>Actions</th><th style='padding:10px;width:15%;'></th></tr></thead>");
-    writeHTMLChunk(stream, "<tbody id='mediaRows'></tbody>");
-    writeHTMLChunk(stream, "</table>");
-    writeHTMLChunk(stream, "<button onclick='addMediaRow()'>Add New Row</button>");
-    writeHTMLChunk(stream, "<button onclick='loadMedia()'>Load from Device</button>");
-    writeHTMLChunk(stream, "<button onclick='saveMedia()'>Save to Device</button>");
-    writeHTMLChunk(stream, "<div id='mediaStatus'></div></div>");
-    
-    // Device settings section
-    writeHTMLChunk(stream, "<div class='section'><h2>Device Settings</h2>");
-    writeHTMLChunk(stream, "<div class='form-group'>");
-    writeHTMLChunk(stream, "<label>Volume (0-100%):</label>");
-    writeHTMLChunk(stream, "<input type='number' id='volume' min='0' max='100' value='50'>");
-    writeHTMLChunk(stream, "</div>");
-    writeHTMLChunk(stream, "<div class='form-group'>");
-    writeHTMLChunk(stream, "<label>Sleep Interval (minutes, must be factor of 60):</label>");
-    writeHTMLChunk(stream, "<input type='number' id='sleepInterval' min='1' max='60' value='1'>");
-    writeHTMLChunk(stream, "</div>");
-    writeHTMLChunk(stream, "<div class='form-group'>");
-    writeHTMLChunk(stream, "<label>Hour Schedule (check hours when device should wake):</label>");
-    writeHTMLChunk(stream, "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;padding:10px;background:#f9f9f9;border-radius:4px;'>");
-    for (int i = 0; i < 24; i++) {
-        char hourHtml[200];
-        snprintf(hourHtml, sizeof(hourHtml), 
-            "<label style='display:flex;align-items:center;gap:5px;cursor:pointer;'><input type='checkbox' class='hourCheckbox' data-hour='%d' style='cursor:pointer;'>%02d:00</label>", 
-            i, i);
-        writeHTMLChunk(stream, hourHtml);
-    }
-    writeHTMLChunk(stream, "</div>");
-    writeHTMLChunk(stream, "<div style='margin-top:10px;'><button onclick='selectAllHours()'>Select All</button>");
-    writeHTMLChunk(stream, "<button onclick='deselectAllHours()'>Deselect All</button>");
-    writeHTMLChunk(stream, "<button onclick='selectNightHours()'>Select Night (6am-11pm)</button>");
-    writeHTMLChunk(stream, "<button onclick='selectDayHours()'>Select Day (11pm-6am)</button></div>");
-    writeHTMLChunk(stream, "</div>");
-    writeHTMLChunk(stream, "<button onclick='loadSettings()'>Load from Device</button>");
-    writeHTMLChunk(stream, "<button onclick='saveSettings()'>Save to Device</button>");
-    writeHTMLChunk(stream, "<div id='settingsStatus'></div></div>");
-    
-    // File management section
-    writeHTMLChunk(stream, "<div class='section'><h2>File Management</h2>");
-    writeHTMLChunk(stream, "<p>Upload, download, and delete files on the SD card.</p>");
-    writeHTMLChunk(stream, "<div style='margin:10px 0;'><input type='file' id='fileUpload' style='display:none;' onchange='handleFileSelect(event)'><button onclick='document.getElementById(\"fileUpload\").click()'>Upload File</button>");
-    writeHTMLChunk(stream, "<button onclick='refreshFileList()'>Refresh File List</button></div>");
-    writeHTMLChunk(stream, "<div id='fileList' style='margin:10px 0;'>Loading files...</div>");
-    writeHTMLChunk(stream, "<div id='fileStatus'></div></div>");
-    
-    // Log viewing section
-    writeHTMLChunk(stream, "<div class='section'><h2>System Log</h2>");
-    writeHTMLChunk(stream, "<p>View the current system log file (read-only).</p>");
-    writeHTMLChunk(stream, "<button onclick='loadLog()'>Load Current Log</button>");
-    writeHTMLChunk(stream, "<button onclick='loadLogArchiveList()'>Load Previous Log</button>");
-    writeHTMLChunk(stream, "<div id='logArchiveList' style='margin-top:10px;'></div>");
-    writeHTMLChunk(stream, "<div id='logContent' style='margin:10px 0;max-height:600px;overflow-y:auto;background:#f9f9f9;padding:10px;border:1px solid #ddd;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;'></div>");
-    writeHTMLChunk(stream, "<div id='logStatus'></div></div>");
-    
-    // Close server button
-    writeHTMLChunk(stream, "<div class='section'><h2>Server Control</h2>");
-    writeHTMLChunk(stream, "<p>Close the management interface and return to normal operation.</p>");
-    writeHTMLChunk(stream, "<button onclick='closeServer()' style='background:#f44336;'>Close Management Interface</button>");
-    writeHTMLChunk(stream, "<div id='closeStatus'></div></div>");
-    
-    // JavaScript - write in chunks to avoid large string
-    writeHTMLChunk(stream, "<script>");
-    // Load all the JavaScript functions - keeping them as chunks to minimize stack usage
-    writeHTMLChunk(stream, "function loadQuotes(){fetch('/api/quotes').then(r=>r.text()).then(t=>{document.getElementById('quotesContent').value=t;showStatus('quotesStatus','Loaded successfully',false);}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}");
-    writeHTMLChunk(stream, "function saveQuotes(){const content=document.getElementById('quotesContent').value;fetch('/api/quotes',{method:'POST',body:content}).then(r=>r.json()).then(d=>{showStatus('quotesStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadQuotes();}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}");
-    writeHTMLChunk(stream, "let imageFiles=[];let audioFiles=[];let filesLoaded=0;");
-    writeHTMLChunk(stream, "function checkAndLoadMedia(){if(filesLoaded>=2){loadMedia();}else if(filesLoaded===1){showStatus('mediaStatus','Warning: Only partial file list loaded',true);}}");
-    writeHTMLChunk(stream, "function loadFileLists(){filesLoaded=0;fetch('/api/images').then(r=>r.json()).then(f=>{imageFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading images: '+e,true);filesLoaded++;checkAndLoadMedia();});fetch('/api/audio').then(r=>r.json()).then(f=>{audioFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading audio: '+e,true);filesLoaded++;checkAndLoadMedia();});}");
-    // Continue with remaining JavaScript - this is a very long section, so we'll keep it as-is but stream it
-    // For brevity, I'll include the key parts and note that the full JS should be streamed
-    writeHTMLChunk(stream, "let showInProgress=false;function createMediaRow(image='',audio='',isNext=false){const row=document.createElement('tr');row.dataset.index=document.getElementById('mediaRows').children.length;const imgCell=document.createElement('td');const imgSelect=document.createElement('select');imgSelect.className='imageSelect';imgSelect.innerHTML='<option value=\"\">-- Select Image --</option>';imageFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===image);imgSelect.appendChild(opt);});imgCell.appendChild(imgSelect);const audCell=document.createElement('td');const audSelect=document.createElement('select');audSelect.className='audioSelect';audSelect.innerHTML='<option value=\"\">(none)</option>';audioFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===audio);audSelect.appendChild(opt);});audCell.appendChild(audSelect);const nextCell=document.createElement('td');nextCell.style.textAlign='center';const nextCheck=document.createElement('input');nextCheck.type='checkbox';nextCheck.className='nextCheckbox';nextCheck.checked=isNext;nextCheck.onchange=function(){document.querySelectorAll('.nextCheckbox').forEach(cb=>{if(cb!==nextCheck)cb.checked=false;});};nextCell.appendChild(nextCheck);const actionCell=document.createElement('td');actionCell.style.textAlign='center';const showBtn=document.createElement('button');showBtn.className='showBtn';showBtn.textContent='Show';showBtn.style.margin='2px';showBtn.style.padding='4px 8px';showBtn.style.fontSize='12px';showBtn.disabled=showInProgress;showBtn.onclick=function(){if(showInProgress){alert('Another show operation is in progress. Please wait.');return;}const idx=parseInt(row.dataset.index);showMediaItem(idx);};actionCell.appendChild(showBtn);const delCell=document.createElement('td');const delBtn=document.createElement('button');delBtn.className='delete';delBtn.textContent='Delete';delBtn.onclick=function(){row.remove();updateRowIndices();};delCell.appendChild(delBtn);row.appendChild(imgCell);row.appendChild(audCell);row.appendChild(nextCell);row.appendChild(actionCell);row.appendChild(delCell);return row;}");
-    writeHTMLChunk(stream, "function showMediaItem(index){if(showInProgress){return;}showInProgress=true;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=true);showStatus('mediaStatus','Displaying image and playing audio (this will take 20-30 seconds)...',false);fetch('/api/media/show?index='+index,{method:'POST'}).then(r=>r.json()).then(d=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);if(d.success){showStatus('mediaStatus','Display updated successfully. Next item: '+(d.nextIndex+1),false);loadMedia();}else{showStatus('mediaStatus','Error: '+d.error,true);}}).catch(e=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);showStatus('mediaStatus','Error: '+e,true);});}");
-    writeHTMLChunk(stream, "function updateRowIndices(){const rows=document.querySelectorAll('#mediaRows tr');rows.forEach((row,idx)=>{row.dataset.index=idx;});}");
-    writeHTMLChunk(stream, "function addMediaRow(){const tbody=document.getElementById('mediaRows');tbody.appendChild(createMediaRow());}");
-    writeHTMLChunk(stream, "function loadMedia(){Promise.all([fetch('/api/media').then(r=>r.text()),fetch('/api/media/index').then(r=>r.json())]).then(([content,indexData])=>{const tbody=document.getElementById('mediaRows');tbody.innerHTML='';const lastDisplayedIndex=indexData.index||0;const lines=content.split('\\n');const mediaCount=lines.filter(l=>{l=l.trim();return l.length>0&&!l.startsWith('#');}).length;const nextIndex=(lastDisplayedIndex+1)%mediaCount;let lineIdx=0;lines.forEach((line,idx)=>{line=line.trim();if(line.length===0||line.startsWith('#'))return;const comma=line.indexOf(',');const isNext=(lineIdx===nextIndex);if(comma>0){const img=line.substring(0,comma).trim();const aud=line.substring(comma+1).trim();tbody.appendChild(createMediaRow(img,aud,isNext));}else if(line.length>0){tbody.appendChild(createMediaRow(line,'',isNext));}lineIdx++;});updateRowIndices();if(tbody.children.length===0)addMediaRow();showStatus('mediaStatus','Loaded successfully',false);}).catch(e=>{showStatus('mediaStatus','Error: '+e,true);});}");
-    writeHTMLChunk(stream, "function saveMedia(){const rows=document.querySelectorAll('#mediaRows tr');let content='';let nextIndex=-1;rows.forEach((row,idx)=>{const img=row.querySelector('.imageSelect').value;const aud=row.querySelector('.audioSelect').value;const isNext=row.querySelector('.nextCheckbox').checked;if(isNext)nextIndex=idx;if(img.length>0){content+=img;if(aud.length>0)content+=','+aud;content+='\\n';}});const saveData={content:content,nextIndex:nextIndex>=0?nextIndex:null};fetch('/api/media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)}).then(r=>r.json()).then(d=>{showStatus('mediaStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadMedia();}).catch(e=>showStatus('mediaStatus','Error: '+e,true));}");
-    writeHTMLChunk(stream, "function loadSettings(){fetch('/api/settings').then(r=>r.json()).then(d=>{document.getElementById('volume').value=d.volume;document.getElementById('sleepInterval').value=d.sleepInterval;if(d.hourSchedule){const schedule=d.hourSchedule;document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=schedule[hour]==='1'||schedule[hour]===true;});}showStatus('settingsStatus','Loaded successfully',false);}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}");
-    writeHTMLChunk(stream, "function saveSettings(){const hourSchedule=[];document.querySelectorAll('.hourCheckbox').forEach(cb=>{hourSchedule.push(cb.checked?'1':'0');});const json=JSON.stringify({volume:parseInt(document.getElementById('volume').value),sleepInterval:parseInt(document.getElementById('sleepInterval').value),hourSchedule:hourSchedule.join('')});fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:json}).then(r=>r.json()).then(d=>{showStatus('settingsStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadSettings();}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}");
-    writeHTMLChunk(stream, "function selectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=true);}");
-    writeHTMLChunk(stream, "function deselectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=false);}");
-    writeHTMLChunk(stream, "function selectNightHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=6&&hour<23);});}");
-    writeHTMLChunk(stream, "function selectDayHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=23||hour<6);});}");
-    writeHTMLChunk(stream, "let fileListData=[];let fileListSortCol='name';let fileListSortDir=1;");
-    writeHTMLChunk(stream, "function formatDate(timestamp){if(!timestamp||timestamp===0)return'N/A';const d=new Date(timestamp);return d.toLocaleString();}");
-    writeHTMLChunk(stream, "function sortFileList(col){if(fileListSortCol===col){fileListSortDir*=-1;}else{fileListSortCol=col;fileListSortDir=1;}renderFileList();}");
-    writeHTMLChunk(stream, "function escapeHtml(str){const div=document.createElement('div');div.textContent=str;return div.innerHTML;}");
-    writeHTMLChunk(stream, "function escapeJs(str){return str.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\").replace(/\"/g,'\\\\\"').replace(/\\n/g,'\\\\n').replace(/\\r/g,'\\\\r');}");
-    writeHTMLChunk(stream, "function renderFileList(){const list=document.getElementById('fileList');if(fileListData.length===0){list.innerHTML='<p>No files found on SD card.</p>';return;}const sorted=fileListData.slice().sort((a,b)=>{let valA,valB;if(fileListSortCol==='name'){valA=a.name.toLowerCase();valB=b.name.toLowerCase();}else if(fileListSortCol==='size'){valA=a.size;valB=b.size;}else if(fileListSortCol==='modified'){valA=a.modified||0;valB=b.modified||0;}return valA<valB?-1*fileListSortDir:valA>valB?1*fileListSortDir:0;});let html='<table style=\"width:100%;border-collapse:collapse;\"><thead><tr style=\"background:#f0f0f0;\">';html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('name')\">Filename ${fileListSortCol==='name'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:right;cursor:pointer;\" onclick=\"sortFileList('size')\">Size ${fileListSortCol==='size'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('modified')\">Last Modified ${fileListSortCol==='modified'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+='<th style=\"padding:8px;text-align:center;width:140px;\">Actions</th></tr></thead><tbody>';sorted.forEach(f=>{const size=f.size>=1024*1024?(f.size/(1024*1024)).toFixed(2)+' MB':f.size>=1024?(f.size/1024).toFixed(2)+' KB':f.size+' B';const modified=formatDate(f.modified);const nameEscaped=escapeJs(f.name);const nameHtml=escapeHtml(f.name);html+=`<tr><td style=\"padding:8px;\">${nameHtml}</td><td style=\"padding:8px;text-align:right;\">${size}</td><td style=\"padding:8px;\">${modified}</td><td style=\"padding:8px;text-align:center;\"><button onclick=\"downloadFile('${nameEscaped}')\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Download</button><button onclick=\"deleteFile('${nameEscaped}')\" class=\"delete\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Delete</button></td></tr>`;});html+='</tbody></table>';list.innerHTML=html;}");
-    writeHTMLChunk(stream, "function refreshFileList(){fetch('/api/files').then(r=>r.json()).then(files=>{fileListData=files;fileListSortCol='name';fileListSortDir=1;renderFileList();showStatus('fileStatus','File list refreshed',false);}).catch(e=>{showStatus('fileStatus','Error loading files: '+e,true);});}");
-    writeHTMLChunk(stream, "function downloadFile(filename){window.location.href='/api/files/'+encodeURIComponent(filename);showStatus('fileStatus','Downloading '+filename,false);}");
-    writeHTMLChunk(stream, "function deleteFile(filename){if(confirm('Delete '+filename+'?')){fetch('/api/files/'+encodeURIComponent(filename),{method:'DELETE'}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Deleted successfully':'Error: '+d.error,d.success?false:true);if(d.success)refreshFileList();}).catch(e=>showStatus('fileStatus','Error: '+e,true));}}");
-    writeHTMLChunk(stream, "function handleFileSelect(event){const file=event.target.files[0];if(!file)return;showStatus('fileStatus','Reading '+file.name+'...',false);const reader=new FileReader();reader.onload=function(e){const base64Data=e.target.result;const base64Content=base64Data.substring(base64Data.indexOf(',')+1);const payload=JSON.stringify({filename:file.name,data:base64Content});showStatus('fileStatus','Uploading '+file.name+'...',false);fetch('/api/files/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:payload}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Uploaded successfully ('+d.size+' bytes)':'Error: '+d.error,d.success?false:true);if(d.success){refreshFileList();document.getElementById('fileUpload').value='';}}).catch(e=>showStatus('fileStatus','Error: '+e,true));};reader.onerror=function(e){showStatus('fileStatus','Error reading file',true);};reader.readAsDataURL(file);}");
-    writeHTMLChunk(stream, "function loadLog(){logFlush();fetch('/api/log').then(r=>r.text()).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus','Log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading log: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}");
-    writeHTMLChunk(stream, "function loadLogArchiveList(){fetch('/api/log/list').then(r=>r.json()).then(files=>{const listDiv=document.getElementById('logArchiveList');if(files.length===0){listDiv.innerHTML='<p style=\"color:#999;\">No archived log files found. Log rotation has not occurred yet.</p>';return;}let html='<p><strong>Recent archived logs (most recent first):</strong></p><div style=\"display:flex;flex-direction:column;gap:5px;\">';files.forEach((file,idx)=>{const filenameEscaped=file.filename.replace(/\"/g,'&quot;').replace(/'/g,'&#39;');html+='<button onclick=\"loadLogArchive(\\''+filenameEscaped+'\\')\" style=\"text-align:left;padding:8px;\">'+file.filename+' ('+formatFileSize(file.size)+')</button>';});html+='</div>';listDiv.innerHTML=html;showStatus('logStatus','Found '+files.length+' archived log file(s)',false);}).catch(e=>{showStatus('logStatus','Error loading archive list: '+e,true);document.getElementById('logArchiveList').innerHTML='<p style=\"color:red;\">Error: '+e+'</p>';});}");
-    writeHTMLChunk(stream, "function loadLogArchive(filename){const url=filename?'/api/log/archive?file='+encodeURIComponent(filename):'/api/log/archive';fetch(url).then(r=>{if(!r.ok){return r.text().then(text=>{throw new Error(text);});}return r.text();}).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus',filename?'Archive log loaded: '+filename:'Archive log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading archive: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}");
-    writeHTMLChunk(stream, "function formatFileSize(bytes){if(bytes<1024)return bytes+' B';if(bytes<1024*1024)return (bytes/1024).toFixed(1)+' KB';return (bytes/(1024*1024)).toFixed(1)+' MB';}");
-    writeHTMLChunk(stream, "function logFlush(){fetch('/api/log/flush',{method:'POST'});}");
-    writeHTMLChunk(stream, "function closeServer(){if(confirm('Close management interface and return to normal operation?')){fetch('/api/close',{method:'POST'}).then(r=>r.json()).then(d=>{showStatus('closeStatus','Management interface closed. You can close this page.',false);setTimeout(()=>{window.location.href='about:blank';},2000);}).catch(e=>showStatus('closeStatus','Error: '+e,true));}}");
-    writeHTMLChunk(stream, "function showStatus(id,msg,isError){const el=document.getElementById(id);el.textContent=msg;el.className=isError?'error status':'status';}");
-    writeHTMLChunk(stream, "window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFileList();};");
-    writeHTMLChunk(stream, "</script></body></html>");
-}
-#endif // OLD HTML GENERATION CODE
-
-#if 0
-// Legacy function kept for compatibility (but should use streaming version)
-static String generateManagementHTML() {
-    String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
-    html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Device Management</title>";
-    html += "<style>";
-    html += "body{font-family:Arial,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5;}";
-    html += "h1{color:#333;border-bottom:2px solid #4CAF50;padding-bottom:10px;}";
-    html += ".section{background:white;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}";
-    html += "h2{color:#4CAF50;margin-top:0;}";
-    html += "textarea{width:100%;min-height:200px;font-family:monospace;padding:10px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}";
-    html += "input[type='number']{width:100px;padding:8px;border:1px solid #ddd;border-radius:4px;}";
-    html += "select{width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;}";
-    html += "button{background:#4CAF50;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:16px;margin:5px;}";
-    html += "button:hover{background:#45a049;}";
-    html += "button.delete{background:#f44336;padding:5px 10px;font-size:12px;}";
-    html += "button.delete:hover{background:#d32f2f;}";
-    html += ".status{color:#4CAF50;margin:10px 0;font-weight:bold;}";
-    html += ".error{color:#f44336;}";
-    html += "label{display:block;margin:10px 0 5px 0;font-weight:bold;}";
-    html += ".form-group{margin:15px 0;}";
-    html += "td{padding:5px;}";
-    html += "</style></head><body>";
-    html += "<h1>Device Configuration Management</h1>";
-    
-    // Quotes section
-    html += "<div class='section'><h2>Quotes Configuration (quotes.txt)</h2>";
-    html += "<p>Format: Quote text on one or more lines, followed by ~Author on the next line. Separate quotes with blank lines.</p>";
-    html += "<textarea id='quotesContent' placeholder='Loading quotes.txt...'></textarea><br>";
-    html += "<button onclick='loadQuotes()'>Load from Device</button>";
-    html += "<button onclick='saveQuotes()'>Save to Device</button>";
-    html += "<div id='quotesStatus'></div></div>";
-    
-    // Media section with dropdowns
-    html += "<div class='section'><h2>Media Mappings (media.txt)</h2>";
-    html += "<p>Select image and audio file combinations. Leave audio empty for no audio. Check the 'Next' box to set which item will be displayed next. Click 'Show' to display the image and play audio on the panel.</p>";
-    html += "<table id='mediaTable' style='width:100%;border-collapse:collapse;margin:10px 0;'>";
-    html += "<thead><tr style='background:#f0f0f0;'><th style='padding:10px;text-align:left;width:30%;'>Image File</th><th style='padding:10px;text-align:left;width:30%;'>Audio File</th><th style='padding:10px;text-align:center;width:10%;'>Next</th><th style='padding:10px;text-align:center;width:15%;'>Actions</th><th style='padding:10px;width:15%;'></th></tr></thead>";
-    html += "<tbody id='mediaRows'></tbody>";
-    html += "</table>";
-    html += "<button onclick='addMediaRow()'>Add New Row</button>";
-    html += "<button onclick='loadMedia()'>Load from Device</button>";
-    html += "<button onclick='saveMedia()'>Save to Device</button>";
-    html += "<div id='mediaStatus'></div></div>";
-    
-    // Device settings section
-    html += "<div class='section'><h2>Device Settings</h2>";
-    html += "<div class='form-group'>";
-    html += "<label>Volume (0-100%):</label>";
-    html += "<input type='number' id='volume' min='0' max='100' value='50'>";
-    html += "</div>";
-    html += "<div class='form-group'>";
-    html += "<label>Sleep Interval (minutes, must be factor of 60):</label>";
-    html += "<input type='number' id='sleepInterval' min='1' max='60' value='1'>";
-    html += "</div>";
-    html += "<div class='form-group'>";
-    html += "<label>Hour Schedule (check hours when device should wake):</label>";
-    html += "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;padding:10px;background:#f9f9f9;border-radius:4px;'>";
-    for (int i = 0; i < 24; i++) {
-        html += "<label style='display:flex;align-items:center;gap:5px;cursor:pointer;'><input type='checkbox' class='hourCheckbox' data-hour='";
-        html += i;
-        html += "' style='cursor:pointer;'>";
-        html += String(i < 10 ? "0" : "") + String(i) + ":00";
-        html += "</label>";
-    }
-    html += "</div>";
-    html += "<div style='margin-top:10px;'><button onclick='selectAllHours()'>Select All</button>";
-    html += "<button onclick='deselectAllHours()'>Deselect All</button>";
-    html += "<button onclick='selectNightHours()'>Select Night (6am-11pm)</button>";
-    html += "<button onclick='selectDayHours()'>Select Day (11pm-6am)</button></div>";
-    html += "</div>";
-    html += "<button onclick='loadSettings()'>Load from Device</button>";
-    html += "<button onclick='saveSettings()'>Save to Device</button>";
-    html += "<div id='settingsStatus'></div></div>";
-    
-    // File management section
-    html += "<div class='section'><h2>File Management</h2>";
-    html += "<p>Upload, download, and delete files on the SD card.</p>";
-    html += "<div style='margin:10px 0;'><input type='file' id='fileUpload' style='display:none;' onchange='handleFileSelect(event)'><button onclick='document.getElementById(\"fileUpload\").click()'>Upload File</button>";
-    html += "<button onclick='refreshFileList()'>Refresh File List</button></div>";
-    html += "<div id='fileList' style='margin:10px 0;'>Loading files...</div>";
-    html += "<div id='fileStatus'></div></div>";
-    
-    // Log viewing section
-    html += "<div class='section'><h2>System Log</h2>";
-    html += "<p>View the current system log file (read-only).</p>";
-    html += "<button onclick='loadLog()'>Load Current Log</button>";
-    html += "<button onclick='loadLogArchiveList()'>Load Previous Log</button>";
-    html += "<div id='logArchiveList' style='margin-top:10px;'></div>";
-    html += "<div id='logContent' style='margin:10px 0;max-height:600px;overflow-y:auto;background:#f9f9f9;padding:10px;border:1px solid #ddd;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;'></div>";
-    html += "<div id='logStatus'></div></div>";
-    
-    // Close server button
-    html += "<div class='section'><h2>Server Control</h2>";
-    html += "<p>Close the management interface and return to normal operation.</p>";
-    html += "<button onclick='closeServer()' style='background:#f44336;'>Close Management Interface</button>";
-    html += "<div id='closeStatus'></div></div>";
-    
-    // JavaScript
-    html += "<script>";
-    html += "function loadQuotes(){fetch('/api/quotes').then(r=>r.text()).then(t=>{document.getElementById('quotesContent').value=t;showStatus('quotesStatus','Loaded successfully',false);}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}";
-    html += "function saveQuotes(){const content=document.getElementById('quotesContent').value;fetch('/api/quotes',{method:'POST',body:content}).then(r=>r.json()).then(d=>{showStatus('quotesStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadQuotes();}).catch(e=>showStatus('quotesStatus','Error: '+e,true));}";
-    html += "let imageFiles=[];let audioFiles=[];let filesLoaded=0;";
-    html += "function checkAndLoadMedia(){if(filesLoaded>=2){loadMedia();}else if(filesLoaded===1){showStatus('mediaStatus','Warning: Only partial file list loaded',true);}}";
-    html += "function loadFileLists(){filesLoaded=0;fetch('/api/images').then(r=>r.json()).then(f=>{imageFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading images: '+e,true);filesLoaded++;checkAndLoadMedia();});fetch('/api/audio').then(r=>r.json()).then(f=>{audioFiles=f;filesLoaded++;checkAndLoadMedia();}).catch(e=>{showStatus('mediaStatus','Error loading audio: '+e,true);filesLoaded++;checkAndLoadMedia();});}";
-    html += "let showInProgress=false;function createMediaRow(image='',audio='',isNext=false){const row=document.createElement('tr');row.dataset.index=document.getElementById('mediaRows').children.length;const imgCell=document.createElement('td');const imgSelect=document.createElement('select');imgSelect.className='imageSelect';imgSelect.innerHTML='<option value=\"\">-- Select Image --</option>';imageFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===image);imgSelect.appendChild(opt);});imgCell.appendChild(imgSelect);const audCell=document.createElement('td');const audSelect=document.createElement('select');audSelect.className='audioSelect';audSelect.innerHTML='<option value=\"\">(none)</option>';audioFiles.forEach(f=>{const opt=document.createElement('option');opt.value=f;opt.text=f;opt.selected=(f===audio);audSelect.appendChild(opt);});audCell.appendChild(audSelect);const nextCell=document.createElement('td');nextCell.style.textAlign='center';const nextCheck=document.createElement('input');nextCheck.type='checkbox';nextCheck.className='nextCheckbox';nextCheck.checked=isNext;nextCheck.onchange=function(){document.querySelectorAll('.nextCheckbox').forEach(cb=>{if(cb!==nextCheck)cb.checked=false;});};nextCell.appendChild(nextCheck);const actionCell=document.createElement('td');actionCell.style.textAlign='center';const showBtn=document.createElement('button');showBtn.className='showBtn';showBtn.textContent='Show';showBtn.style.margin='2px';showBtn.style.padding='4px 8px';showBtn.style.fontSize='12px';showBtn.disabled=showInProgress;showBtn.onclick=function(){if(showInProgress){alert('Another show operation is in progress. Please wait.');return;}const idx=parseInt(row.dataset.index);showMediaItem(idx);};actionCell.appendChild(showBtn);const delCell=document.createElement('td');const delBtn=document.createElement('button');delBtn.className='delete';delBtn.textContent='Delete';delBtn.onclick=function(){row.remove();updateRowIndices();};delCell.appendChild(delBtn);row.appendChild(imgCell);row.appendChild(audCell);row.appendChild(nextCell);row.appendChild(actionCell);row.appendChild(delCell);return row;}";
-    html += "function showMediaItem(index){if(showInProgress){return;}showInProgress=true;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=true);showStatus('mediaStatus','Displaying image and playing audio (this will take 20-30 seconds)...',false);fetch('/api/media/show?index='+index,{method:'POST'}).then(r=>r.json()).then(d=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);if(d.success){showStatus('mediaStatus','Display updated successfully. Next item: '+(d.nextIndex+1),false);loadMedia();}else{showStatus('mediaStatus','Error: '+d.error,true);}}).catch(e=>{showInProgress=false;document.querySelectorAll('.showBtn').forEach(btn=>btn.disabled=false);showStatus('mediaStatus','Error: '+e,true);});}";
-    html += "function updateRowIndices(){const rows=document.querySelectorAll('#mediaRows tr');rows.forEach((row,idx)=>{row.dataset.index=idx;});}";
-    html += "function addMediaRow(){const tbody=document.getElementById('mediaRows');tbody.appendChild(createMediaRow());}";
-    html += "function loadMedia(){Promise.all([fetch('/api/media').then(r=>r.text()),fetch('/api/media/index').then(r=>r.json())]).then(([content,indexData])=>{const tbody=document.getElementById('mediaRows');tbody.innerHTML='';const lastDisplayedIndex=indexData.index||0;const lines=content.split('\\n');const mediaCount=lines.filter(l=>{l=l.trim();return l.length>0&&!l.startsWith('#');}).length;const nextIndex=(lastDisplayedIndex+1)%mediaCount;let lineIdx=0;lines.forEach((line,idx)=>{line=line.trim();if(line.length===0||line.startsWith('#'))return;const comma=line.indexOf(',');const isNext=(lineIdx===nextIndex);if(comma>0){const img=line.substring(0,comma).trim();const aud=line.substring(comma+1).trim();tbody.appendChild(createMediaRow(img,aud,isNext));}else if(line.length>0){tbody.appendChild(createMediaRow(line,'',isNext));}lineIdx++;});updateRowIndices();if(tbody.children.length===0)addMediaRow();showStatus('mediaStatus','Loaded successfully',false);}).catch(e=>{showStatus('mediaStatus','Error: '+e,true);});}";
-    html += "function saveMedia(){const rows=document.querySelectorAll('#mediaRows tr');let content='';let nextIndex=-1;rows.forEach((row,idx)=>{const img=row.querySelector('.imageSelect').value;const aud=row.querySelector('.audioSelect').value;const isNext=row.querySelector('.nextCheckbox').checked;if(isNext)nextIndex=idx;if(img.length>0){content+=img;if(aud.length>0)content+=','+aud;content+='\\n';}});const saveData={content:content,nextIndex:nextIndex>=0?nextIndex:null};fetch('/api/media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)}).then(r=>r.json()).then(d=>{showStatus('mediaStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadMedia();}).catch(e=>showStatus('mediaStatus','Error: '+e,true));}";
-    html += "function loadSettings(){fetch('/api/settings').then(r=>r.json()).then(d=>{document.getElementById('volume').value=d.volume;document.getElementById('sleepInterval').value=d.sleepInterval;if(d.hourSchedule){const schedule=d.hourSchedule;document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=schedule[hour]==='1'||schedule[hour]===true;});}showStatus('settingsStatus','Loaded successfully',false);}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
-    html += "function saveSettings(){const hourSchedule=[];document.querySelectorAll('.hourCheckbox').forEach(cb=>{hourSchedule.push(cb.checked?'1':'0');});const json=JSON.stringify({volume:parseInt(document.getElementById('volume').value),sleepInterval:parseInt(document.getElementById('sleepInterval').value),hourSchedule:hourSchedule.join('')});fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:json}).then(r=>r.json()).then(d=>{showStatus('settingsStatus',d.success?'Saved successfully':'Error: '+d.error,d.success?false:true);if(d.success)loadSettings();}).catch(e=>showStatus('settingsStatus','Error: '+e,true));}";
-    html += "function selectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=true);}";
-    html += "function deselectAllHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>cb.checked=false);}";
-    html += "function selectNightHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=6&&hour<23);});}";
-    html += "function selectDayHours(){document.querySelectorAll('.hourCheckbox').forEach(cb=>{const hour=parseInt(cb.dataset.hour);cb.checked=(hour>=23||hour<6);});}";
-    html += "let fileListData=[];let fileListSortCol='name';let fileListSortDir=1;";
-    html += "function formatDate(timestamp){if(!timestamp||timestamp===0)return'N/A';const d=new Date(timestamp);return d.toLocaleString();}";
-    html += "function sortFileList(col){if(fileListSortCol===col){fileListSortDir*=-1;}else{fileListSortCol=col;fileListSortDir=1;}renderFileList();}";
-    html += "function escapeHtml(str){const div=document.createElement('div');div.textContent=str;return div.innerHTML;}";
-    html += "function escapeJs(str){return str.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\").replace(/\"/g,'\\\\\"').replace(/\\n/g,'\\\\n').replace(/\\r/g,'\\\\r');}";
-    html += "function renderFileList(){const list=document.getElementById('fileList');if(fileListData.length===0){list.innerHTML='<p>No files found on SD card.</p>';return;}const sorted=fileListData.slice().sort((a,b)=>{let valA,valB;if(fileListSortCol==='name'){valA=a.name.toLowerCase();valB=b.name.toLowerCase();}else if(fileListSortCol==='size'){valA=a.size;valB=b.size;}else if(fileListSortCol==='modified'){valA=a.modified||0;valB=b.modified||0;}return valA<valB?-1*fileListSortDir:valA>valB?1*fileListSortDir:0;});let html='<table style=\"width:100%;border-collapse:collapse;\"><thead><tr style=\"background:#f0f0f0;\">';html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('name')\">Filename ${fileListSortCol==='name'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:right;cursor:pointer;\" onclick=\"sortFileList('size')\">Size ${fileListSortCol==='size'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+=`<th style=\"padding:8px;text-align:left;cursor:pointer;\" onclick=\"sortFileList('modified')\">Last Modified ${fileListSortCol==='modified'?(fileListSortDir>0?'▲':'▼'):''}</th>`;html+='<th style=\"padding:8px;text-align:center;width:140px;\">Actions</th></tr></thead><tbody>';sorted.forEach(f=>{const size=f.size>=1024*1024?(f.size/(1024*1024)).toFixed(2)+' MB':f.size>=1024?(f.size/1024).toFixed(2)+' KB':f.size+' B';const modified=formatDate(f.modified);const nameEscaped=escapeJs(f.name);const nameHtml=escapeHtml(f.name);html+=`<tr><td style=\"padding:8px;\">${nameHtml}</td><td style=\"padding:8px;text-align:right;\">${size}</td><td style=\"padding:8px;\">${modified}</td><td style=\"padding:8px;text-align:center;\"><button onclick=\"downloadFile('${nameEscaped}')\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Download</button><button onclick=\"deleteFile('${nameEscaped}')\" class=\"delete\" style=\"margin:2px;padding:4px 8px;font-size:12px;\">Delete</button></td></tr>`;});html+='</tbody></table>';list.innerHTML=html;}";
-    html += "function refreshFileList(){fetch('/api/files').then(r=>r.json()).then(files=>{fileListData=files;fileListSortCol='name';fileListSortDir=1;renderFileList();showStatus('fileStatus','File list refreshed',false);}).catch(e=>{showStatus('fileStatus','Error loading files: '+e,true);});}";
-    html += "function downloadFile(filename){window.location.href='/api/files/'+encodeURIComponent(filename);showStatus('fileStatus','Downloading '+filename,false);}";
-    html += "function deleteFile(filename){if(confirm('Delete '+filename+'?')){fetch('/api/files/'+encodeURIComponent(filename),{method:'DELETE'}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Deleted successfully':'Error: '+d.error,d.success?false:true);if(d.success)refreshFileList();}).catch(e=>showStatus('fileStatus','Error: '+e,true));}}";
-    html += "function handleFileSelect(event){const file=event.target.files[0];if(!file)return;showStatus('fileStatus','Reading '+file.name+'...',false);const reader=new FileReader();reader.onload=function(e){const base64Data=e.target.result;const base64Content=base64Data.substring(base64Data.indexOf(',')+1);const payload=JSON.stringify({filename:file.name,data:base64Content});showStatus('fileStatus','Uploading '+file.name+'...',false);fetch('/api/files/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:payload}).then(r=>r.json()).then(d=>{showStatus('fileStatus',d.success?'Uploaded successfully ('+d.size+' bytes)':'Error: '+d.error,d.success?false:true);if(d.success){refreshFileList();document.getElementById('fileUpload').value='';}}).catch(e=>showStatus('fileStatus','Error: '+e,true));};reader.onerror=function(e){showStatus('fileStatus','Error reading file',true);};reader.readAsDataURL(file);}";
-    html += "function loadLog(){logFlush();fetch('/api/log').then(r=>r.text()).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus','Log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading log: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}";
-    html += "function loadLogArchiveList(){fetch('/api/log/list').then(r=>r.json()).then(files=>{const listDiv=document.getElementById('logArchiveList');if(files.length===0){listDiv.innerHTML='<p style=\"color:#999;\">No archived log files found. Log rotation has not occurred yet.</p>';return;}let html='<p><strong>Recent archived logs (most recent first):</strong></p><div style=\"display:flex;flex-direction:column;gap:5px;\">';files.forEach((file,idx)=>{const filenameEscaped=file.filename.replace(/\"/g,'&quot;').replace(/'/g,'&#39;');html+='<button onclick=\"loadLogArchive(\\''+filenameEscaped+'\\')\" style=\"text-align:left;padding:8px;\">'+file.filename+' ('+formatFileSize(file.size)+')</button>';});html+='</div>';listDiv.innerHTML=html;showStatus('logStatus','Found '+files.length+' archived log file(s)',false);}).catch(e=>{showStatus('logStatus','Error loading archive list: '+e,true);document.getElementById('logArchiveList').innerHTML='<p style=\"color:red;\">Error: '+e+'</p>';});}";
-    html += "function loadLogArchive(filename){const url=filename?'/api/log/archive?file='+encodeURIComponent(filename):'/api/log/archive';fetch(url).then(r=>{if(!r.ok){return r.text().then(text=>{throw new Error(text);});}return r.text();}).then(content=>{document.getElementById('logContent').textContent=content;showStatus('logStatus',filename?'Archive log loaded: '+filename:'Archive log loaded',false);}).catch(e=>{showStatus('logStatus','Error loading archive: '+e,true);document.getElementById('logContent').textContent='Error: '+e;});}";
-    html += "function formatFileSize(bytes){if(bytes<1024)return bytes+' B';if(bytes<1024*1024)return (bytes/1024).toFixed(1)+' KB';return (bytes/(1024*1024)).toFixed(1)+' MB';}";
-    html += "function logFlush(){fetch('/api/log/flush',{method:'POST'});}";
-    html += "function closeServer(){if(confirm('Close management interface and return to normal operation?')){fetch('/api/close',{method:'POST'}).then(r=>r.json()).then(d=>{showStatus('closeStatus','Management interface closed. You can close this page.',false);setTimeout(()=>{window.location.href='about:blank';},2000);}).catch(e=>showStatus('closeStatus','Error: '+e,true));}}";
-    html += "function showStatus(id,msg,isError){const el=document.getElementById(id);el.textContent=msg;el.className=isError?'error status':'status';}";
-    html += "window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFileList();};";
-    html += "</script></body></html>";
-    
-    return html;
-}
-#endif // OLD HTML GENERATION CODE
 
 
 
@@ -4680,12 +4540,12 @@ static void show_media_task(void* parameter) {
         
         bool dispatchResult = dispatchCommand(ctx);
     
-    // The dispatcher calls handleShowCommand, which should handle the display logic
-    // But we still need to set nextIndex for the HTTP response
-    // Calculate nextIndex based on current index
+    // The dispatcher calls handleShowCommand -> displayMediaWithOverlay, which updates lastMediaIndex
+    // Use the actual lastMediaIndex value (which should equal data->index after display)
+    // Next index is (lastMediaIndex + 1) % size
     size_t nextIndex = 0;
     if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-        nextIndex = (data->index + 1) % g_media_mappings.size();
+        nextIndex = (lastMediaIndex + 1) % g_media_mappings.size();
     }
     
     *(data->success) = dispatchResult;
@@ -4942,6 +4802,35 @@ bool handleManageCommand() {
         String json = "{\"index\":";
         json += String((unsigned long)lastMediaIndex);
         json += "}";
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // GET /api/fonts - Get list of available fonts
+    server.on("/api/fonts", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = "[";
+        bool first = true;
+        for (uint8_t i = 0; i < g_rtcFontCount; i++) {
+            if (!first) json += ",";
+            json += "{\"name\":\"";
+            // Escape JSON string
+            String name = String(g_rtcFontList[i].name);
+            name.replace("\\", "\\\\");
+            name.replace("\"", "\\\"");
+            name.replace("\n", "\\n");
+            name.replace("\r", "\\r");
+            json += name;
+            json += "\",\"filename\":\"";
+            String filename = String(g_rtcFontList[i].filename);
+            filename.replace("\\", "\\\\");
+            filename.replace("\"", "\\\"");
+            filename.replace("\n", "\\n");
+            filename.replace("\r", "\\r");
+            json += filename;
+            json += "\"}";
+            first = false;
+        }
+        json += "]";
         return response->send(200, "application/json", json.c_str());
     });
     
@@ -5211,11 +5100,11 @@ bool handleManageCommand() {
         }
     });
     
-    // GET /api/media - Read media.txt
+    // GET /api/media - Read media.csv
     server.on("/api/media", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
-        String content = readSDFile("0:/media.txt");
-        return response->send(200, "text/plain", content.c_str());
+        String content = readSDFile("0:/media.csv");
+        return response->send(200, "text/csv", content.c_str());
     });
     
     // GET /api/settings - Read device settings
@@ -5356,7 +5245,7 @@ bool handleManageCommand() {
         return response->send(200, "application/json", resp.c_str());
     });
     
-    // POST /api/media - Write media.txt and optionally update next index
+    // POST /api/media - Write media.csv and optionally update next index
     server.on("/api/media", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
         String body = request->body();
@@ -5399,7 +5288,14 @@ bool handleManageCommand() {
             mediaContent = body;
         }
         
-        bool success = writeSDFile("0:/media.txt", mediaContent);
+        // Ensure CSV has header if content doesn't start with it (case-insensitive check)
+        String contentLower = mediaContent;
+        contentLower.toLowerCase();
+        if (mediaContent.length() > 0 && !contentLower.startsWith("image,")) {
+            mediaContent = "Image,Audio,Foreground,Outline,Font,Thickness\n" + mediaContent;
+        }
+        
+        bool success = writeSDFile("0:/media.csv", mediaContent);
         
         // Update next index if provided
         if (success && nextIndex >= 0) {
@@ -5414,7 +5310,7 @@ bool handleManageCommand() {
         
         // Reload media mappings after writing
         if (success) {
-            loadMediaMappingsFromSD(true);  // Auto-publish when media.txt is changed
+            loadMediaMappingsFromSD(true);  // Auto-publish when media.csv is changed
         }
         
         String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to write file\"}";
@@ -5486,10 +5382,27 @@ bool handleManageCommand() {
         return response->send(200, "application/json", resp.c_str());
     });
     
-    // GET /api/files - List all files
+    // GET /api/files - List all files (optionally in a subdirectory)
+    // Query parameter: ?dir=path/to/directory
     server.on("/api/files", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
-        String json = listAllFiles();
+        String dirPath = "";
+        if (request->hasParam("dir")) {
+            dirPath = request->getParam("dir")->value();
+            // URL decode
+            dirPath.replace("%20", " ");
+            dirPath.replace("%2F", "/");
+            dirPath.replace("%2f", "/");
+            // Remove leading/trailing slashes
+            dirPath.trim();
+            if (dirPath.startsWith("/")) {
+                dirPath = dirPath.substring(1);
+            }
+            if (dirPath.endsWith("/")) {
+                dirPath = dirPath.substring(0, dirPath.length() - 1);
+            }
+        }
+        String json = listAllFiles(dirPath);
         return response->send(200, "application/json", json.c_str());
     });
     
@@ -5541,9 +5454,26 @@ bool handleManageCommand() {
     });
     
     // POST /api/files/upload - File upload (base64-encoded JSON)
+    // Query parameter: ?dir=path/to/directory (optional)
     // Process in separate task with large stack to avoid stack overflow
     server.on("/api/files/upload", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
+        
+        // Get upload directory from query parameter
+        String uploadDir = "";
+        if (request->hasParam("dir")) {
+            uploadDir = request->getParam("dir")->value();
+            uploadDir.replace("%20", " ");
+            uploadDir.replace("%2F", "/");
+            uploadDir.replace("%2f", "/");
+            uploadDir.trim();
+            if (uploadDir.startsWith("/")) {
+                uploadDir = uploadDir.substring(1);
+            }
+            if (uploadDir.length() > 0 && !uploadDir.endsWith("/")) {
+                uploadDir += "/";
+            }
+        }
         
         // Get body using PsychicHttp's body() method (works in HTTP server task context)
         // This creates a String on the stack, but we'll immediately copy to heap
@@ -5576,6 +5506,8 @@ bool handleManageCommand() {
         struct {
             char* jsonData;
             size_t jsonLen;
+            char* uploadDir;
+            size_t uploadDirLen;
             SemaphoreHandle_t sem;
             bool* success;
             String* resultJson;
@@ -5585,6 +5517,15 @@ bool handleManageCommand() {
         String resultJson = "";
         taskData.jsonData = jsonBuffer;
         taskData.jsonLen = bodyLen;
+        // Copy upload directory to heap
+        size_t uploadDirLen = uploadDir.length();
+        char* uploadDirBuffer = (char*)malloc(uploadDirLen + 1);
+        if (uploadDirBuffer) {
+            memcpy(uploadDirBuffer, uploadDir.c_str(), uploadDirLen);
+            uploadDirBuffer[uploadDirLen] = '\0';
+        }
+        taskData.uploadDir = uploadDirBuffer;
+        taskData.uploadDirLen = uploadDirLen;
         taskData.sem = completionSem;
         taskData.success = &taskSuccess;
         taskData.resultJson = &resultJson;
@@ -5696,9 +5637,22 @@ bool handleManageCommand() {
             
             Serial.printf("Decoded %zu bytes from base64\n", decodedLen);
             
-            // Open file for writing
+            // Build filepath with upload directory
             String filepath = "0:/";
-            filepath += filename;
+            if (data->uploadDir && data->uploadDirLen > 0) {
+                filepath += String(data->uploadDir);
+            }
+            // If filename already contains a path, use it as-is; otherwise append to uploadDir
+            if (filename.indexOf('/') >= 0) {
+                filepath += filename;
+            } else {
+                filepath += filename;
+            }
+            
+            // Free uploadDir buffer
+            if (data->uploadDir) {
+                free(data->uploadDir);
+            }
             FIL file;
             FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
             
@@ -5755,9 +5709,26 @@ bool handleManageCommand() {
     
     // POST /api/files/upload/chunk - Chunked file upload for large files
     // Format: {"filename":"name","chunkIndex":0,"totalChunks":5,"chunkData":"base64..."}
+    // Query parameter: ?dir=path/to/directory (optional)
     // Process in separate task with large stack to avoid stack overflow
     server.on("/api/files/upload/chunk", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
+        
+        // Get upload directory from query parameter
+        String uploadDir = "";
+        if (request->hasParam("dir")) {
+            uploadDir = request->getParam("dir")->value();
+            uploadDir.replace("%20", " ");
+            uploadDir.replace("%2F", "/");
+            uploadDir.replace("%2f", "/");
+            uploadDir.trim();
+            if (uploadDir.startsWith("/")) {
+                uploadDir = uploadDir.substring(1);
+            }
+            if (uploadDir.length() > 0 && !uploadDir.endsWith("/")) {
+                uploadDir += "/";
+            }
+        }
         
         // Get body using PsychicHttp's body() method (works in HTTP server task context)
         // This creates a String on the stack, but we'll immediately copy to heap
@@ -5790,6 +5761,8 @@ bool handleManageCommand() {
         struct {
             char* jsonData;
             size_t jsonLen;
+            char* uploadDir;
+            size_t uploadDirLen;
             SemaphoreHandle_t sem;
             bool* success;
             String* resultJson;
@@ -5799,6 +5772,15 @@ bool handleManageCommand() {
         String resultJson = "";
         taskData.jsonData = jsonBuffer;
         taskData.jsonLen = bodyLen;
+        // Copy upload directory to heap
+        size_t uploadDirLen = uploadDir.length();
+        char* uploadDirBuffer = (char*)malloc(uploadDirLen + 1);
+        if (uploadDirBuffer) {
+            memcpy(uploadDirBuffer, uploadDir.c_str(), uploadDirLen);
+            uploadDirBuffer[uploadDirLen] = '\0';
+        }
+        taskData.uploadDir = uploadDirBuffer;
+        taskData.uploadDirLen = uploadDirLen;
         taskData.sem = completionSem;
         taskData.success = &taskSuccess;
         taskData.resultJson = &resultJson;
@@ -5971,8 +5953,19 @@ bool handleManageCommand() {
             if (chunkIndex == totalChunks - 1) {
                 Serial.printf("Last chunk received, reassembling file: %s\n", filename.c_str());
                 
+                // Build filepath with upload directory
+                String filepath = "0:/";
+                if (data->uploadDir && data->uploadDirLen > 0) {
+                    filepath += String(data->uploadDir);
+                }
+                // If filename already contains a path, use it as-is; otherwise append to uploadDir
+                if (filename.indexOf('/') >= 0) {
+                    filepath += filename;
+                } else {
+                    filepath += filename;
+                }
+                
                 // Open destination file
-                String filepath = "0:/" + filename;
                 FIL destFile;
                 FRESULT openRes = f_open(&destFile, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
                 if (openRes != FR_OK) {
@@ -6063,6 +6056,12 @@ bool handleManageCommand() {
                 *(data->resultJson) += "}";
                 *(data->success) = true;
             }
+            
+            // Free uploadDir buffer
+            if (data->uploadDir) {
+                free(data->uploadDir);
+            }
+            
             xSemaphoreGive(data->sem);
             vTaskDelete(NULL);
         }, "chunk_upload_task", 32 * 1024, &taskData, 5, NULL);  // 32KB stack
@@ -6335,20 +6334,120 @@ bool handleManageCommand() {
         }
     });
     
-    // DELETE /api/files/* - Delete a file
+    // DELETE /api/files/* - Delete a file or directory
     server.on("/api/files/*", HTTP_DELETE, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
         String url = request->url();
         int pathStart = url.indexOf("/api/files/") + 11;
-        String filename = url.substring(pathStart);
-        filename.trim();
+        String filepath = url.substring(pathStart);
+        filepath.trim();
         
-        // URL decode filename (basic)
-        filename.replace("%20", " ");
-        filename.replace("%2F", "/");
+        // URL decode filepath (basic)
+        filepath.replace("%20", " ");
+        filepath.replace("%2F", "/");
+        filepath.replace("%2f", "/");
         
-        bool success = deleteSDFile(filename.c_str());
-        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to delete file\"}";
+        String fullPath = "0:/";
+        fullPath += filepath;
+        
+        FILINFO fno;
+        FRESULT res = f_stat(fullPath.c_str(), &fno);
+        if (res != FR_OK) {
+            String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
+            return response->send(404, "application/json", resp.c_str());
+        }
+        
+        bool success = false;
+        if (fno.fattrib & AM_DIR) {
+            // Directory: use f_rmdir (must be empty)
+            res = f_rmdir(fullPath.c_str());
+            success = (res == FR_OK);
+        } else {
+            // File: use existing deleteSDFile function
+            success = deleteSDFile(filepath.c_str());
+        }
+        
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to delete\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // PUT /api/files/* - Rename a file or directory
+    // Body: {"newname":"newfilename"}
+    server.on("/api/files/*", HTTP_PUT, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String url = request->url();
+        int pathStart = url.indexOf("/api/files/") + 11;
+        String oldPath = url.substring(pathStart);
+        oldPath.trim();
+        
+        // URL decode oldPath (basic)
+        oldPath.replace("%20", " ");
+        oldPath.replace("%2F", "/");
+        oldPath.replace("%2f", "/");
+        
+        String body = request->body();
+        String newName = "";
+        
+        // Parse JSON to extract newname
+        int newnamePos = body.indexOf("\"newname\"");
+        if (newnamePos >= 0) {
+            int colonPos = body.indexOf(":", newnamePos);
+            int quoteStart = body.indexOf("\"", colonPos);
+            if (quoteStart >= 0) {
+                int quoteEnd = body.indexOf("\"", quoteStart + 1);
+                if (quoteEnd > quoteStart) {
+                    newName = body.substring(quoteStart + 1, quoteEnd);
+                    // Unescape JSON string
+                    newName.replace("\\n", "\n");
+                    newName.replace("\\r", "\r");
+                    newName.replace("\\t", "\t");
+                    newName.replace("\\\"", "\"");
+                    newName.replace("\\\\", "\\");
+                }
+            }
+        }
+        
+        if (newName.length() == 0) {
+            String resp = "{\"success\":false,\"error\":\"Missing newname field\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        // Build old and new full paths
+        String oldFullPath = "0:/";
+        oldFullPath += oldPath;
+        
+        // Extract directory from old path
+        int lastSlash = oldPath.lastIndexOf('/');
+        String newPath = "";
+        if (lastSlash >= 0) {
+            newPath = oldPath.substring(0, lastSlash + 1);
+        }
+        newPath += newName;
+        
+        String newFullPath = "0:/";
+        newFullPath += newPath;
+        
+        // Check if old file/directory exists
+        FILINFO fno;
+        FRESULT res = f_stat(oldFullPath.c_str(), &fno);
+        if (res != FR_OK) {
+            String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
+            return response->send(404, "application/json", resp.c_str());
+        }
+        
+        // Check if new name already exists
+        res = f_stat(newFullPath.c_str(), &fno);
+        if (res == FR_OK) {
+            String resp = "{\"success\":false,\"error\":\"Target name already exists\"}";
+            return response->send(409, "application/json", resp.c_str());
+        }
+        
+        // Rename using f_rename
+        res = f_rename(oldFullPath.c_str(), newFullPath.c_str());
+        bool success = (res == FR_OK);
+        
+        String resp = success ? "{\"success\":true,\"newpath\":\"" + newPath + "\"}" 
+                              : "{\"success\":false,\"error\":\"Rename failed\"}";
         return response->send(200, "application/json", resp.c_str());
     });
     
@@ -7023,11 +7122,8 @@ bool handleTextCommandWithColor(const String& parameter, uint8_t fillColor, uint
             }
         }
         
-        // Build full path (images are in root directory)
-        String imagePath = backgroundImage;
-        if (!imagePath.startsWith("/")) {
-            imagePath = "/" + imagePath;
-        }
+        // Build full path (images are in images/ subdirectory)
+        String imagePath = "/images/" + backgroundImage;
         String fatfsPath = "0:" + imagePath;
         
         // Check if file exists
@@ -9518,11 +9614,8 @@ bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms)
     Serial.printf("Image %lu of %zu from media.txt: %s\n", 
                   (unsigned long)(lastMediaIndex + 1), mediaCount, mapping.imageName.c_str());
     
-    // Build full path
-    String imagePath = "/" + mapping.imageName;
-    if (!imagePath.startsWith("/")) {
-        imagePath = "/" + imagePath;
-    }
+    // Build full path (images are in images/ subdirectory)
+    String imagePath = "/images/" + mapping.imageName;
     g_lastImagePath = imagePath;
     
     String fatfsPath = "0:" + imagePath;

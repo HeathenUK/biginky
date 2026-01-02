@@ -605,6 +605,17 @@ async function sendCommand(cmd) {
     }
 }
 
+async function triggerHappyWeather() {
+    const payload = { command: 'happy_weather' };
+    
+    if (await publishMessage(payload)) {
+        showStatus('commandStatus', 'Happy weather scene command sent successfully!', false);
+        setBusyState(true, 'Command sent, waiting for device response...');
+    } else {
+        showStatus('commandStatus', 'Failed to send Happy weather scene command', true);
+    }
+}
+
 // Generate default filename with timestamp
 function generateDefaultCanvasFilename() {
     const now = new Date();

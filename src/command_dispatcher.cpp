@@ -317,6 +317,11 @@ static bool handleCanvasSaveUnified(const CommandContext& ctx) {
     return handleCanvasSaveCommand(ctx.originalMessage);
 }
 
+static bool handleHappyUnified(const CommandContext& ctx) {
+    extern bool displayHappyWeatherScene();
+    return displayHappyWeatherScene();
+}
+
 // Helper function to escape CSV field (wrap in quotes if contains comma or quote, escape quotes)
 static String escapeCSVField(const String& field) {
     // If field contains comma, quote, or newline, wrap in quotes and escape quotes
@@ -668,6 +673,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleMediaReplaceUnified,
         .requiresAuth = true,
         .description = "Replace all media mappings with new set"
+    },
+    
+    // Happy weather scene
+    {
+        .mqttName = "!happy",
+        .webUIName = "happy_weather",
+        .httpEndpoint = "/api/scene/happy",
+        .handler = handleHappyUnified,
+        .requiresAuth = true,
+        .description = "Display Happy weather scene"
     }
 };
 

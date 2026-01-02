@@ -2634,8 +2634,7 @@ static void auto_cycle_task(void* arg) {
             time_ok = true;
         }
         
-        // Display Happy weather scene
-        extern bool displayHappyWeatherScene();
+        // Display Happy weather scene (uses default configuration)
         bool success = displayHappyWeatherScene();
         if (!success) {
             Serial.println("ERROR: Failed to display Happy weather scene at :30");

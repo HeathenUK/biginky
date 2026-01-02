@@ -636,8 +636,74 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
     return true;
 }
 
-// Happy weather scene configuration moved inline to displayHappyWeatherScene()
-// (no longer needed as a separate struct since layout is calculated dynamically)
+// Happy weather scene configuration
+/**
+ * Get default Happy weather scene configuration (hardcoded fallback)
+ * This function returns the original hardcoded configuration values
+ */
+HappyWeatherConfig getDefaultHappyWeatherConfig() {
+    HappyWeatherConfig config;
+    
+    // Locations (hardcoded defaults)
+    config.locations[0] = {"Brienz",          46.75f,   8.03f,  1};
+    config.locations[1] = {"Delden",          52.30f,   6.64f,  1};
+    config.locations[2] = {"Portelet Beach",  49.17f,  -2.18f,  0};
+    config.locations[3] = {"The Five Arrows", 51.85f,  -0.93f,  0};
+    config.locations[4] = {"Isle of Mull",    56.44f,  -6.03f,  0};
+    config.locations[5] = {"Bruvik",          60.48f,   5.68f,  1};
+    config.numLocations = 6;
+    
+    // Layout constants (hardcoded defaults)
+    config.displayWidth = 1600;
+    config.displayHeight = 1200;
+    config.marginTop = 80;
+    config.marginBottom = 100;
+    config.gapBetweenPanels = 25;
+    
+    // Panel widths (hardcoded defaults)
+    config.panelWidths[0] = 200;
+    config.panelWidths[1] = 280;
+    config.panelWidths[2] = 280;
+    config.panelWidths[3] = 280;
+    config.panelWidths[4] = 280;
+    config.panelWidths[5] = 190;
+    config.numPanels = 6;
+    
+    // Background image path (hardcoded default)
+    config.backgroundImagePath = "/littlefs/happy.png";
+    
+    // Font and spacing configuration (hardcoded defaults)
+    config.baseTimeFontSize = 200.0f;
+    config.baseLocationFontSize = 64.0f;
+    config.locationFontSizeOffset = 8.0f;  // Added to calculated location font size
+    config.gapBetweenLocationAndTime = 7;
+    config.gapBetweenTimeAndWeather = 2;
+    
+    // Vertical positioning (hardcoded defaults)
+    config.verticalMarginTop = 10;
+    config.verticalMarginBottom = 50;
+    
+    // Horizontal offsets per panel (hardcoded defaults)
+    config.horizontalOffsets[0] = 0;
+    config.horizontalOffsets[1] = 0;
+    config.horizontalOffsets[2] = 0;
+    config.horizontalOffsets[3] = -10;  // Fourth column: nudge 10px left
+    config.horizontalOffsets[4] = -20;  // Fifth column: nudge 20px left
+    config.horizontalOffsets[5] = -29;  // Sixth column: nudge 29px left
+    
+    // First panel left margin (hardcoded default)
+    config.firstPanelLeftMargin = 13;
+    
+    // Panel alignment (hardcoded defaults: true = top aligned, false = bottom aligned)
+    config.panelTopAligned[0] = false;  // Panel 0: bottom aligned
+    config.panelTopAligned[1] = true;   // Panel 1: top aligned
+    config.panelTopAligned[2] = true;   // Panel 2: top aligned
+    config.panelTopAligned[3] = false;  // Panel 3: bottom aligned
+    config.panelTopAligned[4] = true;   // Panel 4: top aligned
+    config.panelTopAligned[5] = true;   // Panel 5: top aligned
+    
+    return config;
+}
 
 /**
  * Helper function to format time with timezone offset
@@ -669,34 +735,26 @@ static void formatTimeWithTimezone(int8_t timezoneOffset, char* timeBuf, size_t 
  * Shows a blank background with 6 time/weather overlays (background image to be added later)
  * Layout: 6 horizontal panels with 50px margins on left/right, 80px top, 100px bottom, 50px gaps between panels
  */
-bool displayHappyWeatherScene() {
+bool displayHappyWeatherScene(const HappyWeatherConfig* config) {
     Serial.println("=== Happy Weather Scene ===");
     
-    // Hardcoded configuration for 6 locations (coordinates and timezones only)
-    static const struct {
-        const char* name;
-        float lat;
-        float lon;
-        int8_t timezoneOffset;
-    } locations[6] = {
-        {"Brienz",          46.75f,   8.03f,  1},
-        {"Delden",          52.30f,   6.64f,  1},
-        {"Portelet Beach",  49.17f,  -2.18f,  0},
-        {"The Five Arrows", 51.85f,  -0.93f,  0},
-        {"Isle of Mull",    56.44f,  -6.03f,  0},
-        {"Bruvik",          60.48f,   5.68f,  1}
-    };
+    // Use default configuration if none provided (fallback to hardcoded values)
+    HappyWeatherConfig defaultConfig;
+    if (config == nullptr) {
+        defaultConfig = getDefaultHappyWeatherConfig();
+        config = &defaultConfig;
+    }
     
-    // Layout constants
-    const int16_t DISPLAY_WIDTH = 1600;
-    const int16_t DISPLAY_HEIGHT = 1200;
-    const int16_t MARGIN_TOP = 80;
-    const int16_t MARGIN_BOTTOM = 100;
-    const int16_t GAP_BETWEEN_PANELS = 25;
-    const int16_t NUM_PANELS = 6;
-    
-    // Custom panel widths (in pixels): 200, 280, 280, 280, 280, 190
-    const int16_t panelWidths[NUM_PANELS] = {200, 280, 280, 280, 280, 190};
+    // Extract configuration values for easier access
+    const HappyWeatherConfig::Location* locations = config->locations;
+    const int numLocations = config->numLocations;
+    const int16_t DISPLAY_WIDTH = config->displayWidth;
+    const int16_t DISPLAY_HEIGHT = config->displayHeight;
+    const int16_t MARGIN_TOP = config->marginTop;
+    const int16_t MARGIN_BOTTOM = config->marginBottom;
+    const int16_t GAP_BETWEEN_PANELS = config->gapBetweenPanels;
+    const int16_t NUM_PANELS = config->numPanels;
+    const int16_t* panelWidths = config->panelWidths;
     
     // Calculate total width to verify it fits (optional - for debugging)
     int16_t totalWidth = panelWidths[0];
@@ -922,7 +980,7 @@ bool displayHappyWeatherScene() {
     }
     
     // Calculate heights at these scales
-    float finalLocationFontSize = baseLocationFontSize * locationScale + 8.0f;  // Add 8px to location font size (was 5px, now +3px)
+    float finalLocationFontSize = baseLocationFontSize * locationScale + config->locationFontSizeOffset;
     int16_t finalLocationHeight = ttf.getTextHeight(finalLocationFontSize);
     float finalTimeFontSize = baseTimeFontSize * timeScale;
     int16_t finalTimeHeight = ttf.getTextHeight(finalTimeFontSize);
@@ -975,7 +1033,7 @@ bool displayHappyWeatherScene() {
             float totalHeightScale = (float)availableHeightForLocationAndTime / (finalLocationHeight + finalTimeHeight);
             locationScale *= totalHeightScale;
             timeScale *= totalHeightScale;
-            finalLocationFontSize = baseLocationFontSize * locationScale + 8.0f;  // Add 8px to location font size (was 5px, now +3px)
+            finalLocationFontSize = baseLocationFontSize * locationScale + config->locationFontSizeOffset;
             finalLocationHeight = ttf.getTextHeight(finalLocationFontSize);
             finalTimeFontSize = baseTimeFontSize * timeScale;
             finalTimeHeight = ttf.getTextHeight(finalTimeFontSize);
@@ -997,60 +1055,25 @@ bool displayHappyWeatherScene() {
         vTaskDelay(1);  // Yield to watchdog
         
         // Calculate panel boundaries using custom widths
-        // First column starts with 13px margin, others start at 0
-        int16_t panelLeft = (i == 0) ? 13 : 0;
+        // First column starts with configured margin, others start at 0
+        int16_t panelLeft = (i == 0) ? config->firstPanelLeftMargin : 0;
         for (int j = 0; j < i; j++) {
             panelLeft += panelWidths[j] + GAP_BETWEEN_PANELS;
         }
         
-        // Horizontal adjustments: nudge columns 4, 5, 6 left
-        int16_t horizontalOffset = 0;
-        switch (i) {
-            case 3:  // Fourth column: nudge 10px left (unchanged)
-                horizontalOffset = -10;
-                break;
-            case 4:  // Fifth column: nudge 20px left (was -15, now -20)
-                horizontalOffset = -20;
-                break;
-            case 5:  // Sixth column: nudge 29px left (was -25, now -29)
-                horizontalOffset = -29;
-                break;
-            default:
-                horizontalOffset = 0;
-                break;
-        }
+        // Horizontal offset from config
+        int16_t horizontalOffset = config->horizontalOffsets[i];
         
         int16_t panelCenterX = panelLeft + panelWidths[i] / 2 + horizontalOffset;
         
-        // Custom vertical positioning with different margins:
-        // Panel 0: bottom aligned, 50px margin from bottom
-        // Panel 1: top aligned, 10px margin from top
-        // Panel 2: top aligned, 10px margin from top (same as panel 1)
-        // Panel 3: bottom aligned, 50px margin from bottom
-        // Panel 4: top aligned, 10px margin from top
-        // Panel 5: top aligned, 10px margin from top (same as panel 4)
-        const int16_t VERTICAL_MARGIN_TOP = 10;
-        const int16_t VERTICAL_MARGIN_BOTTOM = 50;  // 50px for bottom-aligned panels
+        // Vertical positioning from config
         int16_t contentReferenceY;
-        switch (i) {
-            case 0:  // First column: bottom aligned, 50px margin from bottom
-                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM
-                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM;
-                break;
-            case 1:  // Second column: top aligned, 10px margin from top
-            case 2:  // Third column: top aligned, 10px margin from top (same as second)
-            case 4:  // Fifth column: top aligned, 10px margin from top
-            case 5:  // Sixth column: top aligned, 10px margin from top (same as fifth)
-                // Reference Y is at the top: MARGIN_TOP + VERTICAL_MARGIN_TOP
-                contentReferenceY = MARGIN_TOP + VERTICAL_MARGIN_TOP;
-                break;
-            case 3:  // Fourth column: bottom aligned, 50px margin from bottom
-                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM
-                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM;
-                break;
-            default:
-                contentReferenceY = MARGIN_TOP + (availableHeight / 2);  // Center (shouldn't happen)
-                break;
+        if (config->panelTopAligned[i]) {
+            // Top-aligned: reference Y is at the top
+            contentReferenceY = MARGIN_TOP + config->verticalMarginTop;
+        } else {
+            // Bottom-aligned: reference Y is at the bottom
+            contentReferenceY = DISPLAY_HEIGHT - config->verticalMarginBottom;
         }
         
         // Create weather element with uniform weather scale (without location - we draw it separately)
@@ -1063,7 +1086,7 @@ bool displayHappyWeatherScene() {
         
         // Position content relative to reference Y (top or bottom aligned)
         // For top-aligned panels, reference Y is at top; for bottom-aligned, it's at bottom
-        bool isTopAligned = (i == 1 || i == 2 || i == 4 || i == 5);
+        bool isTopAligned = config->panelTopAligned[i];
         int16_t locationY, timeY, weatherY;
         if (isTopAligned) {
             // Top-aligned: reference Y is at top, position content from top

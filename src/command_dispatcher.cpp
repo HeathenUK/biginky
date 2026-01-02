@@ -318,7 +318,7 @@ static bool handleCanvasSaveUnified(const CommandContext& ctx) {
 }
 
 static bool handleHappyUnified(const CommandContext& ctx) {
-    extern bool displayHappyWeatherScene();
+    // Uses default configuration (nullptr = use hardcoded defaults)
     return displayHappyWeatherScene();
 }
 

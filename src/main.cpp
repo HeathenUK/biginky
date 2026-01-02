@@ -2046,9 +2046,10 @@ String extractTextParameterForCommand(const String& command, const String& origi
 // Schedule action types (extensible for future cron-like system)
 // Note: Using SCHEDULE_ prefix to avoid conflict with ESP32 HAL GPIO macros (DISABLED/ENABLED)
 enum class ScheduleAction {
-    SCHEDULE_DISABLED,   // Hour is disabled - sleep until next enabled hour
-    SCHEDULE_ENABLED,    // Hour is enabled - proceed with normal operations
-    SCHEDULE_NTP_RESYNC  // Special action: resync NTP (e.g., at 30 minutes past hour)
+    SCHEDULE_DISABLED,      // Hour is disabled - sleep until next enabled hour
+    SCHEDULE_ENABLED,       // Hour is enabled - proceed with normal operations
+    SCHEDULE_NTP_RESYNC,    // Special action: resync NTP (e.g., at 30 minutes past hour)
+    SCHEDULE_HAPPY_WEATHER  // Special action: display Happy weather scene at :30
     // Future: CYCLE_MEDIA, PLAY_SOUND, etc.
 };
 
@@ -2068,9 +2069,9 @@ static ScheduleAction getScheduleAction(int hour, int minute) {
     }
     
     // Check for minute-level scheduled actions
-    // NTP resync at 30 minutes past each hour
+    // Happy weather scene at 30 minutes past each hour
     if (minute == 30) {
-        return ScheduleAction::SCHEDULE_NTP_RESYNC;
+        return ScheduleAction::SCHEDULE_HAPPY_WEATHER;
     }
     
     // Future: Add more minute-level actions here
@@ -2593,15 +2594,36 @@ static void auto_cycle_task(void* arg) {
     
     // Check schedule action (extensible for future cron-like system)
     ScheduleAction action = getScheduleAction(currentHour, currentMinute);
+    
+    // Debug output: show what schedule action was determined
+    const char* actionName = "UNKNOWN";
+    switch (action) {
+        case ScheduleAction::SCHEDULE_DISABLED:
+            actionName = "DISABLED";
+            break;
+        case ScheduleAction::SCHEDULE_ENABLED:
+            actionName = "ENABLED";
+            break;
+        case ScheduleAction::SCHEDULE_NTP_RESYNC:
+            actionName = "NTP_RESYNC";
+            break;
+        case ScheduleAction::SCHEDULE_HAPPY_WEATHER:
+            actionName = "HAPPY_WEATHER";
+            break;
+    }
+    Serial.printf("Schedule action: %s (hour=%d, minute=%d)\n", actionName, currentHour, currentMinute);
     if (action == ScheduleAction::SCHEDULE_DISABLED) {
         handleDisabledHour(currentHour, tm_utc);
         return;  // Never returns
     }
     
-    // Handle scheduled actions (e.g., NTP resync at 30 minutes past)
-    if (action == ScheduleAction::SCHEDULE_NTP_RESYNC) {
+    // Handle scheduled actions (e.g., Happy weather scene at 30 minutes past)
+    if (action == ScheduleAction::SCHEDULE_HAPPY_WEATHER) {
+        Serial.println("=== Scheduled Happy weather scene at :30 ===");
+        
+        // Do NTP resync first (if needed) to ensure accurate time for weather data
         doNtpResyncIfNeeded(time_ok);
-        // After NTP resync, continue with normal cycle (MQTT check or display update)
+        
         // Update time variables after potential NTP sync
         now = time(nullptr);
         if (now > 1577836800) {
@@ -2611,6 +2633,23 @@ static void auto_cycle_task(void* arg) {
             currentMinute = tm_utc.tm_min;
             time_ok = true;
         }
+        
+        // Display Happy weather scene
+        extern bool displayHappyWeatherScene();
+        bool success = displayHappyWeatherScene();
+        if (!success) {
+            Serial.println("ERROR: Failed to display Happy weather scene at :30");
+        }
+        
+        // After scene is displayed, sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
     }
     
     // If NOT top of hour, do MQTT check instead of display update
@@ -5043,6 +5082,31 @@ bool handleManageCommand() {
         // Send response immediately to avoid SSL timeout (display operation runs in background)
         String resp = "{\"success\":true,\"message\":\"Display operation started\"}";
         return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // POST /api/scene/happy - Display Happy weather scene
+    server.on("/api/scene/happy", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        Serial.println("HTTP API: Happy weather scene requested");
+        
+        // Use unified command dispatcher
+        CommandContext ctx;
+        ctx.source = CommandSource::HTTP_API;
+        ctx.command = "/api/scene/happy";
+        ctx.originalMessage = "{}";  // No parameters needed
+        ctx.senderNumber = "";
+        ctx.commandId = "";
+        ctx.requiresAuth = true;
+        ctx.shouldPublishCompletion = false;
+        
+        bool success = dispatchCommand(ctx);
+        
+        if (success) {
+            return response->send(200, "application/json", "{\"success\":true}");
+        } else {
+            return response->send(500, "application/json", "{\"success\":false,\"error\":\"Failed to display Happy weather scene\"}");
+        }
     });
     
     // POST /api/media/show?index=N - Show media item

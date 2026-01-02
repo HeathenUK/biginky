@@ -148,7 +148,7 @@ bool hal_image_rotate(const image_desc_t* src, image_desc_t* dst,
         Serial.printf("[IMAGE_HAL] ERROR: Input buffer address %p is not %d-byte aligned!\n", 
                      src->buffer, PPA_CACHE_LINE_SIZE);
         s_last_hw_accel = false;
-        return false;
+            return false;
     }
 
     // Configure input picture

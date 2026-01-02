@@ -477,18 +477,18 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                             lastProcessedCommandId = cmdId;
                             Serial.printf("Command ID: %s\n", cmdId.c_str());
                         }
-                        
-                        String command = extractJsonStringField(jsonMessage, "command");
-                        if (command.length() > 0) {
-                            command.toLowerCase();
-                        }
-                        
-                        if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
-                            Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
-                            webUICommandPending = true;
-                            pendingWebUICommand = jsonMessage;
-                        } else {
-                            handleWebInterfaceCommand(jsonMessage);
+                    
+                    String command = extractJsonStringField(jsonMessage, "command");
+                    if (command.length() > 0) {
+                        command.toLowerCase();
+                    }
+                    
+                    if (command == "next" || command == "canvas_display" || command == "text_display" || command == "clear") {
+                        Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
+                        webUICommandPending = true;
+                        pendingWebUICommand = jsonMessage;
+                    } else {
+                        handleWebInterfaceCommand(jsonMessage);
                         }
                     }
                 } else if (strcmp(mqttMessageTopic, mqttTopicSubscribe) == 0 || strcmp(topic, mqttTopicSubscribe) == 0) {

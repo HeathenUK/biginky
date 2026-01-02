@@ -132,9 +132,9 @@ void TimeDateElement::draw(int16_t centerX, int16_t centerY) {
         }
     } else {
         // Fallback: couldn't parse, draw normally
-        _ttf->drawTextAlignedOutlined(centerX, dateY, _dateText, dateSize,
+    _ttf->drawTextAlignedOutlined(centerX, dateY, _dateText, dateSize,
                                      _textColor, _outlineColor,
-                                     ALIGN_CENTER, ALIGN_MIDDLE, _dateOutline);
+                                  ALIGN_CENTER, ALIGN_MIDDLE, _dateOutline);
     }
 }
 
@@ -372,7 +372,7 @@ void QuoteElement::setOutlineThickness(int16_t thickness) {
 
 WeatherElement::WeatherElement(EL133UF1_TTF* ttf, const char* temperature, const char* condition, const char* location)
     : _ttf(ttf), _tempFontSize(180.0f), _conditionFontSize(96.0f), _locationFontSize(96.0f),
-      _gapBetween(20), _outlineWidth(3), _sizeScale(1.0f),  // Match time outline width (3)
+      _gapBetween(5), _outlineWidth(3), _sizeScale(1.0f),  // Reduced from 20 to 5 (1/4 of original)
       _textColor(EL133UF1_WHITE), _outlineColor(EL133UF1_BLACK),
       _cachedWidth(0), _cachedHeight(0),
       _cachedTempW(0), _cachedTempH(0),

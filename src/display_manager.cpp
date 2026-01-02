@@ -819,8 +819,8 @@ bool displayHappyWeatherScene() {
     int16_t maxWeatherHeight = 0;
     float baseTimeFontSize = 200.0f;  // Start with larger base size to maximize time
     float baseLocationFontSize = 64.0f;  // Ideal size for location name (64px)
-    const int16_t gapBetweenLocationAndTime = 15;
-    const int16_t gapBetweenTimeAndWeather = 20;
+    const int16_t gapBetweenLocationAndTime = 7;  // Reduced to half of 15
+    const int16_t gapBetweenTimeAndWeather = 2;  // Reduced to half of 5
     
     Serial.println("[Happy Weather] First pass: Calculating dimensions for all panels...");
     
@@ -865,7 +865,7 @@ bool displayHappyWeatherScene() {
         // Create weather element at base size (scale 1.0) to get dimensions
         // Note: We pass empty string for location since we'll draw it separately above time
         WeatherElement weatherElement(&ttf, data.tempText.c_str(), data.conditionText.c_str(), "");
-        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_WHITE);
+        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_BLACK);  // Black text with black outline
         weatherElement.setAdaptiveSize(1.0f);  // Base size
         
         weatherElement.getDimensions(data.weatherWidth, data.weatherHeight);
@@ -922,7 +922,7 @@ bool displayHappyWeatherScene() {
     }
     
     // Calculate heights at these scales
-    float finalLocationFontSize = baseLocationFontSize * locationScale + 5.0f;  // Add 5px to location font size
+    float finalLocationFontSize = baseLocationFontSize * locationScale + 8.0f;  // Add 8px to location font size (was 5px, now +3px)
     int16_t finalLocationHeight = ttf.getTextHeight(finalLocationFontSize);
     float finalTimeFontSize = baseTimeFontSize * timeScale;
     int16_t finalTimeHeight = ttf.getTextHeight(finalTimeFontSize);
@@ -975,7 +975,7 @@ bool displayHappyWeatherScene() {
             float totalHeightScale = (float)availableHeightForLocationAndTime / (finalLocationHeight + finalTimeHeight);
             locationScale *= totalHeightScale;
             timeScale *= totalHeightScale;
-            finalLocationFontSize = baseLocationFontSize * locationScale + 5.0f;  // Add 5px to location font size
+            finalLocationFontSize = baseLocationFontSize * locationScale + 8.0f;  // Add 8px to location font size (was 5px, now +3px)
             finalLocationHeight = ttf.getTextHeight(finalLocationFontSize);
             finalTimeFontSize = baseTimeFontSize * timeScale;
             finalTimeHeight = ttf.getTextHeight(finalTimeFontSize);
@@ -1012,8 +1012,8 @@ bool displayHappyWeatherScene() {
             case 4:  // Fifth column: nudge 20px left (was -15, now -20)
                 horizontalOffset = -20;
                 break;
-            case 5:  // Sixth column: nudge 20px left (was -18, now -20)
-                horizontalOffset = -20;
+            case 5:  // Sixth column: nudge 29px left (was -25, now -29)
+                horizontalOffset = -29;
                 break;
             default:
                 horizontalOffset = 0;
@@ -1022,30 +1022,31 @@ bool displayHappyWeatherScene() {
         
         int16_t panelCenterX = panelLeft + panelWidths[i] / 2 + horizontalOffset;
         
-        // Custom vertical positioning with 10px margins:
-        // Panel 0: bottom aligned, 10px margin from bottom
+        // Custom vertical positioning with different margins:
+        // Panel 0: bottom aligned, 50px margin from bottom
         // Panel 1: top aligned, 10px margin from top
         // Panel 2: top aligned, 10px margin from top (same as panel 1)
-        // Panel 3: bottom aligned, 10px margin from bottom
+        // Panel 3: bottom aligned, 50px margin from bottom
         // Panel 4: top aligned, 10px margin from top
         // Panel 5: top aligned, 10px margin from top (same as panel 4)
-        const int16_t VERTICAL_MARGIN = 10;
+        const int16_t VERTICAL_MARGIN_TOP = 10;
+        const int16_t VERTICAL_MARGIN_BOTTOM = 50;  // 50px for bottom-aligned panels
         int16_t contentReferenceY;
         switch (i) {
-            case 0:  // First column: bottom aligned, 10px margin from bottom
-                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN
-                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN;
+            case 0:  // First column: bottom aligned, 50px margin from bottom
+                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM
+                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM;
                 break;
             case 1:  // Second column: top aligned, 10px margin from top
             case 2:  // Third column: top aligned, 10px margin from top (same as second)
             case 4:  // Fifth column: top aligned, 10px margin from top
             case 5:  // Sixth column: top aligned, 10px margin from top (same as fifth)
-                // Reference Y is at the top: MARGIN_TOP + VERTICAL_MARGIN
-                contentReferenceY = MARGIN_TOP + VERTICAL_MARGIN;
+                // Reference Y is at the top: MARGIN_TOP + VERTICAL_MARGIN_TOP
+                contentReferenceY = MARGIN_TOP + VERTICAL_MARGIN_TOP;
                 break;
-            case 3:  // Fourth column: bottom aligned, 10px margin from bottom
-                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN
-                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN;
+            case 3:  // Fourth column: bottom aligned, 50px margin from bottom
+                // Reference Y is at the bottom: DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM
+                contentReferenceY = DISPLAY_HEIGHT - VERTICAL_MARGIN_BOTTOM;
                 break;
             default:
                 contentReferenceY = MARGIN_TOP + (availableHeight / 2);  // Center (shouldn't happen)
@@ -1054,7 +1055,7 @@ bool displayHappyWeatherScene() {
         
         // Create weather element with uniform weather scale (without location - we draw it separately)
         WeatherElement weatherElement(&ttf, data.tempText.c_str(), data.conditionText.c_str(), "");
-        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_WHITE);
+        weatherElement.setColors(EL133UF1_BLACK, EL133UF1_WHITE);  // Black text with white outline
         weatherElement.setAdaptiveSize(weatherScale);
         
         int16_t weatherW, weatherH;
@@ -1081,13 +1082,13 @@ bool displayHappyWeatherScene() {
         // Draw location name (centered horizontally in panel) with 1px outline at ideal 64px size
         // Note: If location name is too wide, it may extend beyond panel bounds (wrapping not yet implemented)
         ttf.drawTextAlignedOutlined(panelCenterX, locationY, data.locationName.c_str(), finalLocationFontSize,
-                                    EL133UF1_BLACK, EL133UF1_WHITE,
-                                    ALIGN_CENTER, ALIGN_MIDDLE, 1);  // 1px outline
+                                    EL133UF1_BLACK, EL133UF1_BLACK,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 1);  // 1px black outline
         
         // Draw time text (centered horizontally in panel) with maximized size
         ttf.drawTextAlignedOutlined(panelCenterX, timeY, data.timeText.c_str(), finalTimeFontSize,
                                     EL133UF1_BLACK, EL133UF1_WHITE,
-                                    ALIGN_CENTER, ALIGN_MIDDLE, 3);
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 3);  // 3px white outline
         
         // Draw weather element (centered horizontally in panel)
         weatherElement.draw(panelCenterX, weatherY);

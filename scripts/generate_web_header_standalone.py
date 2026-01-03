@@ -57,17 +57,6 @@ def generate_web_header(project_dir=None):
         print(f"ERROR: Failed to read {html_file}: {e}")
         sys.exit(1)
     
-    # Check for canvas section
-    if "Drawing Canvas" in html_content:
-        print("  ✓ Found 'Drawing Canvas' section in HTML")
-    else:
-        print("  ⚠ WARNING: 'Drawing Canvas' section NOT found in HTML")
-    
-    if "drawCanvas" in html_content:
-        print("  ✓ Found 'drawCanvas' element in HTML")
-    else:
-        print("  ⚠ WARNING: 'drawCanvas' element NOT found in HTML")
-    
     # Generate hour checkboxes HTML (24 hours)
     hour_checkboxes = ""
     for i in range(24):
@@ -128,12 +117,6 @@ const size_t WEB_HTML_CONTENT_LEN = {len(html_content)};
         print(f"✓ Web assets header generated: {header_file}")
         print(f"  HTML content size: {len(html_content)} bytes")
         print(f"  Header file size: {len(header_content)} bytes")
-        
-        # Verify canvas is in generated header
-        if "Drawing Canvas" in header_content:
-            print("  ✓ Verified: 'Drawing Canvas' section is in generated header")
-        else:
-            print("  ⚠ WARNING: 'Drawing Canvas' section NOT in generated header!")
     except IOError as e:
         print(f"ERROR: Failed to write header file: {e}")
         sys.exit(1)

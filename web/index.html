@@ -40,7 +40,6 @@ input[type="checkbox"]{cursor:pointer;}
 .quote-text{margin-bottom:10px;}
 .quote-author{color:#b0b0b0;font-style:italic;margin-top:5px;padding-top:10px;border-top:1px solid #444;}
 .table-wrapper{overflow-x:auto;width:100%;}
-canvas{max-width:100%;height:auto;}
 @media (max-width:768px){
 body{padding:10px;}
 h1{margin-top:50px;font-size:20px;}
@@ -56,59 +55,16 @@ td{padding:8px 4px;}
 <body>
 <div class="header-controls">
 <button onclick="closeServer()" title="Close Management Interface">✕</button>
+<label style="display:flex;align-items:center;gap:8px;color:#e0e0e0;cursor:pointer;margin:0 10px;"><input type="checkbox" id="timeoutDisabledCheckbox" onchange="toggleTimeoutDisabled()" style="cursor:pointer;width:18px;height:18px;">Disable timeout</label>
 <button class="ota" onclick="startOTA()">Start OTA Update Mode</button>
 <button class="ota" onclick="triggerHappyWeather()" style="background:#FF9800;">Happy Place Weather</button>
 </div>
 <h1>Device Configuration Management</h1>
 <div class="tabs">
-<button class="tab active" onclick="switchTab('draw')">Draw</button>
-<button class="tab" onclick="switchTab('media')">Media</button>
+<button class="tab active" onclick="switchTab('media')">Media</button>
 <button class="tab" onclick="switchTab('config')">Config</button>
 </div>
-<div id="drawTab" class="tab-content active">
-<div class="section"><h2>Text Display</h2>
-<p>Enter text to display on the panel. Select a text colour (or "Multi" for random colours per word) and background colour.</p>
-<label>Text:</label>
-<textarea id="textInput" placeholder="Enter text to display..." style="width:100%;min-height:100px;padding:10px;border:1px solid #444;border-radius:4px;box-sizing:border-box;font-family:monospace;background:#1a1a1a;color:#e0e0e0;margin:10px 0;"></textarea>
-<label style="margin-top:10px;">Text Colour:</label>
-<select id="textColor" style="width:200px;margin-bottom:10px;">
-<option value="black" selected>Black</option>
-<option value="yellow">Yellow</option>
-<option value="red">Red</option>
-<option value="blue">Blue</option>
-<option value="green">Green</option>
-<option value="multi">Multi (Random Colours)</option>
-<option value="multi-fade">Multi-Fade (Gradient)</option>
-<option value="white">White</option>
-</select>
-<label style="margin-top:10px;">Background Colour:</label>
-<select id="textBackgroundColor" style="width:200px;margin-bottom:10px;">
-<option value="black">Black</option>
-<option value="yellow">Yellow</option>
-<option value="red">Red</option>
-<option value="blue">Blue</option>
-<option value="green">Green</option>
-<option value="white" selected>White</option>
-</select>
-<button onclick="displayText()">Display Text on Panel</button>
-<div id="textStatus"></div></div>
-<div class="section"><h2>Drawing Canvas</h2>
-<p>Draw on the canvas (800x600) and display it on the panel (1600x1200). The drawing will be scaled 2x and centered.</p>
-<label>Colour:</label>
-<select id="drawColor" style="width:150px;margin:10px 0;">
-<option value="0" selected>Black</option>
-<option value="2">Yellow</option>
-<option value="3">Red</option>
-<option value="5">Blue</option>
-<option value="6">Green</option>
-<option value="1">White</option>
-</select>
-<button onclick="clearCanvas()">Clear Canvas</button>
-<button onclick="sendCanvasToDisplay()">Display on Panel</button>
-<canvas id="drawCanvas" width="800" height="600" style="border:2px solid #666;cursor:crosshair;background:#fff;touch-action:none;margin-top:10px;display:block;max-width:100%;height:auto;"></canvas>
-<div id="canvasStatus"></div></div>
-</div>
-<div id="mediaTab" class="tab-content">
+<div id="mediaTab" class="tab-content active">
 <div class="section"><h2>Quotes Configuration (quotes.txt)</h2>
 <p>Manage quotes and authors. Each quote must have an author (starting with ~). Quotes are separated by blank lines.</p>
 <div id="quotesRows"></div>
@@ -232,20 +188,12 @@ function logFlush(){fetch('/api/log/flush',{method:'POST'});}
 function closeServer(){if(confirm('Close management interface and return to normal operation?')){fetch('/api/close',{method:'POST'}).then(r=>r.json()).then(d=>{showStatus('closeStatus','Management interface closed. You can close this page.',false);setTimeout(()=>{window.location.href='about:blank';},2000);}).catch(e=>showStatus('closeStatus','Error: '+e,true));}}
 function startOTA(){if(confirm('Start OTA update mode? The device will listen for firmware updates for 10 minutes. You can then upload firmware to /update endpoint.')){showStatus('otaStatus','Starting OTA server...',false);fetch('/api/ota/start',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.success){showStatus('otaStatus','OTA server started! Upload firmware to: '+d.url,false);}else{showStatus('otaStatus','Error: '+d.error,true);}}).catch(e=>{showStatus('otaStatus','Error: '+e,true);});}}
 function triggerHappyWeather(){showStatus('otaStatus','Triggering Happy Place Weather scene...',false);fetch('/api/scene/happy',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.success){showStatus('otaStatus','Happy Place Weather scene triggered!',false);}else{showStatus('otaStatus','Error: '+d.error,true);}}).catch(e=>{showStatus('otaStatus','Error: '+e,true);});}
-function displayText(){const text=document.getElementById('textInput').value.trim();if(text.length===0){showStatus('textStatus','Please enter some text',true);return;}const color=document.getElementById('textColor').value;const bgColor=document.getElementById('textBackgroundColor').value;showStatus('textStatus','Displaying text...',false);fetch('/api/text/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text,color:color,backgroundColour:bgColor})}).then(r=>r.json()).then(d=>{showStatus('textStatus',d.success?'Text displayed successfully!':'Error: '+d.error,d.success?false:true);}).catch(e=>{showStatus('textStatus','Error: '+e,true);});}
+function toggleTimeoutDisabled(){const checkbox=document.getElementById('timeoutDisabledCheckbox');const disable=checkbox.checked;fetch('/api/manage/timeout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({timeout_disabled:disable})}).then(r=>r.json()).then(d=>{if(d.success){showStatus('closeStatus','Timeout disabled: '+d.timeout_disabled,false);}else{showStatus('closeStatus','Error setting timeout: '+(d.error||'Unknown error'),true);}}).catch(e=>{showStatus('closeStatus','Error: '+e,true);});}
+function loadTimeoutDisabledState(){fetch('/api/manage/timeout').then(r=>r.json()).then(d=>{const checkbox=document.getElementById('timeoutDisabledCheckbox');if(checkbox){checkbox.checked=d.timeout_disabled||false;}}).catch(e=>console.error('Error loading timeout disabled state:',e));}
 function showStatus(id,msg,isError){const el=document.getElementById(id);if(el){el.textContent=msg;el.className=isError?'error status':'status';}}
-let canvas=null;let ctx=null;let isDrawing=false;let lastX=0;let lastY=0;
-const colorMap={0:'#000000',1:'#FFFFFF',2:'#FFFF00',3:'#FF0000',5:'#0000FF',6:'#00FF00'};
-function getDrawColor(){const drawColorEl=document.getElementById('drawColor');if(!drawColorEl)return'#000000';const val=parseInt(drawColorEl.value);return colorMap[val]||'#000000';}
-function startDraw(e){if(!canvas)return;isDrawing=true;const rect=canvas.getBoundingClientRect();lastX=e.clientX?e.clientX-rect.left:e.touches[0].clientX-rect.left;lastY=e.clientY?e.clientY-rect.top:e.touches[0].clientY-rect.top;}
-function draw(e){if(!isDrawing||!canvas||!ctx)return;e.preventDefault();const rect=canvas.getBoundingClientRect();const x=e.clientX?e.clientX-rect.left:e.touches[0].clientX-rect.left;const y=e.clientY?e.clientY-rect.top:e.touches[0].clientY-rect.top;ctx.strokeStyle=getDrawColor();ctx.lineWidth=2;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(lastX,lastY);ctx.lineTo(x,y);ctx.stroke();lastX=x;lastY=y;}
-function stopDraw(){isDrawing=false;}
-function clearCanvas(){if(!ctx)return;ctx.fillStyle='#FFFFFF';ctx.fillRect(0,0,800,600);showStatus('canvasStatus','Canvas cleared',false);}
-function quantizeToEinkColors(imageData){const data=imageData.data;const einkColors=[[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];function findClosestColor(r,g,b){let minDist=Infinity;let closestIdx=0;for(let i=0;i<einkColors.length;i++){const ec=einkColors[i];const dist=Math.pow(r-ec[0],2)+Math.pow(g-ec[1],2)+Math.pow(b-ec[2],2);if(dist<minDist){minDist=dist;closestIdx=i;}}return closestIdx;}for(let i=0;i<data.length;i+=4){const r=data[i];const g=data[i+1];const b=data[i+2];const idx=findClosestColor(r,g,b);const color=einkColors[idx];data[i]=color[0];data[i+1]=color[1];data[i+2]=color[2];}return imageData;}
-function sendCanvasToDisplay(){if(!canvas||!ctx){showStatus('canvasStatus','Error: Canvas not initialized',true);return;}showStatus('canvasStatus','Preparing pixel data...',false);const imageData=ctx.getImageData(0,0,800,600);const data=imageData.data;const einkColors=[[0,0,0],[255,255,255],[255,255,0],[255,0,0],[0,0,255],[0,255,0]];const einkColorValues=[0,1,2,3,5,6];function findClosestColorIdx(r,g,b){let minDist=Infinity;let closestIdx=0;for(let i=0;i<einkColors.length;i++){const ec=einkColors[i];const dist=Math.pow(r-ec[0],2)+Math.pow(g-ec[1],2)+Math.pow(b-ec[2],2);if(dist<minDist){minDist=dist;closestIdx=i;}}return closestIdx;}const pixelData=[];for(let i=0;i<data.length;i+=4){const r=data[i];const g=data[i+1];const b=data[i+2];const arrayIdx=findClosestColorIdx(r,g,b);const einkColorValue=einkColorValues[arrayIdx];pixelData.push(einkColorValue);}const pixelBytes=new Uint8Array(pixelData);const base64Data=btoa(String.fromCharCode.apply(null,pixelBytes));const sizeKB=(pixelBytes.length/1024).toFixed(1);showStatus('canvasStatus','Sending pixel data ('+sizeKB+' KB)...',false);fetch('/api/canvas/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pixelData:base64Data,width:800,height:600})}).then(r=>r.json()).then(d=>{showStatus('canvasStatus',d.success?'Drawing displayed successfully!':'Error: '+d.error,d.success?false:true);}).catch(e=>{showStatus('canvasStatus','Error: '+e,true);});}
 let lastActivityPing=0;const ACTIVITY_PING_INTERVAL=30000;function pingActivity(){const now=Date.now();if(now-lastActivityPing<ACTIVITY_PING_INTERVAL)return;lastActivityPing=now;fetch('/api/activity',{method:'POST'}).catch(()=>{});}
 document.addEventListener('click',pingActivity);document.addEventListener('keydown',pingActivity);document.addEventListener('mousemove',()=>{if(Date.now()-lastActivityPing>5000)pingActivity();});document.addEventListener('touchstart',pingActivity);document.addEventListener('scroll',()=>{if(Date.now()-lastActivityPing>5000)pingActivity();});
-window.onload=function(){canvas=document.getElementById('drawCanvas');if(canvas){ctx=canvas.getContext('2d');canvas.addEventListener('mousedown',startDraw);canvas.addEventListener('mousemove',draw);canvas.addEventListener('mouseup',stopDraw);canvas.addEventListener('mouseleave',stopDraw);canvas.addEventListener('touchstart',(e)=>{e.preventDefault();startDraw(e);});canvas.addEventListener('touchmove',(e)=>{e.preventDefault();draw(e);});canvas.addEventListener('touchend',(e)=>{e.preventDefault();stopDraw();});}loadQuotes();loadFileLists();loadSettings();refreshFileList();if(ctx)clearCanvas();pingActivity();checkPasswordStatus();const hourScheduleEl=document.getElementById('hourSchedule');if(hourScheduleEl){for(let i=0;i<24;i++){const cb=document.createElement('input');cb.type='checkbox';cb.className='hourCheckbox';cb.dataset.hour=i;const label=document.createElement('label');label.appendChild(cb);label.appendChild(document.createTextNode(' '+String(i).padStart(2,'0')+':00'));label.style.marginRight='10px';label.style.color='#e0e0e0';hourScheduleEl.appendChild(label);}}};
+window.onload=function(){loadQuotes();loadFileLists();loadSettings();refreshFileList();pingActivity();checkPasswordStatus();loadTimeoutDisabledState();const hourScheduleEl=document.getElementById('hourSchedule');if(hourScheduleEl){for(let i=0;i<24;i++){const cb=document.createElement('input');cb.type='checkbox';cb.className='hourCheckbox';cb.dataset.hour=i;const label=document.createElement('label');label.appendChild(cb);label.appendChild(document.createTextNode(' '+String(i).padStart(2,'0')+':00'));label.style.marginRight='10px';label.style.color='#e0e0e0';hourScheduleEl.appendChild(label);}}};
 </script>
 </body>
 </html>

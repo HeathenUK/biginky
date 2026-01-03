@@ -354,6 +354,7 @@ static Preferences otaPrefs;  // NVS preferences for OTA version tracking
 Preferences mediaPrefs;  // NVS preferences for media index storage (non-static for nvs_manager module access)
 Preferences hourSchedulePrefs;  // NVS preferences for hour schedule (non-static for nvs_manager module access)
 Preferences authPrefs;  // NVS preferences for web UI authentication (non-static for webui_crypto module access)
+Preferences managePrefs;  // NVS preferences for management interface settings (non-static for nvs_manager module access)
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60) (non-static for nvs_manager module access)
@@ -2676,7 +2677,13 @@ static void auto_cycle_task(void* arg) {
             Serial.println("ERROR: Failed to display Happy weather scene at :30");
         }
         
-        // After scene is displayed, sleep until next minute
+        // Always send status update (even for Happy weather scene)
+        // Yield before MQTT check
+        vTaskDelay(1);
+        
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // After scene is displayed and status sent, sleep until next minute
         Serial.println("Sleeping until next minute...");
         if (time_ok) {
             sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -6704,6 +6711,47 @@ bool handleManageCommand() {
         return response->send(200, "application/json", "{\"success\":true}");
     });
     
+    // GET /api/manage/timeout - Get timeout disabled state
+    server.on("/api/manage/timeout", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        extern bool getManageTimeoutDisabled();  // From nvs_manager.cpp
+        bool disabled = getManageTimeoutDisabled();
+        String json = "{\"timeout_disabled\":";
+        json += disabled ? "true" : "false";
+        json += "}";
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // POST /api/manage/timeout - Set timeout disabled state
+    server.on("/api/manage/timeout", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        extern void setManageTimeoutDisabled(bool disabled);  // From nvs_manager.cpp
+        extern void manageTimeoutDisabledSaveToNVS();  // From nvs_manager.cpp
+        
+        String body = request->body();
+        bool timeoutDisabled = false;
+        
+        // Parse JSON body to get timeout_disabled value
+        if (body.length() > 0) {
+            cJSON *json = cJSON_Parse(body.c_str());
+            if (json) {
+                cJSON *disabledItem = cJSON_GetObjectItem(json, "timeout_disabled");
+                if (disabledItem && cJSON_IsBool(disabledItem)) {
+                    timeoutDisabled = cJSON_IsTrue(disabledItem);
+                }
+                cJSON_Delete(json);
+            }
+        }
+        
+        setManageTimeoutDisabled(timeoutDisabled);
+        manageTimeoutDisabledSaveToNVS();
+        
+        String jsonResponse = "{\"success\":true,\"timeout_disabled\":";
+        jsonResponse += timeoutDisabled ? "true" : "false";
+        jsonResponse += "}";
+        return response->send(200, "application/json", jsonResponse.c_str());
+    });
+    
     // POST /api/ota/start - Start OTA update mode
     server.on("/api/ota/start", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
@@ -6746,17 +6794,24 @@ bool handleManageCommand() {
     lastActivityTime = startTime;  // Initialize with start time (variable already declared above)
     const uint32_t timeoutMs = 300000;  // 5 minute timeout (300 seconds)
     
+    // Load timeout disabled state
+    extern bool getManageTimeoutDisabled();  // From nvs_manager.cpp
+    bool timeoutDisabled = getManageTimeoutDisabled();
+    
     // Simple loop - PsychicHttp handles requests internally
     // Check for timeout based on last activity, not just start time
     while (!serverShouldClose) {
         uint32_t now = millis();
         uint32_t timeSinceActivity = now - lastActivityTime;
         
-        // Timeout after 5 minutes of inactivity
-        if (timeSinceActivity >= timeoutMs) {
+        // Timeout after 5 minutes of inactivity (unless timeout is disabled)
+        if (!timeoutDisabled && timeSinceActivity >= timeoutMs) {
             Serial.println("Management interface timeout (5 minutes of inactivity)");
             break;
         }
+        
+        // Re-check timeout disabled state (in case it was changed via API)
+        timeoutDisabled = getManageTimeoutDisabled();
         
         delay(100);  // Yield to other tasks
     }
@@ -10432,6 +10487,9 @@ void setup() {
     
     // Load hour schedule from NVS
     hourScheduleLoadFromNVS();
+    
+    // Load management interface timeout disabled state from NVS
+    manageTimeoutDisabledLoadFromNVS();
     
     // Load media index from NVS
     mediaIndexLoadFromNVS();

@@ -22,6 +22,7 @@ extern Preferences volumePrefs;
 extern Preferences mediaPrefs;
 extern Preferences sleepPrefs;
 extern Preferences hourSchedulePrefs;
+extern Preferences managePrefs;
 
 void volumeLoadFromNVS() {
     NVSGuard guard(volumePrefs, "audio", true);  // read-only
@@ -221,3 +222,42 @@ void hourScheduleSaveToNVS() {
     }
 }
 
+// Management interface timeout disabled state
+static bool g_manage_timeout_disabled = false;  // Default: timeout enabled (false = timeout active)
+
+bool getManageTimeoutDisabled() {
+    return g_manage_timeout_disabled;
+}
+
+void setManageTimeoutDisabled(bool disabled) {
+    g_manage_timeout_disabled = disabled;
+}
+
+void manageTimeoutDisabledLoadFromNVS() {
+    NVSGuard guard(managePrefs, "manage", true);  // Read-only
+    if (!guard.isOpen()) {
+        Serial.println("WARNING: Failed to open NVS for manage timeout disabled - using default (timeout enabled)");
+        g_manage_timeout_disabled = false;
+        return;
+    }
+    
+    g_manage_timeout_disabled = guard.get().getBool("timeout_disabled", false);  // Default: timeout enabled (false)
+    
+    if (g_is_cold_boot) {
+        Serial.printf("Loaded management interface timeout disabled state from NVS: %s\n",
+                     g_manage_timeout_disabled ? "DISABLED (no timeout)" : "ENABLED (5 min timeout)");
+    }
+}
+
+void manageTimeoutDisabledSaveToNVS() {
+    NVSGuard guard(managePrefs, "manage", false);  // Read-write
+    if (!guard.isOpen()) {
+        Serial.println("WARNING: Failed to open NVS for saving manage timeout disabled");
+        return;
+    }
+    
+    guard.get().putBool("timeout_disabled", g_manage_timeout_disabled);
+    
+    Serial.printf("Saved management interface timeout disabled state to NVS: %s\n",
+                 g_manage_timeout_disabled ? "DISABLED (no timeout)" : "ENABLED (5 min timeout)");
+}

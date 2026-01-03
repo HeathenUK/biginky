@@ -92,6 +92,28 @@ void hourScheduleLoadFromNVS();
  */
 void hourScheduleSaveToNVS();
 
+/**
+ * Load management interface timeout disabled state from NVS
+ * Called on startup to restore the timeout disabled setting
+ */
+void manageTimeoutDisabledLoadFromNVS();
+
+/**
+ * Save management interface timeout disabled state to NVS
+ * Called whenever the timeout disabled setting changes
+ */
+void manageTimeoutDisabledSaveToNVS();
+
+/**
+ * Get current management interface timeout disabled state
+ */
+bool getManageTimeoutDisabled();
+
+/**
+ * Set management interface timeout disabled state
+ */
+void setManageTimeoutDisabled(bool disabled);
+
 #endif // NVS_MANAGER_H
 
 

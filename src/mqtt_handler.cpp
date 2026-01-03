@@ -31,6 +31,9 @@
 #include "chunked_processing.h"  // For chunked processing with automatic watchdog yielding
 #include "cJSON.h"  // Pure C JSON library for building JSON (handles escaping, large payloads)
 #include "schedule_manager.h"  // For getDetailedScheduleJSON()
+#include "mbedtls/sha256.h"  // For SHA256 hashing
+#include "nvs_guard.h"  // For NVS access
+#include "Preferences.h"  // For Preferences
 
 // MQTT configuration - hardcoded
 #define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"
@@ -1513,11 +1516,20 @@ void publishMQTTThumbnailAlways() {
     // The user requested considering never disconnecting WiFi
 }
 
+// External references for hash-based optimization
+extern Preferences mediaPrefs;  // For storing media mappings hash
+
 // Forward declarations (must be before mqttWorkerTask which uses them)
 static void publishMQTTMediaMappingsInternalImpl();
 static bool processCanvasDecodeWork(CanvasDecodeWorkData* work);
 static bool processPngDecodeWork(PngDecodeWorkData* work);
 void publishMQTTCommandCompletion(const String& commandId, const String& commandName, bool success);
+
+// Helper functions for hash-based optimization
+static String buildMediaMappingsJSONWithoutThumbnails();
+static String computeSHA256Hash(const String& data);
+static String getStoredMediaMappingsHash();
+static void storeMediaMappingsHash(const String& hash);
 
 // Process PNG decode work on Core 1 (defined before mqttWorkerTask)
 static bool processPngDecodeWork(PngDecodeWorkData* work) {
@@ -2007,6 +2019,36 @@ static void publishMQTTMediaMappingsInternalImpl() {
         }
     }
     
+    // Stage 1: Build JSON without thumbnails and compute hash
+    Serial.println("[Core 1] Building media mappings JSON without thumbnails for hash comparison...");
+    String jsonWithoutThumbnails = buildMediaMappingsJSONWithoutThumbnails();
+    bool skipPublish = false;
+    if (jsonWithoutThumbnails.length() == 0) {
+        Serial.println("[Core 1] ERROR: Failed to build JSON without thumbnails, proceeding with full publish");
+        // Continue with full publish as fallback
+    } else {
+        String currentHash = computeSHA256Hash(jsonWithoutThumbnails);
+        String storedHash = getStoredMediaMappingsHash();
+        
+        if (currentHash.length() > 0 && storedHash.length() > 0 && currentHash == storedHash) {
+            Serial.printf("[Core 1] Media mappings hash unchanged (%s), skipping publish (no changes detected)\n", currentHash.substring(0, 8).c_str());
+            skipPublish = true;  // Skip thumbnail generation and publishing
+        } else {
+            if (storedHash.length() == 0) {
+                Serial.printf("[Core 1] No stored hash found (first run or NVS empty), proceeding with full publish (current hash: %s)\n",
+                             currentHash.length() > 0 ? currentHash.substring(0, 8).c_str() : "(error)");
+            } else {
+                Serial.printf("[Core 1] Media mappings hash changed (stored: %s, current: %s), proceeding with full publish\n",
+                             storedHash.substring(0, 8).c_str(),
+                             currentHash.length() > 0 ? currentHash.substring(0, 8).c_str() : "(error)");
+            }
+        }
+    }
+    
+    if (skipPublish) {
+        return;  // Skip thumbnail generation and publishing
+    }
+    
     Serial.printf("[Core 1] Publishing media mappings (%zu entries) to %s...\n", g_media_mappings.size(), mqttTopicMedia);
     
     // Use cJSON library to build JSON properly (handles escaping, large payloads)
@@ -2228,12 +2270,200 @@ static void publishMQTTMediaMappingsInternalImpl() {
         bool isEncrypted = isEncryptionEnabled();
         Serial.printf("[Core 1] Published %s media mappings to %s (msg_id: %d, size: %zu bytes)\n",
                       isEncrypted ? "encrypted" : "unencrypted", mqttTopicMedia, msg_id, encryptedLen);
+        
+        // Store hash after successful publish (reuse jsonWithoutThumbnails if available, otherwise rebuild)
+        String hashJson = jsonWithoutThumbnails.length() > 0 ? jsonWithoutThumbnails : buildMediaMappingsJSONWithoutThumbnails();
+        if (hashJson.length() > 0) {
+            String newHash = computeSHA256Hash(hashJson);
+            if (newHash.length() > 0) {
+                storeMediaMappingsHash(newHash);
+                Serial.printf("[Core 1] Stored media mappings hash: %s\n", newHash.substring(0, 8).c_str());
+            }
+        }
     } else {
         Serial.printf("[Core 1] Failed to publish media mappings (msg_id: %d)\n", msg_id);
     }
     
     free(encryptedBuffer);
     Serial.println("[Core 1] Media mappings publish complete");
+}
+
+// ============================================================================
+// Hash-based optimization helper functions
+// ============================================================================
+
+/**
+ * Build JSON without thumbnails (for hash comparison)
+ * Returns JSON string (without thumbnails field in mappings)
+ */
+static String buildMediaMappingsJSONWithoutThumbnails() {
+    // List all image files
+    std::vector<String> allImages = listImageFilesVector();
+    
+    // List all audio files
+    std::vector<String> allAudioFiles = listAudioFilesVector();
+    
+    // Create root JSON object
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        Serial.println("[Core 1] ERROR: Failed to create root JSON object for hash");
+        return "";
+    }
+    
+    // Create mappings array (without thumbnails)
+    cJSON* mappingsArray = cJSON_CreateArray();
+    if (!mappingsArray) {
+        Serial.println("[Core 1] ERROR: Failed to create mappings array for hash");
+        cJSON_Delete(root);
+        return "";
+    }
+    cJSON_AddItemToObject(root, "mappings", mappingsArray);
+    
+    // Add each mapping to the array (without thumbnail field)
+    for (size_t i = 0; i < g_media_mappings.size(); i++) {
+        const MediaMapping& mm = g_media_mappings[i];
+        
+        cJSON* mappingObj = cJSON_CreateObject();
+        if (!mappingObj) {
+            cJSON_Delete(root);
+            return "";
+        }
+        
+        cJSON_AddNumberToObject(mappingObj, "index", (double)i);
+        cJSON_AddStringToObject(mappingObj, "image", mm.imageName.c_str());
+        if (mm.audioFile.length() > 0) {
+            cJSON_AddStringToObject(mappingObj, "audio", mm.audioFile.c_str());
+        }
+        if (mm.foreground.length() > 0) {
+            cJSON_AddStringToObject(mappingObj, "foreground", mm.foreground.c_str());
+        }
+        if (mm.outline.length() > 0) {
+            cJSON_AddStringToObject(mappingObj, "outline", mm.outline.c_str());
+        }
+        if (mm.font.length() > 0) {
+            cJSON_AddStringToObject(mappingObj, "font", mm.font.c_str());
+        }
+        cJSON_AddNumberToObject(mappingObj, "thickness", (double)mm.thickness);
+        // Note: Intentionally NOT adding thumbnail field
+        
+        cJSON_AddItemToArray(mappingsArray, mappingObj);
+    }
+    
+    // Create allImages array
+    cJSON* allImagesArray = cJSON_CreateArray();
+    if (allImagesArray) {
+        for (size_t i = 0; i < allImages.size(); i++) {
+            cJSON* imageItem = cJSON_CreateString(allImages[i].c_str());
+            if (imageItem) {
+                cJSON_AddItemToArray(allImagesArray, imageItem);
+            }
+        }
+        cJSON_AddItemToObject(root, "allImages", allImagesArray);
+    }
+    
+    // Create allAudioFiles array
+    cJSON* allAudioFilesArray = cJSON_CreateArray();
+    if (allAudioFilesArray) {
+        for (size_t i = 0; i < allAudioFiles.size(); i++) {
+            cJSON* audioItem = cJSON_CreateString(allAudioFiles[i].c_str());
+            if (audioItem) {
+                cJSON_AddItemToArray(allAudioFilesArray, audioItem);
+            }
+        }
+        cJSON_AddItemToObject(root, "allAudioFiles", allAudioFilesArray);
+    }
+    
+    // Add fonts array
+    cJSON* fontsArray = cJSON_CreateArray();
+    if (fontsArray) {
+        for (uint8_t i = 0; i < g_rtcFontCount; i++) {
+            cJSON* fontObj = cJSON_CreateObject();
+            if (fontObj) {
+                cJSON_AddStringToObject(fontObj, "name", g_rtcFontList[i].name);
+                cJSON_AddStringToObject(fontObj, "filename", g_rtcFontList[i].filename);
+                if (g_rtcFontList[i].isBuiltin) {
+                    cJSON_AddStringToObject(fontObj, "type", "builtin");
+                }
+                cJSON_AddItemToArray(fontsArray, fontObj);
+            }
+        }
+        cJSON_AddItemToObject(root, "fonts", fontsArray);
+    }
+    
+    // Add schedule JSON
+    String scheduleJsonStr = getDetailedScheduleJSON();
+    if (scheduleJsonStr.length() > 0 && !scheduleJsonStr.startsWith("{\"error\"")) {
+        cJSON* scheduleJson = cJSON_Parse(scheduleJsonStr.c_str());
+        if (scheduleJson != nullptr) {
+            cJSON* scheduleObj = cJSON_GetObjectItem(scheduleJson, "schedule");
+            if (scheduleObj != nullptr) {
+                cJSON_DetachItemViaPointer(scheduleJson, scheduleObj);
+                cJSON_AddItemToObject(root, "schedule", scheduleObj);
+            }
+            cJSON_Delete(scheduleJson);
+        }
+    }
+    
+    // Print JSON to string
+    char* jsonString = cJSON_Print(root);
+    String result = "";
+    if (jsonString) {
+        result = String(jsonString);
+        free(jsonString);
+    }
+    
+    cJSON_Delete(root);
+    return result;
+}
+
+/**
+ * Compute SHA256 hash of a string
+ * Returns hex-encoded hash string (64 characters)
+ */
+static String computeSHA256Hash(const String& data) {
+    uint8_t hash[32];
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);  // 0 = SHA256 (not SHA224)
+    mbedtls_sha256_update(&ctx, (const unsigned char*)data.c_str(), data.length());
+    mbedtls_sha256_finish(&ctx, hash);
+    mbedtls_sha256_free(&ctx);
+    
+    // Convert to hex string
+    char hex[65];
+    for (int i = 0; i < 32; i++) {
+        sprintf(hex + i * 2, "%02x", hash[i]);
+    }
+    hex[64] = '\0';
+    
+    return String(hex);
+}
+
+/**
+ * Get stored media mappings hash from NVS
+ * Returns empty string if not found
+ */
+static String getStoredMediaMappingsHash() {
+    NVSGuard guard(mediaPrefs, "media", true);  // Read-only
+    if (!guard.isOpen()) {
+        return "";
+    }
+    
+    String hash = guard.get().getString("mappings_hash", "");
+    return hash;
+}
+
+/**
+ * Store media mappings hash to NVS
+ */
+static void storeMediaMappingsHash(const String& hash) {
+    NVSGuard guard(mediaPrefs, "media", false);  // Read-write
+    if (!guard.isOpen()) {
+        Serial.println("[Core 1] WARNING: Failed to open NVS for saving media mappings hash");
+        return;
+    }
+    
+    guard.get().putString("mappings_hash", hash);
 }
 
 // Backward compatibility wrapper (no parameters)

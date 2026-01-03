@@ -52,8 +52,7 @@ __pycache__/
 .Python
 
 # Generated web assets (not sensitive, but generated)
-# Uncomment if you don't want to commit generated files:
-# src/web_assets.h
+src/web_assets.h
 
 # ESLint and npm files (from web-ui branch, should not be in refactor branch)
 docs/eslint.config.js

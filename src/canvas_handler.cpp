@@ -300,8 +300,8 @@ bool saveCanvasAsPNG(const uint8_t* pixelData, size_t pixelCount, unsigned width
         return false;
     }
     
-    // Save PNG to SD card
-    String fatfsPath = "0:/" + filename;
+    // Save PNG to SD card (in images directory)
+    String fatfsPath = "0:/images/" + filename;
     FIL file;
     FRESULT fileRes = f_open(&file, fatfsPath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
     if (fileRes != FR_OK) {

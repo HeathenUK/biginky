@@ -38,6 +38,41 @@ async function sendTextDisplay() {
     }
 }
 
+async function sendWeatherPlace() {
+    const lat = document.getElementById('weatherLat').value.trim();
+    const lon = document.getElementById('weatherLon').value.trim();
+    const placeName = document.getElementById('weatherPlaceName').value.trim();
+    
+    if (lat.length === 0 || lon.length === 0 || placeName.length === 0) {
+        showStatus('weatherPlaceStatus', 'Please enter latitude, longitude, and place name', true);
+        return;
+    }
+    
+    // Validate lat/lon are numbers
+    const latNum = parseFloat(lat);
+    const lonNum = parseFloat(lon);
+    if (isNaN(latNum) || isNaN(lonNum)) {
+        showStatus('weatherPlaceStatus', 'Latitude and longitude must be valid numbers', true);
+        return;
+    }
+    
+    showStatus('weatherPlaceStatus', 'Sending weather place command...', false);
+    
+    const payload = {
+        command: 'weather_place',
+        lat: lat,
+        lon: lon,
+        placeName: placeName
+    };
+    
+    if (await publishMessage(payload)) {
+        showStatus('weatherPlaceStatus', 'Weather place command sent successfully!', false);
+        setBusyState(true, 'Command sent, waiting for device response...');
+    } else {
+        showStatus('weatherPlaceStatus', 'Failed to send command', true);
+    }
+}
+
 async function sendCanvasToDisplay() {
     console.log('sendCanvasToDisplay() called');
     const canvas = document.getElementById('drawCanvas');

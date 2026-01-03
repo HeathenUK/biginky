@@ -320,6 +320,20 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 <div class="section">
+<h2 onclick="toggleSection(this)">Weather for Place</h2>
+<div class="section-content" id="section-weather-place">
+<p>Display weather for a specific location. Enter latitude, longitude, and place name.</p>
+<label>Latitude:</label>
+<input type="text" id="weatherLat" placeholder="e.g., 51.5074">
+<label>Longitude:</label>
+<input type="text" id="weatherLon" placeholder="e.g., -0.1278">
+<label>Place Name:</label>
+<input type="text" id="weatherPlaceName" placeholder="e.g., London">
+<button onclick="sendWeatherPlace()" id="weatherPlaceBtn" disabled style="margin-top:15px;">Display Weather</button>
+<div id="weatherPlaceStatus"></div>
+</div>
+</div>
+<div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
 <div class="canvas-controls-wrapper" style="margin-bottom:8px;">
@@ -540,6 +554,7 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section-content" id="section-commands">
 <button onclick="sendCommand('clear')" id="clearBtn" disabled>Clear Display</button>
 <button onclick="sendCommand('next')" id="nextBtn" disabled>Next Media Item</button>
+<button onclick="sendCommand('ota')" id="otaBtn" disabled style="background:#FF9800;">Enter OTA Mode</button>
 <button onclick="triggerHappyWeather()" id="happyWeatherBtn" disabled style="background:#FF9800;">Happy Place Weather</button>
 <button onclick="triggerShuffleOn()" id="shuffleOnBtn" disabled style="background:#2196F3;">Shuffle On</button>
 <button onclick="triggerShuffleOff()" id="shuffleOffBtn" disabled style="background:#2196F3;">Shuffle Off</button>

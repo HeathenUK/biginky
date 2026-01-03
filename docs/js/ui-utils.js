@@ -27,7 +27,7 @@ function updateConnectionStatus(status, message) {
     connectBtn.disabled = (status === 'connected' || status === 'connecting' || status === 'reconnecting' || !hasPassword);
     disconnectBtn.disabled = (status === 'disconnected');
     
-    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn'];
+    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'otaBtn', 'weatherPlaceBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn'];
     buttons.forEach(id => {
         const btn = document.getElementById(id);
         if (btn) {
@@ -45,7 +45,7 @@ function updateConnectionStatus(status, message) {
 // Update UI state based on password status
 function updatePasswordStatus() {
     const hasPassword = (webUIPassword && webUIPassword.length > 0);
-    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'connectBtn', 'addMediaBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn'];
+    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'otaBtn', 'weatherPlaceBtn', 'connectBtn', 'addMediaBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn'];
     
     buttons.forEach(id => {
         const btn = document.getElementById(id);
@@ -92,7 +92,9 @@ function logCommand(action, data) {
             'go': 'Show media item command sent',
             'happy_weather': 'Happy weather scene command sent',
             'shuffle_on': 'Shuffle mode enabled command sent',
-            'shuffle_off': 'Shuffle mode disabled command sent'
+            'shuffle_off': 'Shuffle mode disabled command sent',
+            'weather_place': 'Weather for place command sent',
+            'ota': 'OTA mode command sent'
         };
         logEntry += commandMessages[command] || `Command "${command}" sent`;
     } else if (action === 'MESSAGE_RECEIVED' && data && data.topic) {

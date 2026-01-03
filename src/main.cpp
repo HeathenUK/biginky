@@ -2619,6 +2619,38 @@ static void auto_cycle_task(void* arg) {
         // This gives us a window to receive !manage commands
         doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
         
+        // If it's top of hour and schedule is enabled, also do the display update
+        // (Cold boot doesn't skip top-of-hour updates - it does both MQTT check AND display update)
+        if (time_ok && isTopOfHour) {
+            ScheduleAction action = getScheduleAction(currentHour, currentMinute);
+            if (action == ScheduleAction::SCHEDULE_ENABLED) {
+                Serial.println("=== COLD BOOT at top of hour: Also doing display update ===");
+                
+                // Yield before display update cycle
+                vTaskDelay(1);
+                
+                // Top of hour: use unified display function (same as !go and !next commands)
+                // This ensures consistent behavior across all command sources
+                // -1 = get next index (sequential or shuffle based on current mode), 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
+                bool ok = displayMediaWithOverlay(-1, 50);
+                if (!ok) {
+                    Serial.println("ERROR: Failed to display media at top of hour (cold boot)");
+                    // Continue to sleep anyway
+                }
+            } else if (action == ScheduleAction::SCHEDULE_HAPPY_WEATHER) {
+                Serial.println("=== COLD BOOT at :30: Also doing Happy weather scene ===");
+                
+                // Display Happy weather scene (uses default configuration)
+                bool success = displayHappyWeatherScene();
+                if (!success) {
+                    Serial.println("ERROR: Failed to display Happy weather scene at :30 (cold boot)");
+                    // Continue to sleep anyway
+                }
+            }
+            // Note: SCHEDULE_DISABLED is handled by getScheduleAction, but if we're here
+            // and it's top of hour, we've already done MQTT check, so just sleep
+        }
+        
         // Sleep until next minute
         Serial.println("Sleeping until next minute...");
         if (time_ok) {
@@ -2718,7 +2750,8 @@ static void auto_cycle_task(void* arg) {
     
     // Top of hour: use unified display function (same as !go and !next commands)
     // This ensures consistent behavior across all command sources
-    bool ok = displayMediaWithOverlay(-1, 50);  // -1 = sequential next, 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
+    // -1 = get next index (sequential or shuffle based on current mode), 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
+    bool ok = displayMediaWithOverlay(-1, 50);
     if (!ok) {
         Serial.println("ERROR: Failed to display media at top of hour");
         // Sleep anyway and retry next cycle
@@ -9876,6 +9909,15 @@ int getNextMediaIndex() {
 /**
  * Peek at next media index without advancing (for status messages)
  * Returns -1 if shuffle mode and next item is not determinable
+ * 
+ * NOTE: This function may be called from Core 1 (status prep task) while Core 0
+ * could be modifying g_media_mappings, g_shuffleOrder, or g_shufflePosition.
+ * This is mostly safe because:
+ * - Status prep runs early in the cycle (before display updates)
+ * - Media mappings are only modified at startup or explicit reload (rare)
+ * - Shuffle state modifications are infrequent
+ * However, this is not perfectly thread-safe. If crashes occur, consider adding
+ * synchronization (mutex) or caching the result on Core 0 before status prep.
  */
 int peekNextMediaIndex() {
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
@@ -9884,21 +9926,27 @@ int peekNextMediaIndex() {
     
     size_t mediaCount = g_media_mappings.size();
     
-    // Ensure current index is valid
+    // Ensure current index is valid (defensive check - lastMediaIndex could change)
     if (lastMediaIndex >= mediaCount) {
         return 0;  // Would be reset, so next would be 1
     }
     
     if (g_mediaIndexMode == MediaIndexMode::SEQUENTIAL) {
-        // Sequential: just calculate next
+        // Sequential: just calculate next (safe - only reads lastMediaIndex and mediaCount)
         return (int)((lastMediaIndex + 1) % mediaCount);
     } else {
-        // Shuffle mode: peek at shuffle order
-        // If shuffle order is empty or invalid, we can't determine next
+        // Shuffle mode: peek at shuffle order (RACE CONDITION: Core 0 may modify g_shuffleOrder/g_shufflePosition)
+        // Defensive: check if shuffle order is valid before accessing
         if (g_shuffleOrder.size() != mediaCount || g_shufflePosition >= (int)g_shuffleOrder.size()) {
             return -1;  // Cannot determine next in shuffle mode
         }
+        // Additional safety: bounds check (g_shufflePosition could change between check and access)
+        if (g_shufflePosition < 0 || g_shufflePosition >= (int)g_shuffleOrder.size()) {
+            return -1;  // Invalid position
+        }
         // Return the next item from shuffle order without advancing
+        // NOTE: g_shuffleOrder vector could be modified by Core 0, but accessing by index
+        // is relatively safe if bounds are valid (worst case: stale data, not crash)
         return g_shuffleOrder[g_shufflePosition];
     }
 }

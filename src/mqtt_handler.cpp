@@ -964,20 +964,10 @@ static void statusPreparationTask(void* arg) {
     
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
     
-    // WiFi information (if connected)
-    if (WiFi.status() == WL_CONNECTED) {
-        IPAddress ip = WiFi.localIP();
-        int rssi = WiFi.RSSI();
-        // Convert RSSI to percentage: 2 * (rssi + 100), clamped to 0-100
-        // Typical range: -100 dBm (0%) to -50 dBm (100%)
-        int rssiPercent = 2 * (rssi + 100);
-        if (rssiPercent < 0) rssiPercent = 0;
-        if (rssiPercent > 100) rssiPercent = 100;
-        
-        written += snprintf(jsonBuffer + written, jsonSize - written,
-                           ",\"wifi\":{\"ip\":\"%d.%d.%d.%d\",\"signal_percent\":%d}",
-                           ip[0], ip[1], ip[2], ip[3], rssiPercent);
-    }
+    // NOTE: WiFi information is NOT included in parallel status preparation (Core 1)
+    // because ESP32 WiFi API is NOT thread-safe and should only be called from Core 0.
+    // WiFi info is included in the regular publishMQTTStatus() function which runs on Core 0.
+    // Skipping WiFi info here is acceptable - it's not critical for status messages.
     
     // Media index mode (shuffle/sequential)
     if (g_media_mappings_loaded && g_media_mappings.size() > 0) {

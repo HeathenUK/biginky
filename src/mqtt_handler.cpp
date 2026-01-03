@@ -996,37 +996,28 @@ static void statusPreparationTask(void* arg) {
         return;
     }
     
-    // Encrypt the JSON
-    String plaintextJson = String(jsonBuffer);
-    String encryptedJson = encryptAndFormatMessage(plaintextJson);
-    free(jsonBuffer);
-    
-    if (encryptedJson.length() == 0) {
-        Serial.println("[Core 1] ERROR: Failed to encrypt status");
-        g_statusPrepared = false;
-        vTaskDelete(nullptr);
-        return;
-    }
-    
-    // Store encrypted result in shared buffer
-    size_t encryptedLen = encryptedJson.length();
+    // Store plaintext JSON in shared buffer (will be encrypted on Core 0 after WiFi info is added)
+    // NOTE: We don't encrypt here because WiFi info needs to be added on Core 0 (WiFi API is not thread-safe)
+    size_t jsonLen = written;
     if (g_preparedStatusBuffer != nullptr) {
         free(g_preparedStatusBuffer);
     }
-    g_preparedStatusBuffer = (char*)malloc(encryptedLen + 1);
+    g_preparedStatusBuffer = (char*)malloc(jsonLen + 1);
     if (g_preparedStatusBuffer == nullptr) {
-        Serial.println("[Core 1] ERROR: Failed to allocate memory for encrypted status JSON");
+        Serial.println("[Core 1] ERROR: Failed to allocate memory for status JSON");
+        free(jsonBuffer);
         g_statusPrepared = false;
         vTaskDelete(nullptr);
         return;
     }
     
-    strncpy(g_preparedStatusBuffer, encryptedJson.c_str(), encryptedLen);
-    g_preparedStatusBuffer[encryptedLen] = '\0';
-    g_preparedStatusSize = encryptedLen;
+    strncpy(g_preparedStatusBuffer, jsonBuffer, jsonLen);
+    g_preparedStatusBuffer[jsonLen] = '\0';
+    g_preparedStatusSize = jsonLen;
     g_statusPrepared = true;
+    free(jsonBuffer);
     
-    Serial.printf("[Core 1] Status JSON prepared (%d bytes, encrypted)\n", encryptedLen);
+    Serial.printf("[Core 1] Status JSON prepared (%d bytes, plaintext)\n", jsonLen);
     
     // Signal completion to main task
     if (g_mainTaskHandle != nullptr) {
@@ -1097,24 +1088,58 @@ bool publishPreparedStatus() {
         return false;
     }
     
-    // Publish the pre-prepared status
-    Serial.printf("Publishing pre-prepared encrypted status JSON (%d bytes) to %s...\n", 
-                  g_preparedStatusSize, mqttTopicStatus);
-    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, g_preparedStatusBuffer, 
-                                         g_preparedStatusSize, 1, 1);
-    if (msg_id > 0) {
-        bool isEncrypted = isEncryptionEnabled();
-        Serial.printf("Published %s status to %s (msg_id: %d)\n", 
-                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicStatus, msg_id);
+    // Add WiFi info to plaintext JSON (we're on Core 0 now, so WiFi API is safe)
+    String plaintextJson = String(g_preparedStatusBuffer);
+    if (WiFi.status() == WL_CONNECTED) {
+        IPAddress ip = WiFi.localIP();
+        int rssi = WiFi.RSSI();
+        // Convert RSSI to percentage: 2 * (rssi + 100), clamped to 0-100
+        int rssiPercent = 2 * (rssi + 100);
+        if (rssiPercent < 0) rssiPercent = 0;
+        if (rssiPercent > 100) rssiPercent = 100;
         
-        // Clean up
+        // Insert WiFi info before the closing brace
+        int lastBrace = plaintextJson.lastIndexOf('}');
+        if (lastBrace > 0) {
+            String wifiInfo = ",\"wifi\":{\"ip\":\"" + String(ip[0]) + "." + String(ip[1]) + "." + 
+                             String(ip[2]) + "." + String(ip[3]) + "\",\"signal_percent\":" + 
+                             String(rssiPercent) + "}";
+            plaintextJson = plaintextJson.substring(0, lastBrace) + wifiInfo + "}";
+        }
+    }
+    
+    // Encrypt the JSON (now with WiFi info included)
+    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt status with WiFi info");
         free(g_preparedStatusBuffer);
         g_preparedStatusBuffer = nullptr;
         g_preparedStatusSize = 0;
         g_statusPrepared = false;
         g_statusPrepTaskHandle = nullptr;
         g_mainTaskHandle = nullptr;
-        
+        return false;
+    }
+    
+    // Clean up plaintext buffer
+    free(g_preparedStatusBuffer);
+    g_preparedStatusBuffer = nullptr;
+    g_preparedStatusSize = 0;
+    g_statusPrepared = false;
+    g_statusPrepTaskHandle = nullptr;
+    g_mainTaskHandle = nullptr;
+    
+    // Publish the encrypted status
+    size_t encryptedLen = encryptedJson.length();
+    Serial.printf("Publishing pre-prepared encrypted status JSON (%d bytes) to %s...\n", 
+                  encryptedLen, mqttTopicStatus);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, encryptedJson.c_str(), 
+                                         encryptedLen, 1, 1);
+    
+    if (msg_id > 0) {
+        bool isEncrypted = isEncryptionEnabled();
+        Serial.printf("Published %s status to %s (msg_id: %d)\n", 
+                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicStatus, msg_id);
         return true;
     } else {
         Serial.printf("Failed to publish status to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);

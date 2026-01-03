@@ -67,6 +67,12 @@ function updateMediaMappingsTable(mappings) {
     html += '</tbody></table>';
     tableEl.innerHTML = html;
     
+    // Enable Add Media button when mappings are loaded
+    const addBtn = document.getElementById('addMediaBtn');
+    if (addBtn) {
+        addBtn.disabled = false;
+    }
+    
     console.log(`Media mappings table updated with ${mappings.length} entries`);
 }
 

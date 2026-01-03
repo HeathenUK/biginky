@@ -328,6 +328,20 @@ async function handleStatusMessage(message) {
                         showStatus('mediaMappingsStatus', 'Failed to update media mappings: ' + (status.error || 'unknown error'), true);
                     }
                 }
+                
+                // Handle schedule_set command completion - firmware will republish media mappings (which includes schedule)
+                if (status.command === 'schedule_set') {
+                    if (status.success) {
+                        if (typeof showStatus === 'function') {
+                            showStatus('scheduleStatus', 'Schedule updated successfully. Waiting for updated schedule...', false);
+                        }
+                        // Firmware will automatically republish media mappings after update, which will trigger handleMediaMessage and updateScheduleTable
+                    } else {
+                        if (typeof showStatus === 'function') {
+                            showStatus('scheduleStatus', 'Failed to update schedule: ' + (status.error || 'unknown error'), true);
+                        }
+                    }
+                }
             } else if (pendingCommandId) {
                 // console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.id);
             }
@@ -816,6 +830,16 @@ async function handleMediaMessage(message) {
         if (mediaData.fonts && Array.isArray(mediaData.fonts)) {
             allFonts = mediaData.fonts;
             console.log(`Loaded ${allFonts.length} fonts for media mapping editor`);
+        }
+        
+        // Extract and store schedule (if present)
+        if (mediaData.schedule && Array.isArray(mediaData.schedule)) {
+            if (typeof updateScheduleTable === 'function') {
+                updateScheduleTable(mediaData.schedule);
+            }
+            console.log(`Loaded schedule with ${mediaData.schedule.length} hours`);
+        } else {
+            console.log('Media mappings payload does not contain schedule array');
         }
         
         // Display media mappings table

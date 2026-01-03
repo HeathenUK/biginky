@@ -605,6 +605,35 @@ async function sendCommand(cmd) {
     }
 }
 
+async function saveScheduleCommand(schedule) {
+    // Save schedule via schedule_set command
+    const payload = {
+        command: 'schedule_set',
+        schedule: schedule
+    };
+    
+    const statusEl = document.getElementById('scheduleStatus');
+    if (statusEl) {
+        statusEl.textContent = 'Saving schedule...';
+        statusEl.className = 'status';
+    }
+    
+    if (await publishMessage(payload)) {
+        if (statusEl) {
+            statusEl.textContent = 'Schedule update sent. Waiting for confirmation...';
+            statusEl.className = 'status';
+        }
+        if (typeof setBusyState === 'function') {
+            setBusyState(true, 'Updating schedule... Please wait for device to respond.');
+        }
+    } else {
+        if (statusEl) {
+            statusEl.textContent = 'Failed to send schedule update';
+            statusEl.className = 'error status';
+        }
+    }
+}
+
 async function triggerHappyWeather() {
     const payload = { command: 'happy_weather' };
     

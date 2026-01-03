@@ -149,6 +149,7 @@ table th,table td{padding:6px;font-size:12px;}
 <script src="js/paho-loader.js"></script>
 <script src="js/ui-utils.js"></script>
 <script src="js/media.js"></script>
+<script src="js/schedule.js"></script>
 <script src="js/mqtt.js"></script>
 <script src="js/color-picker.js"></script>
 <script src="js/font-loader.js"></script>
@@ -227,6 +228,22 @@ table th,table td{padding:6px;font-size:12px;}
 <div id="mediaMappingsTable">
 <!-- Table will be populated here -->
 </div>
+    </div>
+</div>
+</div>
+<div class="section">
+<h2 onclick="toggleSection(this)">Scene Schedule</h2>
+<div class="section-content" id="section-schedule">
+<p>Configure which scenes display at specific times within each hour. Each hour can have multiple time slots with different scenes.</p>
+<div style="margin:10px 0;">
+<button onclick="saveScheduleToDevice()" id="saveScheduleBtn" disabled>Save Schedule</button>
+</div>
+<div id="scheduleStatus" style="margin:10px 0;"></div>
+<div class="table-wrapper">
+<table id="scheduleTable" style="width:100%;border-collapse:collapse;margin:10px 0;">
+<thead><tr style="background:#333;"><th style="padding:8px;text-align:left;">Hour</th><th style="padding:8px;text-align:left;">Enabled</th><th style="padding:8px;text-align:left;">Time Slots</th><th style="padding:8px;text-align:center;">Actions</th></tr></thead>
+<tbody id="scheduleRows"></tbody>
+</table>
 </div>
 </div>
 </div>

@@ -54,6 +54,9 @@ __pycache__/
 # Uncomment if you don't want to commit generated files:
 # src/web_assets.h
 
+# src/ directory should not exist on web-ui branch (ignore if present)
+src/
+
 # ESLint cache and Node.js dependencies (development tools)
 .eslintcache
 node_modules/

@@ -1113,19 +1113,16 @@ function startDraw(e) {
         return; // Don't create new element
     }
     
-    // If clicking elsewhere and there are pending elements, finalize them first (for shape tools)
-    // Also finalize text input mode if active
-    if (isTextInputMode && currentTextElement) {
-        finalizePendingTextElement();
-    }
-    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper' && tool !== 'text') {
-        finalizePendingElements();
-    }
-    
     if (tool === 'text') {
-        // Finalize any existing pending text element
+        // Finalize any existing pending elements (including text) before starting new text
+        if (pendingElements.length > 0) {
+            finalizePendingElements();
+        }
+        
+        // Exit any existing text input mode
         if (isTextInputMode && currentTextElement) {
-            finalizePendingTextElement();
+            isTextInputMode = false;
+            currentTextElement = null;
         }
         
         // Store coordinates for text placement
@@ -1161,31 +1158,35 @@ function startDraw(e) {
             textInputKeyHandler = (e) => {
                 if (!isTextInputMode || !currentTextElement) return;
                 
-                // Don't interfere with shortcuts when modifiers are pressed
+                // Ignore all keypresses when modifiers are pressed (allow shortcuts to work)
                 if (e.ctrlKey || e.metaKey || e.altKey) {
-                    // Allow Ctrl+Z, Ctrl+Y, etc. to work
-                    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'y')) {
-                        return; // Let undo/redo handlers process this
-                    }
+                    return; // Let browser shortcuts and other handlers process this
                 }
                 
-                e.preventDefault();
-                e.stopPropagation();
-                
+                // Only handle specific keys or single characters
                 if (e.key === 'Enter') {
                     // Finish text input
+                    e.preventDefault();
+                    e.stopPropagation();
                     finalizePendingTextElement();
                 } else if (e.key === 'Escape') {
                     // Cancel text input
+                    e.preventDefault();
+                    e.stopPropagation();
                     cancelPendingTextElement();
                 } else if (e.key === 'Backspace') {
                     // Delete last character
+                    e.preventDefault();
+                    e.stopPropagation();
                     if (currentTextElement.text.length > 0) {
                         currentTextElement.text = currentTextElement.text.slice(0, -1);
                         redrawCanvas();
                     }
                 } else if (e.key.length === 1) {
-                    // Regular character - add to text
+                    // Regular character (including shifted characters like 'R' from Shift+R)
+                    // Note: ctrl/meta/alt modifiers already checked above and would have returned
+                    e.preventDefault();
+                    e.stopPropagation();
                     currentTextElement.text += e.key;
                     redrawCanvas();
                 }
@@ -1833,7 +1834,10 @@ function finalizePendingTextElement() {
         return;
     }
     
-    // Text is already in pendingElements and drawn, just exit input mode
+    // Finalize all pending elements (including the current text element) to canvas
+    finalizePendingElements();
+    
+    // Exit input mode
     isTextInputMode = false;
     currentTextElement = null;
     pendingTextCoords = null;

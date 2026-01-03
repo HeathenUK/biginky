@@ -482,7 +482,7 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <div id="imageProcessingPanel" class="image-processing-panel" style="display:none;margin-bottom:15px;padding:15px;background:#2a2a2a;border-radius:8px;border:1px solid #444;">
 <h3 style="color:#4CAF50;margin-top:0;margin-bottom:15px;font-size:16px;">Image Processing Options</h3>
-<div class="flex-row image-processing-controls" style="align-items:flex-end;overflow-x:auto;padding-right:8px;">
+<div class="flex-row image-processing-controls" style="align-items:flex-end;">
 <div class="flex-item image-processing-slider" style="min-width:150px;">
 <label>Brightness:</label>
 <input type="range" id="imageBrightness" min="-50" max="50" value="10" class="processing-slider" style="width:100%;">
@@ -498,7 +498,7 @@ table th,table td{padding:6px;font-size:12px;}
 <input type="range" id="imageSaturation" min="-50" max="50" value="20" class="processing-slider" style="width:100%;">
 <span id="imageSaturationDisplay" class="processing-value">+20%</span>
 </div>
-<div class="flex-item image-processing-checkbox" style="min-width:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;">
+<div class="flex-item image-processing-checkbox" style="min-width:150px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:8px;">
 <label class="checkbox-label" style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px;user-select:none;">
 <input type="checkbox" id="imagePosterize" checked class="processing-checkbox" style="width:20px;height:20px;margin:0;cursor:pointer;">
 <span>Posterize</span>
@@ -508,7 +508,7 @@ table th,table td{padding:6px;font-size:12px;}
 <span>Dither</span>
 </label>
 </div>
-<div class="flex-item image-processing-actions" style="flex-shrink:0;display:flex;gap:8px;margin-left:auto;">
+<div class="flex-item image-processing-actions" style="flex-shrink:0;display:flex;gap:8px;">
 <button onclick="disableAllProcessing()" id="disableAllProcessingBtn" style="min-height:48px;background:#666;">Disable All</button>
 <button onclick="applyImageProcessing()" id="applyProcessingBtn" style="min-height:48px;">Apply Processing</button>
 </div>

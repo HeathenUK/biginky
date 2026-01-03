@@ -320,10 +320,10 @@ static bool handleManageUnified(const CommandContext& ctx) {
 
 static bool handleOtaUnified(const CommandContext& ctx) {
     // For WEB_UI source, skip the phone number check (it's already authenticated via password)
-    // We use handleOtaCommand with a properly formatted message containing the hardcoded number
+    // We use handleOtaCommand with a properly formatted JSON message containing the hardcoded number
     // This ensures all the OTA startup logic runs correctly
     if (ctx.source == CommandSource::WEB_UI) {
-        String dummyMessage = "From: +447816969344\n!ota";
+        String dummyMessage = "{\"from\":\"+447816969344\"}";
         return handleOtaCommand(dummyMessage);
     } else {
         // For MQTT/SMS source, use the original handler (with phone number check)

@@ -4655,62 +4655,152 @@ static String listAllFiles(const String& dirPath = "") {
     String json = "[";
     bool first = true;
     
-    // Build full directory path
-    String fullPath = "0:/";
-    if (dirPath.length() > 0) {
-        fullPath += dirPath;
-        // Ensure path ends with /
-        if (!fullPath.endsWith("/")) {
-            fullPath += "/";
+    // Check if this is a LittleFS path
+    bool isLittleFS = false;
+    String normalizedPath = dirPath;
+    normalizedPath.trim();
+    
+    if (normalizedPath.startsWith("littlefs") || normalizedPath.startsWith("/littlefs")) {
+        isLittleFS = true;
+        // Remove leading "littlefs" or "/littlefs"
+        if (normalizedPath.startsWith("/littlefs/")) {
+            normalizedPath = normalizedPath.substring(10); // Remove "/littlefs/"
+        } else if (normalizedPath.startsWith("/littlefs")) {
+            normalizedPath = normalizedPath.substring(9); // Remove "/littlefs"
+        } else if (normalizedPath.startsWith("littlefs/")) {
+            normalizedPath = normalizedPath.substring(9); // Remove "littlefs/"
+        } else if (normalizedPath == "littlefs") {
+            normalizedPath = "";
         }
     }
     
-    FF_DIR dir;
-    FILINFO fno;
-    FRESULT res = f_opendir(&dir, fullPath.c_str());
-    
-    if (res == FR_OK) {
-        while (true) {
-            res = f_readdir(&dir, &fno);
-            if (res != FR_OK || fno.fname[0] == 0) break;
-            
-            // Skip . and .. entries
-            if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
-                continue;
-            }
-            
-            if (!first) json += ",";
-            
-            // Build relative path for this entry
-            String entryPath = dirPath;
-            if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
-                entryPath += "/";
-            }
-            entryPath += String(fno.fname);
-            
-            json += "{\"name\":\"";
-            // Escape JSON string
-            String name = String(fno.fname);
-            name.replace("\\", "\\\\");
-            name.replace("\"", "\\\"");
-            json += name;
-            json += "\",\"path\":\"";
-            String path = entryPath;
-            path.replace("\\", "\\\\");
-            path.replace("\"", "\\\"");
-            json += path;
-            json += "\",\"isDir\":";
-            json += (fno.fattrib & AM_DIR) ? "true" : "false";
-            
-            if (!(fno.fattrib & AM_DIR)) {
-                // File: include size and modified time
-                json += ",\"size\":";
-                json += String(fno.fsize);
+    if (isLittleFS) {
+        // Use POSIX file operations for LittleFS
+        String fullPath = "/littlefs";
+        if (normalizedPath.length() > 0) {
+            fullPath += "/";
+            fullPath += normalizedPath;
+        }
+        
+        DIR* dir = opendir(fullPath.c_str());
+        if (dir != nullptr) {
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != nullptr) {
+                // Skip . and .. entries
+                if (entry->d_name[0] == '.' && (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) {
+                    continue;
+                }
                 
-                // Extract date/time from FatFs format
-                // fdate: bits 0-4 = day (1-31), bits 5-8 = month (1-12), bits 9-15 = year from 1980
-                // ftime: bits 0-4 = second/2 (0-29), bits 5-10 = minute (0-59), bits 11-15 = hour (0-23)
-                uint16_t year = 1980 + ((fno.fdate >> 9) & 0x7F);
+                if (!first) json += ",";
+                first = false;
+                
+                // Build relative path for this entry
+                String entryPath = "littlefs";
+                if (normalizedPath.length() > 0) {
+                    entryPath += "/";
+                    entryPath += normalizedPath;
+                }
+                if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
+                    entryPath += "/";
+                }
+                entryPath += String(entry->d_name);
+                
+                // Check if it's a directory
+                String fullEntryPath = fullPath;
+                if (!fullEntryPath.endsWith("/")) {
+                    fullEntryPath += "/";
+                }
+                fullEntryPath += String(entry->d_name);
+                
+                struct stat st;
+                bool isDir = false;
+                if (stat(fullEntryPath.c_str(), &st) == 0) {
+                    isDir = S_ISDIR(st.st_mode);
+                }
+                
+                json += "{\"name\":\"";
+                // Escape JSON string
+                String name = String(entry->d_name);
+                name.replace("\\", "\\\\");
+                name.replace("\"", "\\\"");
+                json += name;
+                json += "\",\"path\":\"";
+                String path = entryPath;
+                path.replace("\\", "\\\\");
+                path.replace("\"", "\\\"");
+                json += path;
+                json += "\",\"isDir\":";
+                json += isDir ? "true" : "false";
+                
+                if (!isDir) {
+                    // File: include size
+                    json += ",\"size\":";
+                    json += String(st.st_size);
+                }
+                
+                json += "}";
+            }
+            closedir(dir);
+        }
+    } else {
+        // Use FatFS for SD card
+        // Build full directory path
+        String fullPath = "0:/";
+        if (normalizedPath.length() > 0) {
+            fullPath += normalizedPath;
+            // Ensure path ends with /
+            if (!fullPath.endsWith("/")) {
+                fullPath += "/";
+            }
+        }
+        
+        FF_DIR dir;
+        FILINFO fno;
+        FRESULT res = f_opendir(&dir, fullPath.c_str());
+        
+        if (res == FR_OK) {
+            while (true) {
+                res = f_readdir(&dir, &fno);
+                if (res != FR_OK || fno.fname[0] == 0) break;
+                
+                // Skip . and .. entries
+                if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
+                    continue;
+                }
+                
+                if (!first) json += ",";
+                first = false;
+                
+                // Build relative path for this entry
+                String entryPath = normalizedPath;
+                if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
+                    entryPath += "/";
+                }
+                entryPath += String(fno.fname);
+                
+                json += "{\"name\":\"";
+                // Escape JSON string
+                String name = String(fno.fname);
+                name.replace("\\", "\\\\");
+                name.replace("\"", "\\\"");
+                json += name;
+                json += "\",\"path\":\"";
+                String path = entryPath;
+                path.replace("\\", "\\\\");
+                path.replace("\"", "\\\"");
+                json += path;
+                json += "\",\"isDir\":";
+                json += (fno.fattrib & AM_DIR) ? "true" : "false";
+                
+                if (!(fno.fattrib & AM_DIR)) {
+                    // File: include size and modified time
+                    json += ",\"size\":";
+                    json += String(fno.fsize);
+                    
+                    // Extract date/time from FatFs format
+                    // fdate: bits 0-4 = day (1-31), bits 5-8 = month (1-12), bits 9-15 = year from 1980
+                    // ftime: bits 0-4 = second/2 (0-29), bits 5-10 = minute (0-59), bits 11-15 = hour (0-23)
+                    uint16_t year = 1980 + ((fno.fdate >> 9) & 0x7F);
                 uint8_t month = (fno.fdate >> 5) & 0x0F;
                 uint8_t day = fno.fdate & 0x1F;
                 uint8_t hour = (fno.ftime >> 11) & 0x1F;
@@ -4743,9 +4833,9 @@ static String listAllFiles(const String& dirPath = "") {
             }
             
             json += "}";
-            first = false;
+            }
+            f_closedir(&dir);
         }
-        f_closedir(&dir);
     }
     
     json += "]";
@@ -5773,6 +5863,7 @@ bool handleManageCommand() {
     
     // GET /api/files - List all files (optionally in a subdirectory)
     // Query parameter: ?dir=path/to/directory
+    // Special case: if dirPath is empty, return root entries for both SD card and LittleFS
     server.on("/api/files", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
         String dirPath = "";
@@ -5791,6 +5882,23 @@ bool handleManageCommand() {
                 dirPath = dirPath.substring(0, dirPath.length() - 1);
             }
         }
+        
+        // If dirPath is empty, show root entries (both SD card and LittleFS)
+        if (dirPath.length() == 0) {
+            String json = "[";
+            bool first = true;
+            
+            // Add SD card root entry
+            json += "{\"name\":\"SD Card\",\"path\":\"\",\"isDir\":true,\"size\":0,\"modified\":0}";
+            first = false;
+            
+            // Add LittleFS root entry
+            json += ",{\"name\":\"LittleFS\",\"path\":\"littlefs\",\"isDir\":true,\"size\":0,\"modified\":0}";
+            
+            json += "]";
+            return response->send(200, "application/json", json.c_str());
+        }
+        
         String json = listAllFiles(dirPath);
         return response->send(200, "application/json", json.c_str());
     });
@@ -5807,38 +5915,106 @@ bool handleManageCommand() {
         filename.replace("%20", " ");
         filename.replace("%2F", "/");
         
-        String filepath = "0:/";
-        filepath += filename;
+        // Check if this is a LittleFS path
+        bool isLittleFS = false;
+        String filepath;
+        String displayName = filename;
         
-        FIL file;
-        FRESULT res = f_open(&file, filepath.c_str(), FA_READ);
-        if (res == FR_OK) {
-            FSIZE_t fileSize = f_size(&file);
-            
-            // Add CORS headers before creating stream response
-            addCorsHeaders(response);
-            
-            // Create stream response for file download
-            // Constructor automatically sets Content-Disposition header for download
-            PsychicStreamResponse streamResp(response, "application/octet-stream", filename);
-            
-            if (streamResp.beginSend() == ESP_OK) {
-                // Stream file content
-                char buffer[512];
-                UINT bytesRead;
-                while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
-                    streamResp.write((uint8_t*)buffer, bytesRead);
-                    if (bytesRead < sizeof(buffer)) break; // EOF
-                }
-                streamResp.endSend();
+        if (filename.startsWith("littlefs") || filename.startsWith("/littlefs")) {
+            isLittleFS = true;
+            // Remove leading "littlefs" or "/littlefs"
+            String normalizedPath = filename;
+            if (normalizedPath.startsWith("/littlefs/")) {
+                normalizedPath = normalizedPath.substring(10); // Remove "/littlefs/"
+            } else if (normalizedPath.startsWith("/littlefs")) {
+                normalizedPath = normalizedPath.substring(9); // Remove "/littlefs"
+            } else if (normalizedPath.startsWith("littlefs/")) {
+                normalizedPath = normalizedPath.substring(9); // Remove "littlefs/"
+            } else if (normalizedPath == "littlefs") {
+                normalizedPath = "";
             }
-            f_close(&file);
-            Serial.printf("File downloaded: %s (%lu bytes)\n", filename.c_str(), (unsigned long)fileSize);
-            return ESP_OK;
+            filepath = "/littlefs";
+            if (normalizedPath.length() > 0) {
+                filepath += "/";
+                filepath += normalizedPath;
+            }
+            // Extract just the filename for display
+            int lastSlash = normalizedPath.lastIndexOf('/');
+            if (lastSlash >= 0) {
+                displayName = normalizedPath.substring(lastSlash + 1);
+            } else {
+                displayName = normalizedPath;
+            }
         } else {
-            addCorsHeaders(response);
-            Serial.printf("File not found: %s (error %d)\n", filepath.c_str(), res);
-            return response->send(404, "text/plain", "File not found");
+            // SD card (FatFS)
+            filepath = "0:/";
+            filepath += filename;
+        }
+        
+        if (isLittleFS) {
+            // Use POSIX file operations for LittleFS
+            FILE* file = fopen(filepath.c_str(), "rb");
+            if (file != nullptr) {
+                // Get file size
+                fseek(file, 0, SEEK_END);
+                long fileSize = ftell(file);
+                fseek(file, 0, SEEK_SET);
+                
+                // Add CORS headers before creating stream response
+                addCorsHeaders(response);
+                
+                // Create stream response for file download
+                PsychicStreamResponse streamResp(response, "application/octet-stream", displayName);
+                
+                if (streamResp.beginSend() == ESP_OK) {
+                    // Stream file content
+                    char buffer[512];
+                    size_t bytesRead;
+                    while ((bytesRead = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                        streamResp.write((uint8_t*)buffer, bytesRead);
+                    }
+                    streamResp.endSend();
+                }
+                fclose(file);
+                Serial.printf("File downloaded from LittleFS: %s (%ld bytes)\n", filepath.c_str(), fileSize);
+                return ESP_OK;
+            } else {
+                addCorsHeaders(response);
+                Serial.printf("File not found in LittleFS: %s\n", filepath.c_str());
+                return response->send(404, "text/plain", "File not found");
+            }
+        } else {
+            // Use FatFS for SD card
+            FIL file;
+            FRESULT res = f_open(&file, filepath.c_str(), FA_READ);
+            if (res == FR_OK) {
+                FSIZE_t fileSize = f_size(&file);
+                
+                // Add CORS headers before creating stream response
+                addCorsHeaders(response);
+                
+                // Create stream response for file download
+                // Constructor automatically sets Content-Disposition header for download
+                PsychicStreamResponse streamResp(response, "application/octet-stream", filename);
+                
+                if (streamResp.beginSend() == ESP_OK) {
+                    // Stream file content
+                    char buffer[512];
+                    UINT bytesRead;
+                    while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
+                        streamResp.write((uint8_t*)buffer, bytesRead);
+                        if (bytesRead < sizeof(buffer)) break; // EOF
+                    }
+                    streamResp.endSend();
+                }
+                f_close(&file);
+                Serial.printf("File downloaded from SD: %s (%lu bytes)\n", filename.c_str(), (unsigned long)fileSize);
+                return ESP_OK;
+            } else {
+                addCorsHeaders(response);
+                Serial.printf("File not found on SD: %s (error %d)\n", filepath.c_str(), res);
+                return response->send(404, "text/plain", "File not found");
+            }
         }
     });
     
@@ -6026,53 +6202,127 @@ bool handleManageCommand() {
             
             Serial.printf("Decoded %zu bytes from base64\n", decodedLen);
             
-            // Build filepath with upload directory
-            String filepath = "0:/";
+            // Check if upload directory indicates LittleFS
+            bool isLittleFS = false;
+            String normalizedUploadDir = "";
             if (data->uploadDir && data->uploadDirLen > 0) {
-                filepath += String(data->uploadDir);
+                normalizedUploadDir = String(data->uploadDir);
+                if (normalizedUploadDir.startsWith("littlefs") || normalizedUploadDir.startsWith("/littlefs")) {
+                    isLittleFS = true;
+                    // Remove leading "littlefs" or "/littlefs"
+                    if (normalizedUploadDir.startsWith("/littlefs/")) {
+                        normalizedUploadDir = normalizedUploadDir.substring(10); // Remove "/littlefs/"
+                    } else if (normalizedUploadDir.startsWith("/littlefs")) {
+                        normalizedUploadDir = normalizedUploadDir.substring(9); // Remove "/littlefs"
+                    } else if (normalizedUploadDir.startsWith("littlefs/")) {
+                        normalizedUploadDir = normalizedUploadDir.substring(9); // Remove "littlefs/"
+                    } else if (normalizedUploadDir == "littlefs") {
+                        normalizedUploadDir = "";
+                    }
+                }
             }
-            // If filename already contains a path, use it as-is; otherwise append to uploadDir
-            if (filename.indexOf('/') >= 0) {
-                filepath += filename;
+            
+            // Build filepath with upload directory
+            String filepath;
+            if (isLittleFS) {
+                filepath = "/littlefs";
+                if (normalizedUploadDir.length() > 0) {
+                    filepath += "/";
+                    filepath += normalizedUploadDir;
+                }
+                // If filename already contains a path, use it as-is; otherwise append to uploadDir
+                if (filename.indexOf('/') >= 0) {
+                    filepath += "/";
+                    filepath += filename;
+                } else {
+                    filepath += "/";
+                    filepath += filename;
+                }
             } else {
-                filepath += filename;
+                // SD card (FatFS)
+                filepath = "0:/";
+                if (data->uploadDir && data->uploadDirLen > 0) {
+                    filepath += String(data->uploadDir);
+                }
+                // If filename already contains a path, use it as-is; otherwise append to uploadDir
+                if (filename.indexOf('/') >= 0) {
+                    filepath += filename;
+                } else {
+                    filepath += filename;
+                }
             }
             
             // Free uploadDir buffer
             if (data->uploadDir) {
                 free(data->uploadDir);
             }
-            FIL file;
-            FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
             
-            if (res != FR_OK) {
+            size_t bytesWritten = 0;  // Declare outside if/else for use after
+            
+            if (isLittleFS) {
+                // Use POSIX file operations for LittleFS
+                FILE* file = fopen(filepath.c_str(), "wb");
+                if (file == nullptr) {
+                    free(decodedBuffer);
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create file in LittleFS\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                // Write decoded data to file
+                bytesWritten = fwrite(decodedBuffer, 1, decodedLen, file);
+                fclose(file);
                 free(decodedBuffer);
-                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create file\"}";
-                *(data->success) = false;
-                xSemaphoreGive(data->sem);
-                vTaskDelete(NULL);
-                return;
+                
+                if (bytesWritten != decodedLen) {
+                    Serial.printf("ERROR: File write failed in LittleFS: wrote=%zu/%zu\n", 
+                                 bytesWritten, decodedLen);
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"File write failed\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                Serial.printf("File upload complete to LittleFS: %s (%zu bytes written)\n", 
+                             filepath.c_str(), bytesWritten);
+            } else {
+                // Use FatFS for SD card
+                FIL file;
+                FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+                
+                if (res != FR_OK) {
+                    free(decodedBuffer);
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create file\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                // Write decoded data to file
+                UINT bytesWrittenUINT = 0;
+                FRESULT writeRes = f_write(&file, decodedBuffer, decodedLen, &bytesWrittenUINT);
+                bytesWritten = bytesWrittenUINT;  // Convert to size_t
+                
+                f_close(&file);
+                free(decodedBuffer);
+                
+                if (writeRes != FR_OK || bytesWritten != decodedLen) {
+                    Serial.printf("ERROR: File write failed: res=%d, wrote=%zu/%zu\n", 
+                                 writeRes, bytesWritten, decodedLen);
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"File write failed\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                Serial.printf("File upload complete to SD: %s (%zu bytes written)\n", 
+                             filename.c_str(), bytesWritten);
             }
-            
-            // Write decoded data to file
-            UINT bytesWritten = 0;
-            FRESULT writeRes = f_write(&file, decodedBuffer, decodedLen, &bytesWritten);
-            
-            f_close(&file);
-            free(decodedBuffer);
-            
-            if (writeRes != FR_OK || bytesWritten != decodedLen) {
-                Serial.printf("ERROR: File write failed: res=%d, wrote=%u/%zu\n", 
-                             writeRes, bytesWritten, decodedLen);
-                *(data->resultJson) = "{\"success\":false,\"error\":\"File write failed\"}";
-                *(data->success) = false;
-                xSemaphoreGive(data->sem);
-                vTaskDelete(NULL);
-                return;
-            }
-            
-            Serial.printf("File upload complete: %s (%u bytes written)\n", 
-                         filename.c_str(), bytesWritten);
             
             *(data->resultJson) = "{\"success\":true,\"filename\":\"";
             *(data->resultJson) += filename;

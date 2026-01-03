@@ -26,6 +26,9 @@ let pendingImageData = null; // Stores {img, drawX, drawY, drawWidth, drawHeight
 
 // Text input modal state
 let pendingTextCoords = null; // Stores {x, y} coordinates where text should be placed
+let isTextInputMode = false; // True when directly typing text on canvas
+let currentTextElement = null; // The text element being typed
+let textInputKeyHandler = null; // Keyboard event handler for direct text input
 
 const colorMap = {
     // Actual e-ink display palette colors
@@ -101,6 +104,11 @@ function getRoundedRectRadius() {
 }
 
 function setTool(tool) {
+    // Exit text input mode if switching away from text tool
+    if (isTextInputMode && currentTextElement && tool !== 'text') {
+        finalizePendingTextElement();
+    }
+    
     const drawToolEl = document.getElementById('drawTool');
     if (drawToolEl) {
         drawToolEl.value = tool;
@@ -117,6 +125,10 @@ function setTool(tool) {
             canvas.style.cursor = 'crosshair';
         } else {
             canvas.style.cursor = 'crosshair'; // Will change to 'move' when hovering over elements
+        }
+        // Remove tabindex when not in text mode
+        if (tool !== 'text') {
+            canvas.removeAttribute('tabindex');
         }
     }
     // Trigger change event to update UI
@@ -1102,20 +1114,86 @@ function startDraw(e) {
     }
     
     // If clicking elsewhere and there are pending elements, finalize them first (for shape tools)
-    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper') {
+    // Also finalize text input mode if active
+    if (isTextInputMode && currentTextElement) {
+        finalizePendingTextElement();
+    }
+    if (pendingElements.length > 0 && tool !== 'brush' && tool !== 'eraser' && tool !== 'fill' && tool !== 'eyedropper' && tool !== 'text') {
         finalizePendingElements();
     }
     
     if (tool === 'text') {
+        // Finalize any existing pending text element
+        if (isTextInputMode && currentTextElement) {
+            finalizePendingTextElement();
+        }
+        
         // Store coordinates for text placement
         pendingTextCoords = { x: coords.x, y: coords.y };
         
-        // Check if we have text already in the inline input (desktop workflow)
-        const inlineTextInput = document.getElementById('canvasTextInput');
-        const text = inlineTextInput ? inlineTextInput.value.trim() : '';
+        // Get text settings
+        const fontSize = document.getElementById('textFontSize') ? document.getElementById('textFontSize').value : '96';
+        const fontFamily = document.getElementById('textFontFamily') ? document.getElementById('textFontFamily').value : 'Arial';
+        const textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
         
-        // Show modal for text input (better UX on mobile, also works on desktop)
-        showTextInputModal(text);
+        // Create pending text element immediately (empty text)
+        saveCanvasState();
+        currentTextElement = {
+            type: 'text',
+            text: '',
+            x: coords.x,
+            y: coords.y,
+            fontSize: fontSize,
+            fontFamily: fontFamily,
+            textAlign: textAlign
+        };
+        pendingElements.push(currentTextElement);
+        isTextInputMode = true;
+        
+        // Make canvas focusable and focus it to capture keyboard input
+        if (canvas) {
+            canvas.setAttribute('tabindex', '0');
+            canvas.focus();
+        }
+        
+        // Set up global keyboard handler for text input
+        if (!textInputKeyHandler) {
+            textInputKeyHandler = (e) => {
+                if (!isTextInputMode || !currentTextElement) return;
+                
+                // Don't interfere with shortcuts when modifiers are pressed
+                if (e.ctrlKey || e.metaKey || e.altKey) {
+                    // Allow Ctrl+Z, Ctrl+Y, etc. to work
+                    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'y')) {
+                        return; // Let undo/redo handlers process this
+                    }
+                }
+                
+                e.preventDefault();
+                e.stopPropagation();
+                
+                if (e.key === 'Enter') {
+                    // Finish text input
+                    finalizePendingTextElement();
+                } else if (e.key === 'Escape') {
+                    // Cancel text input
+                    cancelPendingTextElement();
+                } else if (e.key === 'Backspace') {
+                    // Delete last character
+                    if (currentTextElement.text.length > 0) {
+                        currentTextElement.text = currentTextElement.text.slice(0, -1);
+                        redrawCanvas();
+                    }
+                } else if (e.key.length === 1) {
+                    // Regular character - add to text
+                    currentTextElement.text += e.key;
+                    redrawCanvas();
+                }
+            };
+            document.addEventListener('keydown', textInputKeyHandler);
+        }
+        
+        redrawCanvas();
         return;
     }
     
@@ -1357,6 +1435,14 @@ function clearCanvas() {
     draggingElements = [];
     dragOffsets.clear();
     pendingImageData = null;
+    
+    // Exit text input mode if active
+    isTextInputMode = false;
+    currentTextElement = null;
+    pendingTextCoords = null;
+    if (canvas) {
+        canvas.removeAttribute('tabindex');
+    }
     
     // Hide processing panel
     const processingPanel = document.getElementById('imageProcessingPanel');
@@ -1737,7 +1823,68 @@ function cancelTextInput() {
     pendingTextCoords = null;
 }
 
-// Confirm text input and place on canvas
+// Finalize the currently being-typed text element
+function finalizePendingTextElement() {
+    if (!isTextInputMode || !currentTextElement) return;
+    
+    // Remove empty text elements
+    if (currentTextElement.text.trim() === '') {
+        cancelPendingTextElement();
+        return;
+    }
+    
+    // Text is already in pendingElements and drawn, just exit input mode
+    isTextInputMode = false;
+    currentTextElement = null;
+    pendingTextCoords = null;
+    
+    // Remove tabindex and blur canvas
+    if (canvas) {
+        canvas.removeAttribute('tabindex');
+        canvas.blur();
+    }
+}
+
+// Cancel the currently being-typed text element
+async function cancelPendingTextElement() {
+    if (!isTextInputMode || !currentTextElement) return;
+    
+    // Remove the text element from pendingElements
+    const index = pendingElements.indexOf(currentTextElement);
+    if (index >= 0) {
+        pendingElements.splice(index, 1);
+    }
+    
+    isTextInputMode = false;
+    currentTextElement = null;
+    pendingTextCoords = null;
+    
+    // Remove tabindex and blur canvas
+    if (canvas) {
+        canvas.removeAttribute('tabindex');
+        canvas.blur();
+    }
+    
+    // Restore canvas state (undo the saveCanvasState from startDraw)
+    // We manually restore since we don't want to add to redo history
+    if (historyIndex >= 0) {
+        const state = canvasHistory[historyIndex];
+        const imageData = await decompressImageData(state);
+        ctx.putImageData(imageData, 0, 0);
+        lastUncompressedState = imageData;
+        historyIndex--;
+        canvasHistory.pop(); // Remove the state we just restored from
+        
+        const undoBtn = document.getElementById('undoBtn');
+        if (undoBtn) {
+            undoBtn.disabled = historyIndex < 0;
+        }
+    }
+    
+    redrawCanvas();
+}
+
+// Confirm text input and place on canvas (for modal - kept for backwards compatibility)
 function confirmTextInput() {
     const modalInput = document.getElementById('modalTextInput');
     const text = modalInput ? modalInput.value.trim() : '';
@@ -1750,12 +1897,6 @@ function confirmTextInput() {
     const fontSize = document.getElementById('textFontSize') ? document.getElementById('textFontSize').value : '96';
     const fontFamily = document.getElementById('textFontFamily') ? document.getElementById('textFontFamily').value : 'Arial';
     const textAlign = document.getElementById('textAlign') ? document.getElementById('textAlign').value : 'left';
-    
-    // Also update inline text input for consistency
-    const inlineTextInput = document.getElementById('canvasTextInput');
-    if (inlineTextInput) {
-        inlineTextInput.value = text;
-    }
     
     // Create pending text element
     saveCanvasState();

@@ -602,18 +602,22 @@ void publishMQTTStatus() {
     }
     
     if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-        uint32_t nextIndex = (lastMediaIndex + 1) % g_media_mappings.size();
-        const char* imageName = g_media_mappings[nextIndex].imageName.c_str();
-        const char* audioFile = g_media_mappings[nextIndex].audioFile.c_str();
-        
-        if (audioFile[0] != '\0') {
-            written += snprintf(jsonBuffer + written, jsonSize - written,
-                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\",\"audio\":\"%s\"}",
-                               (unsigned long)nextIndex, imageName, audioFile);
-        } else {
-            written += snprintf(jsonBuffer + written, jsonSize - written,
-                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\"}",
-                               (unsigned long)nextIndex, imageName);
+        extern int peekNextMediaIndex();  // From main.cpp
+        int nextIndex = peekNextMediaIndex();
+        // Only include next_media if we can determine it (not shuffle mode with invalid state)
+        if (nextIndex >= 0) {
+            const char* imageName = g_media_mappings[nextIndex].imageName.c_str();
+            const char* audioFile = g_media_mappings[nextIndex].audioFile.c_str();
+            
+            if (audioFile[0] != '\0') {
+                written += snprintf(jsonBuffer + written, jsonSize - written,
+                                   ",\"next_media\":{\"index\":%d,\"image\":\"%s\",\"audio\":\"%s\"}",
+                                   nextIndex, imageName, audioFile);
+            } else {
+                written += snprintf(jsonBuffer + written, jsonSize - written,
+                                   ",\"next_media\":{\"index\":%d,\"image\":\"%s\"}",
+                                   nextIndex, imageName);
+            }
         }
     }
     
@@ -880,18 +884,22 @@ static void statusPreparationTask(void* arg) {
     }
     
     if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-        uint32_t nextIndex = (lastMediaIndex + 1) % g_media_mappings.size();
-        const char* imageName = g_media_mappings[nextIndex].imageName.c_str();
-        const char* audioFile = g_media_mappings[nextIndex].audioFile.c_str();
-        
-        if (audioFile[0] != '\0') {
-            written += snprintf(jsonBuffer + written, jsonSize - written,
-                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\",\"audio\":\"%s\"}",
-                               (unsigned long)nextIndex, imageName, audioFile);
-        } else {
-            written += snprintf(jsonBuffer + written, jsonSize - written,
-                               ",\"next_media\":{\"index\":%lu,\"image\":\"%s\"}",
-                               (unsigned long)nextIndex, imageName);
+        extern int peekNextMediaIndex();  // From main.cpp
+        int nextIndex = peekNextMediaIndex();
+        // Only include next_media if we can determine it (not shuffle mode with invalid state)
+        if (nextIndex >= 0) {
+            const char* imageName = g_media_mappings[nextIndex].imageName.c_str();
+            const char* audioFile = g_media_mappings[nextIndex].audioFile.c_str();
+            
+            if (audioFile[0] != '\0') {
+                written += snprintf(jsonBuffer + written, jsonSize - written,
+                                   ",\"next_media\":{\"index\":%d,\"image\":\"%s\",\"audio\":\"%s\"}",
+                                   nextIndex, imageName, audioFile);
+            } else {
+                written += snprintf(jsonBuffer + written, jsonSize - written,
+                                   ",\"next_media\":{\"index\":%d,\"image\":\"%s\"}",
+                                   nextIndex, imageName);
+            }
         }
     }
     

@@ -2008,7 +2008,8 @@ void mediaIndexSaveToNVS();  // Save media index to NVS
 void mediaIndexModeLoadFromNVS();  // Load media index mode from NVS (called on startup)
 void mediaIndexModeSaveToNVS();  // Save media index mode to NVS
 // Media mappings index management functions
-int getNextMediaIndex();  // Get next index based on current mode (sequential or shuffle)
+int getNextMediaIndex();  // Get next index based on current mode (sequential or shuffle) - advances index
+int peekNextMediaIndex();  // Peek at next index without advancing (for status messages)
 void setMediaIndex(int index);  // Set index directly (for !go commands)
 int getCurrentMediaIndex();  // Get current index
 void setMediaIndexMode(MediaIndexMode mode);  // Set mode (sequential/shuffle)
@@ -4879,11 +4880,15 @@ bool handleManageCommand() {
         return response->send(200, "application/json", json.c_str());
     });
     
-    // GET /api/media/index - Get current media index
+    // GET /api/media/index - Get current media index and mode
     server.on("/api/media/index", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
+        extern MediaIndexMode getMediaIndexMode();  // From main.cpp
+        MediaIndexMode mode = getMediaIndexMode();
         String json = "{\"index\":";
         json += String((unsigned long)lastMediaIndex);
+        json += ",\"shuffle_mode\":";
+        json += (mode == MediaIndexMode::SHUFFLE) ? "true" : "false";
         json += "}";
         return response->send(200, "application/json", json.c_str());
     });
@@ -9809,6 +9814,36 @@ int getNextMediaIndex() {
         lastMediaIndex = nextIndex;
         mediaIndexSaveToNVS();
         return nextIndex;
+    }
+}
+
+/**
+ * Peek at next media index without advancing (for status messages)
+ * Returns -1 if shuffle mode and next item is not determinable
+ */
+int peekNextMediaIndex() {
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        return 0;
+    }
+    
+    size_t mediaCount = g_media_mappings.size();
+    
+    // Ensure current index is valid
+    if (lastMediaIndex >= mediaCount) {
+        return 0;  // Would be reset, so next would be 1
+    }
+    
+    if (g_mediaIndexMode == MediaIndexMode::SEQUENTIAL) {
+        // Sequential: just calculate next
+        return (int)((lastMediaIndex + 1) % mediaCount);
+    } else {
+        // Shuffle mode: peek at shuffle order
+        // If shuffle order is empty or invalid, we can't determine next
+        if (g_shuffleOrder.size() != mediaCount || g_shufflePosition >= (int)g_shuffleOrder.size()) {
+            return -1;  // Cannot determine next in shuffle mode
+        }
+        // Return the next item from shuffle order without advancing
+        return g_shuffleOrder[g_shufflePosition];
     }
 }
 

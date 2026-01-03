@@ -166,6 +166,17 @@ function updateDeviceStatus(status) {
         html += '</p>';
     }
     
+    // Shuffle mode
+    if (status.shuffle_mode !== undefined) {
+        html += '<p><strong>Shuffle Mode:</strong> ';
+        if (status.shuffle_mode) {
+            html += '<span style="color:#4CAF50;">Enabled</span>';
+        } else {
+            html += '<span style="color:#888;">Disabled</span>';
+        }
+        html += '</p>';
+    }
+    
     // Connection status
     if (status.connected !== undefined) {
         html += '<p><strong>Status:</strong> ';

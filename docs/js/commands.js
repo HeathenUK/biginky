@@ -616,6 +616,28 @@ async function triggerHappyWeather() {
     }
 }
 
+async function triggerShuffleOn() {
+    const payload = { command: 'shuffle_on' };
+    
+    if (await publishMessage(payload)) {
+        showStatus('commandStatus', 'Shuffle mode enabled command sent successfully!', false);
+        setBusyState(true, 'Command sent, waiting for device response...');
+    } else {
+        showStatus('commandStatus', 'Failed to send shuffle on command', true);
+    }
+}
+
+async function triggerShuffleOff() {
+    const payload = { command: 'shuffle_off' };
+    
+    if (await publishMessage(payload)) {
+        showStatus('commandStatus', 'Shuffle mode disabled command sent successfully!', false);
+        setBusyState(true, 'Command sent, waiting for device response...');
+    } else {
+        showStatus('commandStatus', 'Failed to send shuffle off command', true);
+    }
+}
+
 // Generate default filename with timestamp
 function generateDefaultCanvasFilename() {
     const now = new Date();

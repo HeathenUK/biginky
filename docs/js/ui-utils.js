@@ -177,6 +177,33 @@ function updateDeviceStatus(status) {
         html += '</p>';
     }
     
+    // WiFi information
+    if (status.wifi) {
+        html += '<p><strong>WiFi:</strong> ';
+        if (status.wifi.ip) {
+            html += `<span style="color:#2196F3;">${status.wifi.ip}</span>`;
+        }
+        if (status.wifi.signal_percent !== undefined) {
+            const signalPercent = status.wifi.signal_percent;
+            let signalColor = '#f44336'; // Red for low signal
+            if (signalPercent >= 70) signalColor = '#4CAF50'; // Green for good signal
+            else if (signalPercent >= 40) signalColor = '#FF9800'; // Orange for medium signal
+            html += ` <span style="color:${signalColor};">(${signalPercent}%)</span>`;
+        }
+        html += '</p>';
+    }
+    
+    // Shuffle mode
+    if (status.shuffle_mode !== undefined) {
+        html += '<p><strong>Media Mode:</strong> ';
+        if (status.shuffle_mode) {
+            html += '<span style="color:#FF9800;">Shuffle</span>';
+        } else {
+            html += '<span style="color:#2196F3;">Sequential</span>';
+        }
+        html += '</p>';
+    }
+    
     html += '</div>';
     statusEl.innerHTML = html;
 }

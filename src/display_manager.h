@@ -112,4 +112,15 @@ HappyWeatherConfig getDefaultHappyWeatherConfig();
  */
 bool displayHappyWeatherScene(const HappyWeatherConfig* config = nullptr);
 
+/**
+ * Display weather for a single location
+ * Shows location name, temperature, and condition on a simple white background
+ * 
+ * @param lat Latitude
+ * @param lon Longitude
+ * @param placeName Place name to display
+ * @return true if successful, false otherwise
+ */
+bool displayWeatherForPlace(float lat, float lon, const char* placeName);
+
 #endif // DISPLAY_MANAGER_H

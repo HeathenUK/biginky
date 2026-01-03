@@ -22,6 +22,7 @@ extern Preferences volumePrefs;
 extern Preferences mediaPrefs;
 extern Preferences sleepPrefs;
 extern Preferences hourSchedulePrefs;
+extern Preferences detailedSchedulePrefs;
 extern Preferences managePrefs;
 
 void volumeLoadFromNVS() {

@@ -82,6 +82,7 @@
 #include "command_dispatcher.h"  // Unified command dispatcher
 #include "canvas_handler.h"  // Canvas display and save functionality
 #include "display_manager.h"  // Unified display media with overlay
+#include "schedule_manager.h"  // Schedule management for detailed scene scheduling
 // ArduinoJson removed - using cJSON instead (via json_utils.h)
 #include "cJSON.h"  // cJSON for JSON parsing (also available via json_utils.h)
 #include "mbedtls/sha256.h"  // ESP32 built-in SHA256 support
@@ -353,6 +354,7 @@ Preferences sleepPrefs;  // NVS preferences for sleep duration setting (non-stat
 static Preferences otaPrefs;  // NVS preferences for OTA version tracking
 Preferences mediaPrefs;  // NVS preferences for media index storage (non-static for nvs_manager module access)
 Preferences hourSchedulePrefs;  // NVS preferences for hour schedule (non-static for nvs_manager module access)
+Preferences detailedSchedulePrefs;  // NVS preferences for detailed schedule (slots + scenes)
 Preferences authPrefs;  // NVS preferences for web UI authentication (non-static for webui_crypto module access)
 Preferences managePrefs;  // NVS preferences for management interface settings (non-static for nvs_manager module access)
 static const char* OPENAI_API_KEY = "";
@@ -845,12 +847,13 @@ static time_t calculateTargetWakeTime(time_t now) {
     }
     
     // Check if the wake hour is enabled - if not, find next enabled hour
-    if (!isHourEnabled(target_hour)) {
-        // Find next enabled hour
+    // Use detailed schedule (single source of truth)
+    if (!isHourEnabledInSchedule(target_hour)) {
+        // Find next enabled hour using the detailed schedule
         int nextEnabledHour = -1;
         for (int i = 1; i <= 24; i++) {
             int checkHour = (target_hour + i) % 24;
-            if (isHourEnabled(checkHour)) {
+            if (isHourEnabledInSchedule(checkHour)) {
                 nextEnabledHour = checkHour;
                 break;
             }
@@ -2081,44 +2084,9 @@ String extractTextParameterForCommand(const String& command, const String& origi
     return textToDisplay;
 }
 
-// Schedule action types (extensible for future cron-like system)
-// Note: Using SCHEDULE_ prefix to avoid conflict with ESP32 HAL GPIO macros (DISABLED/ENABLED)
-enum class ScheduleAction {
-    SCHEDULE_DISABLED,      // Hour is disabled - sleep until next enabled hour
-    SCHEDULE_ENABLED,       // Hour is enabled - proceed with normal operations
-    SCHEDULE_NTP_RESYNC,    // Special action: resync NTP (e.g., at 30 minutes past hour)
-    SCHEDULE_HAPPY_WEATHER  // Special action: display Happy weather scene at :30
-    // Future: CYCLE_MEDIA, PLAY_SOUND, etc.
-};
-
 // ============================================================================
 // Extracted functions from auto_cycle_task() for better maintainability
 // ============================================================================
-
-/**
- * Get schedule action for a given hour and minute
- * Extensible for future cron-like system (different actions at different times)
- * Checks both hour enablement and minute-level scheduled actions
- */
-static ScheduleAction getScheduleAction(int hour, int minute) {
-    // First check if hour is disabled
-    if (!isHourEnabled(hour)) {
-        return ScheduleAction::SCHEDULE_DISABLED;
-    }
-    
-    // Check for minute-level scheduled actions
-    // Happy weather scene at 30 minutes past each hour
-    if (minute == 30) {
-        return ScheduleAction::SCHEDULE_HAPPY_WEATHER;
-    }
-    
-    // Future: Add more minute-level actions here
-    // if (minute == 0) return ScheduleAction::CYCLE_MEDIA;
-    // if (minute == 15) return ScheduleAction::PLAY_SOUND;
-    
-    // Default: hour is enabled, no special action
-    return ScheduleAction::SCHEDULE_ENABLED;
-}
 
 /**
  * Check and sync time if needed
@@ -2322,11 +2290,11 @@ static void doNtpResyncIfNeeded(bool time_ok) {
 static void handleDisabledHour(int currentHour, struct tm& tm_utc) {
     Serial.printf("Hour %02d is DISABLED - sleeping until next enabled hour\n", currentHour);
     
-    // Find next enabled hour
+    // Find next enabled hour using the detailed schedule (single source of truth)
     int nextEnabledHour = -1;
     for (int i = 1; i <= 24; i++) {
         int checkHour = (currentHour + i) % 24;
-        if (isHourEnabled(checkHour)) {
+        if (isHourEnabledInSchedule(checkHour)) {
             nextEnabledHour = checkHour;
             break;
         }
@@ -2546,7 +2514,7 @@ static void auto_cycle_task(void* arg) {
     Serial.printf("Current time: %02d:%02d:%02d (isTopOfHour: %s, hour enabled: %s)\n", 
                   tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
                   isTopOfHour ? "YES" : "NO",
-                  isHourEnabled(currentHour) ? "YES" : "NO");
+                  isHourEnabledInSchedule(currentHour) ? "YES" : "NO");
     
     // COLD BOOT: Always do WiFi->NTP->MQTT check on first boot (not deep sleep wake)
     // This ensures we can receive !manage commands to change the hour schedule
@@ -2624,19 +2592,37 @@ static void auto_cycle_task(void* arg) {
         if (time_ok && isTopOfHour) {
             ScheduleAction action = getScheduleAction(currentHour, currentMinute);
             if (action == ScheduleAction::SCHEDULE_ENABLED) {
-                Serial.println("=== COLD BOOT at top of hour: Also doing display update ===");
-                
-                // Yield before display update cycle
-                vTaskDelay(1);
-                
-                // Top of hour: use unified display function (same as !go and !next commands)
-                // This ensures consistent behavior across all command sources
-                // -1 = get next index (sequential or shuffle based on current mode), 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
-                bool ok = displayMediaWithOverlay(-1, 50);
-                if (!ok) {
-                    Serial.println("ERROR: Failed to display media at top of hour (cold boot)");
-                    // Continue to sleep anyway
+                // Only display if there's an explicit slot at :00
+                if (hasScheduleSlot(currentHour, currentMinute)) {
+                    Serial.println("=== COLD BOOT at top of hour: Also doing display update ===");
+                    
+                    // Check if there's a mapping number parameter (1-indexed)
+                    String mappingParam = getScheduleSlotParameter(currentHour, currentMinute);
+                    int targetIndex = -1;  // -1 means use next index (default behavior)
+                    
+                    if (mappingParam.length() > 0) {
+                        int mappingNum = mappingParam.toInt();
+                        if (mappingNum >= 1) {
+                            // Convert from 1-indexed to 0-indexed
+                            targetIndex = mappingNum - 1;
+                            Serial.printf("Setting media index to %d (from mapping #%d)\n", targetIndex, mappingNum);
+                            setMediaIndex(targetIndex);
+                        }
+                    }
+                    
+                    // Yield before display update cycle
+                    vTaskDelay(1);
+                    
+                    // Top of hour: use unified display function (same as !go and !next commands)
+                    // This ensures consistent behavior across all command sources
+                    // targetIndex = -1 means get next index (sequential or shuffle based on current mode), 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
+                    bool ok = displayMediaWithOverlay(targetIndex, 50);
+                    if (!ok) {
+                        Serial.println("ERROR: Failed to display media at top of hour (cold boot)");
+                        // Continue to sleep anyway
+                    }
                 }
+                // If no slot at :00, just continue (MQTT check already done above)
             } else if (action == ScheduleAction::SCHEDULE_HAPPY_WEATHER) {
                 Serial.println("=== COLD BOOT at :30: Also doing Happy weather scene ===");
                 
@@ -2679,6 +2665,12 @@ static void auto_cycle_task(void* arg) {
             break;
         case ScheduleAction::SCHEDULE_HAPPY_WEATHER:
             actionName = "HAPPY_WEATHER";
+            break;
+        case ScheduleAction::SCHEDULE_IMAGE:
+            actionName = "IMAGE";
+            break;
+        case ScheduleAction::SCHEDULE_WEATHER_PLACE:
+            actionName = "WEATHER_PLACE";
             break;
     }
     Serial.printf("Schedule action: %s (hour=%d, minute=%d)\n", actionName, currentHour, currentMinute);
@@ -2727,8 +2719,199 @@ static void auto_cycle_task(void* arg) {
         return;
     }
     
-    // If NOT top of hour, do MQTT check instead of display update
+    // Handle scheduled image display
+    if (action == ScheduleAction::SCHEDULE_IMAGE) {
+        String imageFilename = getScheduleSlotParameter(currentHour, currentMinute);
+        Serial.printf("=== Scheduled image display: %s ===\n", imageFilename.c_str());
+        
+        if (imageFilename.length() == 0) {
+            Serial.println("ERROR: No image filename specified in schedule slot");
+        } else {
+            // Yield before display update cycle
+            vTaskDelay(1);
+            
+            // Build full path (images are in images/ subdirectory)
+            String imagePath = "/images/" + imageFilename;
+            g_lastImagePath = imagePath;
+            String fatfsPath = "0:" + imagePath;
+            
+            // Check if file exists
+            FILINFO fno;
+            FRESULT res = f_stat(fatfsPath.c_str(), &fno);
+            if (res != FR_OK) {
+                Serial.printf("ERROR: Image file not found: %s\n", fatfsPath.c_str());
+            } else {
+                size_t fileSize = fno.fsize;
+                
+                // Open and read file
+                FIL pngFile;
+                res = f_open(&pngFile, fatfsPath.c_str(), FA_READ);
+                if (res != FR_OK) {
+                    Serial.printf("ERROR: Failed to open file: %s\n", fatfsPath.c_str());
+                } else {
+                    // Allocate memory for PNG data
+                    uint8_t* pngData = (uint8_t*)hal_psram_malloc(fileSize);
+                    if (!pngData) {
+                        Serial.println("ERROR: Failed to allocate PSRAM buffer for PNG!");
+                        f_close(&pngFile);
+                    } else {
+                        // Read file
+                        UINT bytesRead = 0;
+                        res = f_read(&pngFile, pngData, fileSize, &bytesRead);
+                        f_close(&pngFile);
+                        
+                        if (res != FR_OK || bytesRead != fileSize) {
+                            Serial.printf("ERROR: Failed to read file (read %u/%u bytes)\n", (unsigned)bytesRead, (unsigned)fileSize);
+                            hal_psram_free(pngData);
+                        } else {
+                            // Clear display and draw PNG to framebuffer
+                            display.clear(EL133UF1_WHITE);
+                            PNGResult pres = pngLoader.drawFullscreen(pngData, fileSize);
+                            hal_psram_free(pngData);
+                            
+                            if (pres != PNG_OK) {
+                                Serial.printf("ERROR: PNG draw failed: %s\n", pngLoader.getErrorString(pres));
+                            } else {
+                                // Update display (thumbnail will be generated automatically)
+                                Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+                                display.update();
+                                Serial.println("Display updated");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Always send status update
+        vTaskDelay(1);
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
+    }
+    
+    // Handle scheduled weather for specific place
+    if (action == ScheduleAction::SCHEDULE_WEATHER_PLACE) {
+        String parameter = getScheduleSlotParameter(currentHour, currentMinute);
+        Serial.printf("=== Scheduled weather for place: %s ===\n", parameter.c_str());
+        
+        // Do NTP resync first (if needed) to ensure accurate time for weather data
+        doNtpResyncIfNeeded(time_ok);
+        
+        // Update time variables after potential NTP sync
+        now = time(nullptr);
+        if (now > 1577836800) {
+            gmtime_r(&now, &tm_utc);
+            isTopOfHour = (tm_utc.tm_min == 0);
+            currentHour = tm_utc.tm_hour;
+            currentMinute = tm_utc.tm_min;
+            time_ok = true;
+        }
+        
+        // Parse parameter: "lat,lon,name" (comma-separated)
+        if (parameter.length() == 0) {
+            Serial.println("ERROR: No parameters specified for weather place");
+        } else {
+            // Parse comma-separated values
+            int firstComma = parameter.indexOf(',');
+            int secondComma = parameter.indexOf(',', firstComma + 1);
+            
+            if (firstComma < 0 || secondComma < 0) {
+                Serial.println("ERROR: Invalid parameter format - expected 'lat,lon,name'");
+            } else {
+                String latStr = parameter.substring(0, firstComma);
+                String lonStr = parameter.substring(firstComma + 1, secondComma);
+                String placeName = parameter.substring(secondComma + 1);
+                
+                latStr.trim();
+                lonStr.trim();
+                placeName.trim();
+                
+                float lat = latStr.toFloat();
+                float lon = lonStr.toFloat();
+                
+                if (latStr.length() == 0 || lonStr.length() == 0 || placeName.length() == 0) {
+                    Serial.println("ERROR: Invalid parameter format - lat, lon, and name must all be provided");
+                } else {
+                    Serial.printf("Parsed: lat=%.4f, lon=%.4f, name='%s'\n", lat, lon, placeName.c_str());
+                    
+                    // Display weather for this location
+                    bool success = displayWeatherForPlace(lat, lon, placeName.c_str());
+                    if (!success) {
+                        Serial.println("ERROR: Failed to display weather for place");
+                    }
+                }
+            }
+        }
+        
+        // Always send status update
+        vTaskDelay(1);
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
+    }
+    
+    // If NOT top of hour, check if there's a scheduled media display
     if (!isTopOfHour && time_ok) {
+        // Check if there's an explicit slot at this minute (scheduled media display)
+        if (action == ScheduleAction::SCHEDULE_ENABLED && hasScheduleSlot(currentHour, currentMinute)) {
+            Serial.println("=== Scheduled media mapping at non-top-of-hour ===");
+            
+            // Check if there's a mapping number parameter (1-indexed)
+            String mappingParam = getScheduleSlotParameter(currentHour, currentMinute);
+            int targetIndex = -1;  // -1 means use next index (default behavior)
+            
+            if (mappingParam.length() > 0) {
+                int mappingNum = mappingParam.toInt();
+                if (mappingNum >= 1) {
+                    // Convert from 1-indexed to 0-indexed
+                    targetIndex = mappingNum - 1;
+                    Serial.printf("Setting media index to %d (from mapping #%d)\n", targetIndex, mappingNum);
+                    setMediaIndex(targetIndex);
+                }
+            }
+            
+            // Yield before display update cycle
+            vTaskDelay(1);
+            
+            // Display media mapping (use targetIndex if specified, otherwise -1 for next)
+            bool ok = displayMediaWithOverlay(targetIndex, 50);
+            if (!ok) {
+                Serial.println("ERROR: Failed to display scheduled media mapping");
+            }
+            
+            // Always send status update after display
+            vTaskDelay(1);
+            doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+            
+            // Sleep until next minute
+            Serial.println("Sleeping until next minute...");
+            if (time_ok) {
+                sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+            } else {
+                sleepNowSeconds(kCycleSleepSeconds);
+            }
+            // Never returns - device enters deep sleep
+            return;
+        }
+        
+        // No scheduled display - just do MQTT check
         // Yield before MQTT check
         vTaskDelay(1);
         
@@ -2745,16 +2928,47 @@ static void auto_cycle_task(void* arg) {
         return;
     }
     
-    // Yield before display update cycle
-    vTaskDelay(1);
-    
-    // Top of hour: use unified display function (same as !go and !next commands)
-    // This ensures consistent behavior across all command sources
-    // -1 = get next index (sequential or shuffle based on current mode), 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
-    bool ok = displayMediaWithOverlay(-1, 50);
-    if (!ok) {
-        Serial.println("ERROR: Failed to display media at top of hour");
-        // Sleep anyway and retry next cycle
+    // Only display media if there's an explicit slot at this minute
+    // This allows hours to be enabled but have no action at :00 if no slot is defined
+    if (hasScheduleSlot(currentHour, currentMinute)) {
+        // Yield before display update cycle
+        vTaskDelay(1);
+        
+        // Check if there's a mapping number parameter (1-indexed)
+        String mappingParam = getScheduleSlotParameter(currentHour, currentMinute);
+        int targetIndex = -1;  // -1 means use next index (default behavior)
+        
+        if (mappingParam.length() > 0) {
+            int mappingNum = mappingParam.toInt();
+            if (mappingNum >= 1) {
+                // Convert from 1-indexed to 0-indexed
+                targetIndex = mappingNum - 1;
+                Serial.printf("Setting media index to %d (from mapping #%d)\n", targetIndex, mappingNum);
+                setMediaIndex(targetIndex);
+            }
+        }
+        
+        // Display media mapping using unified display function (same as !go and !next commands)
+        // This ensures consistent behavior across all command sources
+        // targetIndex = -1 means get next index (sequential or shuffle based on current mode), 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
+        bool ok = displayMediaWithOverlay(targetIndex, 50);
+        if (!ok) {
+            Serial.println("ERROR: Failed to display scheduled media mapping");
+            // Sleep anyway and retry next cycle
+            if (time_ok) {
+                sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+            } else {
+                sleepNowSeconds(kCycleSleepSeconds);
+            }
+            return;  // Exit task
+        }
+        
+        // Always send status update after display
+        vTaskDelay(1);
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
         if (time_ok) {
             sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
         } else {
@@ -2762,6 +2976,12 @@ static void auto_cycle_task(void* arg) {
         }
         return;  // Exit task
     }
+    
+    // No slot at this minute - just do MQTT check and sleep
+    // Yield before MQTT check
+    vTaskDelay(1);
+    
+    doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
     
     // Sleep until next enabled hour (or next minute if time invalid)
     if (time_ok) {
@@ -4558,6 +4778,7 @@ static String getDeviceSettingsJSON() {
     return json;
 }
 
+
 static bool updateDeviceSettings(const String& json) {
     // Simple JSON parsing for volume, sleepInterval, and hourSchedule
     int volumeStart = json.indexOf("\"volume\":");
@@ -5475,6 +5696,22 @@ bool handleManageCommand() {
         String body = request->body();
         bool success = updateDeviceSettings(body);
         String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to update settings\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // GET /api/schedule - Get detailed schedule (slots + scenes)
+    server.on("/api/schedule", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = getDetailedScheduleJSON();
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // POST /api/schedule - Update detailed schedule (slots + scenes)
+    server.on("/api/schedule", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String body = request->body();
+        bool success = updateDetailedScheduleFromJSON(body);
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to update schedule\"}";
         return response->send(200, "application/json", resp.c_str());
     });
     
@@ -10541,6 +10778,9 @@ void setup() {
     
     // Load hour schedule from NVS
     hourScheduleLoadFromNVS();
+    
+    // Load detailed schedule (slots + scenes) from NVS
+    detailedScheduleLoadFromNVS();
     
     // Load management interface timeout disabled state from NVS
     manageTimeoutDisabledLoadFromNVS();

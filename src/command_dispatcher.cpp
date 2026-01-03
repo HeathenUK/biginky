@@ -11,6 +11,7 @@
 #include "display_manager.h"  // Unified display media with overlay
 #include "cJSON.h"  // For JSON parsing
 #include "ff.h"  // For FatFs file operations (FIL, FRESULT, f_open, f_write, f_close, etc.)
+#include "schedule_manager.h"  // For schedule management functions
 
 // Forward declarations of handler functions from main.cpp
 extern bool handleClearCommand();
@@ -356,6 +357,72 @@ static String escapeCSVField(const String& field) {
     }
     escaped += "\"";
     return escaped;
+}
+
+// Handler for schedule_set command
+static bool handleScheduleSetUnified(const CommandContext& ctx) {
+    // Only WEB_UI source is supported (MQTT command via JSON)
+    if (ctx.source != CommandSource::WEB_UI) {
+        Serial.println("[SCHEDULE_SET] ERROR: Only WEB_UI source supported");
+        return false;
+    }
+    
+    // Parse JSON to extract schedule object
+    String json = ctx.originalMessage;
+    if (!json.startsWith("{")) {
+        Serial.println("[SCHEDULE_SET] ERROR: Invalid JSON format");
+        return false;
+    }
+    
+    // Extract schedule field from JSON
+    // The command JSON should have: {"command": "schedule_set", "schedule": {...}}
+    cJSON* root = cJSON_Parse(json.c_str());
+    if (!root) {
+        Serial.println("[SCHEDULE_SET] ERROR: Failed to parse JSON");
+        return false;
+    }
+    
+    cJSON* scheduleObj = cJSON_GetObjectItem(root, "schedule");
+    if (!scheduleObj) {
+        Serial.println("[SCHEDULE_SET] ERROR: 'schedule' field missing");
+        cJSON_Delete(root);
+        return false;
+    }
+    
+    // Convert schedule object back to JSON string
+    char* scheduleJsonStr = cJSON_Print(scheduleObj);
+    if (!scheduleJsonStr) {
+        Serial.println("[SCHEDULE_SET] ERROR: Failed to convert schedule to JSON string");
+        cJSON_Delete(root);
+        return false;
+    }
+    
+    // Build full JSON wrapper (same format as HTTP API: {"schedule": [...]})
+    String fullScheduleJson = "{\"schedule\":";
+    fullScheduleJson += String(scheduleJsonStr);
+    fullScheduleJson += "}";
+    
+    free(scheduleJsonStr);
+    cJSON_Delete(root);
+    
+    // Update schedule from JSON
+    Serial.println("[SCHEDULE_SET] Updating schedule from JSON...");
+    bool success = updateDetailedScheduleFromJSON(fullScheduleJson);
+    if (!success) {
+        Serial.println("[SCHEDULE_SET] ERROR: Failed to update schedule");
+        return false;
+    }
+    
+    // Save to NVS
+    detailedScheduleSaveToNVS();
+    Serial.println("[SCHEDULE_SET] Schedule updated and saved to NVS");
+    
+    // Republish media mappings to notify UI of schedule change
+    extern void publishMQTTMediaMappings();
+    publishMQTTMediaMappings();
+    Serial.println("[SCHEDULE_SET] Media mappings republished with updated schedule");
+    
+    return true;
 }
 
 // Handler for media_replace command
@@ -717,6 +784,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleHappyUnified,
         .requiresAuth = true,
         .description = "Display Happy weather scene"
+    },
+    
+    // Schedule set (update detailed schedule)
+    {
+        .mqttName = nullptr,
+        .webUIName = "schedule_set",
+        .httpEndpoint = nullptr,
+        .handler = handleScheduleSetUnified,
+        .requiresAuth = true,
+        .description = "Update detailed scene schedule"
     }
 };
 

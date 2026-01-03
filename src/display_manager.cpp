@@ -1124,3 +1124,74 @@ bool displayHappyWeatherScene(const HappyWeatherConfig* config) {
     
     return true;
 }
+
+/**
+ * Display weather for a single location
+ */
+bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
+    Serial.printf("=== Weather for Place: %s (%.4f, %.4f) ===\n", placeName, lat, lon);
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+    // Ensure TTF is initialized
+    if (!ttf.begin(&display)) {
+        Serial.println("ERROR: TTF initialization failed!");
+        return false;
+    }
+    
+    // Clear display to white background
+    display.clear(EL133UF1_WHITE);
+    
+    // Fetch weather data
+    char tempStr[32];
+    char conditionStr[64];
+    if (!fetchWeatherData(lat, lon, tempStr, sizeof(tempStr), conditionStr, sizeof(conditionStr))) {
+        Serial.println("ERROR: Failed to fetch weather data");
+        // Display error message
+        ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2,
+                                    "Weather data unavailable", 64.0f,
+                                    EL133UF1_BLACK, EL133UF1_WHITE,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 2);
+        display.update();
+        return false;
+    }
+    
+    Serial.printf("Weather: %s, %s\n", tempStr, conditionStr);
+    
+    // Display location name at top (centered)
+    const float nameFontSize = 80.0f;
+    int16_t nameY = 150;
+    ttf.drawTextAlignedOutlined(display.width() / 2, nameY, placeName, nameFontSize,
+                                EL133UF1_BLACK, EL133UF1_WHITE,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 3);
+    
+    // Display temperature below location name (centered, larger font)
+    const float tempFontSize = 120.0f;
+    int16_t tempY = nameY + 200;
+    ttf.drawTextAlignedOutlined(display.width() / 2, tempY, tempStr, tempFontSize,
+                                EL133UF1_BLACK, EL133UF1_WHITE,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 3);
+    
+    // Display condition below temperature (centered)
+    const float conditionFontSize = 64.0f;
+    int16_t conditionY = tempY + 180;
+    ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
+                                EL133UF1_BLACK, EL133UF1_WHITE,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    
+    // Update display
+    Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
+    display.update();
+    Serial.println("Display updated");
+    
+    return true;
+}

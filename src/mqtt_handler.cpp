@@ -30,6 +30,7 @@
 #include "miniz.h"    // For zlib decompression (tinfl_decompress_mem_to_mem)
 #include "chunked_processing.h"  // For chunked processing with automatic watchdog yielding
 #include "cJSON.h"  // Pure C JSON library for building JSON (handles escaping, large payloads)
+#include "schedule_manager.h"  // For getDetailedScheduleJSON()
 
 // MQTT configuration - hardcoded
 #define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"
@@ -2160,6 +2161,26 @@ static void publishMQTTMediaMappingsInternalImpl() {
     }
     cJSON_AddItemToObject(root, "fonts", fontsArray);
     Serial.printf("[Core 1] Added fonts array with %d fonts to media mappings JSON\n", g_rtcFontCount);
+    
+    // Add schedule JSON
+    String scheduleJsonStr = getDetailedScheduleJSON();
+    if (scheduleJsonStr.length() > 0 && !scheduleJsonStr.startsWith("{\"error\"")) {
+        cJSON* scheduleJson = cJSON_Parse(scheduleJsonStr.c_str());
+        if (scheduleJson != nullptr) {
+            cJSON* scheduleObj = cJSON_GetObjectItem(scheduleJson, "schedule");
+            if (scheduleObj != nullptr) {
+                // Detach the schedule object from the parsed JSON (so it won't be deleted with scheduleJson)
+                cJSON_DetachItemViaPointer(scheduleJson, scheduleObj);
+                cJSON_AddItemToObject(root, "schedule", scheduleObj);
+                Serial.println("[Core 1] Added schedule to media mappings JSON");
+            }
+            cJSON_Delete(scheduleJson);  // Delete the wrapper object (scheduleObj is now in root)
+        } else {
+            Serial.println("[Core 1] WARNING: Failed to parse schedule JSON for media mappings");
+        }
+    } else {
+        Serial.println("[Core 1] WARNING: Failed to get schedule JSON for media mappings");
+    }
     
     // Print JSON to string (cJSON_Print handles memory allocation)
     // Use cJSON_PrintBuffered with custom malloc for PSRAM

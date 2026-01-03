@@ -48,6 +48,25 @@ void mediaIndexLoadFromNVS();
 void mediaIndexSaveToNVS();
 
 /**
+ * Load media index mode from NVS
+ * Called on startup to restore the shuffle/sequential mode setting
+ */
+void mediaIndexModeLoadFromNVS();
+
+/**
+ * Save media index mode to NVS
+ * Called whenever the media index mode changes
+ */
+void mediaIndexModeSaveToNVS();
+
+/**
+ * Get/set media index mode value (0 = SEQUENTIAL, 1 = SHUFFLE)
+ * Used by main.cpp to sync with NVS functions
+ */
+uint8_t getMediaIndexModeValue();
+void setMediaIndexModeValue(uint8_t value);
+
+/**
  * Load sleep duration interval from NVS
  * Called on startup to restore the last sleep interval setting
  */

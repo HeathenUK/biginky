@@ -86,6 +86,47 @@ void mediaIndexSaveToNVS() {
     Serial.printf("Saved media index to NVS: %lu\n", (unsigned long)lastMediaIndex);
 }
 
+// Media index mode storage (uint8_t: 0 = SEQUENTIAL, 1 = SHUFFLE)
+// This is set/read by main.cpp functions, we just store/retrieve from NVS
+static uint8_t g_mediaIndexModeValue = 0;  // 0 = SEQUENTIAL (default)
+
+uint8_t getMediaIndexModeValue() {
+    return g_mediaIndexModeValue;
+}
+
+void setMediaIndexModeValue(uint8_t value) {
+    g_mediaIndexModeValue = value;
+}
+
+void mediaIndexModeLoadFromNVS() {
+    NVSGuard guard(mediaPrefs, "media", true);  // Read-only
+    if (!guard.isOpen()) {
+        Serial.println("WARNING: Failed to open NVS for media index mode - using default (SEQUENTIAL)");
+        g_mediaIndexModeValue = 0;  // SEQUENTIAL
+        return;
+    }
+    
+    g_mediaIndexModeValue = guard.get().getUChar("mode", 0);  // 0 = SEQUENTIAL, 1 = SHUFFLE
+    
+    if (g_is_cold_boot) {
+        Serial.printf("Loaded media index mode from NVS: %s\n", 
+                     (g_mediaIndexModeValue == 1) ? "SHUFFLE" : "SEQUENTIAL");
+    }
+}
+
+void mediaIndexModeSaveToNVS() {
+    NVSGuard guard(mediaPrefs, "media", false);  // Read-write
+    if (!guard.isOpen()) {
+        Serial.println("WARNING: Failed to open NVS for saving media index mode");
+        return;
+    }
+    
+    guard.get().putUChar("mode", g_mediaIndexModeValue);
+    
+    Serial.printf("Saved media index mode to NVS: %s\n",
+                 (g_mediaIndexModeValue == 1) ? "SHUFFLE" : "SEQUENTIAL");
+}
+
 void sleepDurationLoadFromNVS() {
     NVSGuard guard(sleepPrefs, "sleep", true);  // Read-only
     if (!guard.isOpen()) {

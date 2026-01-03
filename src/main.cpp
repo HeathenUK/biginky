@@ -284,6 +284,18 @@ RTC_DATA_ATTR uint32_t lastImageIndex = 0;  // Track last displayed image for se
 uint32_t lastMediaIndex = 0;  // Track last displayed image from media.csv (stored in NVS)
 static bool showOperationInProgress = false;  // Lock to prevent concurrent show operations
 
+// Media mappings index management mode
+enum class MediaIndexMode {
+    SEQUENTIAL,  // Sequential cycling: 0, 1, 2, ..., wrap around
+    SHUFFLE      // Shuffle mode: random selection without repeats until cycle complete
+};
+static MediaIndexMode g_mediaIndexMode = MediaIndexMode::SEQUENTIAL;  // Default to sequential
+
+// Shuffle state (only used when mode is SHUFFLE)
+static std::vector<int> g_shuffleOrder;  // Current shuffle order
+static int g_shufflePosition = 0;  // Current position in shuffle order
+static int g_shuffleLastItem = -1;  // Last item from previous cycle (to avoid repeat at cycle boundary)
+
 // MQTT state - moved to mqtt_handler.cpp
 // Access via getMqttClient() and isMqttConnected() functions from mqtt_handler.h
 // RTC drift compensation: store sleep duration and target wake time
@@ -369,7 +381,7 @@ static TaskHandle_t g_serial_monitor_task = nullptr;  // Task handle for serial 
 
 // Forward declarations (SDMMC is always enabled)
 
-bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
+bool pngDrawFromMediaMappings(int index, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
 bool pngDrawRandomToBuffer(const char* dirname, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
 bool sdInit(bool mode1bit);
 bool sdInitDirect(bool mode1bit = false);
@@ -1371,6 +1383,9 @@ int loadQuotesFromSD() {
     return g_loaded_quotes.size();
 }
 
+// Forward declaration for resetShuffleState (needed by loadMediaMappingsFromSD)
+void resetShuffleState(int excludeFirst = -1);
+
 /**
  * Load image-to-audio mappings from /media.csv on SD card
  * CSV Format with header line:
@@ -1542,6 +1557,17 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
     if (g_media_mappings.size() > 0) {
         g_media_mappings_loaded = true;
         Serial.printf("  Loaded %d media mappings from SD card\n", g_media_mappings.size());
+        
+        // Reset shuffle state when mappings are reloaded (list may have changed)
+        if (g_mediaIndexMode == MediaIndexMode::SHUFFLE) {
+            resetShuffleState(-1);  // No exclusion on reload (list changed)
+        }
+        
+        // Validate current index is still valid
+        if (lastMediaIndex >= g_media_mappings.size()) {
+            lastMediaIndex = 0;
+            mediaIndexSaveToNVS();
+        }
         
         // Publish media mappings if MQTT is connected (media.csv was changed/reloaded)
         // BUT only if autoPublish is true (to avoid double-publishing when called from publishMQTTMediaMappings)
@@ -1979,6 +2005,15 @@ void sleepDurationSaveToNVS();  // Save sleep duration to NVS
 void volumeSaveToNVS();    // Save volume to NVS (called when volume changes)
 void mediaIndexLoadFromNVS();  // Load media index from NVS (called on startup)
 void mediaIndexSaveToNVS();  // Save media index to NVS
+void mediaIndexModeLoadFromNVS();  // Load media index mode from NVS (called on startup)
+void mediaIndexModeSaveToNVS();  // Save media index mode to NVS
+// Media mappings index management functions
+int getNextMediaIndex();  // Get next index based on current mode (sequential or shuffle)
+void setMediaIndex(int index);  // Set index directly (for !go commands)
+int getCurrentMediaIndex();  // Get current index
+void setMediaIndexMode(MediaIndexMode mode);  // Set mode (sequential/shuffle)
+MediaIndexMode getMediaIndexMode();  // Get current mode
+void setMediaIndexModeFromInt(uint8_t modeValue);  // Set mode from integer (0=SEQUENTIAL, 1=SHUFFLE) - for command dispatcher
 void hourScheduleLoadFromNVS();  // Load hour schedule from NVS (called on startup)
 void hourScheduleSaveToNVS();  // Save hour schedule to NVS
 bool isHourEnabled(int hour);  // Check if a specific hour (0-23) is enabled for waking (defined after hourScheduleLoadFromNVS)
@@ -4665,23 +4700,14 @@ static void show_media_task(void* parameter) {
                                   data->index, mediaCount - 1);
                     displayOk = false;
                 } else {
-                    // Set the index so that pngDrawFromMediaMappings will show this item
-                    lastMediaIndex = (data->index - 1 + mediaCount) % mediaCount;
-                    
-                    // Draw the image
+                    // Set index and draw the image
+                    setMediaIndex(data->index);
                     uint32_t sd_ms = 0, dec_ms = 0;
-                    bool ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+                    bool ok = pngDrawFromMediaMappings(data->index, &sd_ms, &dec_ms);
                     if (!ok) {
                         Serial.println("ERROR: Failed to load image from media.txt");
                         displayOk = false;
                     } else {
-                        // Verify we're at the correct index
-                        if (lastMediaIndex != (size_t)data->index) {
-                            Serial.printf("WARNING: Expected index %d but got %lu - correcting\n", 
-                                          data->index, (unsigned long)lastMediaIndex);
-                            lastMediaIndex = data->index;
-                        }
-                        
                         Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", 
                                      (unsigned long)sd_ms, (unsigned long)dec_ms);
                         
@@ -4708,12 +4734,9 @@ static void show_media_task(void* parameter) {
                         audio_stop();
                         
                         // Calculate next index (the one after the displayed one, wrapping)
-                        nextIndex = (lastMediaIndex + 1) % mediaCount;
-                        // Set lastMediaIndex to nextIndex-1 so that next call will show nextIndex
-                        lastMediaIndex = (nextIndex - 1 + mediaCount) % mediaCount;
-                        mediaIndexSaveToNVS();
+                        nextIndex_old = (lastMediaIndex + 1) % mediaCount;
                         
-                        Serial.printf("Show operation completed - next item will be index %zu\n", nextIndex);
+                        Serial.printf("Show operation completed - next item will be index %zu\n", nextIndex_old);
                         success = true;
                     }
                 }
@@ -5385,11 +5408,9 @@ bool handleManageCommand() {
         // Update next index if provided
         if (success && nextIndex >= 0) {
             size_t mediaCount = g_media_mappings.size();
-            if (mediaCount > 0) {
-                lastMediaIndex = (nextIndex - 1 + mediaCount) % mediaCount;
-                mediaIndexSaveToNVS();
-                Serial.printf("Updated next media index: will display index %d next (lastMediaIndex=%lu)\n", 
-                             nextIndex, (unsigned long)lastMediaIndex);
+            if (mediaCount > 0 && nextIndex < (int)mediaCount) {
+                setMediaIndex(nextIndex);  // Use index management function
+                Serial.printf("Updated next media index: will display index %d next\n", nextIndex);
             }
         }
         
@@ -9671,19 +9692,21 @@ void pngListFiles(const char* dirname = "/") {
     Serial.println("=====================================\n");
 }
 
-// Draw a PNG from media.txt mappings into the display buffer (no display.update), return timing info.
-bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms) {
-    if (out_sd_read_ms) *out_sd_read_ms = 0;
-    if (out_decode_ms) *out_decode_ms = 0;
+// ============================================================================
+// Media Mappings Index Management
+// ============================================================================
 
+/**
+ * Get current media index
+ */
+int getCurrentMediaIndex() {
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
-        return false;
+        return 0;
     }
-
-    // Cycle through images from media.txt sequentially
+    
     size_t mediaCount = g_media_mappings.size();
     
-    // Safety check: if index is out of bounds (e.g., media.txt was reloaded with fewer items), reset to 0
+    // Safety check: if index is out of bounds, reset to 0
     if (lastMediaIndex >= mediaCount) {
         Serial.printf("WARNING: lastMediaIndex %lu is out of bounds (max %zu), resetting to 0\n",
                      (unsigned long)lastMediaIndex, mediaCount);
@@ -9691,13 +9714,187 @@ bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms)
         mediaIndexSaveToNVS();
     }
     
-    // Increment and wrap around
-    lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
-    mediaIndexSaveToNVS();
-    const MediaMapping& mapping = g_media_mappings[lastMediaIndex];
+    return (int)lastMediaIndex;
+}
+
+/**
+ * Reset shuffle state and generate new shuffle order
+ * excludeFirst: if >= 0, exclude this index from being the first item (to avoid repeat at cycle boundary)
+ */
+void resetShuffleState(int excludeFirst) {
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        g_shuffleOrder.clear();
+        g_shufflePosition = 0;
+        return;
+    }
     
-    Serial.printf("Image %lu of %zu from media.txt: %s\n", 
-                  (unsigned long)(lastMediaIndex + 1), mediaCount, mapping.imageName.c_str());
+    size_t mediaCount = g_media_mappings.size();
+    g_shuffleOrder.clear();
+    g_shuffleOrder.reserve(mediaCount);
+    
+    // Build list of all indices
+    std::vector<int> available;
+    available.reserve(mediaCount);
+    for (size_t i = 0; i < mediaCount; i++) {
+        available.push_back((int)i);
+    }
+    
+    // If excludeFirst is valid, pick first item from remaining items
+    if (excludeFirst >= 0 && excludeFirst < (int)mediaCount) {
+        // Remove excludeFirst from available
+        available.erase(std::remove(available.begin(), available.end(), excludeFirst), available.end());
+        
+        // Pick random first item from remaining
+        if (available.size() > 0) {
+            int firstIdx = random(available.size());
+            g_shuffleOrder.push_back(available[firstIdx]);
+            available.erase(available.begin() + firstIdx);
+        }
+        
+        // Add back excludeFirst for the rest of the shuffle
+        available.push_back(excludeFirst);
+    }
+    
+    // Shuffle the remaining items (Fisher-Yates shuffle)
+    while (available.size() > 0) {
+        int randomIdx = random(available.size());
+        g_shuffleOrder.push_back(available[randomIdx]);
+        available.erase(available.begin() + randomIdx);
+    }
+    
+    g_shufflePosition = 0;
+    Serial.printf("Shuffle reset: new order generated (%zu items)\n", g_shuffleOrder.size());
+}
+
+/**
+ * Get next media index based on current mode (sequential or shuffle)
+ */
+int getNextMediaIndex() {
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        return 0;
+    }
+    
+    size_t mediaCount = g_media_mappings.size();
+    
+    // Ensure current index is valid
+    if (lastMediaIndex >= mediaCount) {
+        lastMediaIndex = 0;
+        mediaIndexSaveToNVS();
+    }
+    
+    if (g_mediaIndexMode == MediaIndexMode::SEQUENTIAL) {
+        // Sequential: increment and wrap around
+        lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
+        mediaIndexSaveToNVS();
+        return (int)lastMediaIndex;
+    } else {
+        // Shuffle mode
+        // If shuffle order is empty or invalid, generate new one
+        if (g_shuffleOrder.size() != mediaCount || g_shufflePosition >= (int)g_shuffleOrder.size()) {
+            resetShuffleState(g_shuffleLastItem);
+        }
+        
+        // Get next item from shuffle order
+        int nextIndex = g_shuffleOrder[g_shufflePosition];
+        g_shufflePosition++;
+        
+        // If we've completed a cycle, reset for next cycle
+        if (g_shufflePosition >= (int)g_shuffleOrder.size()) {
+            g_shuffleLastItem = nextIndex;  // Remember this for next cycle
+            resetShuffleState(g_shuffleLastItem);
+            nextIndex = g_shuffleOrder[0];  // Start new cycle
+            g_shufflePosition = 1;
+        }
+        
+        lastMediaIndex = nextIndex;
+        mediaIndexSaveToNVS();
+        return nextIndex;
+    }
+}
+
+/**
+ * Set media index directly (for !go commands)
+ */
+void setMediaIndex(int index) {
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        Serial.println("ERROR: Cannot set media index - no media mappings loaded");
+        return;
+    }
+    
+    size_t mediaCount = g_media_mappings.size();
+    
+    if (index < 0 || index >= (int)mediaCount) {
+        Serial.printf("ERROR: Index %d is out of bounds (max %zu)\n", index, mediaCount);
+        return;
+    }
+    
+    lastMediaIndex = index;
+    mediaIndexSaveToNVS();
+    Serial.printf("Set media index to %d\n", index);
+}
+
+/**
+ * Set media index mode (sequential or shuffle)
+ */
+void setMediaIndexMode(MediaIndexMode mode) {
+    if (g_mediaIndexMode != mode) {
+        g_mediaIndexMode = mode;
+        // Reset shuffle state when switching modes
+        if (mode == MediaIndexMode::SHUFFLE) {
+            resetShuffleState(-1);  // No exclusion on mode switch
+        } else {
+            g_shuffleOrder.clear();
+            g_shufflePosition = 0;
+            g_shuffleLastItem = -1;
+        }
+        // Save mode to NVS
+        mediaIndexModeSaveToNVS();
+    }
+}
+
+/**
+ * Get current media index mode
+ */
+MediaIndexMode getMediaIndexMode() {
+    return g_mediaIndexMode;
+}
+
+/**
+ * Set media index mode from integer value (for command dispatcher)
+ * 0 = SEQUENTIAL, 1 = SHUFFLE
+ */
+void setMediaIndexModeFromInt(uint8_t modeValue) {
+    MediaIndexMode mode = (modeValue == 1) ? MediaIndexMode::SHUFFLE : MediaIndexMode::SEQUENTIAL;
+    setMediaIndexMode(mode);
+}
+
+// ============================================================================
+// Media Mappings Drawing (Pure Function)
+// ============================================================================
+
+// Draw a PNG from media mappings at the specified index into the display buffer.
+// This is a pure function - it does NOT modify lastMediaIndex or manage state.
+// Returns timing info via out parameters.
+bool pngDrawFromMediaMappings(int index, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms) {
+    if (out_sd_read_ms) *out_sd_read_ms = 0;
+    if (out_decode_ms) *out_decode_ms = 0;
+
+    if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
+        return false;
+    }
+
+    size_t mediaCount = g_media_mappings.size();
+    
+    // Validate index
+    if (index < 0 || index >= (int)mediaCount) {
+        Serial.printf("ERROR: Index %d is out of bounds (max %zu)\n", index, mediaCount);
+        return false;
+    }
+    
+    const MediaMapping& mapping = g_media_mappings[index];
+    
+    Serial.printf("Image %d of %zu from media.csv: %s\n", 
+                  index + 1, mediaCount, mapping.imageName.c_str());
     
     // Build full path (images are in images/ subdirectory)
     String imagePath = "/images/" + mapping.imageName;
@@ -10203,6 +10400,12 @@ void setup() {
     
     // Load media index from NVS
     mediaIndexLoadFromNVS();
+    
+    // Load media index mode from NVS
+    mediaIndexModeLoadFromNVS();
+    // Sync loaded value to g_mediaIndexMode enum
+    uint8_t modeValue = getMediaIndexModeValue();
+    g_mediaIndexMode = (modeValue == 1) ? MediaIndexMode::SHUFFLE : MediaIndexMode::SEQUENTIAL;
     
     // Initialize text placement mutex (protects textPlacement analyzer from concurrent access)
     // Text placement mutex removed - not available in this branch

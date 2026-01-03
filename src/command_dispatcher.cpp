@@ -119,6 +119,20 @@ static bool handleNextUnified(const CommandContext& ctx) {
     return handleNextCommand();
 }
 
+static bool handleShuffleOnUnified(const CommandContext& ctx) {
+    (void)ctx;  // No parameters needed
+    extern void setMediaIndexModeFromInt(uint8_t modeValue);
+    setMediaIndexModeFromInt(1);  // 1 = SHUFFLE
+    return true;
+}
+
+static bool handleShuffleOffUnified(const CommandContext& ctx) {
+    (void)ctx;  // No parameters needed
+    extern void setMediaIndexModeFromInt(uint8_t modeValue);
+    setMediaIndexModeFromInt(0);  // 0 = SEQUENTIAL
+    return true;
+}
+
 static bool handleGoUnified(const CommandContext& ctx) {
     String param = "";
     if (ctx.source == CommandSource::MQTT_SMS) {
@@ -513,6 +527,26 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleGoUnified,
         .requiresAuth = true,
         .description = "Go to specific media index"
+    },
+    
+    // Shuffle mode on
+    {
+        .mqttName = "!shuffle_on",
+        .webUIName = "shuffle_on",
+        .httpEndpoint = "/api/shuffle/on",
+        .handler = handleShuffleOnUnified,
+        .requiresAuth = true,
+        .description = "Enable shuffle mode"
+    },
+    
+    // Shuffle mode off
+    {
+        .mqttName = "!shuffle_off",
+        .webUIName = "shuffle_off",
+        .httpEndpoint = "/api/shuffle/off",
+        .handler = handleShuffleOffUnified,
+        .requiresAuth = true,
+        .description = "Disable shuffle mode (use sequential)"
     },
     
     // Show media

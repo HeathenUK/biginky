@@ -64,7 +64,10 @@ extern bool g_media_mappings_loaded;
 extern bool sdInitDirect(bool mode1bit);
 extern void loadQuotesFromSD();
 extern void loadMediaMappingsFromSD(bool autoPublish);
-extern bool pngDrawFromMediaMappings(uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
+extern bool pngDrawFromMediaMappings(int index, uint32_t* out_sd_read_ms, uint32_t* out_decode_ms);
+extern int getNextMediaIndex();
+extern void setMediaIndex(int index);
+extern int getCurrentMediaIndex();
 extern void mediaIndexSaveToNVS();
 extern String getAudioForImage(const String& imagePath);
 extern bool playWavFile(const String& audioPath);
@@ -542,20 +545,20 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
         return false;
     }
     
-    // Set target index if specified (otherwise use sequential)
+    // Determine which index to display
+    int displayIndex;
     if (targetIndex >= 0) {
-        size_t mediaCount = g_media_mappings.size();
-        if (targetIndex >= (int)mediaCount) {
-            Serial.printf("ERROR: Index %d is out of bounds (max %zu)\n", targetIndex, mediaCount);
-            return false;
-        }
-        // Set to targetIndex-1 so pngDrawFromMediaMappings increments to targetIndex
-        lastMediaIndex = (targetIndex - 1 + mediaCount) % mediaCount;
+        // Specific index requested (e.g., from !go command)
+        setMediaIndex(targetIndex);
+        displayIndex = targetIndex;
+    } else {
+        // Sequential: get next index based on current mode
+        displayIndex = getNextMediaIndex();
     }
     
-    // Load image from media mappings (this increments lastMediaIndex to show the target/next item)
+    // Draw the image at the determined index (pure function - no state management)
     uint32_t sd_ms = 0, dec_ms = 0;
-    bool ok = pngDrawFromMediaMappings(&sd_ms, &dec_ms);
+    bool ok = pngDrawFromMediaMappings(displayIndex, &sd_ms, &dec_ms);
     if (!ok) {
         Serial.println("ERROR: Failed to load image from media.txt");
         return false;
@@ -563,13 +566,6 @@ bool displayMediaWithOverlay(int targetIndex, int16_t keepoutMargin) {
     
     Serial.printf("PNG SD read: %lu ms, decode+draw: %lu ms\n", (unsigned long)sd_ms, (unsigned long)dec_ms);
     Serial.printf("Now at media index: %lu\n", (unsigned long)lastMediaIndex);
-    
-    // When showing a specific target index, lastMediaIndex should remain at that index
-    // (not advance) so the web UI correctly shows the next item as (targetIndex + 1)
-    // The increment happens naturally on the next sequential cycle via pngDrawFromMediaMappings
-    
-    // Save updated index to NVS
-    mediaIndexSaveToNVS();
     
     // Yield before text placement
     vTaskDelay(1);

@@ -2015,6 +2015,7 @@ void setMediaIndex(int index);  // Set index directly (for !go commands)
 int getCurrentMediaIndex();  // Get current index
 void setMediaIndexMode(MediaIndexMode mode);  // Set mode (sequential/shuffle)
 MediaIndexMode getMediaIndexMode();  // Get current mode
+uint8_t getMediaIndexModeAsInt();  // Get current mode as integer (0=SEQUENTIAL, 1=SHUFFLE) - for use in other compilation units
 void setMediaIndexModeFromInt(uint8_t modeValue);  // Set mode from integer (0=SEQUENTIAL, 1=SHUFFLE) - for command dispatcher
 void hourScheduleLoadFromNVS();  // Load hour schedule from NVS (called on startup)
 void hourScheduleSaveToNVS();  // Save hour schedule to NVS
@@ -9947,6 +9948,11 @@ void setMediaIndexMode(MediaIndexMode mode) {
  */
 MediaIndexMode getMediaIndexMode() {
     return g_mediaIndexMode;
+}
+
+// Helper function to get mode as integer (for use in other compilation units)
+uint8_t getMediaIndexModeAsInt() {
+    return (g_mediaIndexMode == MediaIndexMode::SHUFFLE) ? 1 : 0;
 }
 
 /**

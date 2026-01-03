@@ -659,6 +659,29 @@ void publishMQTTStatus() {
     
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
     
+    // WiFi information (if connected)
+    if (WiFi.status() == WL_CONNECTED) {
+        IPAddress ip = WiFi.localIP();
+        int rssi = WiFi.RSSI();
+        // Convert RSSI to percentage: 2 * (rssi + 100), clamped to 0-100
+        // Typical range: -100 dBm (0%) to -50 dBm (100%)
+        int rssiPercent = 2 * (rssi + 100);
+        if (rssiPercent < 0) rssiPercent = 0;
+        if (rssiPercent > 100) rssiPercent = 100;
+        
+        written += snprintf(jsonBuffer + written, jsonSize - written,
+                           ",\"wifi\":{\"ip\":\"%d.%d.%d.%d\",\"signal_percent\":%d}",
+                           ip[0], ip[1], ip[2], ip[3], rssiPercent);
+    }
+    
+    // Media index mode (shuffle/sequential)
+    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+        extern uint8_t getMediaIndexModeAsInt();  // From main.cpp - returns 0 for SEQUENTIAL, 1 for SHUFFLE
+        uint8_t modeInt = getMediaIndexModeAsInt();
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"shuffle_mode\":%s",
+                           (modeInt == 1) ? "true" : "false");
+    }
+    
     if (webUICommandPending && pendingWebUICommand.length() > 0) {
         String cmdName = extractJsonStringField(pendingWebUICommand, "command");
         if (cmdName.length() == 0) {
@@ -940,6 +963,29 @@ static void statusPreparationTask(void* arg) {
     }
     
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
+    
+    // WiFi information (if connected)
+    if (WiFi.status() == WL_CONNECTED) {
+        IPAddress ip = WiFi.localIP();
+        int rssi = WiFi.RSSI();
+        // Convert RSSI to percentage: 2 * (rssi + 100), clamped to 0-100
+        // Typical range: -100 dBm (0%) to -50 dBm (100%)
+        int rssiPercent = 2 * (rssi + 100);
+        if (rssiPercent < 0) rssiPercent = 0;
+        if (rssiPercent > 100) rssiPercent = 100;
+        
+        written += snprintf(jsonBuffer + written, jsonSize - written,
+                           ",\"wifi\":{\"ip\":\"%d.%d.%d.%d\",\"signal_percent\":%d}",
+                           ip[0], ip[1], ip[2], ip[3], rssiPercent);
+    }
+    
+    // Media index mode (shuffle/sequential)
+    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
+        extern uint8_t getMediaIndexModeAsInt();  // From main.cpp - returns 0 for SEQUENTIAL, 1 for SHUFFLE
+        uint8_t modeInt = getMediaIndexModeAsInt();
+        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"shuffle_mode\":%s",
+                           (modeInt == 1) ? "true" : "false");
+    }
     
     if (webUICommandPending && pendingWebUICommand.length() > 0) {
         String cmdName = extractJsonStringField(pendingWebUICommand, "command");

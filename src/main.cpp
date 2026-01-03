@@ -1472,21 +1472,21 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
         }
         
         String imageName = fields[0];
-        imageName.trim();
-        
-        // Extract just the filename (remove path if present)
-        int slashPos = imageName.lastIndexOf('/');
-        if (slashPos >= 0) {
-            imageName = imageName.substring(slashPos + 1);
-        }
+            imageName.trim();
+            
+            // Extract just the filename (remove path if present)
+            int slashPos = imageName.lastIndexOf('/');
+            if (slashPos >= 0) {
+                imageName = imageName.substring(slashPos + 1);
+            }
         
         // Validate image filename
         if (imageName.length() == 0) {
             Serial.printf("  Warning: Line %d has empty image field, skipping\n", lineNum);
             continue;
         }
-        
-        // Check if it looks like an image file
+            
+            // Check if it looks like an image file
         String imageLower = imageName;
         imageLower.toLowerCase();
         if (!(imageLower.endsWith(".png") || imageLower.endsWith(".bmp") || 
@@ -1497,8 +1497,8 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
         }
         
         // Create mapping
-        MediaMapping mm;
-        mm.imageName = imageName;
+                MediaMapping mm;
+                mm.imageName = imageName;
         if (fieldCount > 1) {
             mm.audioFile = fields[1];
             mm.audioFile.trim();
@@ -1540,15 +1540,15 @@ int loadMediaMappingsFromSD(bool autoPublish = true) {
             }
         }
         
-        g_media_mappings.push_back(mm);
-        
+                g_media_mappings.push_back(mm);
+                
         // Log the mapping
         Serial.printf("  [%d] %s", g_media_mappings.size(), imageName.c_str());
         if (mm.audioFile.length() > 0) {
             Serial.printf(" -> %s", mm.audioFile.c_str());
-        } else {
+            } else {
             Serial.printf(" -> (no audio)");
-        }
+            }
         if (mm.foreground.length() > 0 || mm.outline.length() > 0 || mm.font.length() > 0 || mm.thickness != 3) {
             Serial.printf(" [fg:%s,out:%s,font:%s,thickness:%d]", 
                          mm.foreground.c_str(), mm.outline.c_str(), mm.font.c_str(), mm.thickness);
@@ -2931,9 +2931,9 @@ static void auto_cycle_task(void* arg) {
     // Only display media if there's an explicit slot at this minute
     // This allows hours to be enabled but have no action at :00 if no slot is defined
     if (hasScheduleSlot(currentHour, currentMinute)) {
-        // Yield before display update cycle
-        vTaskDelay(1);
-        
+    // Yield before display update cycle
+    vTaskDelay(1);
+    
         // Check if there's a mapping number parameter (1-indexed)
         String mappingParam = getScheduleSlotParameter(currentHour, currentMinute);
         int targetIndex = -1;  // -1 means use next index (default behavior)
@@ -2949,19 +2949,19 @@ static void auto_cycle_task(void* arg) {
         }
         
         // Display media mapping using unified display function (same as !go and !next commands)
-        // This ensures consistent behavior across all command sources
+    // This ensures consistent behavior across all command sources
         // targetIndex = -1 means get next index (sequential or shuffle based on current mode), 50 = keepout margin (50px top/bottom, will be 25px left/right in layout)
         bool ok = displayMediaWithOverlay(targetIndex, 50);
-        if (!ok) {
+    if (!ok) {
             Serial.println("ERROR: Failed to display scheduled media mapping");
-            // Sleep anyway and retry next cycle
-            if (time_ok) {
-                sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
-            } else {
-                sleepNowSeconds(kCycleSleepSeconds);
-            }
-            return;  // Exit task
+        // Sleep anyway and retry next cycle
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
         }
+        return;  // Exit task
+    }
         
         // Always send status update after display
         vTaskDelay(1);
@@ -3942,6 +3942,21 @@ bool handleOtaCommand(const String& originalMessage) {
         Serial.println("ERROR: !ota command only allowed from hardcoded number - command rejected");
         return false;
     }
+    
+    // Clear retained message on devices/web-ui/cmd BEFORE starting blocking OTA server
+    // This prevents the OTA command from being replayed on reconnect
+    extern esp_mqtt_client_handle_t getMqttClient();
+    esp_mqtt_client_handle_t client = getMqttClient();
+    if (client != nullptr) {
+        Serial.println("Clearing retained OTA command from devices/web-ui/cmd before starting OTA server...");
+        int msg_id = esp_mqtt_client_publish(client, "devices/web-ui/cmd", "", 0, 1, 1);
+        if (msg_id > 0) {
+            Serial.printf("Published blank retained message to clear OTA command (msg_id: %d)\n", msg_id);
+        } else {
+            Serial.printf("WARNING: Failed to clear retained OTA command (msg_id: %d)\n", msg_id);
+        }
+    }
+    
     // Mark that OTA was triggered via MQTT (so we send notification on next boot)
     {
         NVSGuard guard(otaPrefs, "ota", false);  // read-write
@@ -4753,16 +4768,16 @@ static String listAllFiles(const String& dirPath = "") {
                 fullPath += "/";
             }
         }
-        
-        FF_DIR dir;
-        FILINFO fno;
+    
+    FF_DIR dir;
+    FILINFO fno;
         FRESULT res = f_opendir(&dir, fullPath.c_str());
-        
-        if (res == FR_OK) {
-            while (true) {
-                res = f_readdir(&dir, &fno);
-                if (res != FR_OK || fno.fname[0] == 0) break;
-                
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
                 // Skip . and .. entries
                 if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
                     continue;
@@ -4795,12 +4810,12 @@ static String listAllFiles(const String& dirPath = "") {
                 if (!(fno.fattrib & AM_DIR)) {
                     // File: include size and modified time
                     json += ",\"size\":";
-                    json += String(fno.fsize);
-                    
-                    // Extract date/time from FatFs format
-                    // fdate: bits 0-4 = day (1-31), bits 5-8 = month (1-12), bits 9-15 = year from 1980
-                    // ftime: bits 0-4 = second/2 (0-29), bits 5-10 = minute (0-59), bits 11-15 = hour (0-23)
-                    uint16_t year = 1980 + ((fno.fdate >> 9) & 0x7F);
+                json += String(fno.fsize);
+                
+                // Extract date/time from FatFs format
+                // fdate: bits 0-4 = day (1-31), bits 5-8 = month (1-12), bits 9-15 = year from 1980
+                // ftime: bits 0-4 = second/2 (0-29), bits 5-10 = minute (0-59), bits 11-15 = hour (0-23)
+                uint16_t year = 1980 + ((fno.fdate >> 9) & 0x7F);
                 uint8_t month = (fno.fdate >> 5) & 0x0F;
                 uint8_t day = fno.fdate & 0x1F;
                 uint8_t hour = (fno.ftime >> 11) & 0x1F;
@@ -4832,9 +4847,9 @@ static String listAllFiles(const String& dirPath = "") {
                 json += ",\"size\":0,\"modified\":0";
             }
             
-            json += "}";
-            }
-            f_closedir(&dir);
+                json += "}";
+        }
+        f_closedir(&dir);
         }
     }
     
@@ -5948,7 +5963,7 @@ bool handleManageCommand() {
         } else {
             // SD card (FatFS)
             filepath = "0:/";
-            filepath += filename;
+        filepath += filename;
         }
         
         if (isLittleFS) {
@@ -5985,35 +6000,35 @@ bool handleManageCommand() {
             }
         } else {
             // Use FatFS for SD card
-            FIL file;
-            FRESULT res = f_open(&file, filepath.c_str(), FA_READ);
-            if (res == FR_OK) {
-                FSIZE_t fileSize = f_size(&file);
-                
-                // Add CORS headers before creating stream response
-                addCorsHeaders(response);
-                
-                // Create stream response for file download
-                // Constructor automatically sets Content-Disposition header for download
-                PsychicStreamResponse streamResp(response, "application/octet-stream", filename);
-                
-                if (streamResp.beginSend() == ESP_OK) {
-                    // Stream file content
-                    char buffer[512];
-                    UINT bytesRead;
-                    while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
-                        streamResp.write((uint8_t*)buffer, bytesRead);
-                        if (bytesRead < sizeof(buffer)) break; // EOF
-                    }
-                    streamResp.endSend();
+        FIL file;
+        FRESULT res = f_open(&file, filepath.c_str(), FA_READ);
+        if (res == FR_OK) {
+            FSIZE_t fileSize = f_size(&file);
+            
+            // Add CORS headers before creating stream response
+            addCorsHeaders(response);
+            
+            // Create stream response for file download
+            // Constructor automatically sets Content-Disposition header for download
+            PsychicStreamResponse streamResp(response, "application/octet-stream", filename);
+            
+            if (streamResp.beginSend() == ESP_OK) {
+                // Stream file content
+                char buffer[512];
+                UINT bytesRead;
+                while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
+                    streamResp.write((uint8_t*)buffer, bytesRead);
+                    if (bytesRead < sizeof(buffer)) break; // EOF
                 }
-                f_close(&file);
+                streamResp.endSend();
+            }
+            f_close(&file);
                 Serial.printf("File downloaded from SD: %s (%lu bytes)\n", filename.c_str(), (unsigned long)fileSize);
-                return ESP_OK;
-            } else {
-                addCorsHeaders(response);
+            return ESP_OK;
+        } else {
+            addCorsHeaders(response);
                 Serial.printf("File not found on SD: %s (error %d)\n", filepath.c_str(), res);
-                return response->send(404, "text/plain", "File not found");
+            return response->send(404, "text/plain", "File not found");
             }
         }
     });
@@ -6233,7 +6248,7 @@ bool handleManageCommand() {
                 // If filename already contains a path, use it as-is; otherwise append to uploadDir
                 if (filename.indexOf('/') >= 0) {
                     filepath += "/";
-                    filepath += filename;
+            filepath += filename;
                 } else {
                     filepath += "/";
                     filepath += filename;
@@ -6261,6 +6276,34 @@ bool handleManageCommand() {
             
             if (isLittleFS) {
                 // Use POSIX file operations for LittleFS
+                // Create parent directories if they don't exist
+                String parentDir = filepath;
+                int lastSlash = parentDir.lastIndexOf('/');
+                if (lastSlash > 0) {  // Only if there's a directory component (not just "/littlefs")
+                    parentDir = parentDir.substring(0, lastSlash);
+                    struct stat st;
+                    if (stat(parentDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                        // Directory doesn't exist, create it
+                        // Create all parent directories recursively
+                        String dirToCreate = "/littlefs";
+                        int startPos = 9;  // Start after "/littlefs"
+                        while (startPos < parentDir.length()) {
+                            int nextSlash = parentDir.indexOf('/', startPos);
+                            if (nextSlash < 0) {
+                                dirToCreate = parentDir;
+                                break;
+                            }
+                            dirToCreate = parentDir.substring(0, nextSlash);
+                            if (stat(dirToCreate.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                                if (mkdir(dirToCreate.c_str(), 0755) != 0) {
+                                    Serial.printf("WARNING: Failed to create directory %s\n", dirToCreate.c_str());
+                                }
+                            }
+                            startPos = nextSlash + 1;
+                        }
+                    }
+                }
+                
                 FILE* file = fopen(filepath.c_str(), "wb");
                 if (file == nullptr) {
                     free(decodedBuffer);
@@ -6290,38 +6333,38 @@ bool handleManageCommand() {
                              filepath.c_str(), bytesWritten);
             } else {
                 // Use FatFS for SD card
-                FIL file;
-                FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
-                
-                if (res != FR_OK) {
-                    free(decodedBuffer);
-                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create file\"}";
-                    *(data->success) = false;
-                    xSemaphoreGive(data->sem);
-                    vTaskDelete(NULL);
-                    return;
-                }
-                
-                // Write decoded data to file
+            FIL file;
+            FRESULT res = f_open(&file, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+            
+            if (res != FR_OK) {
+                free(decodedBuffer);
+                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create file\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Write decoded data to file
                 UINT bytesWrittenUINT = 0;
                 FRESULT writeRes = f_write(&file, decodedBuffer, decodedLen, &bytesWrittenUINT);
                 bytesWritten = bytesWrittenUINT;  // Convert to size_t
-                
-                f_close(&file);
-                free(decodedBuffer);
-                
-                if (writeRes != FR_OK || bytesWritten != decodedLen) {
+            
+            f_close(&file);
+            free(decodedBuffer);
+            
+            if (writeRes != FR_OK || bytesWritten != decodedLen) {
                     Serial.printf("ERROR: File write failed: res=%d, wrote=%zu/%zu\n", 
-                                 writeRes, bytesWritten, decodedLen);
-                    *(data->resultJson) = "{\"success\":false,\"error\":\"File write failed\"}";
-                    *(data->success) = false;
-                    xSemaphoreGive(data->sem);
-                    vTaskDelete(NULL);
-                    return;
-                }
-                
+                             writeRes, bytesWritten, decodedLen);
+                *(data->resultJson) = "{\"success\":false,\"error\":\"File write failed\"}";
+                *(data->success) = false;
+                xSemaphoreGive(data->sem);
+                vTaskDelete(NULL);
+                return;
+            }
+            
                 Serial.printf("File upload complete to SD: %s (%zu bytes written)\n", 
-                             filename.c_str(), bytesWritten);
+                         filename.c_str(), bytesWritten);
             }
             
             *(data->resultJson) = "{\"success\":true,\"filename\":\"";
@@ -6508,32 +6551,44 @@ bool handleManageCommand() {
             Serial.printf("Chunk upload: %s chunk %d/%d (%d bytes base64)\n", 
                          filename.c_str(), chunkIndex + 1, totalChunks, chunkData.length());
             
-            // Create temp directory for chunks if it doesn't exist
-            String tempDir = "0:/_upload_chunks";
+            // Determine filesystem type from upload directory
+            bool isLittleFS = false;
+            String normalizedUploadDir = "";
+            if (data->uploadDir && data->uploadDirLen > 0) {
+                normalizedUploadDir = String(data->uploadDir);
+                if (normalizedUploadDir.startsWith("littlefs") || normalizedUploadDir.startsWith("/littlefs")) {
+                    isLittleFS = true;
+                }
+            }
+            
+            // Create temp directory for chunks (same filesystem as destination)
+            String tempDir;
+            if (isLittleFS) {
+                tempDir = "/littlefs/_upload_chunks";
+                // Create directory if it doesn't exist
+                struct stat st;
+                if (stat(tempDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                    if (mkdir(tempDir.c_str(), 0755) != 0) {
+                        Serial.printf("WARNING: Failed to create chunk directory %s\n", tempDir.c_str());
+                    }
+                }
+            } else {
+                tempDir = "0:/_upload_chunks";
             FILINFO fno;
             FRESULT dirRes = f_stat(tempDir.c_str(), &fno);
             if (dirRes != FR_OK) {
                 f_mkdir(tempDir.c_str());
+                }
             }
             
             // Save chunk to temp file
             String chunkFile = tempDir + "/" + filename + ".chunk" + String(chunkIndex);
-            FIL chunkFil;
-            FRESULT openRes = f_open(&chunkFil, chunkFile.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
-            if (openRes != FR_OK) {
-                *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create chunk file\"}";
-                *(data->success) = false;
-                xSemaphoreGive(data->sem);
-                vTaskDelete(NULL);
-                return;
-            }
             
-            // Decode base64 chunk
+            // Decode base64 chunk first
             size_t base64Len = chunkData.length();
             size_t decodedMaxSize = (base64Len * 3) / 4 + 4;
             uint8_t* decodedBuffer = (uint8_t*)malloc(decodedMaxSize);
             if (!decodedBuffer) {
-                f_close(&chunkFil);
                 *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to allocate decode buffer\"}";
                 *(data->success) = false;
                 xSemaphoreGive(data->sem);
@@ -6574,7 +6629,43 @@ bool handleManageCommand() {
                 }
             }
             
-            // Write decoded chunk
+            // Write decoded chunk to temp file (same filesystem as destination)
+            if (isLittleFS) {
+                // Use POSIX file operations for LittleFS
+                FILE* chunkFil = fopen(chunkFile.c_str(), "wb");
+                if (chunkFil == nullptr) {
+                    free(decodedBuffer);
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create chunk file\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                size_t bytesWritten = fwrite(decodedBuffer, 1, decodedLen, chunkFil);
+                fclose(chunkFil);
+                free(decodedBuffer);
+                
+                if (bytesWritten != decodedLen) {
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to write chunk\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+            } else {
+                // Use FatFS for SD card
+                FIL chunkFil;
+                FRESULT openRes = f_open(&chunkFil, chunkFile.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+                if (openRes != FR_OK) {
+                    free(decodedBuffer);
+                    *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create chunk file\"}";
+                    *(data->success) = false;
+                    xSemaphoreGive(data->sem);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
             UINT bytesWritten = 0;
             FRESULT writeRes = f_write(&chunkFil, decodedBuffer, decodedLen, &bytesWritten);
             f_close(&chunkFil);
@@ -6586,25 +6677,182 @@ bool handleManageCommand() {
                 xSemaphoreGive(data->sem);
                 vTaskDelete(NULL);
                 return;
+                }
             }
             
             // Check if this is the last chunk - if so, reassemble file
             if (chunkIndex == totalChunks - 1) {
                 Serial.printf("Last chunk received, reassembling file: %s\n", filename.c_str());
                 
-                // Build filepath with upload directory
-                String filepath = "0:/";
+                // Check if upload directory indicates LittleFS
+                bool isLittleFS = false;
+                String normalizedUploadDir = "";
                 if (data->uploadDir && data->uploadDirLen > 0) {
-                    filepath += String(data->uploadDir);
-                }
-                // If filename already contains a path, use it as-is; otherwise append to uploadDir
-                if (filename.indexOf('/') >= 0) {
-                    filepath += filename;
-                } else {
-                    filepath += filename;
+                    normalizedUploadDir = String(data->uploadDir);
+                    if (normalizedUploadDir.startsWith("littlefs") || normalizedUploadDir.startsWith("/littlefs")) {
+                        isLittleFS = true;
+                        // Remove leading "littlefs" or "/littlefs"
+                        if (normalizedUploadDir.startsWith("/littlefs/")) {
+                            normalizedUploadDir = normalizedUploadDir.substring(10); // Remove "/littlefs/"
+                        } else if (normalizedUploadDir.startsWith("/littlefs")) {
+                            normalizedUploadDir = normalizedUploadDir.substring(9); // Remove "/littlefs"
+                        } else if (normalizedUploadDir.startsWith("littlefs/")) {
+                            normalizedUploadDir = normalizedUploadDir.substring(9); // Remove "littlefs/"
+                        } else if (normalizedUploadDir == "littlefs") {
+                            normalizedUploadDir = "";
+                        }
+                    }
                 }
                 
-                // Open destination file
+                // Build filepath with upload directory
+                String filepath;
+                if (isLittleFS) {
+                    filepath = "/littlefs";
+                    if (normalizedUploadDir.length() > 0) {
+                        filepath += "/";
+                        filepath += normalizedUploadDir;
+                    }
+                    // If filename already contains a path, use it as-is; otherwise append to uploadDir
+                    if (filename.indexOf('/') >= 0) {
+                        filepath += "/";
+                        filepath += filename;
+                    } else {
+                        filepath += "/";
+                        filepath += filename;
+                    }
+                } else {
+                    // SD card (FatFS)
+                    filepath = "0:/";
+                    if (data->uploadDir && data->uploadDirLen > 0) {
+                        filepath += String(data->uploadDir);
+                    }
+                    // If filename already contains a path, use it as-is; otherwise append to uploadDir
+                    if (filename.indexOf('/') >= 0) {
+                        filepath += filename;
+                    } else {
+                        filepath += filename;
+                    }
+                }
+                
+                if (isLittleFS) {
+                    // Use POSIX file operations for LittleFS
+                    // Create parent directories if they don't exist
+                    String parentDir = filepath;
+                    int lastSlash = parentDir.lastIndexOf('/');
+                    if (lastSlash > 8) {  // Only if there's a directory component beyond "/littlefs"
+                        parentDir = parentDir.substring(0, lastSlash);
+                        struct stat st;
+                        if (stat(parentDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                            // Directory doesn't exist, create it recursively
+                            String dirToCreate = "/littlefs";
+                            int startPos = 9;  // Start after "/littlefs"
+                            while (startPos <= parentDir.length()) {
+                                int nextSlash = parentDir.indexOf('/', startPos);
+                                if (nextSlash < 0) {
+                                    dirToCreate = parentDir;
+                                } else {
+                                    dirToCreate = parentDir.substring(0, nextSlash);
+                                }
+                                // Check if this directory level exists
+                                if (stat(dirToCreate.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                                    if (mkdir(dirToCreate.c_str(), 0755) != 0) {
+                                        Serial.printf("WARNING: Failed to create directory %s\n", dirToCreate.c_str());
+                                    } else {
+                                        Serial.printf("Created directory: %s\n", dirToCreate.c_str());
+                                    }
+                                }
+                                if (nextSlash < 0) break;
+                                startPos = nextSlash + 1;
+                            }
+                        }
+                    }
+                    
+                    FILE* destFile = fopen(filepath.c_str(), "wb");
+                    if (destFile == nullptr) {
+                        *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to create destination file in LittleFS\"}";
+                        *(data->success) = false;
+                        xSemaphoreGive(data->sem);
+                        vTaskDelete(NULL);
+                        return;
+                    }
+                    
+                    // Read and concatenate all chunks
+                    uint8_t* buffer = (uint8_t*)malloc(8192);  // 8KB buffer
+                    if (!buffer) {
+                        fclose(destFile);
+                        *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to allocate buffer\"}";
+                        *(data->success) = false;
+                        xSemaphoreGive(data->sem);
+                        vTaskDelete(NULL);
+                        return;
+                    }
+                    
+                    size_t totalBytes = 0;
+                    bool success = true;
+                    
+                    for (int i = 0; i < totalChunks; i++) {
+                        String chunkPath = tempDir + "/" + filename + ".chunk" + String(i);
+                        FILE* chunkFile = fopen(chunkPath.c_str(), "rb");
+                        if (chunkFile == nullptr) {
+                            Serial.printf("ERROR: Failed to open chunk %d\n", i);
+                            success = false;
+                            break;
+                        }
+                        
+                        // Get file size
+                        fseek(chunkFile, 0, SEEK_END);
+                        long chunkSize = ftell(chunkFile);
+                        fseek(chunkFile, 0, SEEK_SET);
+                        
+                        size_t remaining = (size_t)chunkSize;
+                        
+                        while (remaining > 0) {
+                            size_t toRead = (remaining > 8192) ? 8192 : remaining;
+                            size_t bytesRead = fread(buffer, 1, toRead, chunkFile);
+                            if (bytesRead == 0) {
+                                success = false;
+                                break;
+                            }
+                            
+                            // Use POSIX file operations for LittleFS
+                            size_t bytesWritten = fwrite(buffer, 1, bytesRead, destFile);
+                            if (bytesWritten != bytesRead) {
+                                success = false;
+                                break;
+                            }
+                            
+                            totalBytes += bytesWritten;
+                            remaining -= bytesRead;
+                        }
+                        
+                        fclose(chunkFile);
+                        
+                        // Delete chunk file
+                        unlink(chunkPath.c_str());
+                        
+                        if (!success) break;
+                    }
+                    
+                    fclose(destFile);
+                    free(buffer);
+                    
+                    if (!success) {
+                        *(data->resultJson) = "{\"success\":false,\"error\":\"Failed to reassemble file\"}";
+                        *(data->success) = false;
+                        xSemaphoreGive(data->sem);
+                        vTaskDelete(NULL);
+                        return;
+                    }
+                    
+                    Serial.printf("File reassembled: %s (%zu bytes)\n", filename.c_str(), totalBytes);
+                    *(data->resultJson) = "{\"success\":true,\"filename\":\"";
+                    *(data->resultJson) += filename;
+                    *(data->resultJson) += "\",\"size\":";
+                    *(data->resultJson) += String(totalBytes);
+                    *(data->resultJson) += "}";
+                    *(data->success) = true;
+                } else {
+                    // Use FatFS for SD card
                 FIL destFile;
                 FRESULT openRes = f_open(&destFile, filepath.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
                 if (openRes != FR_OK) {
@@ -6651,6 +6899,7 @@ bool handleManageCommand() {
                             break;
                         }
                         
+                            // Use FatFS for SD card
                         UINT bytesWritten = 0;
                         res = f_write(&destFile, buffer, bytesRead, &bytesWritten);
                         if (res != FR_OK || bytesWritten != bytesRead) {
@@ -6688,6 +6937,7 @@ bool handleManageCommand() {
                 *(data->resultJson) += String(totalBytes);
                 *(data->resultJson) += "}";
                 *(data->success) = true;
+                }
             } else {
                 // Not the last chunk, just acknowledge
                 *(data->resultJson) = "{\"success\":true,\"chunk\":";
@@ -10284,7 +10534,7 @@ int getCurrentMediaIndex() {
     if (!g_media_mappings_loaded || g_media_mappings.size() == 0) {
         return 0;
     }
-    
+
     size_t mediaCount = g_media_mappings.size();
     
     // Safety check: if index is out of bounds, reset to 0
@@ -10365,8 +10615,8 @@ int getNextMediaIndex() {
     
     if (g_mediaIndexMode == MediaIndexMode::SEQUENTIAL) {
         // Sequential: increment and wrap around
-        lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
-        mediaIndexSaveToNVS();
+    lastMediaIndex = (lastMediaIndex + 1) % mediaCount;
+    mediaIndexSaveToNVS();
         return (int)lastMediaIndex;
     } else {
         // Shuffle mode
@@ -10845,7 +11095,7 @@ void setup() {
     if (ret != ESP_OK) {
         Serial.printf("Failed to initialize LittleFS partition (%s)\n", esp_err_to_name(ret));
     }
-    
+
     // Print chip information at boot
     // Check if we woke from deep sleep (non-switch-D wake) - set global flag early
     g_is_cold_boot = (wakeCause == ESP_SLEEP_WAKEUP_UNDEFINED);  // Set global flag early for use in print statements

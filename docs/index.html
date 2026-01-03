@@ -459,10 +459,6 @@ table th,table td{padding:6px;font-size:12px;}
 <option value="right">Right</option>
 </select>
 </div>
-<div id="textInputContainer" style="width:200px;display:none;flex-shrink:0;">
-<label style="display:block;margin-bottom:6px;font-size:14px;color:#e0e0e0;">Text:</label>
-<input type="text" id="canvasTextInput" placeholder="Enter text..." style="width:100%;padding:6px;border:1px solid #444;border-radius:4px;box-sizing:border-box;background:#1a1a1a;color:#e0e0e0;font-size:13px;">
-</div>
 </div>
 </div>
 <div class="canvas-actions-wrapper" style="margin-bottom:10px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;">
@@ -486,7 +482,7 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 <div id="imageProcessingPanel" class="image-processing-panel" style="display:none;margin-bottom:15px;padding:15px;background:#2a2a2a;border-radius:8px;border:1px solid #444;">
 <h3 style="color:#4CAF50;margin-top:0;margin-bottom:15px;font-size:16px;">Image Processing Options</h3>
-<div class="flex-row image-processing-controls" style="align-items:flex-end;">
+<div class="flex-row image-processing-controls" style="align-items:flex-end;overflow-x:auto;padding-right:8px;">
 <div class="flex-item image-processing-slider" style="min-width:150px;">
 <label>Brightness:</label>
 <input type="range" id="imageBrightness" min="-50" max="50" value="10" class="processing-slider" style="width:100%;">
@@ -502,19 +498,17 @@ table th,table td{padding:6px;font-size:12px;}
 <input type="range" id="imageSaturation" min="-50" max="50" value="20" class="processing-slider" style="width:100%;">
 <span id="imageSaturationDisplay" class="processing-value">+20%</span>
 </div>
-<div class="flex-item image-processing-checkbox" style="min-width:150px;display:flex;align-items:center;gap:8px;">
+<div class="flex-item image-processing-checkbox" style="min-width:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;">
 <label class="checkbox-label" style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px;user-select:none;">
 <input type="checkbox" id="imagePosterize" checked class="processing-checkbox" style="width:20px;height:20px;margin:0;cursor:pointer;">
 <span>Posterize</span>
 </label>
-</div>
-<div class="flex-item image-processing-checkbox" style="min-width:150px;display:flex;align-items:center;gap:8px;">
 <label class="checkbox-label" style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px;user-select:none;">
 <input type="checkbox" id="imageDither" checked class="processing-checkbox" style="width:20px;height:20px;margin:0;cursor:pointer;">
 <span>Dither</span>
 </label>
 </div>
-<div class="flex-item image-processing-actions" style="flex-shrink:0;display:flex;gap:8px;">
+<div class="flex-item image-processing-actions" style="flex-shrink:0;display:flex;gap:8px;margin-left:auto;">
 <button onclick="disableAllProcessing()" id="disableAllProcessingBtn" style="min-height:48px;background:#666;">Disable All</button>
 <button onclick="applyImageProcessing()" id="applyProcessingBtn" style="min-height:48px;">Apply Processing</button>
 </div>

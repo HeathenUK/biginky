@@ -12,6 +12,8 @@
 #include "cJSON.h"  // For JSON parsing
 #include "ff.h"  // For FatFs file operations (FIL, FRESULT, f_open, f_write, f_close, etc.)
 #include "schedule_manager.h"  // For schedule management functions
+#include "nvs_guard.h"  // For NVS access in OTA handler
+#include "Preferences.h"  // For Preferences
 
 // Forward declarations of handler functions from main.cpp
 extern bool handleClearCommand();
@@ -318,23 +320,9 @@ static bool handleManageUnified(const CommandContext& ctx) {
 
 static bool handleOtaUnified(const CommandContext& ctx) {
     // For WEB_UI source, skip the phone number check (it's already authenticated via password)
+    // We use handleOtaCommand with a properly formatted message containing the hardcoded number
+    // This ensures all the OTA startup logic runs correctly
     if (ctx.source == CommandSource::WEB_UI) {
-        // Mark that OTA was triggered via Web UI
-        extern Preferences otaPrefs;
-        NVSGuard guard(otaPrefs, "ota", false);  // read-write
-        if (guard.isOpen()) {
-            guard.get().putBool("mqtt_triggered", true);
-            Serial.println("OTA triggered via Web UI - notification will be sent after update");
-        }
-        // Start OTA server (function is in main.cpp but not exposed, use handleOtaCommand with empty message)
-        // handleOtaCommand checks senderNumber, but for WEB_UI we want to skip that check
-        // Instead, directly call the OTA startup logic
-        extern void checkAndNotifyOTAUpdate();  // Forward declaration
-        // Create a dummy message that will pass the phone number check by using handleOtaCommand's logic
-        // Actually, let's just call handleOtaCommand with a message that includes the hardcoded number
-        // But wait - handleOtaCommand extracts the number from the message, so we can't fake it
-        // Best approach: Extract the OTA startup logic into a separate function, or modify handleOtaCommand
-        // For now, let's use handleOtaCommand with a properly formatted message
         String dummyMessage = "From: +447816969344\n!ota";
         return handleOtaCommand(dummyMessage);
     } else {

@@ -4056,6 +4056,7 @@ static void serial_monitor_task(void* arg) {
     Serial.println("  Press 'm' at any time to launch web interface");
     Serial.println("  Press 'h' at any time to display Happy weather scene");
     Serial.println("  Press 'E' for encryption status, 'e' to toggle encryption");
+    Serial.println("  Press 's' to print current schedule");
     
     while (true) {
         if (Serial.available()) {
@@ -4086,6 +4087,69 @@ static void serial_monitor_task(void* arg) {
                 } else {
                     Serial.println("\n>>> ERROR: Failed to change encryption setting <<<");
                 }
+            } else if (ch == 's' || ch == 'S') {
+                // Print current schedule
+                Serial.println("\n>>> Current Schedule <<<");
+                String scheduleJson = getDetailedScheduleJSON();
+                if (scheduleJson.length() > 0 && !scheduleJson.startsWith("{\"error\"")) {
+                    // Parse and pretty-print the schedule
+                    cJSON* root = cJSON_Parse(scheduleJson.c_str());
+                    if (root) {
+                        cJSON* scheduleArray = cJSON_GetObjectItem(root, "schedule");
+                        if (scheduleArray && cJSON_IsArray(scheduleArray)) {
+                            int arraySize = cJSON_GetArraySize(scheduleArray);
+                            Serial.printf("Schedule has %d hours:\n", arraySize);
+                            Serial.println("----------------------------------------");
+                            for (int h = 0; h < arraySize && h < 24; h++) {
+                                cJSON* hourObj = cJSON_GetArrayItem(scheduleArray, h);
+                                if (hourObj) {
+                                    cJSON* enabledItem = cJSON_GetObjectItem(hourObj, "enabled");
+                                    bool enabled = enabledItem && cJSON_IsTrue(enabledItem);
+                                    cJSON* slotsArray = cJSON_GetObjectItem(hourObj, "slots");
+                                    
+                                    Serial.printf("Hour %02d: %s\n", h, enabled ? "ENABLED" : "DISABLED");
+                                    if (slotsArray && cJSON_IsArray(slotsArray)) {
+                                        int slotCount = cJSON_GetArraySize(slotsArray);
+                                        if (slotCount > 0) {
+                                            for (int s = 0; s < slotCount; s++) {
+                                                cJSON* slotObj = cJSON_GetArrayItem(slotsArray, s);
+                                                if (slotObj) {
+                                                    cJSON* minuteItem = cJSON_GetObjectItem(slotObj, "minute");
+                                                    cJSON* sceneItem = cJSON_GetObjectItem(slotObj, "scene");
+                                                    cJSON* paramItem = cJSON_GetObjectItem(slotObj, "parameter");
+                                                    
+                                                    int minute = minuteItem && cJSON_IsNumber(minuteItem) ? (int)cJSON_GetNumberValue(minuteItem) : -1;
+                                                    const char* scene = sceneItem && cJSON_IsString(sceneItem) ? cJSON_GetStringValue(sceneItem) : "unknown";
+                                                    const char* param = paramItem && cJSON_IsString(paramItem) ? cJSON_GetStringValue(paramItem) : "";
+                                                    
+                                                    Serial.printf("    %02d:%02d - %s", h, minute, scene);
+                                                    if (param && strlen(param) > 0) {
+                                                        Serial.printf(" (%s)", param);
+                                                    }
+                                                    Serial.println();
+                                                }
+                                            }
+                                        } else {
+                                            Serial.println("    (no slots)");
+                                        }
+                                    } else {
+                                        Serial.println("    (no slots array)");
+                                    }
+                                }
+                            }
+                        } else {
+                            Serial.println("ERROR: Schedule array not found in JSON");
+                        }
+                        cJSON_Delete(root);
+                    } else {
+                        Serial.println("ERROR: Failed to parse schedule JSON");
+                        Serial.printf("JSON: %s\n", scheduleJson.c_str());
+                    }
+                } else {
+                    Serial.println("ERROR: Failed to get schedule JSON");
+                    Serial.printf("Response: %s\n", scheduleJson.c_str());
+                }
+                Serial.println("----------------------------------------");
             }
             // Drain any remaining characters to prevent buffer buildup
             while (Serial.available()) {

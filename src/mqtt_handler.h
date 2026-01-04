@@ -134,6 +134,12 @@ void publishMQTTMediaMappings();
 void publishMQTTMediaMappings(bool waitForCompletion);
 
 /**
+ * Clear the stored media mappings hash to force republish on next call
+ * Useful when schedule or other metadata changes and we want to force an update
+ */
+void clearMediaMappingsHash();
+
+/**
  * Initialize Core 1 task for thumbnail generation and MQTT message building
  * Should be called once at startup
  */

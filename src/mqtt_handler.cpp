@@ -2466,6 +2466,20 @@ static void storeMediaMappingsHash(const String& hash) {
     guard.get().putString("mappings_hash", hash);
 }
 
+/**
+ * Clear the stored media mappings hash to force republish on next call
+ */
+void clearMediaMappingsHash() {
+    NVSGuard guard(mediaPrefs, "media", false);  // Read-write
+    if (!guard.isOpen()) {
+        Serial.println("WARNING: Failed to open NVS for clearing media mappings hash");
+        return;
+    }
+    
+    guard.get().remove("mappings_hash");
+    Serial.println("Cleared stored media mappings hash (will force republish on next call)");
+}
+
 // Backward compatibility wrapper (no parameters)
 void publishMQTTMediaMappings() {
     publishMQTTMediaMappings(false);  // Async by default

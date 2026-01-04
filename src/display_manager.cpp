@@ -17,6 +17,7 @@
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
 #include <HTTPClient.h>
+#include <cstring>  // For strchr, strlen, memcpy
 #include "cJSON.h"
 #include <time.h>
 #include <sys/time.h>
@@ -1752,7 +1753,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     
     // Display condition below current temperature
     const float conditionFontSize = 96.0f;  // Doubled from 48.0f
-    int16_t conditionY = tempY + 150;  // Increased spacing for larger font
+    int16_t conditionY = tempY + 75;  // Reduced gap by half (was 150, now 75)
     ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
@@ -1768,9 +1769,9 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     
     // Display hourly forecast strip (next 8 hours, skipping current hour) below high/low temperatures
     if (hourlyCount > 0) {
-        const float hourlyTimeFontSize = 24.0f;  // Keep same for time labels
+        const float hourlyTimeFontSize = 58.0f;  // Increased from 24.0f
         const float hourlyTempFontSize = 80.0f;  // Doubled from 40.0f
-        const float hourlyDescFontSize = 52.0f;  // Doubled from 26.0f
+        const float hourlyDescFontSize = 40.0f;  // Reduced from 52.0f
         int16_t hourlyY = hiLoY + 130;  // Increased spacing for larger fonts above
         int16_t displayWidth = display.width();
         int16_t stripWidth = displayWidth - 40;  // 20px margin on each side
@@ -1866,14 +1867,49 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
                                  wrappedDesc, sizeof(wrappedDesc), &numLines);
             
             // Calculate Y position for centered multi-line text
-            int16_t lineHeight = ttf.getTextHeight(hourlyDescFontSize);
-            int16_t totalTextHeight = (numLines * lineHeight) + ((numLines - 1) * (lineHeight / 4));  // Small gap between lines
-            int16_t descY = tempY + 70 + (totalTextHeight / 2);  // Increased gap from 50 to 70 for larger fonts
-            
-            // Draw wrapped description (centered)
-            ttf.drawTextAlignedOutlined(itemX, descY, wrappedDesc, hourlyDescFontSize,
-                                        EL133UF1_BLACK, EL133UF1_WHITE,
-                                        ALIGN_CENTER, ALIGN_MIDDLE, 1);
+            // Draw multi-line text by splitting on newlines and drawing each line centered
+            // This ensures proper centering of each line individually
+            if (numLines > 0) {
+                int16_t lineHeight = ttf.getTextHeight(hourlyDescFontSize);
+                int16_t descY = tempY + 70;  // Start position (gap from temperature)
+                
+                // descY is the top of the text block
+                // For ALIGN_MIDDLE, Y position should be the middle of each line
+                // First line middle = descY + lineHeight/2
+                int16_t lineSpacing = lineHeight + (lineHeight / 4);  // Line height + gap between lines
+                
+                const char* lineStart = wrappedDesc;
+                int currentLine = 0;
+                while (lineStart && *lineStart && currentLine < numLines) {
+                    // Find the end of current line (newline or end of string)
+                    const char* lineEnd = strchr(lineStart, '\n');
+                    if (!lineEnd) {
+                        lineEnd = lineStart + strlen(lineStart);
+                    }
+                    
+                    // Extract line (temporarily null-terminate)
+                    size_t lineLen = lineEnd - lineStart;
+                    char lineBuf[128];
+                    if (lineLen < sizeof(lineBuf) - 1) {
+                        memcpy(lineBuf, lineStart, lineLen);
+                        lineBuf[lineLen] = '\0';
+                        
+                        // Calculate Y position for this line's middle (for ALIGN_MIDDLE)
+                        int16_t lineY = descY + (lineHeight / 2) + (currentLine * lineSpacing);
+                        ttf.drawTextAlignedOutlined(itemX, lineY, lineBuf, hourlyDescFontSize,
+                                                    EL133UF1_BLACK, EL133UF1_WHITE,
+                                                    ALIGN_CENTER, ALIGN_MIDDLE, 1);
+                    }
+                    
+                    // Move to next line
+                    if (*lineEnd == '\n') {
+                        lineStart = lineEnd + 1;
+                    } else {
+                        lineStart = nullptr;
+                    }
+                    currentLine++;
+                }
+            }
         }
     }
     

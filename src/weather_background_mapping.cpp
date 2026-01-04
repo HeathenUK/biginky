@@ -188,25 +188,51 @@ bool getWeatherBackgroundPath(const char* iconCode, char* bgPath, size_t bgPathS
         return false;
     }
     
+    // Determine if it's day or night from icon code (ends with 'd' or 'n')
+    bool isDay = false;
+    size_t iconCodeLen = strlen(iconCode);
+    if (iconCodeLen > 0) {
+        char lastChar = iconCode[iconCodeLen - 1];
+        isDay = (lastChar == 'd' || lastChar == 'D');
+    }
+    
+    const char* baseBgFile = nullptr;
+    
     // First, try weather ID mapping (more specific)
     if (weatherId >= 200) {
         for (int i = 0; weatherIdMappings[i].weatherId != -1; i++) {
             if (weatherIdMappings[i].weatherId == weatherId) {
-                snprintf(bgPath, bgPathSize, "/littlefs/weather-bg/%s", weatherIdMappings[i].bgFile);
-                return true;
+                baseBgFile = weatherIdMappings[i].bgFile;
+                break;
             }
         }
     }
     
     // Fallback to icon code mapping
-    for (int i = 0; bgMappings[i].iconCode != nullptr; i++) {
-        if (strcmp(iconCode, bgMappings[i].iconCode) == 0) {
-            snprintf(bgPath, bgPathSize, "/littlefs/weather-bg/%s", bgMappings[i].bgFile);
-            return true;
+    if (baseBgFile == nullptr) {
+        for (int i = 0; bgMappings[i].iconCode != nullptr; i++) {
+            if (strcmp(iconCode, bgMappings[i].iconCode) == 0) {
+                baseBgFile = bgMappings[i].bgFile;
+                break;
+            }
         }
     }
     
     // Default fallback: clear sky
-    snprintf(bgPath, bgPathSize, "/littlefs/weather-bg/13_clear.png");
+    if (baseBgFile == nullptr) {
+        baseBgFile = "13_clear.png";
+    }
+    
+    // Replace .png with _d.png or _n.png based on day/night
+    // Extract base name (everything before .png)
+    String baseName = String(baseBgFile);
+    int dotPos = baseName.lastIndexOf(".png");
+    if (dotPos >= 0) {
+        baseName = baseName.substring(0, dotPos);
+    }
+    
+    // Append day/night suffix
+    String finalName = baseName + (isDay ? "_d.png" : "_n.png");
+    snprintf(bgPath, bgPathSize, "/littlefs/weather-bg/%s", finalName.c_str());
     return true;
 }

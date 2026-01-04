@@ -1782,7 +1782,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     
     // Display high/low temperatures below current temperature
     const float hiLoFontSize = 96.0f;  // Doubled from 48.0f
-    int16_t hiLoY = tempY + 130;  // Spacing from temperature
+    int16_t hiLoY = tempY + 140;  // Spacing from temperature (lowered by 10px)
     char hiLoStr[128];
     snprintf(hiLoStr, sizeof(hiLoStr), "High: %s / Low: %s", tempMaxStr, tempMinStr);
     ttf.drawTextAlignedOutlined(display.width() / 2, hiLoY, hiLoStr, hiLoFontSize,
@@ -1791,7 +1791,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     
     // Display condition halfway between current temperature and high/low
     const float conditionFontSize = 96.0f;  // Doubled from 48.0f
-    int16_t conditionY = tempY + 65;  // Halfway between tempY and hiLoY: (0 + 130) / 2 = 65
+    int16_t conditionY = tempY + 70;  // Halfway between tempY and hiLoY: (0 + 140) / 2 = 70
     ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);

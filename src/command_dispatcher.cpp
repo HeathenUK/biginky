@@ -481,8 +481,10 @@ static bool handleScheduleSetUnified(const CommandContext& ctx) {
     clearMediaMappingsHash();
     
     // Republish media mappings to notify UI of schedule change
-    extern void publishMQTTMediaMappings();
-    publishMQTTMediaMappings();
+    // Use synchronous mode (waitForCompletion=true) to ensure publish completes before device continues
+    // This prevents crashes if device enters sleep while Core 1 is still generating thumbnails
+    extern void publishMQTTMediaMappings(bool waitForCompletion);
+    publishMQTTMediaMappings(true);  // Wait for completion
     Serial.println("[SCHEDULE_SET] Media mappings republished with updated schedule");
     
     return true;

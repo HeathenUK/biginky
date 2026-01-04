@@ -403,10 +403,9 @@ async function saveScheduleToDevice() {
                     // Only push slot if at least one field is provided
                     if (hasName || hasLatLon) {
                         slots.push(slot);
-                    } else {
-                        // Skip empty slots
-                        continue;
                     }
+                    // Skip empty slots - return early to avoid pushing slot without data
+                    return; // Skip to next iteration in forEach
                 } else {
                     slots.push(slot);
                 }

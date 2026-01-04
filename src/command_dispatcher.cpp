@@ -476,10 +476,6 @@ static bool handleScheduleSetUnified(const CommandContext& ctx) {
     detailedScheduleSaveToNVS();
     Serial.println("[SCHEDULE_SET] Schedule updated and saved to NVS");
     
-    // Clear stored media mappings hash to force republish (schedule is part of media mappings JSON)
-    extern void clearMediaMappingsHash();
-    clearMediaMappingsHash();
-    
     // Republish media mappings to notify UI of schedule change
     // Use synchronous mode (waitForCompletion=true) to ensure publish completes before device continues
     // This prevents crashes if device enters sleep while Core 1 is still generating thumbnails

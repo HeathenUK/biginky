@@ -4057,6 +4057,7 @@ static void serial_monitor_task(void* arg) {
     Serial.println("  Press 'h' at any time to display Happy weather scene");
     Serial.println("  Press 'E' for encryption status, 'e' to toggle encryption");
     Serial.println("  Press 's' to print current schedule");
+    Serial.println("  Press 'p' to manually publish media mappings to MQTT");
     
     while (true) {
         if (Serial.available()) {
@@ -4150,6 +4151,12 @@ static void serial_monitor_task(void* arg) {
                     Serial.printf("Response: %s\n", scheduleJson.c_str());
                 }
                 Serial.println("----------------------------------------");
+            } else if (ch == 'p' || ch == 'P') {
+                // Manually publish media mappings
+                Serial.println("\n>>> 'p' key detected - Publishing media mappings to MQTT <<<");
+                extern void publishMQTTMediaMappings();
+                publishMQTTMediaMappings();  // Async mode (non-blocking)
+                Serial.println("Media mappings publish queued to Core 1 worker task");
             }
             // Drain any remaining characters to prevent buffer buildup
             while (Serial.available()) {

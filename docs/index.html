@@ -248,30 +248,6 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 <div class="section">
-<h2 onclick="toggleSection(this)">Scene Schedule</h2>
-<div class="section-content" id="section-schedule">
-<p>Configure which scenes display at specific times within each hour. Each hour can have multiple time slots with different scenes.</p>
-<div style="margin:10px 0;">
-<button onclick="saveScheduleToDevice()" id="saveScheduleBtn" disabled>Save Schedule</button>
-</div>
-<div id="scheduleStatus" style="margin:10px 0;"></div>
-<div style="display:flex;gap:20px;flex-wrap:wrap;">
-<div class="table-wrapper" style="flex:1;min-width:400px;">
-<table id="scheduleTable1" style="width:100%;border-collapse:collapse;margin:10px 0;">
-<thead><tr style="background:#333;"><th style="padding:8px;text-align:left;">Hour</th><th style="padding:8px;text-align:left;">Enabled</th><th style="padding:8px;text-align:left;">Time Slots</th></tr></thead>
-<tbody id="scheduleRows1"></tbody>
-</table>
-</div>
-<div class="table-wrapper" style="flex:1;min-width:400px;">
-<table id="scheduleTable2" style="width:100%;border-collapse:collapse;margin:10px 0;">
-<thead><tr style="background:#333;"><th style="padding:8px;text-align:left;">Hour</th><th style="padding:8px;text-align:left;">Enabled</th><th style="padding:8px;text-align:left;">Time Slots</th></tr></thead>
-<tbody id="scheduleRows2"></tbody>
-</table>
-</div>
-</div>
-</div>
-</div>
-<div class="section">
 <h2 onclick="toggleSection(this)">Text Display</h2>
 <div class="section-content" id="section-text">
 <label>Text:</label>
@@ -346,13 +322,13 @@ table th,table td{padding:6px;font-size:12px;}
 <div class="section">
 <h2 onclick="toggleSection(this)">Weather for Place</h2>
 <div class="section-content" id="section-weather-place">
-<p>Display weather for a specific location. Enter latitude, longitude, and place name.</p>
+<p>Display weather for a specific location. Enter either a place name (for geocoding) or latitude/longitude coordinates.</p>
 <label>Latitude:</label>
-<input type="text" id="weatherLat" placeholder="e.g., 51.5074">
+<input type="text" id="weatherLat" placeholder="(optional) e.g., 51.5074">
 <label>Longitude:</label>
-<input type="text" id="weatherLon" placeholder="e.g., -0.1278">
+<input type="text" id="weatherLon" placeholder="(optional) e.g., -0.1278">
 <label>Place Name:</label>
-<input type="text" id="weatherPlaceName" placeholder="e.g., London">
+<input type="text" id="weatherPlaceName" placeholder="(optional) e.g., London">
 <button onclick="sendWeatherPlace()" id="weatherPlaceBtn" disabled style="margin-top:15px;">Display Weather</button>
 <div id="weatherPlaceStatus"></div>
 </div>
@@ -599,14 +575,11 @@ table th,table td{padding:6px;font-size:12px;}
 // - js/paho-loader.js: Paho MQTT library loader
 // - js/ui-utils.js: UI helper functions (status, busy state, logging, sections)
 // - js/media.js: Media mappings and thumbnail display
+// - js/schedule.js: Schedule management functions
 // - js/mqtt.js: MQTT connection and message handling
 // - js/commands.js: Command sending functions
 // - js/canvas.js: Canvas drawing tools and history
 // - js/main.js: Initialization code
 </script>
-<<<<<<< Updated upstream
-=======
-<script src="js/schedule.js"></script>
 </body>
->>>>>>> Stashed changes
 </html>

@@ -337,20 +337,44 @@ static bool handleWeatherPlaceUnified(const CommandContext& ctx) {
         return false;
     }
     
-    // Extract parameters from JSON
+    // Extract parameters from JSON (lat/lon are optional, placeName is optional but at least one must be provided)
     String latStr = extractJsonStringField(ctx.originalMessage, "lat");
     String lonStr = extractJsonStringField(ctx.originalMessage, "lon");
     String placeName = extractJsonStringField(ctx.originalMessage, "placeName");
     
-    if (latStr.length() == 0 || lonStr.length() == 0 || placeName.length() == 0) {
-        Serial.println("[WEATHER_PLACE] ERROR: Missing required fields (lat, lon, placeName)");
+    // Validate: need either placeName OR (both lat and lon)
+    bool hasPlaceName = (placeName.length() > 0);
+    bool hasLatLon = (latStr.length() > 0 && lonStr.length() > 0);
+    
+    if (!hasPlaceName && !hasLatLon) {
+        Serial.println("[WEATHER_PLACE] ERROR: Must provide either placeName or both lat and lon");
         return false;
     }
     
-    float lat = latStr.toFloat();
-    float lon = lonStr.toFloat();
+    float lat = 0.0f;
+    float lon = 0.0f;
     
-    Serial.printf("[WEATHER_PLACE] Displaying weather for %s at (%.4f, %.4f)\n", placeName.c_str(), lat, lon);
+    // Parse lat/lon if provided (otherwise will be 0.0, 0.0 for geocoding)
+    if (hasLatLon) {
+        lat = latStr.toFloat();
+        lon = lonStr.toFloat();
+    }
+    
+    // If placeName is provided, use geocoding (pass lat/lon as 0.0, 0.0 or actual values as fallback)
+    // If only lat/lon provided, use them directly (placeName can be empty or can use placeName for display)
+    if (hasPlaceName) {
+        Serial.printf("[WEATHER_PLACE] Using geocoding for place name: %s", placeName.c_str());
+        if (hasLatLon) {
+            Serial.printf(" (lat/lon provided as fallback: %.4f, %.4f)", lat, lon);
+        }
+        Serial.println();
+    } else {
+        Serial.printf("[WEATHER_PLACE] Using provided coordinates: (%.4f, %.4f)\n", lat, lon);
+        // If no placeName provided, use a default display name
+        if (placeName.length() == 0) {
+            placeName = "Location";
+        }
+    }
     
     return displayWeatherForPlace(lat, lon, placeName.c_str());
 }

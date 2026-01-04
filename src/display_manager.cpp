@@ -6,12 +6,16 @@
 #include "display_manager.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
-#include "EL133UF1_PNG.h"  // For loading background image
+#include "EL133UF1_PNG.h"  // For loading background image and weather icons
+#include "EL133UF1_TextPlacement.h"  // For wrapText function
+#include "weather_icon_mapping.h"  // For mapping OpenWeatherMap codes to PNG paths
+#include "weather_background_mapping.h"  // For mapping OpenWeatherMap codes to background PNG paths
 #include "text_elements.h"
 #include "wifi_manager.h"  // For wifiConnectPersistent (NOT wifi_guard.h - it disconnects WiFi!)
 #include "platform_hal.h"  // For hal_psram_malloc/free
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <HTTPClient.h>
 #include "cJSON.h"
 #include <time.h>
@@ -77,7 +81,14 @@ extern bool loadFontByName(const String& fontName);
 
 // Forward declarations for internal helper functions
 static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStrSize,
-                             char* conditionStr, size_t conditionStrSize);
+                             char* conditionStr, size_t conditionStrSize,
+                             char* tempMaxStr = nullptr, size_t tempMaxStrSize = 0,
+                             char* tempMinStr = nullptr, size_t tempMinStrSize = 0,
+                             float* hourlyTemps = nullptr, char hourlyDescs[][32] = nullptr, 
+                             time_t* hourlyTimestamps = nullptr, int* hourlyCount = nullptr,
+                             time_t* currentTime = nullptr, char hourlyIcons[][16] = nullptr,
+                             char* currentIcon = nullptr, size_t currentIconSize = 0,
+                             int* currentWeatherId = nullptr, int32_t* timezoneOffset = nullptr);
 static bool formatTimeAndDate(char* timeBuf, size_t timeBufSize, 
                               char* dayBuf, size_t dayBufSize,
                               char* dateBuf, size_t dateBufSize);
@@ -86,10 +97,132 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
                                   int16_t keepoutMargin, uint8_t textColor, uint8_t outlineColor, int16_t outlineThickness);
 
 /**
+ * Geocode a place name to get lat/lon coordinates using OpenWeatherMap Geocoding API
+ * @param placeName Place name to geocode
+ * @param lat Output latitude (set on success)
+ * @param lon Output longitude (set on success)
+ * @return true if geocoding successful, false otherwise
+ */
+static bool geocodePlaceName(const char* placeName, float* lat, float* lon) {
+    const char* apiKey = "4efd38c9e9d41e3b10724fe764541d7b";  // TODO: Replace with actual API key or load from NVS
+    
+    if (placeName == nullptr || placeName[0] == '\0' || lat == nullptr || lon == nullptr) {
+        Serial.println("Geocoding API: Invalid parameters");
+        return false;
+    }
+    
+    Serial.printf("Geocoding API: Attempting to geocode place name: %s\n", placeName);
+    
+    // Yield to watchdog before starting HTTP request
+    vTaskDelay(1);
+    
+    HTTPClient http;
+    WiFiClient client;  // Geocoding API uses HTTP (not HTTPS)
+    client.setTimeout(5000);  // 5 second timeout
+    
+    // Build geocoding API URL
+    char url[512];  // Increased size for URL encoding
+    // URL encode the place name (simple version - replace spaces with %20)
+    String encodedPlaceName = String(placeName);
+    encodedPlaceName.replace(" ", "%20");
+    encodedPlaceName.replace(",", "%2C");
+    
+    snprintf(url, sizeof(url), 
+             "http://api.openweathermap.org/geo/1.0/direct?q=%s&limit=1&appid=%s",
+             encodedPlaceName.c_str(), apiKey);
+    
+    Serial.printf("Geocoding API: URL: %s\n", url);
+    
+    http.begin(client, url);
+    http.setTimeout(8000);  // 8 second timeout
+    
+    // Yield to watchdog before blocking HTTP call
+    vTaskDelay(1);
+    
+    int httpCode = http.GET();
+    
+    // Yield immediately after HTTP call to reset watchdog
+    vTaskDelay(1);
+    
+    Serial.printf("Geocoding API: HTTP response code %d\n", httpCode);
+    
+    if (httpCode == HTTP_CODE_OK) {
+        // Yield before reading response
+        vTaskDelay(1);
+        
+        String payload = http.getString();
+        Serial.printf("Geocoding API: Received payload (%d bytes)\n", payload.length());
+        
+        // Yield before JSON parsing
+        vTaskDelay(1);
+        
+        // Parse JSON response using cJSON
+        cJSON* json = cJSON_Parse(payload.c_str());
+        if (json && cJSON_IsArray(json)) {
+            int arraySize = cJSON_GetArraySize(json);
+            if (arraySize > 0) {
+                // Get first result
+                cJSON* firstResult = cJSON_GetArrayItem(json, 0);
+                if (firstResult) {
+                    // Extract lat and lon
+                    cJSON* latItem = cJSON_GetObjectItem(firstResult, "lat");
+                    cJSON* lonItem = cJSON_GetObjectItem(firstResult, "lon");
+                    
+                    if (latItem && cJSON_IsNumber(latItem) && lonItem && cJSON_IsNumber(lonItem)) {
+                        *lat = (float)latItem->valuedouble;
+                        *lon = (float)lonItem->valuedouble;
+                        
+                        // Optionally extract and log the resolved name
+                        cJSON* nameItem = cJSON_GetObjectItem(firstResult, "name");
+                        const char* resolvedName = placeName;
+                        if (nameItem && cJSON_IsString(nameItem)) {
+                            resolvedName = nameItem->valuestring;
+                        }
+                        
+                        cJSON* countryItem = cJSON_GetObjectItem(firstResult, "country");
+                        const char* country = "";
+                        if (countryItem && cJSON_IsString(countryItem)) {
+                            country = countryItem->valuestring;
+                        }
+                        
+                        Serial.printf("Geocoding API: SUCCESS - Resolved '%s' to %s, %s (%.4f, %.4f)\n",
+                                     placeName, resolvedName, country, *lat, *lon);
+                        
+                        cJSON_Delete(json);
+                        http.end();
+                        return true;
+                    }
+                }
+            } else {
+                Serial.printf("Geocoding API: No results found for place name: %s\n", placeName);
+            }
+        } else {
+            Serial.println("Geocoding API: Failed to parse JSON response or response is not an array");
+        }
+        
+        if (json) {
+            cJSON_Delete(json);
+        }
+    } else {
+        Serial.printf("Geocoding API: HTTP error %d\n", httpCode);
+    }
+    
+    http.end();
+    return false;
+}
+
+/**
  * Fetch weather data from OpenWeatherMap API
  */
 static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStrSize,
-                             char* conditionStr, size_t conditionStrSize) {
+                             char* conditionStr, size_t conditionStrSize,
+                             char* tempMaxStr, size_t tempMaxStrSize,
+                             char* tempMinStr, size_t tempMinStrSize,
+                             float* hourlyTemps, char hourlyDescs[][32], 
+                             time_t* hourlyTimestamps, int* hourlyCount,
+                             time_t* currentTime, char hourlyIcons[][16],
+                             char* currentIcon, size_t currentIconSize,
+                             int* currentWeatherId, int32_t* timezoneOffset) {
     const char* apiKey = "4efd38c9e9d41e3b10724fe764541d7b";  // TODO: Replace with actual API key or load from NVS
     
     Serial.printf("Weather API: Attempting to fetch weather data (lat=%.4f, lon=%.4f)\n", lat, lon);
@@ -102,10 +235,10 @@ static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStr
     client.setInsecure();  // Skip certificate verification for OpenWeatherMap API
     client.setTimeout(5000);  // 5 second timeout (reduced to avoid watchdog)
     
-    // Build API URL
+    // Build API URL - One Call API 3.0
     char url[256];
     snprintf(url, sizeof(url), 
-             "https://api.openweathermap.org/data/2.5/weather?lat=%.4f&lon=%.4f&units=metric&appid=%s",
+             "https://api.openweathermap.org/data/3.0/onecall?lat=%.4f&lon=%.4f&exclude=minutely,alerts&units=metric&appid=%s",
              lat, lon, apiKey);
     
     Serial.printf("Weather API: URL: %s\n", url);
@@ -128,7 +261,7 @@ static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStr
         vTaskDelay(1);
         
         String payload = http.getString();
-        Serial.printf("Weather API: Received payload (%d bytes): %s\n", payload.length(), payload.c_str());
+        Serial.printf("Weather API: Received payload (%d bytes)\n", payload.length());
         
         // Yield before JSON parsing (can be CPU intensive)
         vTaskDelay(1);
@@ -136,10 +269,34 @@ static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStr
         // Parse JSON response using cJSON
         cJSON* json = cJSON_Parse(payload.c_str());
         if (json) {
-            // Extract temperature
-            cJSON* main = cJSON_GetObjectItem(json, "main");
-            if (main) {
-                cJSON* temp = cJSON_GetObjectItem(main, "temp");
+            // Extract timezone offset (seconds from UTC) from top-level response
+            if (timezoneOffset) {
+                cJSON* tzOffset = cJSON_GetObjectItem(json, "timezone_offset");
+                if (tzOffset && cJSON_IsNumber(tzOffset)) {
+                    *timezoneOffset = (int32_t)cJSON_GetNumberValue(tzOffset);
+                    Serial.printf("Weather API: Timezone offset: %ld seconds (UTC%+ld)\n", 
+                                 (long)*timezoneOffset, (long)(*timezoneOffset / 3600));
+                } else {
+                    *timezoneOffset = 0;
+                    Serial.println("Weather API: No timezone_offset in response, using UTC");
+                }
+            }
+            
+            // Extract current weather data (One Call API 3.0 structure)
+            cJSON* current = cJSON_GetObjectItem(json, "current");
+            if (current) {
+                // Extract current time (dt)
+                if (currentTime) {
+                    cJSON* dt = cJSON_GetObjectItem(current, "dt");
+                    if (dt && cJSON_IsNumber(dt)) {
+                        *currentTime = (time_t)dt->valueint;
+                    } else {
+                        *currentTime = 0;
+                    }
+                }
+                
+                // Extract temperature
+                cJSON* temp = cJSON_GetObjectItem(current, "temp");
                 if (temp && cJSON_IsNumber(temp)) {
                     float tempC = (float)temp->valuedouble;
                     snprintf(tempStr, tempStrSize, "%.0f°C", tempC);
@@ -147,27 +304,263 @@ static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStr
                     strncpy(tempStr, "N/A", tempStrSize - 1);
                     tempStr[tempStrSize - 1] = '\0';
                 }
-            } else {
-                strncpy(tempStr, "N/A", tempStrSize - 1);
-                tempStr[tempStrSize - 1] = '\0';
-            }
-            
-            // Yield before processing weather condition
-            vTaskDelay(1);
-            
-            // Extract weather condition
-            cJSON* weather = cJSON_GetObjectItem(json, "weather");
-            if (weather && cJSON_IsArray(weather)) {
-                cJSON* weatherItem = cJSON_GetArrayItem(weather, 0);
-                if (weatherItem) {
-                    cJSON* description = cJSON_GetObjectItem(weatherItem, "description");
-                    if (description && cJSON_IsString(description)) {
-                        // Capitalize first letter
-                        const char* desc = description->valuestring;
-                        strncpy(conditionStr, desc, conditionStrSize - 1);
+                
+                // Yield before processing weather condition
+                vTaskDelay(1);
+                
+                // Extract weather condition
+                cJSON* weather = cJSON_GetObjectItem(current, "weather");
+                if (weather && cJSON_IsArray(weather)) {
+                    cJSON* weatherItem = cJSON_GetArrayItem(weather, 0);
+                    if (weatherItem) {
+                        cJSON* description = cJSON_GetObjectItem(weatherItem, "description");
+                        if (description && cJSON_IsString(description)) {
+                            // Capitalize first letter
+                            const char* desc = description->valuestring;
+                            strncpy(conditionStr, desc, conditionStrSize - 1);
+                            conditionStr[conditionStrSize - 1] = '\0';
+                            if (conditionStr[0] >= 'a' && conditionStr[0] <= 'z') {
+                                conditionStr[0] = conditionStr[0] - 'a' + 'A';
+                            }
+                        } else {
+                            strncpy(conditionStr, "Unknown", conditionStrSize - 1);
+                            conditionStr[conditionStrSize - 1] = '\0';
+                        }
+                        
+                        // Extract icon code for current weather
+                        if (currentIcon && currentIconSize > 0) {
+                            cJSON* icon = cJSON_GetObjectItem(weatherItem, "icon");
+                            if (icon && cJSON_IsString(icon)) {
+                                strncpy(currentIcon, icon->valuestring, currentIconSize - 1);
+                                currentIcon[currentIconSize - 1] = '\0';
+                            } else {
+                                currentIcon[0] = '\0';
+                            }
+                        }
+                        
+                        // Extract weather ID for current weather
+                        if (currentWeatherId) {
+                            cJSON* id = cJSON_GetObjectItem(weatherItem, "id");
+                            if (id && cJSON_IsNumber(id)) {
+                                *currentWeatherId = id->valueint;
+                            } else {
+                                *currentWeatherId = -1;
+                            }
+                        }
+                    } else {
+                        strncpy(conditionStr, "Unknown", conditionStrSize - 1);
                         conditionStr[conditionStrSize - 1] = '\0';
-                        if (conditionStr[0] >= 'a' && conditionStr[0] <= 'z') {
-                            conditionStr[0] = conditionStr[0] - 'a' + 'A';
+                        if (currentIcon && currentIconSize > 0) {
+                            currentIcon[0] = '\0';
+                        }
+                        if (currentWeatherId) {
+                            *currentWeatherId = -1;
+                        }
+                    }
+                } else {
+                    strncpy(conditionStr, "Unknown", conditionStrSize - 1);
+                    conditionStr[conditionStrSize - 1] = '\0';
+                    if (currentIcon && currentIconSize > 0) {
+                        currentIcon[0] = '\0';
+                    }
+                    if (currentWeatherId) {
+                        *currentWeatherId = -1;
+                    }
+                }
+                
+                // Extract daily forecast high/low temperatures (One Call API 3.0)
+                if (tempMaxStr && tempMaxStrSize > 0 && tempMinStr && tempMinStrSize > 0) {
+                    cJSON* daily = cJSON_GetObjectItem(json, "daily");
+                    if (daily && cJSON_IsArray(daily)) {
+                        cJSON* today = cJSON_GetArrayItem(daily, 0);
+                        if (today) {
+                            cJSON* temp = cJSON_GetObjectItem(today, "temp");
+                            if (temp) {
+                                cJSON* tempMax = cJSON_GetObjectItem(temp, "max");
+                                cJSON* tempMin = cJSON_GetObjectItem(temp, "min");
+                                if (tempMax && cJSON_IsNumber(tempMax)) {
+                                    float tempMaxC = (float)tempMax->valuedouble;
+                                    snprintf(tempMaxStr, tempMaxStrSize, "%.0f°C", tempMaxC);
+                                } else {
+                                    strncpy(tempMaxStr, "N/A", tempMaxStrSize - 1);
+                                    tempMaxStr[tempMaxStrSize - 1] = '\0';
+                                }
+                                if (tempMin && cJSON_IsNumber(tempMin)) {
+                                    float tempMinC = (float)tempMin->valuedouble;
+                                    snprintf(tempMinStr, tempMinStrSize, "%.0f°C", tempMinC);
+                                } else {
+                                    strncpy(tempMinStr, "N/A", tempMinStrSize - 1);
+                                    tempMinStr[tempMinStrSize - 1] = '\0';
+                                }
+                            } else {
+                                strncpy(tempMaxStr, "N/A", tempMaxStrSize - 1);
+                                tempMaxStr[tempMaxStrSize - 1] = '\0';
+                                strncpy(tempMinStr, "N/A", tempMinStrSize - 1);
+                                tempMinStr[tempMinStrSize - 1] = '\0';
+                            }
+                        } else {
+                            strncpy(tempMaxStr, "N/A", tempMaxStrSize - 1);
+                            tempMaxStr[tempMaxStrSize - 1] = '\0';
+                            strncpy(tempMinStr, "N/A", tempMinStrSize - 1);
+                            tempMinStr[tempMinStrSize - 1] = '\0';
+                        }
+                    } else {
+                        strncpy(tempMaxStr, "N/A", tempMaxStrSize - 1);
+                        tempMaxStr[tempMaxStrSize - 1] = '\0';
+                        strncpy(tempMinStr, "N/A", tempMinStrSize - 1);
+                        tempMinStr[tempMinStrSize - 1] = '\0';
+                    }
+                }
+                
+                // Extract hourly forecast (next 8 hours, skipping current hour 0)
+                if (hourlyTemps && hourlyDescs && hourlyCount) {
+                    cJSON* hourly = cJSON_GetObjectItem(json, "hourly");
+                    if (hourly && cJSON_IsArray(hourly)) {
+                        int count = cJSON_GetArraySize(hourly);
+                        // Skip hour 0 (current hour), get next 8 hours (indices 1-8)
+                        int startIndex = 1;
+                        int maxHours = (count - startIndex < 8) ? (count - startIndex) : 8;
+                        if (maxHours < 0) maxHours = 0;
+                        *hourlyCount = 0;
+                        
+                        for (int i = startIndex; i < startIndex + maxHours && i < count; i++) {
+                            cJSON* hour = cJSON_GetArrayItem(hourly, i);
+                            if (hour) {
+                                // Extract timestamp (dt)
+                                if (hourlyTimestamps) {
+                                    cJSON* dt = cJSON_GetObjectItem(hour, "dt");
+                                    if (dt && cJSON_IsNumber(dt)) {
+                                        hourlyTimestamps[*hourlyCount] = (time_t)dt->valueint;
+                                    } else {
+                                        hourlyTimestamps[*hourlyCount] = 0;
+                                    }
+                                }
+                                
+                                // Extract temperature
+                                cJSON* temp = cJSON_GetObjectItem(hour, "temp");
+                                if (temp && cJSON_IsNumber(temp)) {
+                                    hourlyTemps[*hourlyCount] = (float)temp->valuedouble;
+                                } else {
+                                    hourlyTemps[*hourlyCount] = 0.0f;
+                                }
+                                
+                                // Extract weather description and icon
+                                cJSON* weather = cJSON_GetObjectItem(hour, "weather");
+                                if (weather && cJSON_IsArray(weather)) {
+                                    cJSON* weatherItem = cJSON_GetArrayItem(weather, 0);
+                                    if (weatherItem) {
+                                        cJSON* description = cJSON_GetObjectItem(weatherItem, "description");
+                                        if (description && cJSON_IsString(description)) {
+                                            const char* desc = description->valuestring;
+                                            strncpy(hourlyDescs[*hourlyCount], desc, 31);
+                                            hourlyDescs[*hourlyCount][31] = '\0';
+                                            // Capitalize first letter
+                                            if (hourlyDescs[*hourlyCount][0] >= 'a' && hourlyDescs[*hourlyCount][0] <= 'z') {
+                                                hourlyDescs[*hourlyCount][0] = hourlyDescs[*hourlyCount][0] - 'a' + 'A';
+                                            }
+                                        } else {
+                                            strncpy(hourlyDescs[*hourlyCount], "N/A", 31);
+                                            hourlyDescs[*hourlyCount][31] = '\0';
+                                        }
+                                        
+                                        // Extract icon name
+                                        if (hourlyIcons) {
+                                            cJSON* icon = cJSON_GetObjectItem(weatherItem, "icon");
+                                            if (icon && cJSON_IsString(icon)) {
+                                                strncpy(hourlyIcons[*hourlyCount], icon->valuestring, 15);
+                                                hourlyIcons[*hourlyCount][15] = '\0';
+                                            } else {
+                                                hourlyIcons[*hourlyCount][0] = '\0';
+                                            }
+                                        }
+                                    } else {
+                                        strncpy(hourlyDescs[*hourlyCount], "N/A", 31);
+                                        hourlyDescs[*hourlyCount][31] = '\0';
+                                        if (hourlyIcons) {
+                                            hourlyIcons[*hourlyCount][0] = '\0';
+                                        }
+                                    }
+                                } else {
+                                    strncpy(hourlyDescs[*hourlyCount], "N/A", 31);
+                                    hourlyDescs[*hourlyCount][31] = '\0';
+                                    if (hourlyIcons) {
+                                        hourlyIcons[*hourlyCount][0] = '\0';
+                                    }
+                                }
+                                
+                                (*hourlyCount)++;
+                            }
+                        }
+                    } else {
+                        *hourlyCount = 0;
+                    }
+                }
+            } else {
+                // Fallback: try old format (2.5 API) for backwards compatibility
+                // Try to get current time from hourly[0] if available
+                if (currentTime) {
+                    cJSON* hourly = cJSON_GetObjectItem(json, "hourly");
+                    if (hourly && cJSON_IsArray(hourly)) {
+                        cJSON* hour0 = cJSON_GetArrayItem(hourly, 0);
+                        if (hour0) {
+                            cJSON* dt = cJSON_GetObjectItem(hour0, "dt");
+                            if (dt && cJSON_IsNumber(dt)) {
+                                *currentTime = (time_t)dt->valueint;
+                            } else {
+                                *currentTime = 0;
+                            }
+                        } else {
+                            *currentTime = 0;
+                        }
+                    } else {
+                        *currentTime = 0;
+                    }
+                }
+                
+                // Note: Old format doesn't have hourly forecast
+                if (hourlyCount) {
+                    *hourlyCount = 0;
+                }
+                // Note: Old format doesn't have daily forecast, so set high/low to N/A if requested
+                if (tempMaxStr && tempMaxStrSize > 0) {
+                    strncpy(tempMaxStr, "N/A", tempMaxStrSize - 1);
+                    tempMaxStr[tempMaxStrSize - 1] = '\0';
+                }
+                if (tempMinStr && tempMinStrSize > 0) {
+                    strncpy(tempMinStr, "N/A", tempMinStrSize - 1);
+                    tempMinStr[tempMinStrSize - 1] = '\0';
+                }
+                Serial.println("Weather API: No 'current' object found, trying legacy format...");
+                cJSON* main = cJSON_GetObjectItem(json, "main");
+                if (main) {
+                    cJSON* temp = cJSON_GetObjectItem(main, "temp");
+                    if (temp && cJSON_IsNumber(temp)) {
+                        float tempC = (float)temp->valuedouble;
+                        snprintf(tempStr, tempStrSize, "%.0f°C", tempC);
+                    } else {
+                        strncpy(tempStr, "N/A", tempStrSize - 1);
+                        tempStr[tempStrSize - 1] = '\0';
+                    }
+                } else {
+                    strncpy(tempStr, "N/A", tempStrSize - 1);
+                    tempStr[tempStrSize - 1] = '\0';
+                }
+                
+                cJSON* weather = cJSON_GetObjectItem(json, "weather");
+                if (weather && cJSON_IsArray(weather)) {
+                    cJSON* weatherItem = cJSON_GetArrayItem(weather, 0);
+                    if (weatherItem) {
+                        cJSON* description = cJSON_GetObjectItem(weatherItem, "description");
+                        if (description && cJSON_IsString(description)) {
+                            const char* desc = description->valuestring;
+                            strncpy(conditionStr, desc, conditionStrSize - 1);
+                            conditionStr[conditionStrSize - 1] = '\0';
+                            if (conditionStr[0] >= 'a' && conditionStr[0] <= 'z') {
+                                conditionStr[0] = conditionStr[0] - 'a' + 'A';
+                            }
+                        } else {
+                            strncpy(conditionStr, "Unknown", conditionStrSize - 1);
+                            conditionStr[conditionStrSize - 1] = '\0';
                         }
                     } else {
                         strncpy(conditionStr, "Unknown", conditionStrSize - 1);
@@ -177,9 +570,6 @@ static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStr
                     strncpy(conditionStr, "Unknown", conditionStrSize - 1);
                     conditionStr[conditionStrSize - 1] = '\0';
                 }
-            } else {
-                strncpy(conditionStr, "Unknown", conditionStrSize - 1);
-                conditionStr[conditionStrSize - 1] = '\0';
             }
             
             cJSON_Delete(json);
@@ -200,9 +590,21 @@ static bool fetchWeatherData(float lat, float lon, char* tempStr, size_t tempStr
         if (httpCode < 0) {
             Serial.printf("Weather API: HTTPClient error code: %d (negative means connection/network error)\n", httpCode);
         } else {
-            // Try to get error payload
+            // Try to get error payload and parse One Call API 3.0 error format
             String errorPayload = http.getString();
             Serial.printf("Weather API: Error response (%d bytes): %s\n", errorPayload.length(), errorPayload.c_str());
+            
+            // Parse One Call API 3.0 error format: {"cod": 400, "message": "...", "parameters": [...]}
+            cJSON* errorJson = cJSON_Parse(errorPayload.c_str());
+            if (errorJson) {
+                cJSON* cod = cJSON_GetObjectItem(errorJson, "cod");
+                cJSON* message = cJSON_GetObjectItem(errorJson, "message");
+                if (cod && message && cJSON_IsString(message)) {
+                    Serial.printf("Weather API: Error code %d - %s\n", 
+                                 cod->valueint, message->valuestring);
+                }
+                cJSON_Delete(errorJson);
+            }
         }
     }
     
@@ -458,20 +860,21 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
         Serial.printf("[Layout] Scaled weather to %.2f%% to fit quarter area\n", weatherScale * 100.0f);
     }
     
-    // Scale quote to fit half area (with reduced margins: 50px top/bottom, 25px left/right)
+    // Scale quote to fit half area (with margins: 50px top/bottom, 40px left / 30px right)
     // Important: quoteH includes both quote text AND author, so scaling considers the full element
     // When quote is on bottom, add 10px extra to bottom margin (50px top, 60px bottom = 110px total)
     int16_t quoteW, quoteH;
     quoteElement.getDimensions(quoteW, quoteH);
     float quoteScale = 1.0f;
     int16_t quoteHeightMargin = quoteOnTop ? 100 : 110;  // 50px top/bottom when on top, 50px top/60px bottom when on bottom
-    if (quoteW > (halfW - 50) || quoteH > (halfH_area - quoteHeightMargin)) {  // 25px margin each side = 50px total
-        float scaleW = (float)(halfW - 50) / quoteW;
+    int16_t quoteWidthMargin = 70;  // 40px left + 30px right = 70px total
+    if (quoteW > (halfW - quoteWidthMargin) || quoteH > (halfH_area - quoteHeightMargin)) {
+        float scaleW = (float)(halfW - quoteWidthMargin) / quoteW;
         float scaleH = (float)(halfH_area - quoteHeightMargin) / quoteH;
         quoteScale = (scaleW < scaleH) ? scaleW : scaleH;
         if (quoteScale < 0.5f) quoteScale = 0.5f;  // Minimum 50% size
         quoteElement.setAdaptiveSize(quoteScale);
-        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area (width margin: 25px each side, height margin: %dpx total - %s)\n", 
+        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area (width margin: 40px left / 30px right, height margin: %dpx total - %s)\n", 
                      quoteScale * 100.0f, quoteHeightMargin, quoteOnTop ? "50px top/bottom" : "50px top/60px bottom");
     }
     
@@ -1129,7 +1532,62 @@ bool displayHappyWeatherScene(const HappyWeatherConfig* config) {
  * Display weather for a single location
  */
 bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
-    Serial.printf("=== Weather for Place: %s (%.4f, %.4f) ===\n", placeName, lat, lon);
+    // Use geocoding API to convert place name to lat/lon coordinates
+    // The lat/lon parameters are kept for backwards compatibility but are now primarily used as fallback
+    float actualLat = lat;
+    float actualLon = lon;
+    bool usedGeocoding = false;
+    
+    // Always use geocoding if place name is provided
+    if (placeName != nullptr && placeName[0] != '\0') {
+        Serial.printf("=== Geocoding place name: %s ===\n", placeName);
+        
+        // Ensure WiFi is connected for geocoding
+        if (!wifiLoadCredentials()) {
+            Serial.println("ERROR: WiFi credentials not available for geocoding");
+            return false;
+        }
+        
+        // Connect WiFi if needed (but don't disconnect - might be needed for weather query)
+        bool wifiConnected = false;
+        if (WiFi.status() == WL_CONNECTED) {
+            wifiConnected = true;
+            Serial.printf("Geocoding: WiFi already connected (IP: %s)\n", WiFi.localIP().toString().c_str());
+        } else {
+            Serial.println("Geocoding: WiFi not connected, attempting connection...");
+            if (wifiConnectPersistent(3, 20000, false)) {
+                wifiConnected = true;
+                Serial.printf("Geocoding: WiFi connected (IP: %s)\n", WiFi.localIP().toString().c_str());
+            }
+        }
+        
+        if (wifiConnected) {
+            if (geocodePlaceName(placeName, &actualLat, &actualLon)) {
+                usedGeocoding = true;
+                Serial.printf("Geocoding SUCCESS: %s -> (%.4f, %.4f)\n", placeName, actualLat, actualLon);
+            } else {
+                Serial.printf("Geocoding FAILED for: %s\n", placeName);
+                // If geocoding fails and no valid lat/lon provided, return error
+                if (lat == 0.0f && lon == 0.0f) {
+                    Serial.println("ERROR: Geocoding failed and no coordinates provided");
+                    return false;
+                }
+                // Otherwise, fall back to provided coordinates
+                Serial.println("Falling back to provided coordinates");
+            }
+        } else {
+            Serial.println("ERROR: WiFi connection failed for geocoding");
+            // If geocoding fails and no valid lat/lon provided, return error
+            if (lat == 0.0f && lon == 0.0f) {
+                return false;
+            }
+            // Otherwise, fall back to provided coordinates
+            Serial.println("Falling back to provided coordinates");
+        }
+    }
+    
+    Serial.printf("=== Weather for Place: %s (%.4f, %.4f)%s ===\n", 
+                 placeName, actualLat, actualLon, usedGeocoding ? " [geocoded]" : "");
     
     // Ensure display is initialized
     if (display.getBuffer() == nullptr) {
@@ -1148,13 +1606,54 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         return false;
     }
     
+    // Reset font to default OpenSans (in case a custom font was loaded by a previous scene)
+    if (!loadFontByName("")) {
+        Serial.println("WARNING: Failed to load default OpenSans font");
+    }
+    
+    // Ensure PNG loader is initialized for weather icons
+    if (!pngLoader.begin(&display)) {
+        Serial.println("ERROR: PNG loader initialization failed!");
+        return false;
+    }
+    
     // Clear display to white background
     display.clear(EL133UF1_WHITE);
     
-    // Fetch weather data
+    // Fetch weather data (we'll load background after getting current weather icon/ID)
     char tempStr[32];
     char conditionStr[64];
-    if (!fetchWeatherData(lat, lon, tempStr, sizeof(tempStr), conditionStr, sizeof(conditionStr))) {
+    char tempMaxStr[32];
+    char tempMinStr[32];
+    time_t currentTime = 0;
+    
+    // Allocate hourly forecast arrays in PSRAM (8 hours, skipping current hour)
+    float* hourlyTemps = (float*)hal_psram_malloc(8 * sizeof(float));
+    char (*hourlyDescs)[32] = (char(*)[32])hal_psram_malloc(8 * 32 * sizeof(char));
+    time_t* hourlyTimestamps = (time_t*)hal_psram_malloc(8 * sizeof(time_t));
+    char (*hourlyIcons)[16] = (char(*)[16])hal_psram_malloc(8 * 16 * sizeof(char));
+    int hourlyCount = 0;
+    
+    if (hourlyTemps == nullptr || hourlyDescs == nullptr || hourlyTimestamps == nullptr || hourlyIcons == nullptr) {
+        Serial.println("ERROR: Failed to allocate hourly forecast arrays in PSRAM");
+        if (hourlyTemps) hal_psram_free(hourlyTemps);
+        if (hourlyDescs) hal_psram_free(hourlyDescs);
+        if (hourlyTimestamps) hal_psram_free(hourlyTimestamps);
+        if (hourlyIcons) hal_psram_free(hourlyIcons);
+        return false;
+    }
+    
+    // Variables to store current weather icon and ID for background selection
+    char currentIcon[16] = {0};
+    int currentWeatherId = -1;
+    int32_t timezoneOffset = 0;  // Timezone offset in seconds from UTC
+
+    bool fetchSuccess = fetchWeatherData(actualLat, actualLon, tempStr, sizeof(tempStr), conditionStr, sizeof(conditionStr),
+                                         tempMaxStr, sizeof(tempMaxStr), tempMinStr, sizeof(tempMinStr),
+                                         hourlyTemps, hourlyDescs, hourlyTimestamps, &hourlyCount, &currentTime, hourlyIcons,
+                                         currentIcon, sizeof(currentIcon), &currentWeatherId, &timezoneOffset);
+    
+    if (!fetchSuccess) {
         Serial.println("ERROR: Failed to fetch weather data");
         // Display error message
         ttf.drawTextAlignedOutlined(display.width() / 2, display.height() / 2,
@@ -1162,36 +1661,235 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
                                     EL133UF1_BLACK, EL133UF1_WHITE,
                                     ALIGN_CENTER, ALIGN_MIDDLE, 2);
         display.update();
+        hal_psram_free(hourlyTemps);
+        hal_psram_free(hourlyDescs);
+        hal_psram_free(hourlyTimestamps);
+        hal_psram_free(hourlyIcons);
         return false;
     }
     
-    Serial.printf("Weather: %s, %s\n", tempStr, conditionStr);
+    Serial.printf("Weather: %s, %s (High: %s, Low: %s)\n", tempStr, conditionStr, tempMaxStr, tempMinStr);
     
-    // Display location name at top (centered)
-    const float nameFontSize = 80.0f;
+    // Load and draw background image based on current weather condition
+    if (currentIcon[0] != '\0') {
+        char bgPath[128];
+        if (getWeatherBackgroundPath(currentIcon, bgPath, sizeof(bgPath), currentWeatherId)) {
+            // Load PNG background file from LittleFS
+            FILE* bgFile = fopen(bgPath, "rb");
+            if (bgFile != nullptr) {
+                // Get file size
+                fseek(bgFile, 0, SEEK_END);
+                long fileSize = ftell(bgFile);
+                fseek(bgFile, 0, SEEK_SET);
+                
+                if (fileSize > 0 && fileSize < 5000000) {  // Max 5MB for fullscreen background
+                    // Allocate buffer in PSRAM and read PNG data
+                    uint8_t* bgData = (uint8_t*)hal_psram_malloc(fileSize);
+                    if (bgData != nullptr) {
+                        size_t bytesRead = fread(bgData, 1, fileSize, bgFile);
+                        fclose(bgFile);  // Close file immediately after reading
+                        
+                        if (bytesRead == (size_t)fileSize) {
+                            // Draw background fullscreen (fullscreen mode)
+                            PNGResult bgResult = pngLoader.drawFullscreen(bgData, fileSize);
+                            if (bgResult != PNG_OK) {
+                                Serial.printf("Failed to draw background PNG (%s): %s\n", 
+                                             bgPath, pngLoader.getErrorString(bgResult));
+                            } else {
+                                Serial.printf("Drew background image: %s\n", bgPath);
+                            }
+                            
+                            hal_psram_free(bgData);
+                        } else {
+                            Serial.printf("Failed to read background PNG file %s: read %zu of %ld bytes\n", 
+                                         bgPath, bytesRead, fileSize);
+                            hal_psram_free(bgData);
+                        }
+                    } else {
+                        Serial.printf("Failed to allocate %ld bytes for background PNG %s\n", fileSize, bgPath);
+                        fclose(bgFile);
+                    }
+                } else {
+                    Serial.printf("Invalid background PNG file size %ld for %s\n", fileSize, bgPath);
+                    fclose(bgFile);
+                }
+            } else {
+                Serial.printf("Failed to open background PNG file: %s\n", bgPath);
+            }
+        } else {
+            Serial.printf("Failed to get background path for icon code: %s\n", currentIcon);
+        }
+    }
+    
+    // Display location name at top (centered) - same size as time and temperature
+    const float nameFontSize = 120.0f;  // Same as temp
     int16_t nameY = 150;
     ttf.drawTextAlignedOutlined(display.width() / 2, nameY, placeName, nameFontSize,
-                                EL133UF1_BLACK, EL133UF1_WHITE,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     
-    // Display temperature below location name (centered, larger font)
+    // Display current time below location name - equal spacing to time-to-temperature gap
+    // Use location's timezone offset to convert UTC timestamp to local time
+    int16_t timeY = nameY + 130;  // Equal spacing to time-to-temperature (130px)
+    if (currentTime > 0) {
+        // Convert UTC timestamp to local time using timezone offset
+        time_t localTime = currentTime + timezoneOffset;
+        struct tm* timeinfo = gmtime(&localTime);  // Use gmtime since we already applied offset
+        char timeBuf[16];
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
+        const float timeFontSize = 120.0f;  // Same as name and temp
+        ttf.drawTextAlignedOutlined(display.width() / 2, timeY, timeBuf, timeFontSize,
+                                    EL133UF1_WHITE, EL133UF1_BLACK,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 3);
+    }
+    
+    // Display temperature below time (centered, same font size as name and time)
     const float tempFontSize = 120.0f;
-    int16_t tempY = nameY + 200;
+    int16_t tempY = timeY + 130;
     ttf.drawTextAlignedOutlined(display.width() / 2, tempY, tempStr, tempFontSize,
-                                EL133UF1_BLACK, EL133UF1_WHITE,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     
-    // Display condition below temperature (centered)
-    const float conditionFontSize = 64.0f;
-    int16_t conditionY = tempY + 180;
+    // Display condition below current temperature
+    const float conditionFontSize = 96.0f;  // Doubled from 48.0f
+    int16_t conditionY = tempY + 150;  // Increased spacing for larger font
     ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
-                                EL133UF1_BLACK, EL133UF1_WHITE,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    
+    // Display high/low temperatures on same line below condition
+    const float hiLoFontSize = 96.0f;  // Doubled from 48.0f
+    int16_t hiLoY = conditionY + 130;  // Increased spacing for larger font
+    char hiLoStr[128];
+    snprintf(hiLoStr, sizeof(hiLoStr), "High: %s  Low: %s", tempMaxStr, tempMinStr);
+    ttf.drawTextAlignedOutlined(display.width() / 2, hiLoY, hiLoStr, hiLoFontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    
+    // Display hourly forecast strip (next 8 hours, skipping current hour) below high/low temperatures
+    if (hourlyCount > 0) {
+        const float hourlyTimeFontSize = 24.0f;  // Keep same for time labels
+        const float hourlyTempFontSize = 80.0f;  // Doubled from 40.0f
+        const float hourlyDescFontSize = 52.0f;  // Doubled from 26.0f
+        int16_t hourlyY = hiLoY + 130;  // Increased spacing for larger fonts above
+        int16_t displayWidth = display.width();
+        int16_t stripWidth = displayWidth - 40;  // 20px margin on each side
+        int16_t itemWidth = stripWidth / hourlyCount;
+        
+        for (int i = 0; i < hourlyCount; i++) {
+            int16_t itemX = 20 + (itemWidth * i) + (itemWidth / 2);  // Center of each item
+            
+            // Display time (from dt timestamp) - use location's timezone offset
+            int16_t timeY = hourlyY - 10;  // Reduced gap from -40 to -10 (closer to icon)
+            if (hourlyTimestamps && hourlyTimestamps[i] > 0) {
+                // Convert UTC timestamp to local time using timezone offset
+                time_t localTime = hourlyTimestamps[i] + timezoneOffset;
+                struct tm* timeinfo = gmtime(&localTime);  // Use gmtime since we already applied offset
+                char timeBuf[8];
+                strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
+                ttf.drawTextAlignedOutlined(itemX, timeY, timeBuf, hourlyTimeFontSize,
+                                            EL133UF1_BLACK, EL133UF1_WHITE,
+                                            ALIGN_CENTER, ALIGN_MIDDLE, 1);
+            }
+            
+            // Display weather icon (PNG, 128x128 pixels, centered in column)
+            int16_t iconY = hourlyY + 5;  // Gap from time
+            if (hourlyIcons[i][0] != '\0') {
+                // Get PNG path for this icon code
+                char iconPath[128];
+                if (getWeatherIconPath(hourlyIcons[i], iconPath, sizeof(iconPath))) {
+                    // Load PNG file from LittleFS
+                    FILE* iconFile = fopen(iconPath, "rb");
+                    if (iconFile != nullptr) {
+                        // Get file size
+                        fseek(iconFile, 0, SEEK_END);
+                        long fileSize = ftell(iconFile);
+                        fseek(iconFile, 0, SEEK_SET);
+                        
+                        if (fileSize > 0 && fileSize < 200000) {  // Max 200KB PNG (128x128 should be ~20-50KB)
+                            // Allocate buffer in PSRAM and read PNG data
+                            uint8_t* iconData = (uint8_t*)hal_psram_malloc(fileSize);
+                            if (iconData != nullptr) {
+                                size_t bytesRead = fread(iconData, 1, fileSize, iconFile);
+                                fclose(iconFile);  // Close file immediately after reading
+                                
+                                if (bytesRead == (size_t)fileSize) {
+                                    // Icons are 128x128 pixels, center them horizontally in the item column
+                                    int16_t iconX = itemX - 64;  // Center the 128px icon
+                                    
+                                    PNGResult iconResult = pngLoader.draw(iconX, iconY, iconData, fileSize);
+                                    if (iconResult != PNG_OK) {
+                                        Serial.printf("  Failed to draw PNG icon %d (%s): %s\n", 
+                                                     i, iconPath, pngLoader.getErrorString(iconResult));
+                                    }
+                                    
+                                    hal_psram_free(iconData);
+                                } else {
+                                    Serial.printf("  Failed to read PNG file %s: read %zu of %ld bytes\n", 
+                                                 iconPath, bytesRead, fileSize);
+                                    hal_psram_free(iconData);
+                                }
+                            } else {
+                                Serial.printf("  Failed to allocate %ld bytes for PNG %s\n", fileSize, iconPath);
+                                fclose(iconFile);
+                            }
+                        } else {
+                            Serial.printf("  Invalid PNG file size %ld for %s\n", fileSize, iconPath);
+                            fclose(iconFile);
+                        }
+                    } else {
+                        Serial.printf("  Failed to open PNG file: %s\n", iconPath);
+                    }
+                } else {
+                    Serial.printf("  Failed to get PNG path for icon code: %s\n", hourlyIcons[i]);
+                }
+            }
+            
+            // Display temperature below icon
+            int16_t tempY = iconY + 150;  // 128px icon + 22px gap (increased for larger font)
+            char tempBuf[16];
+            snprintf(tempBuf, sizeof(tempBuf), "%.0f°", hourlyTemps[i]);
+            ttf.drawTextAlignedOutlined(itemX, tempY, tempBuf, hourlyTempFontSize,
+                                        EL133UF1_BLACK, EL133UF1_WHITE,
+                                        ALIGN_CENTER, ALIGN_MIDDLE, 1);
+            
+            // Display description below temperature (with text wrapping)
+            // Calculate available width for description (slightly less than item width for margin)
+            int16_t descMaxWidth = itemWidth - 10;  // 10px margin on each side
+            const char* descText = hourlyDescs[i];
+            
+            // Use existing wrapText function from TextPlacementAnalyzer
+            static TextPlacementAnalyzer textWrapper;  // Static instance for reuse
+            char wrappedDesc[256];  // Increased buffer for larger text (was 128)
+            int numLines = 0;
+            textWrapper.wrapText(&ttf, descText, hourlyDescFontSize, descMaxWidth, 
+                                 wrappedDesc, sizeof(wrappedDesc), &numLines);
+            
+            // Calculate Y position for centered multi-line text
+            int16_t lineHeight = ttf.getTextHeight(hourlyDescFontSize);
+            int16_t totalTextHeight = (numLines * lineHeight) + ((numLines - 1) * (lineHeight / 4));  // Small gap between lines
+            int16_t descY = tempY + 70 + (totalTextHeight / 2);  // Increased gap from 50 to 70 for larger fonts
+            
+            // Draw wrapped description (centered)
+            ttf.drawTextAlignedOutlined(itemX, descY, wrappedDesc, hourlyDescFontSize,
+                                        EL133UF1_BLACK, EL133UF1_WHITE,
+                                        ALIGN_CENTER, ALIGN_MIDDLE, 1);
+        }
+    }
+    
     
     // Update display
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
     Serial.println("Display updated");
+    
+    // Free PSRAM allocations
+    hal_psram_free(hourlyTemps);
+    hal_psram_free(hourlyDescs);
+    hal_psram_free(hourlyTimestamps);
+    hal_psram_free(hourlyIcons);
+    
+    // No icon data to free (SVGs are loaded on-demand from LittleFS and freed immediately after rendering)
     
     return true;
 }

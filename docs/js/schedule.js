@@ -58,6 +58,11 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
     }
     
     const availableMinutes = accessibleMinutes.filter(m => usedMinutes.indexOf(m) < 0);
+    // Always include the slot's current minute, even if it's marked as "used" (for loading existing slots)
+    if (slot.minute !== undefined && slot.minute !== null && accessibleMinutes.indexOf(slot.minute) >= 0 && availableMinutes.indexOf(slot.minute) < 0) {
+        availableMinutes.push(slot.minute);
+        availableMinutes.sort((a, b) => a - b);
+    }
     availableMinutes.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m;

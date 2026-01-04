@@ -677,13 +677,11 @@ void publishMQTTStatus() {
                            ip[0], ip[1], ip[2], ip[3], rssiPercent);
     }
     
-    // Media index mode (shuffle/sequential)
-    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-        extern uint8_t getMediaIndexModeAsInt();  // From main.cpp - returns 0 for SEQUENTIAL, 1 for SHUFFLE
-        uint8_t modeInt = getMediaIndexModeAsInt();
-        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"shuffle_mode\":%s",
-                           (modeInt == 1) ? "true" : "false");
-    }
+    // Media index mode (shuffle/sequential) - always include (device setting, independent of loaded mappings)
+    extern uint8_t getMediaIndexModeAsInt();  // From main.cpp - returns 0 for SEQUENTIAL, 1 for SHUFFLE
+    uint8_t modeInt = getMediaIndexModeAsInt();
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"shuffle_mode\":%s",
+                       (modeInt == 1) ? "true" : "false");
     
     if (webUICommandPending && pendingWebUICommand.length() > 0) {
         String cmdName = extractJsonStringField(pendingWebUICommand, "command");
@@ -972,13 +970,11 @@ static void statusPreparationTask(void* arg) {
     // WiFi info is included in the regular publishMQTTStatus() function which runs on Core 0.
     // Skipping WiFi info here is acceptable - it's not critical for status messages.
     
-    // Media index mode (shuffle/sequential)
-    if (g_media_mappings_loaded && g_media_mappings.size() > 0) {
-        extern uint8_t getMediaIndexModeAsInt();  // From main.cpp - returns 0 for SEQUENTIAL, 1 for SHUFFLE
-        uint8_t modeInt = getMediaIndexModeAsInt();
-        written += snprintf(jsonBuffer + written, jsonSize - written, ",\"shuffle_mode\":%s",
-                           (modeInt == 1) ? "true" : "false");
-    }
+    // Media index mode (shuffle/sequential) - always include (device setting, independent of loaded mappings)
+    extern uint8_t getMediaIndexModeAsInt();  // From main.cpp - returns 0 for SEQUENTIAL, 1 for SHUFFLE
+    uint8_t modeInt = getMediaIndexModeAsInt();
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"shuffle_mode\":%s",
+                       (modeInt == 1) ? "true" : "false");
     
     if (webUICommandPending && pendingWebUICommand.length() > 0) {
         String cmdName = extractJsonStringField(pendingWebUICommand, "command");

@@ -4666,161 +4666,81 @@ static String listAudioFiles() {
     return json;
 }
 
-static String listAllFiles(const String& dirPath = "") {
+// List files on SD Card (using FatFS)
+static String listSDFiles(const String& dirPath = "") {
     String json = "[";
     bool first = true;
     
-    // Check if this is a LittleFS path
-    bool isLittleFS = false;
+    // Normalize path - strip "0:/" prefix if present
     String normalizedPath = dirPath;
     normalizedPath.trim();
+    if (normalizedPath.startsWith("0:/")) {
+        normalizedPath = normalizedPath.substring(3);
+    } else if (normalizedPath.startsWith("0:")) {
+        normalizedPath = normalizedPath.substring(2);
+    }
+    normalizedPath.trim();
     
-    if (normalizedPath.startsWith("littlefs") || normalizedPath.startsWith("/littlefs")) {
-        isLittleFS = true;
-        // Remove leading "littlefs" or "/littlefs"
-        if (normalizedPath.startsWith("/littlefs/")) {
-            normalizedPath = normalizedPath.substring(10); // Remove "/littlefs/"
-        } else if (normalizedPath.startsWith("/littlefs")) {
-            normalizedPath = normalizedPath.substring(9); // Remove "/littlefs"
-        } else if (normalizedPath.startsWith("littlefs/")) {
-            normalizedPath = normalizedPath.substring(9); // Remove "littlefs/"
-        } else if (normalizedPath == "littlefs") {
-            normalizedPath = "";
+    // Build full directory path
+    String fullPath = "0:/";
+    if (normalizedPath.length() > 0) {
+        fullPath += normalizedPath;
+        // Ensure path ends with /
+        if (!fullPath.endsWith("/")) {
+            fullPath += "/";
         }
     }
     
-    if (isLittleFS) {
-        // Use POSIX file operations for LittleFS
-        String fullPath = "/littlefs";
-        if (normalizedPath.length() > 0) {
-            fullPath += "/";
-            fullPath += normalizedPath;
-        }
-        
-        DIR* dir = opendir(fullPath.c_str());
-        if (dir != nullptr) {
-            struct dirent* entry;
-            while ((entry = readdir(dir)) != nullptr) {
-                // Skip . and .. entries
-                if (entry->d_name[0] == '.' && (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) {
-                    continue;
-                }
-                
-                if (!first) json += ",";
-                first = false;
-                
-                // Build relative path for this entry
-                String entryPath = "littlefs";
-                if (normalizedPath.length() > 0) {
-                    entryPath += "/";
-                    entryPath += normalizedPath;
-                }
-                if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
-                    entryPath += "/";
-                }
-                entryPath += String(entry->d_name);
-                
-                // Check if it's a directory
-                String fullEntryPath = fullPath;
-                if (!fullEntryPath.endsWith("/")) {
-                    fullEntryPath += "/";
-                }
-                fullEntryPath += String(entry->d_name);
-                
-                struct stat st;
-                bool isDir = false;
-                if (stat(fullEntryPath.c_str(), &st) == 0) {
-                    isDir = S_ISDIR(st.st_mode);
-                }
-                
-                json += "{\"name\":\"";
-                // Escape JSON string
-                String name = String(entry->d_name);
-                name.replace("\\", "\\\\");
-                name.replace("\"", "\\\"");
-                json += name;
-                json += "\",\"path\":\"";
-                String path = entryPath;
-                path.replace("\\", "\\\\");
-                path.replace("\"", "\\\"");
-                json += path;
-                json += "\",\"isDir\":";
-                json += isDir ? "true" : "false";
-                
-                if (!isDir) {
-                    // File: include size
-                    json += ",\"size\":";
-                    json += String(st.st_size);
-                }
-                
-                json += "}";
-            }
-            closedir(dir);
-        }
-    } else {
-        // Use FatFS for SD card
-        // Strip "0:/" prefix if present (defensive normalization)
-        if (normalizedPath.startsWith("0:/")) {
-            normalizedPath = normalizedPath.substring(3);
-        } else if (normalizedPath.startsWith("0:")) {
-            normalizedPath = normalizedPath.substring(2);
-        }
-        normalizedPath.trim();
-        
-        // Build full directory path
-        String fullPath = "0:/";
-        if (normalizedPath.length() > 0) {
-            fullPath += normalizedPath;
-            // Ensure path ends with /
-            if (!fullPath.endsWith("/")) {
-                fullPath += "/";
-            }
-        }
-        
-        Serial.printf("listAllFiles: SD card path='%s', fullPath='%s'\n", normalizedPath.c_str(), fullPath.c_str());
+    Serial.printf("listSDFiles: path='%s', fullPath='%s'\n", normalizedPath.c_str(), fullPath.c_str());
     
-        FF_DIR dir;
-        FILINFO fno;
-        FRESULT res = f_opendir(&dir, fullPath.c_str());
-        Serial.printf("listAllFiles: f_opendir returned %d\n", res);
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, fullPath.c_str());
+    Serial.printf("listSDFiles: f_opendir returned %d\n", res);
     
-        if (res == FR_OK) {
+    if (res == FR_OK) {
         while (true) {
             res = f_readdir(&dir, &fno);
             if (res != FR_OK || fno.fname[0] == 0) break;
             
-                // Skip . and .. entries
-                if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
-                    continue;
-                }
-                
-                if (!first) json += ",";
-                first = false;
-                
-                // Build relative path for this entry
-                String entryPath = normalizedPath;
-                if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
-                    entryPath += "/";
-                }
-                entryPath += String(fno.fname);
-                
-                json += "{\"name\":\"";
-                // Escape JSON string
-                String name = String(fno.fname);
-                name.replace("\\", "\\\\");
-                name.replace("\"", "\\\"");
-                json += name;
-                json += "\",\"path\":\"";
-                String path = entryPath;
-                path.replace("\\", "\\\\");
-                path.replace("\"", "\\\"");
-                json += path;
-                json += "\",\"isDir\":";
-                json += (fno.fattrib & AM_DIR) ? "true" : "false";
-                
-                if (!(fno.fattrib & AM_DIR)) {
-                    // File: include size and modified time
-                    json += ",\"size\":";
+            // Skip . and .. entries
+            if (fno.fname[0] == '.' && (fno.fname[1] == '\0' || (fno.fname[1] == '.' && fno.fname[2] == '\0'))) {
+                continue;
+            }
+            
+            // Skip hidden directories and files (starting with . or _)
+            // Examples: .logs, _upload_chunks, etc.
+            if (fno.fname[0] == '.' || fno.fname[0] == '_') {
+                continue;
+            }
+            
+            if (!first) json += ",";
+            first = false;
+            
+            // Build relative path for this entry
+            String entryPath = normalizedPath;
+            if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
+                entryPath += "/";
+            }
+            entryPath += String(fno.fname);
+            
+            json += "{\"name\":\"";
+            // Escape JSON string
+            String name = String(fno.fname);
+            name.replace("\\", "\\\\");
+            name.replace("\"", "\\\"");
+            json += name;
+            json += "\",\"path\":\"";
+            String path = entryPath;
+            path.replace("\\", "\\\\");
+            path.replace("\"", "\\\"");
+            json += path;
+            json += "\",\"isDir\":";
+            json += (fno.fattrib & AM_DIR) ? "true" : "false";
+            
+            if (!(fno.fattrib & AM_DIR)) {
+                // File: include size and modified time
+                json += ",\"size\":";
                 json += String(fno.fsize);
                 
                 // Extract date/time from FatFs format
@@ -4858,10 +4778,105 @@ static String listAllFiles(const String& dirPath = "") {
                 json += ",\"size\":0,\"modified\":0";
             }
             
-                json += "}";
+            json += "}";
         }
         f_closedir(&dir);
+    }
+    
+    json += "]";
+    return json;
+}
+
+// List files in LittleFS (using POSIX file operations)
+static String listLittleFSFiles(const String& dirPath = "") {
+    String json = "[";
+    bool first = true;
+    
+    // Normalize path
+    String normalizedPath = dirPath;
+    normalizedPath.trim();
+    
+    // Build full path
+    String fullPath = "/littlefs";
+    if (normalizedPath.length() > 0) {
+        fullPath += "/";
+        fullPath += normalizedPath;
+    }
+    
+    Serial.printf("listLittleFSFiles: path='%s', fullPath='%s'\n", normalizedPath.c_str(), fullPath.c_str());
+    
+    DIR* dir = opendir(fullPath.c_str());
+    if (dir != nullptr) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            // Skip . and .. entries
+            if (entry->d_name[0] == '.' && (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) {
+                continue;
+            }
+            
+            // Skip hidden directories and files (starting with . or _)
+            // Examples: .logs, _upload_chunks, etc.
+            if (entry->d_name[0] == '.' || entry->d_name[0] == '_') {
+                continue;
+            }
+            
+            if (!first) json += ",";
+            first = false;
+            
+            // Build relative path for this entry
+            String entryPath = normalizedPath;
+            if (entryPath.length() > 0 && !entryPath.endsWith("/")) {
+                entryPath += "/";
+            }
+            entryPath += String(entry->d_name);
+            
+            // Check if it's a directory
+            String fullEntryPath = fullPath;
+            if (!fullEntryPath.endsWith("/")) {
+                fullEntryPath += "/";
+            }
+            fullEntryPath += String(entry->d_name);
+            
+            struct stat st;
+            bool isDir = false;
+            uint64_t fileSize = 0;
+            uint64_t modified = 0;
+            if (stat(fullEntryPath.c_str(), &st) == 0) {
+                isDir = S_ISDIR(st.st_mode);
+                if (!isDir) {
+                    fileSize = st.st_size;
+                    modified = (uint64_t)st.st_mtime * 1000; // Convert to milliseconds
+                }
+            }
+            
+            json += "{\"name\":\"";
+            // Escape JSON string
+            String name = String(entry->d_name);
+            name.replace("\\", "\\\\");
+            name.replace("\"", "\\\"");
+            json += name;
+            json += "\",\"path\":\"";
+            String path = entryPath;
+            path.replace("\\", "\\\\");
+            path.replace("\"", "\\\"");
+            json += path;
+            json += "\",\"isDir\":";
+            json += isDir ? "true" : "false";
+            
+            if (!isDir) {
+                // File: include size and modified time
+                json += ",\"size\":";
+                json += String(fileSize);
+                json += ",\"modified\":";
+                json += String(modified);
+            } else {
+                // Directory: no size or modified time
+                json += ",\"size\":0,\"modified\":0";
+            }
+            
+            json += "}";
         }
+        closedir(dir);
     }
     
     json += "]";
@@ -5887,21 +5902,14 @@ bool handleManageCommand() {
         return response->send(200, "application/json", resp.c_str());
     });
     
-    // GET /api/files - List all files (optionally in a subdirectory)
-    // Query parameter: ?dir=path/to/directory
-    // Special case: if dirPath is empty, return root entries for both SD card and LittleFS
-    server.on("/api/files", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+    // GET /api/files/sd - List files on SD Card (optionally in a subdirectory)
+    // Query parameter: ?dir=path/to/directory (optional)
+    server.on("/api/files/sd", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
-        String url = request->url();
-        Serial.printf("GET /api/files - URL: %s\n", url.c_str());
         
         String dirPath = "";
-        bool hasDirParam = request->hasParam("dir");
-        Serial.printf("GET /api/files - hasDirParam: %d\n", hasDirParam);
-        
-        if (hasDirParam) {
+        if (request->hasParam("dir")) {
             dirPath = request->getParam("dir")->value();
-            Serial.printf("GET /api/files - dir param raw value: '%s' (length: %d)\n", dirPath.c_str(), dirPath.length());
             // URL decode
             dirPath.replace("%20", " ");
             dirPath.replace("%2F", "/");
@@ -5914,178 +5922,151 @@ bool handleManageCommand() {
             if (dirPath.endsWith("/")) {
                 dirPath = dirPath.substring(0, dirPath.length() - 1);
             }
-            Serial.printf("GET /api/files - dir param after normalization: '%s' (length: %d)\n", dirPath.c_str(), dirPath.length());
         }
         
-        // If dir parameter was NOT provided, show root entries (both SD card and LittleFS)
-        // If dir parameter was provided (even if empty), list files in that directory
-        if (!hasDirParam) {
-            Serial.printf("GET /api/files - No dir param, returning root entries\n");
-            String json = "[";
-            bool first = true;
-            
-            // Add SD card root entry
-            json += "{\"name\":\"SD Card\",\"path\":\"\",\"isDir\":true,\"size\":0,\"modified\":0}";
-            first = false;
-            
-            // Add LittleFS root entry
-            json += ",{\"name\":\"LittleFS\",\"path\":\"littlefs\",\"isDir\":true,\"size\":0,\"modified\":0}";
-            
-            json += "]";
-            return response->send(200, "application/json", json.c_str());
-        }
-        
-        // dir parameter was provided - list files in that directory
-        // If dirPath is empty after normalization, it means list SD card root
-        Serial.printf("GET /api/files: Calling listAllFiles with dirPath='%s' (len=%d)\n", dirPath.c_str(), dirPath.length());
-        String json = listAllFiles(dirPath);
-        Serial.printf("GET /api/files: listAllFiles returned JSON length=%d\n", json.length());
-        if (json.length() < 200) {
-            Serial.printf("GET /api/files: JSON content: %s\n", json.c_str());
-        }
+        Serial.printf("GET /api/files/sd: dirPath='%s'\n", dirPath.c_str());
+        String json = listSDFiles(dirPath);
         return response->send(200, "application/json", json.c_str());
     });
     
-    // GET /api/files/* - Download a file
-    server.on("/api/files/*", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
-        // Extract filename from URL path
-        String url = request->url();
-        int pathStart = url.indexOf("/api/files/") + 11;
-        String filename = url.substring(pathStart);
-        filename.trim();
+    // GET /api/files/littlefs - List files in LittleFS (optionally in a subdirectory)
+    // Query parameter: ?dir=path/to/directory (optional)
+    server.on("/api/files/littlefs", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
         
-        // URL decode filename (basic)
-        filename.replace("%20", " ");
-        filename.replace("%2F", "/");
-        
-        // Check if this is a LittleFS path
-        bool isLittleFS = false;
-        String filepath;
-        String displayName = filename;
-        
-        if (filename.startsWith("littlefs") || filename.startsWith("/littlefs")) {
-            isLittleFS = true;
-            // Remove leading "littlefs" or "/littlefs"
-            String normalizedPath = filename;
-            if (normalizedPath.startsWith("/littlefs/")) {
-                normalizedPath = normalizedPath.substring(10); // Remove "/littlefs/"
-            } else if (normalizedPath.startsWith("/littlefs")) {
-                normalizedPath = normalizedPath.substring(9); // Remove "/littlefs"
-            } else if (normalizedPath.startsWith("littlefs/")) {
-                normalizedPath = normalizedPath.substring(9); // Remove "littlefs/"
-            } else if (normalizedPath == "littlefs") {
-                normalizedPath = "";
+        String dirPath = "";
+        if (request->hasParam("dir")) {
+            dirPath = request->getParam("dir")->value();
+            // URL decode
+            dirPath.replace("%20", " ");
+            dirPath.replace("%2F", "/");
+            dirPath.replace("%2f", "/");
+            // Remove leading/trailing slashes
+            dirPath.trim();
+            if (dirPath.startsWith("/")) {
+                dirPath = dirPath.substring(1);
             }
-            filepath = "/littlefs";
-            if (normalizedPath.length() > 0) {
-                filepath += "/";
-                filepath += normalizedPath;
-            }
-            // Extract just the filename for display
-            int lastSlash = normalizedPath.lastIndexOf('/');
-            if (lastSlash >= 0) {
-                displayName = normalizedPath.substring(lastSlash + 1);
-            } else {
-                displayName = normalizedPath;
-            }
-        } else {
-            // SD card (FatFS)
-            // Strip "0:/" prefix if present (defensive normalization)
-            String normalizedFilename = filename;
-            if (normalizedFilename.startsWith("0:/")) {
-                normalizedFilename = normalizedFilename.substring(3);
-            } else if (normalizedFilename.startsWith("0:")) {
-                normalizedFilename = normalizedFilename.substring(2);
-            }
-            normalizedFilename.trim();
-            
-            filepath = "0:/";
-            if (normalizedFilename.length() > 0) {
-                filepath += normalizedFilename;
+            if (dirPath.endsWith("/")) {
+                dirPath = dirPath.substring(0, dirPath.length() - 1);
             }
         }
         
-        if (isLittleFS) {
-            // Use POSIX file operations for LittleFS
-            FILE* file = fopen(filepath.c_str(), "rb");
-            if (file != nullptr) {
-                // Get file size
-                fseek(file, 0, SEEK_END);
-                long fileSize = ftell(file);
-                fseek(file, 0, SEEK_SET);
-                
-                // Add CORS headers before creating stream response
-                addCorsHeaders(response);
-                
-                // Create stream response for file download
-                PsychicStreamResponse streamResp(response, "application/octet-stream", displayName);
-                
-                if (streamResp.beginSend() == ESP_OK) {
-                    // Stream file content
-                    char buffer[512];
-                    size_t bytesRead;
-                    while ((bytesRead = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-                        streamResp.write((uint8_t*)buffer, bytesRead);
-                    }
-                    streamResp.endSend();
-                }
-                fclose(file);
-                Serial.printf("File downloaded from LittleFS: %s (%ld bytes)\n", filepath.c_str(), fileSize);
-                return ESP_OK;
-            } else {
-                addCorsHeaders(response);
-                Serial.printf("File not found in LittleFS: %s\n", filepath.c_str());
-                return response->send(404, "text/plain", "File not found");
-            }
-        } else {
-            // Use FatFS for SD card
-            // Strip "0:/" prefix if present (defensive normalization)
-            String normalizedFilePath = filepath;
-            if (normalizedFilePath.startsWith("0:/")) {
-                normalizedFilePath = normalizedFilePath.substring(3);
-            } else if (normalizedFilePath.startsWith("0:")) {
-                normalizedFilePath = normalizedFilePath.substring(2);
-            }
-            normalizedFilePath.trim();
-            
-            String fullFilePath = "0:/";
-            if (normalizedFilePath.length() > 0) {
-                fullFilePath += normalizedFilePath;
-            }
-            
+        Serial.printf("GET /api/files/littlefs: dirPath='%s'\n", dirPath.c_str());
+        String json = listLittleFSFiles(dirPath);
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // GET /api/files/sd/* - Download a file from SD Card
+    server.on("/api/files/sd/*", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        String url = request->url();
+        int pathStart = url.indexOf("/api/files/sd/") + 14;
+        String filepath = url.substring(pathStart);
+        filepath.trim();
+        
+        // URL decode
+        filepath.replace("%20", " ");
+        filepath.replace("%2F", "/");
+        filepath.replace("%2f", "/");
+        
+        // Normalize path
+        if (filepath.startsWith("0:/")) {
+            filepath = filepath.substring(3);
+        } else if (filepath.startsWith("0:")) {
+            filepath = filepath.substring(2);
+        }
+        filepath.trim();
+        
+        String fullFilePath = "0:/";
+        if (filepath.length() > 0) {
+            fullFilePath += filepath;
+        }
+        
         FIL file;
         FRESULT res = f_open(&file, fullFilePath.c_str(), FA_READ);
         if (res == FR_OK) {
             FSIZE_t fileSize = f_size(&file);
-            
-            // Add CORS headers before creating stream response
             addCorsHeaders(response);
             
-            // Create stream response for file download
-            // Constructor automatically sets Content-Disposition header for download
-            PsychicStreamResponse streamResp(response, "application/octet-stream", filename);
+            // Extract filename for Content-Disposition
+            String displayName = filepath;
+            int lastSlash = displayName.lastIndexOf('/');
+            if (lastSlash >= 0) {
+                displayName = displayName.substring(lastSlash + 1);
+            }
             
+            PsychicStreamResponse streamResp(response, "application/octet-stream", displayName);
             if (streamResp.beginSend() == ESP_OK) {
-                // Stream file content
                 char buffer[512];
                 UINT bytesRead;
                 while (f_read(&file, buffer, sizeof(buffer), &bytesRead) == FR_OK && bytesRead > 0) {
                     streamResp.write((uint8_t*)buffer, bytesRead);
-                    if (bytesRead < sizeof(buffer)) break; // EOF
+                    if (bytesRead < sizeof(buffer)) break;
                 }
                 streamResp.endSend();
             }
             f_close(&file);
-                Serial.printf("File downloaded from SD: %s (%lu bytes)\n", filename.c_str(), (unsigned long)fileSize);
+            Serial.printf("File downloaded from SD: %s (%lu bytes)\n", fullFilePath.c_str(), (unsigned long)fileSize);
             return ESP_OK;
         } else {
             addCorsHeaders(response);
-                Serial.printf("File not found on SD: %s (error %d)\n", filepath.c_str(), res);
+            Serial.printf("File not found on SD: %s (error %d)\n", fullFilePath.c_str(), res);
             return response->send(404, "text/plain", "File not found");
-            }
         }
     });
     
+    // GET /api/files/littlefs/* - Download a file from LittleFS
+    server.on("/api/files/littlefs/*", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        String url = request->url();
+        int pathStart = url.indexOf("/api/files/littlefs/") + 20;
+        String filepath = url.substring(pathStart);
+        filepath.trim();
+        
+        // URL decode
+        filepath.replace("%20", " ");
+        filepath.replace("%2F", "/");
+        filepath.replace("%2f", "/");
+        
+        String fullFilePath = "/littlefs";
+        if (filepath.length() > 0) {
+            fullFilePath += "/";
+            fullFilePath += filepath;
+        }
+        
+        FILE* file = fopen(fullFilePath.c_str(), "rb");
+        if (file != nullptr) {
+            fseek(file, 0, SEEK_END);
+            long fileSize = ftell(file);
+            fseek(file, 0, SEEK_SET);
+            addCorsHeaders(response);
+            
+            // Extract filename for Content-Disposition
+            String displayName = filepath;
+            int lastSlash = displayName.lastIndexOf('/');
+            if (lastSlash >= 0) {
+                displayName = displayName.substring(lastSlash + 1);
+            }
+            
+            PsychicStreamResponse streamResp(response, "application/octet-stream", displayName);
+            if (streamResp.beginSend() == ESP_OK) {
+                char buffer[512];
+                size_t bytesRead;
+                while ((bytesRead = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                    streamResp.write((uint8_t*)buffer, bytesRead);
+                }
+                streamResp.endSend();
+            }
+            fclose(file);
+            Serial.printf("File downloaded from LittleFS: %s (%ld bytes)\n", fullFilePath.c_str(), fileSize);
+            return ESP_OK;
+        } else {
+            addCorsHeaders(response);
+            Serial.printf("File not found in LittleFS: %s\n", fullFilePath.c_str());
+            return response->send(404, "text/plain", "File not found");
+        }
+    });
+    
+    
+    // Legacy endpoint - kept for backwards compatibility but determines filesystem from uploadDir
     // POST /api/files/upload - File upload (base64-encoded JSON)
     // Query parameter: ?dir=path/to/directory (optional)
     // Process in separate task with large stack to avoid stack overflow
@@ -7358,109 +7339,104 @@ bool handleManageCommand() {
         }
     });
     
-    // DELETE /api/files/* - Delete a file or directory
-    server.on("/api/files/*", HTTP_DELETE, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+    // DELETE /api/files/sd/* - Delete a file or directory on SD Card
+    server.on("/api/files/sd/*", HTTP_DELETE, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
         String url = request->url();
-        int pathStart = url.indexOf("/api/files/") + 11;
+        int pathStart = url.indexOf("/api/files/sd/") + 14;
         String filepath = url.substring(pathStart);
         filepath.trim();
         
-        // URL decode filepath (basic)
+        // URL decode
         filepath.replace("%20", " ");
         filepath.replace("%2F", "/");
         filepath.replace("%2f", "/");
         
-        // Check if this is a LittleFS path
-        bool isLittleFS = false;
-        String fullPath;
+        // Normalize path
         String normalizedPath = filepath;
+        if (normalizedPath.startsWith("0:/")) {
+            normalizedPath = normalizedPath.substring(3);
+        } else if (normalizedPath.startsWith("0:")) {
+            normalizedPath = normalizedPath.substring(2);
+        }
+        normalizedPath.trim();
         
-        if (filepath.startsWith("littlefs") || filepath.startsWith("/littlefs")) {
-            isLittleFS = true;
-            // Remove leading "littlefs" or "/littlefs"
-            if (normalizedPath.startsWith("/littlefs/")) {
-                normalizedPath = normalizedPath.substring(10); // Remove "/littlefs/"
-            } else if (normalizedPath.startsWith("/littlefs")) {
-                normalizedPath = normalizedPath.substring(9); // Remove "/littlefs"
-            } else if (normalizedPath.startsWith("littlefs/")) {
-                normalizedPath = normalizedPath.substring(9); // Remove "littlefs/"
-            } else if (normalizedPath == "littlefs") {
-                normalizedPath = "";
-            }
-            fullPath = "/littlefs";
-            if (normalizedPath.length() > 0) {
-                fullPath += "/";
-                fullPath += normalizedPath;
-            }
-        } else {
-            // SD card (FatFS)
-            // Strip "0:/" prefix if present (defensive normalization)
-            if (normalizedPath.startsWith("0:/")) {
-                normalizedPath = normalizedPath.substring(3);
-            } else if (normalizedPath.startsWith("0:")) {
-                normalizedPath = normalizedPath.substring(2);
-            }
-            normalizedPath.trim();
-            
-            fullPath = "0:/";
-            if (normalizedPath.length() > 0) {
-                fullPath += normalizedPath;
-            }
+        String fullPath = "0:/";
+        if (normalizedPath.length() > 0) {
+            fullPath += normalizedPath;
+        }
+        
+        FILINFO fno;
+        FRESULT res = f_stat(fullPath.c_str(), &fno);
+        if (res != FR_OK) {
+            String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
+            return response->send(404, "application/json", resp.c_str());
         }
         
         bool success = false;
-        
-        if (isLittleFS) {
-            // Use POSIX file operations for LittleFS
-            struct stat st;
-            if (stat(fullPath.c_str(), &st) != 0) {
-                String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
-                return response->send(404, "application/json", resp.c_str());
-            }
-            
-            if (S_ISDIR(st.st_mode)) {
-                // Directory: use rmdir (must be empty)
-                int res = rmdir(fullPath.c_str());
-                success = (res == 0);
-            } else {
-                // File: use unlink
-                int res = unlink(fullPath.c_str());
-                success = (res == 0);
-            }
+        if (fno.fattrib & AM_DIR) {
+            // Directory: use f_rmdir (must be empty)
+            res = f_rmdir(fullPath.c_str());
+            success = (res == FR_OK);
         } else {
-            // Use FatFS for SD card
-            FILINFO fno;
-            FRESULT res = f_stat(fullPath.c_str(), &fno);
-            if (res != FR_OK) {
-                String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
-                return response->send(404, "application/json", resp.c_str());
-            }
-            
-            if (fno.fattrib & AM_DIR) {
-                // Directory: use f_rmdir (must be empty)
-                res = f_rmdir(fullPath.c_str());
-                success = (res == FR_OK);
-            } else {
-                // File: use existing deleteSDFile function
-                success = deleteSDFile(filepath.c_str());
-            }
+            // File: use existing deleteSDFile function
+            success = deleteSDFile(normalizedPath.c_str());
         }
         
         String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to delete\"}";
         return response->send(200, "application/json", resp.c_str());
     });
     
-    // PUT /api/files/* - Rename a file or directory
-    // Body: {"newname":"newfilename"}
-    server.on("/api/files/*", HTTP_PUT, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+    // DELETE /api/files/littlefs/* - Delete a file or directory in LittleFS
+    server.on("/api/files/littlefs/*", HTTP_DELETE, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
         String url = request->url();
-        int pathStart = url.indexOf("/api/files/") + 11;
+        int pathStart = url.indexOf("/api/files/littlefs/") + 20;
+        String filepath = url.substring(pathStart);
+        filepath.trim();
+        
+        // URL decode
+        filepath.replace("%20", " ");
+        filepath.replace("%2F", "/");
+        filepath.replace("%2f", "/");
+        
+        String fullPath = "/littlefs";
+        if (filepath.length() > 0) {
+            fullPath += "/";
+            fullPath += filepath;
+        }
+        
+        struct stat st;
+        if (stat(fullPath.c_str(), &st) != 0) {
+            String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
+            return response->send(404, "application/json", resp.c_str());
+        }
+        
+        bool success = false;
+        if (S_ISDIR(st.st_mode)) {
+            // Directory: use rmdir (must be empty)
+            int res = rmdir(fullPath.c_str());
+            success = (res == 0);
+        } else {
+            // File: use unlink
+            int res = unlink(fullPath.c_str());
+            success = (res == 0);
+        }
+        
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to delete\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // PUT /api/files/sd/* - Rename a file or directory on SD Card
+    // Body: {"newname":"newfilename"}
+    server.on("/api/files/sd/*", HTTP_PUT, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String url = request->url();
+        int pathStart = url.indexOf("/api/files/sd/") + 14;
         String oldPath = url.substring(pathStart);
         oldPath.trim();
         
-        // URL decode oldPath (basic)
+        // URL decode
         oldPath.replace("%20", " ");
         oldPath.replace("%2F", "/");
         oldPath.replace("%2f", "/");
@@ -7492,45 +7468,21 @@ bool handleManageCommand() {
             return response->send(400, "application/json", resp.c_str());
         }
         
-        // Check if this is a LittleFS path
-        bool isLittleFS = false;
-        String oldFullPath;
+        // Normalize old path
         String normalizedOldPath = oldPath;
+        if (normalizedOldPath.startsWith("0:/")) {
+            normalizedOldPath = normalizedOldPath.substring(3);
+        } else if (normalizedOldPath.startsWith("0:")) {
+            normalizedOldPath = normalizedOldPath.substring(2);
+        }
+        normalizedOldPath.trim();
         
-        if (oldPath.startsWith("littlefs") || oldPath.startsWith("/littlefs")) {
-            isLittleFS = true;
-            // Remove leading "littlefs" or "/littlefs"
-            if (normalizedOldPath.startsWith("/littlefs/")) {
-                normalizedOldPath = normalizedOldPath.substring(10); // Remove "/littlefs/"
-            } else if (normalizedOldPath.startsWith("/littlefs")) {
-                normalizedOldPath = normalizedOldPath.substring(9); // Remove "/littlefs"
-            } else if (normalizedOldPath.startsWith("littlefs/")) {
-                normalizedOldPath = normalizedOldPath.substring(9); // Remove "littlefs/"
-            } else if (normalizedOldPath == "littlefs") {
-                normalizedOldPath = "";
-            }
-            oldFullPath = "/littlefs";
-            if (normalizedOldPath.length() > 0) {
-                oldFullPath += "/";
-                oldFullPath += normalizedOldPath;
-            }
-        } else {
-            // SD card (FatFS)
-            // Strip "0:/" prefix if present (defensive normalization)
-            if (normalizedOldPath.startsWith("0:/")) {
-                normalizedOldPath = normalizedOldPath.substring(3);
-            } else if (normalizedOldPath.startsWith("0:")) {
-                normalizedOldPath = normalizedOldPath.substring(2);
-            }
-            normalizedOldPath.trim();
-            
-            oldFullPath = "0:/";
-            if (normalizedOldPath.length() > 0) {
-                oldFullPath += normalizedOldPath;
-            }
+        String oldFullPath = "0:/";
+        if (normalizedOldPath.length() > 0) {
+            oldFullPath += normalizedOldPath;
         }
         
-        // Extract directory from old path
+        // Extract directory from old path and build new path
         int lastSlash = normalizedOldPath.lastIndexOf('/');
         String newPath = "";
         if (lastSlash >= 0) {
@@ -7538,57 +7490,108 @@ bool handleManageCommand() {
         }
         newPath += newName;
         
-        String newFullPath;
-        if (isLittleFS) {
-            newFullPath = "/littlefs";
-            if (newPath.length() > 0) {
-                newFullPath += "/";
-                newFullPath += newPath;
+        String newFullPath = "0:/";
+        newFullPath += newPath;
+        
+        FILINFO fno;
+        FRESULT res = f_stat(oldFullPath.c_str(), &fno);
+        if (res != FR_OK) {
+            String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
+            return response->send(404, "application/json", resp.c_str());
+        }
+        
+        // Check if new name already exists
+        res = f_stat(newFullPath.c_str(), &fno);
+        if (res == FR_OK) {
+            String resp = "{\"success\":false,\"error\":\"Target name already exists\"}";
+            return response->send(409, "application/json", resp.c_str());
+        }
+        
+        // Rename using f_rename
+        res = f_rename(oldFullPath.c_str(), newFullPath.c_str());
+        bool success = (res == FR_OK);
+        
+        String resp = success ? "{\"success\":true,\"newpath\":\"" + newPath + "\"}" 
+                              : "{\"success\":false,\"error\":\"Rename failed\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // PUT /api/files/littlefs/* - Rename a file or directory in LittleFS
+    // Body: {"newname":"newfilename"}
+    server.on("/api/files/littlefs/*", HTTP_PUT, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String url = request->url();
+        int pathStart = url.indexOf("/api/files/littlefs/") + 20;
+        String oldPath = url.substring(pathStart);
+        oldPath.trim();
+        
+        // URL decode
+        oldPath.replace("%20", " ");
+        oldPath.replace("%2F", "/");
+        oldPath.replace("%2f", "/");
+        
+        String body = request->body();
+        String newName = "";
+        
+        // Parse JSON to extract newname
+        int newnamePos = body.indexOf("\"newname\"");
+        if (newnamePos >= 0) {
+            int colonPos = body.indexOf(":", newnamePos);
+            int quoteStart = body.indexOf("\"", colonPos);
+            if (quoteStart >= 0) {
+                int quoteEnd = body.indexOf("\"", quoteStart + 1);
+                if (quoteEnd > quoteStart) {
+                    newName = body.substring(quoteStart + 1, quoteEnd);
+                    // Unescape JSON string
+                    newName.replace("\\n", "\n");
+                    newName.replace("\\r", "\r");
+                    newName.replace("\\t", "\t");
+                    newName.replace("\\\"", "\"");
+                    newName.replace("\\\\", "\\");
+                }
             }
-        } else {
-            newFullPath = "0:/";
+        }
+        
+        if (newName.length() == 0) {
+            String resp = "{\"success\":false,\"error\":\"Missing newname field\"}";
+            return response->send(400, "application/json", resp.c_str());
+        }
+        
+        String oldFullPath = "/littlefs";
+        if (oldPath.length() > 0) {
+            oldFullPath += "/";
+            oldFullPath += oldPath;
+        }
+        
+        // Extract directory from old path and build new path
+        int lastSlash = oldPath.lastIndexOf('/');
+        String newPath = "";
+        if (lastSlash >= 0) {
+            newPath = oldPath.substring(0, lastSlash + 1);
+        }
+        newPath += newName;
+        
+        String newFullPath = "/littlefs";
+        if (newPath.length() > 0) {
+            newFullPath += "/";
             newFullPath += newPath;
         }
         
-        bool success = false;
-        
-        if (isLittleFS) {
-            // Use POSIX file operations for LittleFS
-            struct stat st;
-            if (stat(oldFullPath.c_str(), &st) != 0) {
-                String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
-                return response->send(404, "application/json", resp.c_str());
-            }
-            
-            // Check if new name already exists
-            if (stat(newFullPath.c_str(), &st) == 0) {
-                String resp = "{\"success\":false,\"error\":\"Target name already exists\"}";
-                return response->send(409, "application/json", resp.c_str());
-            }
-            
-            // Rename using rename() (POSIX)
-            int res = rename(oldFullPath.c_str(), newFullPath.c_str());
-            success = (res == 0);
-        } else {
-            // Use FatFS for SD card
-            FILINFO fno;
-            FRESULT res = f_stat(oldFullPath.c_str(), &fno);
-            if (res != FR_OK) {
-                String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
-                return response->send(404, "application/json", resp.c_str());
-            }
-            
-            // Check if new name already exists
-            res = f_stat(newFullPath.c_str(), &fno);
-            if (res == FR_OK) {
-                String resp = "{\"success\":false,\"error\":\"Target name already exists\"}";
-                return response->send(409, "application/json", resp.c_str());
-            }
-            
-            // Rename using f_rename
-            res = f_rename(oldFullPath.c_str(), newFullPath.c_str());
-            success = (res == FR_OK);
+        struct stat st;
+        if (stat(oldFullPath.c_str(), &st) != 0) {
+            String resp = "{\"success\":false,\"error\":\"File or directory not found\"}";
+            return response->send(404, "application/json", resp.c_str());
         }
+        
+        // Check if new name already exists
+        if (stat(newFullPath.c_str(), &st) == 0) {
+            String resp = "{\"success\":false,\"error\":\"Target name already exists\"}";
+            return response->send(409, "application/json", resp.c_str());
+        }
+        
+        // Rename using rename() (POSIX)
+        int res = rename(oldFullPath.c_str(), newFullPath.c_str());
+        bool success = (res == 0);
         
         String resp = success ? "{\"success\":true,\"newpath\":\"" + newPath + "\"}" 
                               : "{\"success\":false,\"error\":\"Rename failed\"}";

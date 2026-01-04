@@ -1594,10 +1594,18 @@ static void mqttWorkerTask(void* param) {
                 // Generate media mappings and publish (this is CPU-intensive)
                 if (mqttClient != nullptr && mqttConnected) {
                     // Call the actual media mappings generation function (runs on Core 1)
+                    // Note: Function may return early if MQTT disconnects during processing
                     publishMQTTMediaMappingsInternalImpl();
-                    workSuccess = true;
+                    // Check if MQTT is still connected after processing (may have disconnected during thumbnail generation)
+                    if (mqttClient != nullptr && mqttConnected) {
+                        workSuccess = true;
+                    } else {
+                        Serial.println("[Core 1] MQTT disconnected during media mappings processing - publish may have failed");
+                        workSuccess = false;
+                    }
                 } else {
                     Serial.println("[Core 1] MQTT not connected, skipping media mappings publish");
+                    workSuccess = false;
                 }
             } else if (request.type == MQTT_WORK_CANVAS_DECODE) {
                 Serial.println("[Core 1] Processing canvas decode/decompress work...");
@@ -2273,6 +2281,14 @@ static void publishMQTTMediaMappingsInternalImpl() {
     Serial.printf("[Core 1] Copying encrypted data to buffer...\n");
     strncpy(encryptedBuffer, encryptedJson.c_str(), encryptedLen);
     encryptedBuffer[encryptedLen] = '\0';
+    
+    // Check MQTT connection status again before publishing (may have disconnected during thumbnail generation)
+    if (mqttClient == nullptr || !mqttConnected) {
+        Serial.printf("[Core 1] ERROR: MQTT disconnected during processing (client=%p, connected=%s), cannot publish media mappings\n", 
+                     (void*)mqttClient, mqttConnected ? "true" : "false");
+        free(encryptedBuffer);
+        return;
+    }
     
     Serial.printf("[Core 1] Publishing to MQTT topic %s (payload size: %zu bytes)...\n", mqttTopicMedia, encryptedLen);
     uint32_t publishStart = millis();

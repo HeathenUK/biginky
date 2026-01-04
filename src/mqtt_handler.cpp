@@ -656,11 +656,20 @@ void publishMQTTStatus() {
         char wakeTimeStr[16];
         snprintf(wakeTimeStr, sizeof(wakeTimeStr), "%02d:%02d", wake_hour, wake_min);
         written += snprintf(jsonBuffer + written, jsonSize - written,
-                           ",\"next_wake\":\"%s\",\"sleep_interval_minutes\":%lu",
-                           wakeTimeStr, (unsigned long)interval_minutes);
+                           ",\"next_wake\":\"%s\"",
+                           wakeTimeStr);
     }
     
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
+    
+    // Sleep interval (device setting, always include - independent of time validity)
+    extern uint8_t g_sleep_interval_minutes;
+    uint32_t interval_minutes = g_sleep_interval_minutes;
+    if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+        interval_minutes = 1;  // Normalize invalid values to default
+    }
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"sleep_interval_minutes\":%lu",
+                       (unsigned long)interval_minutes);
     
     // WiFi information (if connected)
     if (WiFi.status() == WL_CONNECTED) {
@@ -959,11 +968,20 @@ static void statusPreparationTask(void* arg) {
         char wakeTimeStr[16];
         snprintf(wakeTimeStr, sizeof(wakeTimeStr), "%02d:%02d", wake_hour, wake_min);
         written += snprintf(jsonBuffer + written, jsonSize - written,
-                           ",\"next_wake\":\"%s\",\"sleep_interval_minutes\":%lu",
-                           wakeTimeStr, (unsigned long)interval_minutes);
+                           ",\"next_wake\":\"%s\"",
+                           wakeTimeStr);
     }
     
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
+    
+    // Sleep interval (device setting, always include - independent of time validity)
+    extern uint8_t g_sleep_interval_minutes;
+    uint32_t interval_minutes = g_sleep_interval_minutes;
+    if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+        interval_minutes = 1;  // Normalize invalid values to default
+    }
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"sleep_interval_minutes\":%lu",
+                       (unsigned long)interval_minutes);
     
     // NOTE: WiFi information is NOT included in parallel status preparation (Core 1)
     // because ESP32 WiFi API is NOT thread-safe and should only be called from Core 0.

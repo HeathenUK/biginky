@@ -2249,23 +2249,36 @@ static void publishMQTTMediaMappingsInternalImpl() {
         return;
     }
     
+    Serial.printf("[Core 1] Starting encryption of %zu byte JSON payload...\n", jsonStr.length());
+    uint32_t encryptStart = millis();
     String encryptedJson = encryptAndFormatMessage(jsonStr);
+    uint32_t encryptDuration = millis() - encryptStart;
+    Serial.printf("[Core 1] Encryption completed in %lu ms\n", (unsigned long)encryptDuration);
+    
     if (encryptedJson.length() == 0) {
         Serial.println("[Core 1] ERROR: Failed to encrypt media mappings - publishing without encryption");
         return;
     }
     
     size_t encryptedLen = encryptedJson.length();
+    Serial.printf("[Core 1] Encrypted payload size: %zu bytes (from %zu bytes plaintext)\n", encryptedLen, jsonStr.length());
+    
+    Serial.printf("[Core 1] Allocating buffer for encrypted payload (%zu bytes)...\n", encryptedLen + 1);
     char* encryptedBuffer = (char*)malloc(encryptedLen + 1);
     if (!encryptedBuffer) {
         Serial.println("[Core 1] ERROR: Failed to allocate memory for encrypted media mappings JSON");
         return;
     }
     
+    Serial.printf("[Core 1] Copying encrypted data to buffer...\n");
     strncpy(encryptedBuffer, encryptedJson.c_str(), encryptedLen);
     encryptedBuffer[encryptedLen] = '\0';
     
+    Serial.printf("[Core 1] Publishing to MQTT topic %s (payload size: %zu bytes)...\n", mqttTopicMedia, encryptedLen);
+    uint32_t publishStart = millis();
     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, encryptedBuffer, encryptedLen, 1, 1);
+    uint32_t publishDuration = millis() - publishStart;
+    Serial.printf("[Core 1] MQTT publish call returned msg_id=%d after %lu ms\n", msg_id, (unsigned long)publishDuration);
     if (msg_id > 0) {
         bool isEncrypted = isEncryptionEnabled();
         Serial.printf("[Core 1] Published %s media mappings to %s (msg_id: %d, size: %zu bytes)\n",

@@ -134,12 +134,22 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             }
             paramCell.appendChild(select);
         } else if (paramType === 'weather_place') {
-            const parts = paramValue ? paramValue.split(',') : ['', '', ''];
+            let parts = paramValue ? paramValue.split(',') : ['', '', ''];
+            // Handle different parameter formats when loading:
+            // - "placeName" (1 part) -> ['', '', 'placeName']
+            // - "lat,lon" (2 parts) -> ['lat', 'lon', '']
+            // - "lat,lon,placeName" (3 parts) -> ['lat', 'lon', 'placeName']
+            if (parts.length === 1) {
+                parts = ['', '', parts[0]];
+            } else if (parts.length === 2) {
+                parts = [parts[0], parts[1], ''];
+            }
+            
             const latInput = document.createElement('input');
             latInput.type = 'number';
             latInput.step = '0.0001';
             latInput.className = 'slot-parameter slot-parameter-lat';
-            latInput.placeholder = 'Latitude';
+            latInput.placeholder = 'Latitude (optional)';
             latInput.value = parts[0] || '';
             latInput.style.width = '100px';
             latInput.style.background = '#1a1a1a';
@@ -153,7 +163,7 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             lonInput.type = 'number';
             lonInput.step = '0.0001';
             lonInput.className = 'slot-parameter slot-parameter-lon';
-            lonInput.placeholder = 'Longitude';
+            lonInput.placeholder = 'Longitude (optional)';
             lonInput.value = parts[1] || '';
             lonInput.style.width = '100px';
             lonInput.style.background = '#1a1a1a';
@@ -166,7 +176,7 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             const nameInput = document.createElement('input');
             nameInput.type = 'text';
             nameInput.className = 'slot-parameter slot-parameter-name';
-            nameInput.placeholder = 'Place Name';
+            nameInput.placeholder = 'Place Name (optional)';
             nameInput.value = parts[2] || '';
             nameInput.style.width = '150px';
             nameInput.style.background = '#1a1a1a';
@@ -179,7 +189,28 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
     
     updateParameterFields(slot.scene, slot.parameter || '');
     sceneSelect.onchange = function() {
-        updateParameterFields(sceneSelect.value);
+        // Preserve existing values when changing scene type
+        const currentLatInput = paramCell.querySelector('.slot-parameter-lat');
+        const currentLonInput = paramCell.querySelector('.slot-parameter-lon');
+        const currentNameInput = paramCell.querySelector('.slot-parameter-name');
+        let currentParam = '';
+        if (currentLatInput || currentLonInput || currentNameInput) {
+            const latVal = currentLatInput ? currentLatInput.value.trim() : '';
+            const lonVal = currentLonInput ? currentLonInput.value.trim() : '';
+            const nameVal = currentNameInput ? currentNameInput.value.trim() : '';
+            const hasLatLon = latVal.length > 0 && lonVal.length > 0;
+            const hasName = nameVal.length > 0;
+            if (hasName) {
+                if (hasLatLon) {
+                    currentParam = latVal + ',' + lonVal + ',' + nameVal;
+                } else {
+                    currentParam = nameVal;
+                }
+            } else if (hasLatLon) {
+                currentParam = latVal + ',' + lonVal;
+            }
+        }
+        updateParameterFields(sceneSelect.value, currentParam);
     };
     
     // Action cell
@@ -355,15 +386,30 @@ async function saveScheduleToDevice() {
                     const latInput = slotRow.querySelector('.slot-parameter-lat');
                     const lonInput = slotRow.querySelector('.slot-parameter-lon');
                     const nameInput = slotRow.querySelector('.slot-parameter-name');
-                    if (latInput && lonInput && nameInput && 
-                        latInput.value.trim().length > 0 && 
-                        lonInput.value.trim().length > 0 && 
-                        nameInput.value.trim().length > 0) {
-                        slot.parameter = latInput.value.trim() + ',' + lonInput.value.trim() + ',' + nameInput.value.trim();
+                    const latVal = latInput ? latInput.value.trim() : '';
+                    const lonVal = lonInput ? lonInput.value.trim() : '';
+                    const nameVal = nameInput ? nameInput.value.trim() : '';
+                    const hasLatLon = latVal.length > 0 && lonVal.length > 0;
+                    const hasName = nameVal.length > 0;
+                    if (hasName) {
+                        if (hasLatLon) {
+                            slot.parameter = latVal + ',' + lonVal + ',' + nameVal;
+                        } else {
+                            slot.parameter = nameVal;
+                        }
+                    } else if (hasLatLon) {
+                        slot.parameter = latVal + ',' + lonVal;
                     }
+                    // Only push slot if at least one field is provided
+                    if (hasName || hasLatLon) {
+                        slots.push(slot);
+                    } else {
+                        // Skip empty slots
+                        continue;
+                    }
+                } else {
+                    slots.push(slot);
                 }
-                
-                slots.push(slot);
             }
         });
         

@@ -43,30 +43,49 @@ async function sendWeatherPlace() {
     const lon = document.getElementById('weatherLon').value.trim();
     const placeName = document.getElementById('weatherPlaceName').value.trim();
     
-    if (lat.length === 0 || lon.length === 0 || placeName.length === 0) {
-        showStatus('weatherPlaceStatus', 'Please enter latitude, longitude, and place name', true);
+    // Validate: need either placeName OR (both lat and lon)
+    const hasPlaceName = placeName.length > 0;
+    const hasLatLon = lat.length > 0 && lon.length > 0;
+    
+    if (!hasPlaceName && !hasLatLon) {
+        showStatus('weatherPlaceStatus', 'Please enter either a place name (for geocoding) or both latitude and longitude', true);
         return;
     }
     
-    // Validate lat/lon are numbers
-    const latNum = parseFloat(lat);
-    const lonNum = parseFloat(lon);
-    if (isNaN(latNum) || isNaN(lonNum)) {
-        showStatus('weatherPlaceStatus', 'Latitude and longitude must be valid numbers', true);
-        return;
+    // If lat/lon are provided, validate they are numbers
+    let latNum = 0.0;
+    let lonNum = 0.0;
+    if (hasLatLon) {
+        latNum = parseFloat(lat);
+        lonNum = parseFloat(lon);
+        if (isNaN(latNum) || isNaN(lonNum)) {
+            showStatus('weatherPlaceStatus', 'Latitude and longitude must be valid numbers', true);
+            return;
+        }
     }
     
     showStatus('weatherPlaceStatus', 'Sending weather place command...', false);
     
     const payload = {
         command: 'weather_place',
-        lat: lat,
-        lon: lon,
-        placeName: placeName
+        placeName: hasPlaceName ? placeName : 'Location'
     };
     
+    // Only include lat/lon if provided (otherwise geocoding will be used)
+    if (hasLatLon) {
+        payload.lat = latNum.toString();
+        payload.lon = lonNum.toString();
+    } else {
+        // Pass 0.0, 0.0 to indicate geocoding should be used
+        payload.lat = '0.0';
+        payload.lon = '0.0';
+    }
+    
     if (await publishMessage(payload)) {
-        showStatus('weatherPlaceStatus', 'Weather place command sent successfully!', false);
+        const msg = hasPlaceName ? 
+            `Weather place command sent successfully! Will geocode "${placeName}"...` :
+            `Weather place command sent successfully! Using coordinates (${latNum}, ${lonNum})...`;
+        showStatus('weatherPlaceStatus', msg, false);
         setBusyState(true, 'Command sent, waiting for device response...');
     } else {
         showStatus('weatherPlaceStatus', 'Failed to send command', true);

@@ -1751,19 +1751,19 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     
-    // Display condition below current temperature
-    const float conditionFontSize = 96.0f;  // Doubled from 48.0f
-    int16_t conditionY = tempY + 75;  // Reduced gap by half (was 150, now 75)
-    ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
+    // Display high/low temperatures below current temperature
+    const float hiLoFontSize = 96.0f;  // Doubled from 48.0f
+    int16_t hiLoY = tempY + 130;  // Spacing from temperature
+    char hiLoStr[128];
+    snprintf(hiLoStr, sizeof(hiLoStr), "High: %s / Low: %s", tempMaxStr, tempMinStr);
+    ttf.drawTextAlignedOutlined(display.width() / 2, hiLoY, hiLoStr, hiLoFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
     
-    // Display high/low temperatures on same line below condition
-    const float hiLoFontSize = 96.0f;  // Doubled from 48.0f
-    int16_t hiLoY = conditionY + 130;  // Increased spacing for larger font
-    char hiLoStr[128];
-    snprintf(hiLoStr, sizeof(hiLoStr), "High: %s  Low: %s", tempMaxStr, tempMinStr);
-    ttf.drawTextAlignedOutlined(display.width() / 2, hiLoY, hiLoStr, hiLoFontSize,
+    // Display condition halfway between current temperature and high/low
+    const float conditionFontSize = 96.0f;  // Doubled from 48.0f
+    int16_t conditionY = tempY + 65;  // Halfway between tempY and hiLoY: (0 + 130) / 2 = 65
+    ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
     
@@ -1789,7 +1789,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
                 char timeBuf[8];
                 strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
                 ttf.drawTextAlignedOutlined(itemX, timeY, timeBuf, hourlyTimeFontSize,
-                                            EL133UF1_BLACK, EL133UF1_WHITE,
+                                            EL133UF1_WHITE, EL133UF1_BLACK,
                                             ALIGN_CENTER, ALIGN_MIDDLE, 1);
             }
             
@@ -1851,7 +1851,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
             char tempBuf[16];
             snprintf(tempBuf, sizeof(tempBuf), "%.0f°", hourlyTemps[i]);
             ttf.drawTextAlignedOutlined(itemX, tempY, tempBuf, hourlyTempFontSize,
-                                        EL133UF1_BLACK, EL133UF1_WHITE,
+                                        EL133UF1_WHITE, EL133UF1_BLACK,
                                         ALIGN_CENTER, ALIGN_MIDDLE, 1);
             
             // Display description below temperature (with text wrapping)
@@ -1897,7 +1897,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
                         // Calculate Y position for this line's middle (for ALIGN_MIDDLE)
                         int16_t lineY = descY + (lineHeight / 2) + (currentLine * lineSpacing);
                         ttf.drawTextAlignedOutlined(itemX, lineY, lineBuf, hourlyDescFontSize,
-                                                    EL133UF1_BLACK, EL133UF1_WHITE,
+                                                    EL133UF1_WHITE, EL133UF1_BLACK,
                                                     ALIGN_CENTER, ALIGN_MIDDLE, 1);
                     }
                     

@@ -102,9 +102,11 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
  * @param placeName Place name to geocode
  * @param lat Output latitude (set on success)
  * @param lon Output longitude (set on success)
+ * @param formattedLocation Output formatted location string "Name, State, Country" (optional, can be nullptr)
+ * @param formattedLocationSize Size of formattedLocation buffer (ignored if formattedLocation is nullptr)
  * @return true if geocoding successful, false otherwise
  */
-static bool geocodePlaceName(const char* placeName, float* lat, float* lon) {
+static bool geocodePlaceName(const char* placeName, float* lat, float* lon, char* formattedLocation = nullptr, size_t formattedLocationSize = 0) {
     const char* apiKey = "4efd38c9e9d41e3b10724fe764541d7b";  // TODO: Replace with actual API key or load from NVS
     
     if (placeName == nullptr || placeName[0] == '\0' || lat == nullptr || lon == nullptr) {
@@ -173,11 +175,17 @@ static bool geocodePlaceName(const char* placeName, float* lat, float* lon) {
                         *lat = (float)latItem->valuedouble;
                         *lon = (float)lonItem->valuedouble;
                         
-                        // Optionally extract and log the resolved name
+                        // Extract name, state, and country for formatted location string
                         cJSON* nameItem = cJSON_GetObjectItem(firstResult, "name");
                         const char* resolvedName = placeName;
                         if (nameItem && cJSON_IsString(nameItem)) {
                             resolvedName = nameItem->valuestring;
+                        }
+                        
+                        cJSON* stateItem = cJSON_GetObjectItem(firstResult, "state");
+                        const char* state = "";
+                        if (stateItem && cJSON_IsString(stateItem)) {
+                            state = stateItem->valuestring;
                         }
                         
                         cJSON* countryItem = cJSON_GetObjectItem(firstResult, "country");
@@ -186,8 +194,21 @@ static bool geocodePlaceName(const char* placeName, float* lat, float* lon) {
                             country = countryItem->valuestring;
                         }
                         
-                        Serial.printf("Geocoding API: SUCCESS - Resolved '%s' to %s, %s (%.4f, %.4f)\n",
-                                     placeName, resolvedName, country, *lat, *lon);
+                        // Format location string as "Name, State, Country" (if formattedLocation buffer provided)
+                        if (formattedLocation != nullptr && formattedLocationSize > 0) {
+                            if (state[0] != '\0' && country[0] != '\0') {
+                                snprintf(formattedLocation, formattedLocationSize, "%s, %s, %s", 
+                                        resolvedName, state, country);
+                            } else if (country[0] != '\0') {
+                                snprintf(formattedLocation, formattedLocationSize, "%s, %s", 
+                                        resolvedName, country);
+                            } else {
+                                snprintf(formattedLocation, formattedLocationSize, "%s", resolvedName);
+                            }
+                        }
+                        
+                        Serial.printf("Geocoding API: SUCCESS - Resolved '%s' to %s, %s, %s (%.4f, %.4f)\n",
+                                     placeName, resolvedName, state, country, *lat, *lon);
                         
                         cJSON_Delete(json);
                         http.end();
@@ -1538,6 +1559,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     float actualLat = lat;
     float actualLon = lon;
     bool usedGeocoding = false;
+    char formattedLocation[256] = "";  // Store formatted location string from geocoding
     
     // Always use geocoding if place name is provided
     if (placeName != nullptr && placeName[0] != '\0') {
@@ -1563,9 +1585,12 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         }
         
         if (wifiConnected) {
-            if (geocodePlaceName(placeName, &actualLat, &actualLon)) {
+            if (geocodePlaceName(placeName, &actualLat, &actualLon, formattedLocation, sizeof(formattedLocation))) {
                 usedGeocoding = true;
                 Serial.printf("Geocoding SUCCESS: %s -> (%.4f, %.4f)\n", placeName, actualLat, actualLon);
+                if (formattedLocation[0] != '\0') {
+                    Serial.printf("Formatted location: %s\n", formattedLocation);
+                }
             } else {
                 Serial.printf("Geocoding FAILED for: %s\n", placeName);
                 // If geocoding fails and no valid lat/lon provided, return error
@@ -1587,8 +1612,11 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         }
     }
     
+    // Use formatted location if geocoding was used and succeeded, otherwise use original placeName
+    const char* displayName = (usedGeocoding && formattedLocation[0] != '\0') ? formattedLocation : placeName;
+    
     Serial.printf("=== Weather for Place: %s (%.4f, %.4f)%s ===\n", 
-                 placeName, actualLat, actualLon, usedGeocoding ? " [geocoded]" : "");
+                 displayName, actualLat, actualLon, usedGeocoding ? " [geocoded]" : "");
     
     // Ensure display is initialized
     if (display.getBuffer() == nullptr) {
@@ -1723,9 +1751,10 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     }
     
     // Display location name at top (centered) - same size as time and temperature
+    // Use formatted location if geocoding was used, otherwise use original placeName
     const float nameFontSize = 120.0f;  // Same as temp
     int16_t nameY = 150;
-    ttf.drawTextAlignedOutlined(display.width() / 2, nameY, placeName, nameFontSize,
+    ttf.drawTextAlignedOutlined(display.width() / 2, nameY, displayName, nameFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     

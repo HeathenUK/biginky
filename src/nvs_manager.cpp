@@ -170,15 +170,16 @@ void hourScheduleLoadFromNVS() {
         g_hour_schedule[i] = true;
     }
     
+    // Try to open in read-only mode first (to avoid creating namespace unnecessarily)
+    // If it doesn't exist, Preferences.begin() will fail and log an error, which is expected on first boot
     NVSGuard guard(hourSchedulePrefs, "hours", true);  // Read-only
     if (!guard.isOpen()) {
         // This is normal on first boot or after NVS clear - namespace doesn't exist yet
+        // The Preferences library logs "NOT_FOUND" error, but we handle it gracefully here
         // We'll use defaults (all hours enabled) and the namespace will be created on first save
-        if (g_is_cold_boot) {
-            Serial.println("INFO: NVS namespace 'hours' not found or failed to open - using default (all hours enabled)");
-            Serial.println("      This is normal on first run or after NVS erase. Your schedule will be saved when you configure it.");
-        }
-        return;
+        // Note: This hour schedule is deprecated in favor of detailed scene schedule, 
+        // but kept for backward compatibility and as initial default
+        return;  // Use defaults - all hours enabled
     }
     
     // Load hour schedule as a 24-byte string (each byte is '1' or '0')

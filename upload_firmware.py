@@ -36,16 +36,28 @@ def calculate_checksums(data):
     
     return simple_sum, crc_like
 
-def verify_device_reachable(device_ip, port=80, timeout=5):
-    """Verify device is reachable before attempting upload."""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect((device_ip, port))
-        sock.close()
-        return True
-    except socket.error:
-        return False
+def verify_device_reachable(device_ip, port=80, timeout=5, retry_interval=2, max_retries=None):
+    """Verify device is reachable before attempting upload. Retries indefinitely if max_retries is None."""
+    attempt = 0
+    while max_retries is None or attempt < max_retries:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((device_ip, port))
+            sock.close()
+            return True
+        except socket.error:
+            attempt += 1
+            if max_retries is None:
+                # Retry indefinitely - print status every 10 attempts (every 20 seconds with 2s interval)
+                if attempt % 10 == 0:
+                    print(f"Still waiting for device at {device_ip}:{port}... (attempt {attempt})")
+                else:
+                    print(".", end="", flush=True)
+            else:
+                print(f"Attempt {attempt}/{max_retries} failed, retrying in {retry_interval}s...")
+            time.sleep(retry_interval)
+    return False
 
 def main():
     if len(sys.argv) < 2:
@@ -57,16 +69,18 @@ def main():
     device_ip = sys.argv[1]
     firmware_path = sys.argv[2] if len(sys.argv) > 2 else ".pio/build/esp32p4/firmware.bin"
     
-    # Verify device is reachable first
-    print(f"Checking if device is reachable at {device_ip}:80...")
-    if not verify_device_reachable(device_ip):
-        print(f"Device not reachable")
+    # Verify device is reachable first (retry indefinitely)
+    print(f"Waiting for device to be reachable at {device_ip}:80...")
+    print("(This will keep retrying - start OTA mode on the device now)")
+    if not verify_device_reachable(device_ip, retry_interval=2, max_retries=None):
+        # This shouldn't be reached with max_retries=None, but kept for safety
+        print(f"\nDevice not reachable after maximum retries")
         print("\nMake sure:")
         print("  1. Device IP is correct")
         print("  2. Device is on same network")
         print("  3. OTA server running (send !ota via MQTT or press 'o' at boot)")
         sys.exit(1)
-    print("✓ Device reachable\n")
+    print("\n✓ Device reachable\n")
     
     # Check file exists
     if not os.path.exists(firmware_path):
@@ -97,9 +111,24 @@ def main():
     print(f"\nUploading to {device_ip}:80...")
     
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(300)
-        sock.connect((device_ip, 80))
+        # Retry connection if it fails (device might have disconnected briefly)
+        sock = None
+        max_connect_retries = 5
+        connect_retry_delay = 1
+        for retry in range(max_connect_retries):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(300)
+                sock.connect((device_ip, 80))
+                break  # Success
+            except socket.error as e:
+                if retry < max_connect_retries - 1:
+                    print(f"Connection failed (attempt {retry + 1}/{max_connect_retries}), retrying in {connect_retry_delay}s...")
+                    time.sleep(connect_retry_delay)
+                    if sock:
+                        sock.close()
+                else:
+                    raise  # Re-raise on final failure
         
         # Calculate checksums before upload
         print("\nCalculating checksums...")

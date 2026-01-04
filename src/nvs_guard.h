@@ -47,10 +47,16 @@ public:
         : prefs_(nullptr)
         , owns_prefs_(true)
         , is_open_(false)
+        , namespace_name_(namespace_name)
     {
         prefs_ = new Preferences();
         if (prefs_ != nullptr) {
             is_open_ = prefs_->begin(namespace_name, read_only);
+            if (!is_open_) {
+                // Log which namespace failed (ESP-IDF Preferences already logs the error, but we add context)
+                Serial.printf("[NVSGuard] Failed to open namespace '%s' (read-only=%s) - this may be normal on first boot\n", 
+                             namespace_name, read_only ? "true" : "false");
+            }
         }
     }
 
@@ -64,8 +70,14 @@ public:
         : prefs_(&prefs)
         , owns_prefs_(false)
         , is_open_(false)
+        , namespace_name_(namespace_name)
     {
         is_open_ = prefs_->begin(namespace_name, read_only);
+        if (!is_open_) {
+            // Log which namespace failed (ESP-IDF Preferences already logs the error, but we add context)
+            Serial.printf("[NVSGuard] Failed to open namespace '%s' (read-only=%s) - this may be normal on first boot\n", 
+                         namespace_name, read_only ? "true" : "false");
+        }
     }
 
     /**
@@ -113,6 +125,7 @@ private:
     Preferences* prefs_;      // Pointer to Preferences object (owned or external)
     bool owns_prefs_;         // True if we own the Preferences object, false if external
     bool is_open_;            // True if begin() succeeded
+    const char* namespace_name_;  // Namespace name for error reporting
 };
 
 #endif // NVS_GUARD_H

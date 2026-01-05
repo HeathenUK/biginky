@@ -523,34 +523,35 @@ async function handleThumbnailMessage(message) {
             } catch (decryptError) {
                 console.error('Failed to decrypt thumbnail message:', decryptError);
                 console.error('Thumbnail decryption failed for retained message:', message.retained);
+                console.error('Thumbnail payload details - IV length:', payload.iv ? payload.iv.length : 'missing', 
+                    'Payload length:', payload.payload ? payload.payload.length : 'missing');
                 // If this is a retained message and decryption throws an exception, skip gracefully
-                // This handles the case where an old retained message was encrypted with a different key
                 if (message.retained) {
                     console.warn('Skipping retained thumbnail message that failed to decrypt (exception) - will wait for new message');
-                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message encrypted with different key)';
+                    console.warn('Check browser console for specific decryption error');
+                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message failed to decrypt - check console for details)';
                     return;
                 }
-                document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect or message corrupted.';
+                document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Check console for details.';
                 return;
             }
             
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
                 console.error('Thumbnail decryption returned empty for retained message:', message.retained);
+                console.error('Thumbnail payload details - IV length:', payload.iv ? payload.iv.length : 'missing', 
+                    'Payload length:', payload.payload ? payload.payload.length : 'missing');
                 
-                // If this is a retained message and decryption fails, it may have been encrypted
-                // with a different key/method. Since new messages work, we'll just skip this one.
-                // Optionally, we could request a fresh thumbnail by sending a command, but that
-                // might be too aggressive - better to wait for the next automatic update.
+                // If this is a retained message and decryption fails, skip gracefully.
+                // This can happen due to: stale retained message, message corruption, or broker issues with large payloads.
                 if (message.retained) {
                     console.warn('Skipping retained thumbnail message that failed to decrypt - will wait for new message');
-                    console.warn('This usually means the retained message was encrypted with a different key/method');
-                    console.warn('New thumbnails will work fine - trigger a canvas draw or wait for next automatic update');
-                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message encrypted with different key)';
+                    console.warn('Check browser console for specific decryption error (IV length, ciphertext length, padding issues)');
+                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message failed to decrypt - check console for details)';
                     return;
                 }
                 
-                document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
+                document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Check console for details.';
                 return;
             }
             

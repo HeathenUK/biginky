@@ -184,12 +184,25 @@ async function handleStatusMessage(message) {
                 decrypted = await decryptMessage(payload.payload, payload.iv);
             } catch (decryptError) {
                 console.error('Failed to decrypt status message:', decryptError);
+                // If this is a retained message and decryption throws an exception, skip gracefully
+                // This handles the case where an old retained message was encrypted with a different key
+                if (message.retained) {
+                    console.warn('Skipping retained status message that failed to decrypt (exception) - will wait for new message');
+                    document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Waiting for new status... (retained message encrypted with different key)</p>';
+                    return;
+                }
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Failed to decrypt status message. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
                 return;
             }
             
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
+                // If this is a retained message and decryption fails, skip gracefully
+                if (message.retained) {
+                    console.warn('Skipping retained status message that failed to decrypt (empty result) - will wait for new message');
+                    document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Waiting for new status... (retained message encrypted with different key)</p>';
+                    return;
+                }
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Decryption failed - empty result. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
                 return;
             }
@@ -510,6 +523,13 @@ async function handleThumbnailMessage(message) {
             } catch (decryptError) {
                 console.error('Failed to decrypt thumbnail message:', decryptError);
                 console.error('Thumbnail decryption failed for retained message:', message.retained);
+                // If this is a retained message and decryption throws an exception, skip gracefully
+                // This handles the case where an old retained message was encrypted with a different key
+                if (message.retained) {
+                    console.warn('Skipping retained thumbnail message that failed to decrypt (exception) - will wait for new message');
+                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message encrypted with different key)';
+                    return;
+                }
                 document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect or message corrupted.';
                 return;
             }

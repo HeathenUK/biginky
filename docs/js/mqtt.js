@@ -468,7 +468,26 @@ async function handleThumbnailMessage(message) {
                     console.warn('Thumbnail: IV base64 length is', cleanIv.length, '(expected 24 for 16 bytes)');
                 }
                 if (cleanPayload.length % 4 !== 0) {
-                    console.warn('Thumbnail: Payload base64 length is', cleanPayload.length, '(not a multiple of 4, may be corrupted)');
+                    console.error('Thumbnail: Payload base64 length is', cleanPayload.length, '(not a multiple of 4 - MESSAGE IS TRUNCATED/CORRUPTED)');
+                    if (message.retained) {
+                        console.error('Thumbnail: This retained message is corrupted. The device needs to publish a fresh thumbnail.');
+                        document.getElementById('thumbnailStatus').textContent = 'Retained thumbnail corrupted (truncated). Waiting for device to publish fresh thumbnail...';
+                        return;
+                    }
+                }
+                
+                // Pre-check: decode base64 and validate ciphertext length before attempting decryption
+                try {
+                    const testPayload = atob(cleanPayload);
+                    if (testPayload.length % 16 !== 0) {
+                        console.error('Thumbnail: Decoded ciphertext length', testPayload.length, 'is not multiple of 16 (remainder:', testPayload.length % 16, ') - MESSAGE IS TRUNCATED');
+                        if (message.retained) {
+                            document.getElementById('thumbnailStatus').textContent = 'Retained thumbnail corrupted (ciphertext truncated). Waiting for fresh thumbnail...';
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.error('Thumbnail: Failed to decode payload base64 for validation:', e);
                 }
                 
                 // Verify HMAC first (on encrypted message)

@@ -19,7 +19,7 @@
 #include "nanosvgrast.h"
 
 EL133UF1_SVG::EL133UF1_SVG()
-    : _display(nullptr), _width(0), _height(0), _useDithering(false), _autoCrop(true)
+    : _display(nullptr), _width(0), _height(0), _useDithering(false), _autoCrop(true), _invertColors(false)
 {
 }
 
@@ -265,6 +265,13 @@ SVGResult EL133UF1_SVG::rasterizeAndDraw(int16_t x, int16_t y, void* image, floa
             if (a < 128) {
                 pixelsSkippedAlpha++;
                 continue;  // Don't write, keep background
+            }
+            
+            // Invert colors if enabled (black becomes white)
+            if (_invertColors) {
+                r = 255 - r;
+                g = 255 - g;
+                b = 255 - b;
             }
             
             // Map to Spectra 6 color

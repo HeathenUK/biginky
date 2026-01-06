@@ -6,9 +6,10 @@
 #include "display_manager.h"
 #include "EL133UF1.h"
 #include "EL133UF1_TTF.h"
-#include "EL133UF1_PNG.h"  // For loading background image and weather icons
+#include "EL133UF1_PNG.h"  // For loading background image
+#include "EL133UF1_SVG.h"  // For loading weather icon SVGs
 #include "EL133UF1_TextPlacement.h"  // For wrapText function
-#include "weather_icon_mapping.h"  // For mapping OpenWeatherMap codes to PNG paths
+#include "weather_icon_mapping.h"  // For mapping OpenWeatherMap codes to SVG paths
 #include "weather_background_mapping.h"  // For mapping OpenWeatherMap codes to background PNG paths
 #include "text_elements.h"
 #include "wifi_manager.h"  // For wifiConnectPersistent (NOT wifi_guard.h - it disconnects WiFi!)
@@ -31,6 +32,7 @@ extern SPIClass displaySPI;
 extern EL133UF1 display;
 extern EL133UF1_TTF ttf;
 extern EL133UF1_PNG pngLoader;  // For loading background image
+static EL133UF1_SVG svgLoader;  // For loading weather icon SVGs
 extern bool sdCardMounted;
 extern uint32_t lastMediaIndex;
 extern String g_lastImagePath;
@@ -1640,11 +1642,21 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         Serial.println("WARNING: Failed to load default OpenSans font");
     }
     
-    // Ensure PNG loader is initialized for weather icons
+    // Ensure PNG loader is initialized for background images
     if (!pngLoader.begin(&display)) {
         Serial.println("ERROR: PNG loader initialization failed!");
         return false;
     }
+    
+    // Ensure SVG loader is initialized for weather icons
+    if (!svgLoader.begin(&display)) {
+        Serial.println("ERROR: SVG loader initialization failed!");
+        return false;
+    }
+    
+    // Configure SVG loader for white-on-transparent rendering (invert black to white)
+    svgLoader.setInvertColors(true);
+    svgLoader.setAutoCrop(false);  // Don't auto-crop weather icons
     
     // Clear display to white background
     display.clear(EL133UF1_WHITE);
@@ -1822,13 +1834,13 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
                                             ALIGN_CENTER, ALIGN_MIDDLE, 1);
             }
             
-            // Display weather icon (PNG, 128x128 pixels, centered in column)
+            // Display weather icon (SVG, rendered at 128x128 pixels, centered in column)
             int16_t iconY = hourlyY + 5;  // Gap from time
             if (hourlyIcons[i][0] != '\0') {
-                // Get PNG path for this icon code
+                // Get SVG path for this icon code
                 char iconPath[128];
                 if (getWeatherIconPath(hourlyIcons[i], iconPath, sizeof(iconPath))) {
-                    // Load PNG file from LittleFS
+                    // Load SVG file from LittleFS
                     FILE* iconFile = fopen(iconPath, "rb");
                     if (iconFile != nullptr) {
                         // Get file size
@@ -1836,42 +1848,50 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
                         long fileSize = ftell(iconFile);
                         fseek(iconFile, 0, SEEK_SET);
                         
-                        if (fileSize > 0 && fileSize < 200000) {  // Max 200KB PNG (128x128 should be ~20-50KB)
-                            // Allocate buffer in PSRAM and read PNG data
-                            uint8_t* iconData = (uint8_t*)hal_psram_malloc(fileSize);
+                        if (fileSize > 0 && fileSize < 200000) {  // Max 200KB SVG
+                            // Allocate buffer in PSRAM and read SVG data
+                            uint8_t* iconData = (uint8_t*)hal_psram_malloc(fileSize + 1);  // +1 for null terminator
                             if (iconData != nullptr) {
                                 size_t bytesRead = fread(iconData, 1, fileSize, iconFile);
                                 fclose(iconFile);  // Close file immediately after reading
                                 
                                 if (bytesRead == (size_t)fileSize) {
-                                    // Icons are 128x128 pixels, center them horizontally in the item column
+                                    // Null-terminate for SVG loader (accepts string or binary)
+                                    iconData[fileSize] = '\0';
+                                    
+                                    // Icons are rendered at 128x128 pixels, center them horizontally in the item column
                                     int16_t iconX = itemX - 64;  // Center the 128px icon
                                     
-                                    PNGResult iconResult = pngLoader.draw(iconX, iconY, iconData, fileSize);
-                                    if (iconResult != PNG_OK) {
-                                        Serial.printf("  Failed to draw PNG icon %d (%s): %s\n", 
-                                                     i, iconPath, pngLoader.getErrorString(iconResult));
+                                    // Render SVG at 128x128 (SVG viewBox is 512x512, so scale = 128/512 = 0.25)
+                                    // Actually, let's use a scale that makes it fit nicely - SVG icons are typically 512x512 viewBox
+                                    // For 128px output from 512px viewBox: scale = 128/512 = 0.25
+                                    float iconScale = 128.0f / 512.0f;  // Scale to 128px
+                                    
+                                    SVGResult iconResult = svgLoader.draw(iconX, iconY, iconData, fileSize, iconScale);
+                                    if (iconResult != SVG_OK) {
+                                        Serial.printf("  Failed to draw SVG icon %d (%s): %s\n", 
+                                                     i, iconPath, svgLoader.getErrorString(iconResult));
                                     }
                                     
                                     hal_psram_free(iconData);
                                 } else {
-                                    Serial.printf("  Failed to read PNG file %s: read %zu of %ld bytes\n", 
+                                    Serial.printf("  Failed to read SVG file %s: read %zu of %ld bytes\n", 
                                                  iconPath, bytesRead, fileSize);
                                     hal_psram_free(iconData);
                                 }
                             } else {
-                                Serial.printf("  Failed to allocate %ld bytes for PNG %s\n", fileSize, iconPath);
+                                Serial.printf("  Failed to allocate %ld bytes for SVG %s\n", fileSize, iconPath);
                                 fclose(iconFile);
                             }
                         } else {
-                            Serial.printf("  Invalid PNG file size %ld for %s\n", fileSize, iconPath);
+                            Serial.printf("  Invalid SVG file size %ld for %s\n", fileSize, iconPath);
                             fclose(iconFile);
                         }
                     } else {
-                        Serial.printf("  Failed to open PNG file: %s\n", iconPath);
+                        Serial.printf("  Failed to open SVG file: %s\n", iconPath);
                     }
                 } else {
-                    Serial.printf("  Failed to get PNG path for icon code: %s\n", hourlyIcons[i]);
+                    Serial.printf("  Failed to get SVG path for icon code: %s\n", hourlyIcons[i]);
                 }
             }
             

@@ -7196,13 +7196,44 @@ bool handleManageCommand() {
                 Serial.printf("Extracting: %s (compressed: %lu, uncompressed: %lu, method: %d)\n",
                              fileName.c_str(), (unsigned long)compressedSize, (unsigned long)uncompressedSize, compressionMethod);
                 
-                // Check if it's a directory (ends with /)
+                // Handle directory entries - create directory if it doesn't exist
                 if (fileName.endsWith("/")) {
-                    // Create directory (FatFS will create parent dirs if needed)
-                    // Note: FatFS doesn't have mkdir -p, so we'll try to create the file
-                    // and it will fail if parent dirs don't exist, but that's okay
+                    // Extract directory name (remove trailing slash)
+                    String dirName = fileName;
+                    dirName = dirName.substring(0, dirName.length() - 1);
+                    if (dirName.length() > 0) {
+                        String dirPath = extractDir + dirName;
+                        // Try to create directory using FatFS
+                        // Note: FatFS doesn't support recursive mkdir, so we need to create parent dirs first
+                        // For SD card, we'll create the directory path component by component
+                        String dirToCreate = extractDir.startsWith("0:/") ? "0:/" : extractDir;
+                        int startPos = dirToCreate.length();
+                        String fullDirPath = dirPath;
+                        while (startPos < fullDirPath.length()) {
+                            int nextSlash = fullDirPath.indexOf('/', startPos);
+                            if (nextSlash < 0) {
+                                dirToCreate = fullDirPath;
+                            } else {
+                                dirToCreate = fullDirPath.substring(0, nextSlash);
+                            }
+                            // Check if directory exists
+                            FILINFO fno;
+                            FRESULT dirRes = f_stat(dirToCreate.c_str(), &fno);
+                            if (dirRes != FR_OK || !(fno.fattrib & AM_DIR)) {
+                                // Try to create directory
+                                dirRes = f_mkdir(dirToCreate.c_str());
+                                if (dirRes == FR_OK) {
+                                    Serial.printf("Created directory: %s\n", dirToCreate.c_str());
+                                } else if (dirRes != FR_EXIST) {
+                                    Serial.printf("WARNING: Failed to create directory %s (FRESULT: %d)\n", dirToCreate.c_str(), dirRes);
+                                }
+                            }
+                            if (nextSlash < 0) break;
+                            startPos = nextSlash + 1;
+                        }
+                    }
                     cdPos += 46 + fileNameLen + extraFieldLen + commentLen;
-                    continue;  // Skip directory entries for now
+                    continue;
                 }
                 
                 // Read local file header
@@ -7573,8 +7604,38 @@ bool handleManageCommand() {
                 Serial.printf("Extracting: %s (compressed: %lu, uncompressed: %lu, method: %d)\n",
                              fileName.c_str(), (unsigned long)compressedSize, (unsigned long)uncompressedSize, compressionMethod);
                 
-                // Skip directory entries
+                // Handle directory entries - create directory if it doesn't exist
                 if (fileName.endsWith("/")) {
+                    // Extract directory name (remove trailing slash)
+                    String dirName = fileName;
+                    dirName = dirName.substring(0, dirName.length() - 1);
+                    if (dirName.length() > 0) {
+                        String dirPath = extractDir + dirName;
+                        struct stat st;
+                        if (stat(dirPath.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                            // Create directory recursively
+                            String dirToCreate = extractDir.startsWith("/littlefs") ? "/littlefs" : extractDir.substring(0, extractDir.indexOf('/'));
+                            int startPos = dirToCreate.length();
+                            String fullDirPath = dirPath;
+                            while (startPos < fullDirPath.length()) {
+                                int nextSlash = fullDirPath.indexOf('/', startPos);
+                                if (nextSlash < 0) {
+                                    dirToCreate = fullDirPath;
+                                } else {
+                                    dirToCreate = fullDirPath.substring(0, nextSlash);
+                                }
+                                if (stat(dirToCreate.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                                    if (mkdir(dirToCreate.c_str(), 0755) != 0) {
+                                        Serial.printf("WARNING: Failed to create directory %s\n", dirToCreate.c_str());
+                                    } else {
+                                        Serial.printf("Created directory: %s\n", dirToCreate.c_str());
+                                    }
+                                }
+                                if (nextSlash < 0) break;
+                                startPos = nextSlash + 1;
+                            }
+                        }
+                    }
                     cdPos += 46 + fileNameLen + extraFieldLen + commentLen;
                     continue;
                 }

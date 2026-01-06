@@ -7,9 +7,9 @@
 #include <string.h>
 
 /**
- * Mapping of OpenWeatherMap icon codes to PNG filenames
- * Format: icon_code -> png_filename (without /littlefs/weather-png/ prefix)
- * PNG files (128x128) are stored in /littlefs/weather-png/ directory
+ * Mapping of OpenWeatherMap icon codes to SVG filenames
+ * Format: icon_code -> svg_filename (without /littlefs/weather-svg/ prefix)
+ * SVG files are stored in /littlefs/weather-svg/ directory
  * 
  * OpenWeatherMap codes:
  * - 01d/01n: Clear sky
@@ -24,45 +24,45 @@
  */
 struct IconMapping {
     const char* iconCode;
-    const char* pngFile;
+    const char* svgFile;
 };
 
 static const IconMapping iconMappings[] = {
     // Clear sky
-    {"01d", "clear-day.png"},
-    {"01n", "clear-night.png"},
+    {"01d", "clear-day.svg"},
+    {"01n", "clear-night.svg"},
     
     // Few clouds (11-25% cloudiness) - partly cloudy
-    {"02d", "partly-cloudy-day.png"},
-    {"02n", "partly-cloudy-night.png"},
+    {"02d", "partly-cloudy-day.svg"},
+    {"02n", "partly-cloudy-night.svg"},
     
     // Scattered clouds (25-50% cloudiness) - partly cloudy
-    {"03d", "partly-cloudy-day.png"},
-    {"03n", "partly-cloudy-night.png"},
+    {"03d", "partly-cloudy-day.svg"},
+    {"03n", "partly-cloudy-night.svg"},
     
     // Broken/Overcast clouds (51-100% cloudiness)
-    {"04d", "overcast-day.png"},
-    {"04n", "overcast-night.png"},
+    {"04d", "overcast-day.svg"},
+    {"04n", "overcast-night.svg"},
     
     // Shower rain (light rain intensity)
-    {"09d", "drizzle.png"},
-    {"09n", "drizzle.png"},
+    {"09d", "drizzle.svg"},
+    {"09n", "drizzle.svg"},
     
     // Rain
-    {"10d", "rain.png"},
-    {"10n", "rain.png"},
+    {"10d", "rain.svg"},
+    {"10n", "rain.svg"},
     
     // Thunderstorm
-    {"11d", "thunderstorms-day.png"},
-    {"11n", "thunderstorms-night.png"},
+    {"11d", "thunderstorms-day.svg"},
+    {"11n", "thunderstorms-night.svg"},
     
     // Snow
-    {"13d", "snow.png"},
-    {"13n", "snow.png"},
+    {"13d", "snow.svg"},
+    {"13n", "snow.svg"},
     
     // Mist/Fog
-    {"50d", "fog-day.png"},
-    {"50n", "fog-night.png"},
+    {"50d", "fog-day.svg"},
+    {"50n", "fog-night.svg"},
     
     {nullptr, nullptr}  // Sentinel
 };
@@ -70,20 +70,20 @@ static const IconMapping iconMappings[] = {
 // Additional fallback mappings for edge cases
 static const IconMapping fallbackMappings[] = {
     // Generic weather types
-    {"cloudy", "cloudy.png"},
-    {"fog", "fog.png"},
-    {"mist", "mist.png"},
-    {"haze", "haze.png"},
-    {"haze-day", "haze-day.png"},
-    {"haze-night", "haze-night.png"},
-    {"dust", "dust.png"},
-    {"dust-day", "dust-day.png"},
-    {"dust-night", "dust-night.png"},
-    {"sleet", "sleet.png"},
-    {"hail", "hail.png"},
-    {"tornado", "tornado.png"},
-    {"hurricane", "hurricane.png"},
-    {"smoke", "smoke.png"},
+    {"cloudy", "cloudy.svg"},
+    {"fog", "fog.svg"},
+    {"mist", "mist.svg"},
+    {"haze", "haze.svg"},
+    {"haze-day", "haze-day.svg"},
+    {"haze-night", "haze-night.svg"},
+    {"dust", "dust.svg"},
+    {"dust-day", "dust-day.svg"},
+    {"dust-night", "dust-night.svg"},
+    {"sleet", "sleet.svg"},
+    {"hail", "hail.svg"},
+    {"tornado", "tornado.svg"},
+    {"hurricane", "hurricane.svg"},
+    {"smoke", "smoke.svg"},
     
     {nullptr, nullptr}  // Sentinel
 };
@@ -96,7 +96,7 @@ bool getWeatherIconPath(const char* iconCode, char* iconPath, size_t iconPathSiz
     // Search primary mappings
     for (int i = 0; iconMappings[i].iconCode != nullptr; i++) {
         if (strcmp(iconCode, iconMappings[i].iconCode) == 0) {
-            snprintf(iconPath, iconPathSize, "/littlefs/weather-png/%s", iconMappings[i].pngFile);
+            snprintf(iconPath, iconPathSize, "/littlefs/weather-svg/%s", iconMappings[i].svgFile);
             return true;
         }
     }
@@ -104,7 +104,7 @@ bool getWeatherIconPath(const char* iconCode, char* iconPath, size_t iconPathSiz
     // Try fallback mappings
     for (int i = 0; fallbackMappings[i].iconCode != nullptr; i++) {
         if (strcmp(iconCode, fallbackMappings[i].iconCode) == 0) {
-            snprintf(iconPath, iconPathSize, "/littlefs/weather-png/%s", fallbackMappings[i].pngFile);
+            snprintf(iconPath, iconPathSize, "/littlefs/weather-svg/%s", fallbackMappings[i].svgFile);
             return true;
         }
     }
@@ -117,16 +117,16 @@ bool getWeatherIconPath(const char* iconCode, char* iconPath, size_t iconPathSiz
         char lastChar = iconCode[len - 1];
         if (lastChar == 'd') {
             // Default to partly-cloudy-day for unknown day icons
-            snprintf(iconPath, iconPathSize, "/littlefs/weather-png/partly-cloudy-day.png");
+            snprintf(iconPath, iconPathSize, "/littlefs/weather-svg/partly-cloudy-day.svg");
             return true;
         } else if (lastChar == 'n') {
             // Default to partly-cloudy-night for unknown night icons
-            snprintf(iconPath, iconPathSize, "/littlefs/weather-png/partly-cloudy-night.png");
+            snprintf(iconPath, iconPathSize, "/littlefs/weather-svg/partly-cloudy-night.svg");
             return true;
         }
     }
     
     // Ultimate fallback
-    snprintf(iconPath, iconPathSize, "/littlefs/weather-png/not-available.png");
+    snprintf(iconPath, iconPathSize, "/littlefs/weather-svg/not-available.svg");
     return true;  // Return true even for fallback so caller doesn't error
 }

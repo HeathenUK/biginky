@@ -76,6 +76,15 @@ public:
     bool getAutoCrop() const { return _autoCrop; }
     
     /**
+     * @brief Enable/disable color inversion (black becomes white)
+     * When enabled, inverts RGB colors after rasterization but before mapping to Spectra6
+     * Useful for rendering black-on-transparent SVGs as white-on-transparent
+     * @param enable true to enable color inversion
+     */
+    void setInvertColors(bool enable) { _invertColors = enable; }
+    bool getInvertColors() const { return _invertColors; }
+    
+    /**
      * @brief Draw SVG icon from memory data
      * @param x X position on display
      * @param y Y position on display
@@ -136,6 +145,7 @@ private:
     int32_t _height;
     bool _useDithering;
     bool _autoCrop;
+    bool _invertColors;
     
     uint8_t mapToSpectra6(uint8_t r, uint8_t g, uint8_t b);
     SVGResult rasterizeAndDraw(int16_t x, int16_t y, void* image, float scale, uint8_t bgColor);

@@ -780,7 +780,7 @@ static const UnifiedCommandEntry commandRegistry[] = {
     // Manage
     {
         .mqttName = "!manage",
-        .webUIName = nullptr,
+        .webUIName = "!manage",
         .httpEndpoint = nullptr,
         .handler = handleManageUnified,
         .requiresAuth = true,

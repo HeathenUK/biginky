@@ -23,7 +23,6 @@ class EL133UF1;
 extern EL133UF1 display;
 extern bool sdCardMounted;
 extern sdmmc_card_t* sd_card;
-extern bool thumbnailPendingPublish;
 extern bool webUICommandPending;
 extern String pendingWebUICommand;
 extern String lastProcessedCommandId;  // ID of the last command that was processed

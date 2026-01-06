@@ -328,40 +328,8 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 Serial.printf("Subscribed to %s (msg_id: %d)\n", mqttTopicWebUI, msg_id);
             }
             
-            // Check if there's a pending thumbnail to publish
-            if (thumbnailPendingPublish) {
-                Serial.println("Publishing pending thumbnail after MQTT reconnect...");
-                delay(500);
-                thumbnailPendingPublish = false;
-                
-                if (display.getBuffer() != nullptr) {
-                    Serial.println("Regenerating thumbnail from current framebuffer...");
-                    publishMQTTThumbnail();
-                } else {
-                    Serial.println("Framebuffer lost, loading thumbnail from SD card...");
-                    if (!sdCardMounted) {
-                        Serial.println("SD card not mounted - mounting now to load thumbnail...");
-                        if (!sdInitDirect(false)) {
-                            Serial.println("ERROR: Failed to mount SD card for thumbnail load");
-                        } else {
-                            Serial.println("SD card mounted successfully");
-                        }
-                    }
-                    char* jsonFromSD = loadThumbnailFromSD();
-                    if (jsonFromSD != nullptr) {
-                        Serial.println("Loaded thumbnail from SD card, publishing...");
-                        int msg_id = esp_mqtt_client_publish(client, mqttTopicThumb, jsonFromSD, strlen(jsonFromSD), 1, 1);
-                        if (msg_id > 0) {
-                            Serial.printf("Published thumbnail from SD to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
-                        } else {
-                            Serial.printf("Failed to publish thumbnail from SD (msg_id: %d)\n", msg_id);
-                        }
-                        free(jsonFromSD);
-                    } else {
-                        Serial.println("WARNING: Cannot publish thumbnail - SD file missing and framebuffer lost");
-                    }
-                }
-            }
+            // Thumbnail publishing is now handled by publishMQTTThumbnailAlways() after display updates
+            // No SD card fallback - thumbnails are only published when WiFi/MQTT is available and framebuffer exists
             break;
             
         case MQTT_EVENT_SUBSCRIBED:
@@ -1244,16 +1212,7 @@ static void publishMQTTThumbnailInternalImpl() {
         return;
     }
     
-    // Ensure SD card is mounted (required for saving thumbnail)
-    if (!sdCardMounted) {
-        Serial.println("[Core 1] SD card not mounted, attempting to mount for thumbnail save...");
-        if (!sdInitDirect(false)) {
-            Serial.println("[Core 1] WARNING: Failed to mount SD card, thumbnail will not be saved to SD");
-            // Continue anyway - we can still publish the thumbnail via MQTT
-        } else {
-            Serial.println("[Core 1] SD card mounted successfully for thumbnail save");
-        }
-    }
+    // Thumbnail is generated from framebuffer and published directly to MQTT (no SD card fallback)
     
     const int srcWidth = 1600;
     const int srcHeight = 1200;
@@ -1527,34 +1486,25 @@ void publishMQTTThumbnail() {
 }
 
 void publishMQTTThumbnailIfConnected() {
-    if (mqttConnected) {
-        publishMQTTThumbnail();
-    } else {
-        Serial.println("MQTT not connected - generating thumbnail and saving to SD card for later publish...");
-        if (display.getBuffer() == nullptr) {
-            Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
-            thumbnailPendingPublish = true;
-            return;
-        }
-        thumbnailPendingPublish = true;
-    }
+    // Simply delegate to publishMQTTThumbnailAlways() which handles connectivity
+    // This ensures consistent behavior and eliminates SD card fallback issues
+    publishMQTTThumbnailAlways();
 }
 
 void publishMQTTThumbnailAlways() {
     // Always connect WiFi and MQTT if needed, then publish thumbnail
     // This ensures thumbnails are published after every display update
+    // NO SD card fallback - if WiFi/MQTT unavailable or framebuffer lost, we skip publishing
     
     // Check if display buffer is available
     if (display.getBuffer() == nullptr) {
-        Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail");
-        thumbnailPendingPublish = true;
+        Serial.println("WARNING: Display buffer is nullptr, cannot generate thumbnail (skipping)");
         return;
     }
     
     // Load WiFi credentials if needed
     if (!wifiLoadCredentials()) {
-        Serial.println("WARNING: No WiFi credentials, cannot publish thumbnail");
-        thumbnailPendingPublish = true;
+        Serial.println("WARNING: No WiFi credentials, cannot publish thumbnail (skipping)");
         return;
     }
     
@@ -1568,8 +1518,7 @@ void publishMQTTThumbnailAlways() {
         // Use persistent mode which should reuse existing connection if available
         // This is faster than a full reconnect if WiFi is still in the process of disconnecting
         if (!wifiConnectPersistent(5, 20000, false)) {  // 5 retries, 20s per attempt, not required
-            Serial.println("WARNING: WiFi connection failed, saving thumbnail to SD for later publish");
-            thumbnailPendingPublish = true;
+            Serial.println("WARNING: WiFi connection failed, cannot publish thumbnail (skipping)");
             return;
         }
         Serial.println("WiFi connected for thumbnail publish");
@@ -1584,8 +1533,7 @@ void publishMQTTThumbnailAlways() {
     if (!mqttWasConnected) {
         Serial.println("Connecting to MQTT for thumbnail publish...");
         if (!mqttConnect()) {
-            Serial.println("WARNING: MQTT connection failed, saving thumbnail to SD for later publish");
-            thumbnailPendingPublish = true;
+            Serial.println("WARNING: MQTT connection failed, cannot publish thumbnail (skipping)");
             // Don't disconnect WiFi - we might want to keep it connected
             return;
         }

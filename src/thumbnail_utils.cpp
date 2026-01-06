@@ -1,7 +1,7 @@
 /**
  * @file thumbnail_utils.cpp
- * @brief Implementation of thumbnail generation and SD card operations
- * 
+ * @brief Implementation of thumbnail generation from image files
+ *
  * Extracted from main_esp32p4_test.cpp as part of Priority 1 refactoring.
  */
 
@@ -143,99 +143,6 @@ static bool decodePNGToRGB(const uint8_t* pngData, size_t pngLen, uint8_t** rgbB
     bool success = g_pngToRGBContext.success;
     g_pngToRGBContext.rgbBuffer = nullptr;  // Clear context
     return success;
-}
-
-char* loadThumbnailFromSD() {
-    if (!sdCardMounted) {
-        Serial.println("SD card not mounted, cannot load thumbnail");
-        return nullptr;
-    }
-    
-    const char* thumbPath = "0:/thumbnail.jpg";
-    FILINFO fno;
-    FRESULT res = f_stat(thumbPath, &fno);
-    if (res != FR_OK) {
-        Serial.println("Thumbnail file not found on SD card");
-        return nullptr;
-    }
-    
-    FIL thumbFile;
-    res = f_open(&thumbFile, thumbPath, FA_READ);
-    if (res != FR_OK) {
-        Serial.printf("ERROR: Failed to open thumbnail file for reading: %d\n", res);
-        return nullptr;
-    }
-    
-    size_t fileSize = fno.fsize;
-    uint8_t* jpegData = (uint8_t*)malloc(fileSize);
-    if (jpegData == nullptr) {
-        Serial.println("ERROR: Failed to allocate memory for thumbnail");
-        f_close(&thumbFile);
-        return nullptr;
-    }
-    
-    UINT bytesRead = 0;
-    res = f_read(&thumbFile, jpegData, fileSize, &bytesRead);
-    f_close(&thumbFile);
-    
-    if (res != FR_OK || bytesRead != fileSize) {
-        Serial.printf("ERROR: Failed to read thumbnail from SD: res=%d, read=%d/%d\n", res, bytesRead, fileSize);
-        free(jpegData);
-        return nullptr;
-    }
-    
-    // Base64 encode the JPEG
-    size_t base64Size = ((fileSize + 2) / 3) * 4 + 1;
-    char* base64Buffer = (char*)malloc(base64Size);
-    if (base64Buffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate base64 buffer");
-        free(jpegData);
-        return nullptr;
-    }
-    
-    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t base64Idx = 0;
-    
-    for (size_t i = 0; i < fileSize; i += 3) {
-        uint32_t b0 = jpegData[i];
-        uint32_t b1 = (i + 1 < fileSize) ? jpegData[i + 1] : 0;
-        uint32_t b2 = (i + 2 < fileSize) ? jpegData[i + 2] : 0;
-        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
-        
-        if (base64Idx + 4 < base64Size) {
-            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
-            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
-            base64Buffer[base64Idx++] = (i + 1 < fileSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
-            base64Buffer[base64Idx++] = (i + 2 < fileSize) ? base64_chars[value & 0x3F] : '=';
-        }
-    }
-    base64Buffer[base64Idx] = '\0';
-    free(jpegData);
-    
-    // Create JSON payload
-    size_t jsonSize = 55 + base64Idx + 1;
-    char* jsonBuffer = (char*)malloc(jsonSize);
-    if (jsonBuffer == nullptr) {
-        Serial.println("ERROR: Failed to allocate JSON buffer");
-        free(base64Buffer);
-        return nullptr;
-    }
-    
-    int written = snprintf(jsonBuffer, jsonSize, 
-                          "{\"width\":400,\"height\":300,\"format\":\"png\",\"data\":\"%s\"}",
-                          base64Buffer);
-    free(base64Buffer);
-    
-    if (written < 0 || written >= (int)jsonSize) {
-        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
-        free(jsonBuffer);
-        return nullptr;
-    }
-    
-    // Delete the file after loading
-    f_unlink(thumbPath);
-    Serial.printf("Loaded thumbnail from SD and created JSON (%d bytes)\n", written);
-    return jsonBuffer;
 }
 
 String generateThumbnailFromImageFile(const String& imagePath) {
@@ -569,7 +476,6 @@ std::vector<String> listImageFilesVector() {
     
     return files;
 }
-
 
 std::vector<String> listAudioFilesVector() {
     std::vector<String> files;

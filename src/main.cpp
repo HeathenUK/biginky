@@ -304,7 +304,6 @@ static int g_shuffleLastItem = -1;  // Last item from previous cycle (to avoid r
 RTC_DATA_ATTR uint32_t lastSleepDurationSeconds = 0;  // How long we intended to sleep
 RTC_DATA_ATTR uint8_t targetWakeHour = 255;  // Target wake hour (255 = not set)
 RTC_DATA_ATTR uint8_t targetWakeMinute = 255;  // Target wake minute (255 = not set)
-RTC_DATA_ATTR bool thumbnailPendingPublish = false;  // Flag to indicate thumbnail needs to be published
 
 // Structure for passing data to show media task
 struct ShowMediaTaskData {
@@ -2376,7 +2375,7 @@ static void wifiMqttThumbnailTask(void* param) {
             {
                 MQTTGuard guard;
                 if (guard.isConnected()) {
-                    // Publish thumbnail (will load from SD if available, otherwise regenerate from framebuffer)
+                    // Publish thumbnail (generated from framebuffer)
                     Serial.println("[Core 1] Publishing thumbnail to MQTT...");
                     publishMQTTThumbnail();
                     

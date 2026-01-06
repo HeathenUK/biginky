@@ -1,11 +1,10 @@
 /**
  * @file thumbnail_utils.h
- * @brief Thumbnail generation and SD card operations for thumbnails
- * 
+ * @brief Thumbnail generation from image files
+ *
  * Provides functions for:
- * - Loading thumbnails from SD card
- * - Generating thumbnails from image files
- * 
+ * - Generating thumbnails from image files on SD card
+ *
  * Extracted from main_esp32p4_test.cpp as part of Priority 1 refactoring.
  */
 
@@ -14,12 +13,6 @@
 
 #include <Arduino.h>
 #include <vector>
-
-/**
- * Load JPEG thumbnail from SD card and return JSON string
- * @return Pointer to JSON string (caller must free), or nullptr on error
- */
-char* loadThumbnailFromSD();
 
 /**
  * Generate a quarter-size JPEG thumbnail from an image file on SD card

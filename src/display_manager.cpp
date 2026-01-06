@@ -1963,9 +1963,10 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     }
     
     
-    // Update display
+    // Update display (wait for completion to ensure thumbnail is published)
     Serial.println("Updating display (e-ink refresh - this will take 20-30 seconds)...");
     display.update();
+    display.waitForUpdate();  // Wait for refresh to complete (ensures thumbnail publishing completes)
     Serial.println("Display updated");
     
     // Free PSRAM allocations

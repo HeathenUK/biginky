@@ -66,7 +66,7 @@ static char mqttTopicThumb[128] = MQTT_TOPIC_THUMB;
 static char mqttTopicMedia[128] = MQTT_TOPIC_MEDIA;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
-static char mqttRetainedTopicToClear[128] = "";  // Topic to clear after command processing (SMS bridge only)
+static char mqttRetainedTopicToClear[128] = "";  // Topic to clear after command processing (SMS bridge or deferred web UI commands)
 
 // Core 1 worker task for thumbnail generation, MQTT message building, and CPU-intensive operations
 enum MqttWorkType {
@@ -511,6 +511,13 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                         Serial.printf("Deferring heavy '%s' command to process after MQTT disconnect\n", command.c_str());
                         webUICommandPending = true;
                         pendingWebUICommand = jsonMessage;
+                        // Store topic to clear AFTER command is processed (not immediately)
+                        // This prevents commands from being lost if processing fails or is skipped
+                        if (mqttMessageRetain && strlen(topicToClear) > 0) {
+                            strncpy(mqttRetainedTopicToClear, topicToClear, sizeof(mqttRetainedTopicToClear) - 1);
+                            mqttRetainedTopicToClear[sizeof(mqttRetainedTopicToClear) - 1] = '\0';
+                            Serial.printf("Web UI retained message (deferred) - will clear topic '%s' AFTER processing\n", mqttRetainedTopicToClear);
+                        }
                     } else {
                         handleWebInterfaceCommand(jsonMessage);
                         }
@@ -557,18 +564,27 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             }
             
             // Clear retained messages (must happen after processing, regardless of which path was taken)
-            // For web UI commands: clear immediately (they have their own deduplication logic)
-            // For SMS bridge commands: DON'T clear here - clear AFTER successful processing to prevent command loss
+            // For IMMEDIATELY processed commands: clear immediately (deduplication prevents reprocessing)
+            // For DEFERRED commands (SMS bridge or heavy web UI): DON'T clear here - clear AFTER successful processing to prevent command loss
             // Check mqttMessageRetain directly (not shouldClearRetained) to ensure we clear even if message took non-retained path
             if (mqttMessageRetain && strlen(topicToClear) > 0 && client != nullptr) {
-                // Only clear immediately for web UI commands (they have deduplication)
-                // SMS bridge commands will be cleared after successful processing
+                // Check if this is a deferred command (topic already stored in mqttRetainedTopicToClear)
+                bool isDeferredCommand = (strlen(mqttRetainedTopicToClear) > 0 && strcmp(topicToClear, mqttRetainedTopicToClear) == 0);
                 bool isWebUITopic = (strcmp(topicToClear, mqttTopicWebUI) == 0);
                 bool isSmsBridgeTopic = (strcmp(topicToClear, mqttTopicSubscribe) == 0);
                 
-                if (isWebUITopic) {
-                    // Web UI: clear immediately (deduplication prevents reprocessing)
-                    Serial.printf("Clearing retained web UI message on topic %s (immediate - has deduplication)\n", topicToClear);
+                if (isDeferredCommand) {
+                    // Deferred command (SMS bridge or heavy web UI): topic already stored, will be cleared after processing
+                    if (isWebUITopic) {
+                        Serial.printf("Web UI retained message (deferred) on topic %s - deferring clear until AFTER processing\n", topicToClear);
+                    } else if (isSmsBridgeTopic) {
+                        Serial.printf("SMS bridge retained message on topic %s - deferring clear until AFTER processing\n", topicToClear);
+                    } else {
+                        Serial.printf("Deferred retained message on topic %s - deferring clear until AFTER processing\n", topicToClear);
+                    }
+                } else if (isWebUITopic) {
+                    // Web UI: immediate processing - clear immediately (deduplication prevents reprocessing)
+                    Serial.printf("Clearing retained web UI message on topic %s (immediate - not deferred)\n", topicToClear);
                     int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
                     if (msg_id > 0) {
                         Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
@@ -577,8 +593,15 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                                      topicToClear, msg_id, (void*)client);
                     }
                 } else if (isSmsBridgeTopic) {
-                    // SMS bridge: topic already stored in mqttRetainedTopicToClear, will be cleared after processing
-                    Serial.printf("SMS bridge retained message on topic %s - deferring clear until AFTER processing\n", topicToClear);
+                    // SMS bridge: should have been stored above, but if not, clear immediately
+                    Serial.printf("WARNING: SMS bridge retained message on topic %s - not stored for deferred clear, clearing immediately\n", topicToClear);
+                    int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
+                    if (msg_id > 0) {
+                        Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
+                    } else {
+                        Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
+                                     topicToClear, msg_id, (void*)client);
+                    }
                 } else {
                     // Unknown topic: clear immediately to be safe
                     Serial.printf("Clearing retained message on unknown topic %s (immediate)\n", topicToClear);

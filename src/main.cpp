@@ -3284,6 +3284,19 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                         webUICommandPending = false;
                         pendingWebUICommand = "";
                         
+                        // Clear the retained message AFTER processing (regardless of success/failure)
+                        // This prevents commands from being lost if processing is skipped
+                        // Reconnect MQTT briefly to clear the retained message
+                        if (mqttConnect()) {
+                            delay(200);  // Wait for connection
+                            extern void mqttClearPendingRetainedMessage();  // From mqtt_handler.cpp
+                            mqttClearPendingRetainedMessage();
+                            mqttDisconnect();
+                            delay(50);
+                        } else {
+                            Serial.println("WARNING: Failed to reconnect MQTT to clear retained message - will retry on next cycle");
+                        }
+                        
                         // Wait a bit to ensure the completion message is sent (for non-blocking commands)
                         delay(2000);  // 2 seconds should be enough for completion message to be sent
                         Serial.println("Web UI command processing completed (blocking commands like !manage will block until finished)");

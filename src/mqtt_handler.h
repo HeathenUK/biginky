@@ -217,4 +217,11 @@ bool isMqttConnected();
  */
 const char* getMqttTopicPublish();
 
+/**
+ * Clear the pending retained message (called after successful command processing)
+ * This should be called after processing SMS bridge commands to clear the retained message
+ * that was deferred in the event handler
+ */
+void mqttClearPendingRetainedMessage();
+
 #endif // MQTT_HANDLER_H

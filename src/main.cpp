@@ -3245,8 +3245,26 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                         // We'll handle the "unknown command" message inside handleMqttCommand itself
                         // to distinguish between unrecognized commands and command execution failures
                         // For blocking commands like !manage, this call will not return until the command completes
-                        handleMqttCommand(commandToProcess, originalMessageForCommand);
+                        // Process the command (returns true if recognized, false if unrecognized/failed)
+                        bool commandProcessed = handleMqttCommand(commandToProcess, originalMessageForCommand);
                         Serial.println("Command processing completed (blocking commands like !manage will block until finished)");
+                        
+                        // Clear the retained message AFTER processing (regardless of success/failure)
+                        // This prevents commands from being lost if processing is skipped
+                        // We clear after processing because:
+                        // 1. If recognized: we processed it (even if execution failed)
+                        // 2. If unrecognized: we don't want to keep reprocessing invalid commands
+                        // 3. Key fix: previously cleared immediately in event handler, now cleared after processing
+                        // Reconnect MQTT briefly to clear the retained message
+                        if (mqttConnect()) {
+                            delay(200);  // Wait for connection
+                            extern void mqttClearPendingRetainedMessage();  // From mqtt_handler.cpp
+                            mqttClearPendingRetainedMessage();
+                            mqttDisconnect();
+                            delay(50);
+                        } else {
+                            Serial.println("WARNING: Failed to reconnect MQTT to clear retained message - will retry on next cycle");
+                        }
                     }
                     
                     // Process deferred web UI command (if any) AFTER SMS bridge commands

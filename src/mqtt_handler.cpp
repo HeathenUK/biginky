@@ -66,6 +66,7 @@ static char mqttTopicThumb[128] = MQTT_TOPIC_THUMB;
 static char mqttTopicMedia[128] = MQTT_TOPIC_MEDIA;
 static bool mqttMessageReceived = false;
 static String lastMqttMessage = "";
+static char mqttRetainedTopicToClear[128] = "";  // Topic to clear after command processing (SMS bridge only)
 
 // Core 1 worker task for thumbnail generation, MQTT message building, and CPU-intensive operations
 enum MqttWorkType {
@@ -126,6 +127,26 @@ bool isMqttConnected() {
 
 const char* getMqttTopicPublish() {
     return mqttTopicPublish;
+}
+
+// Clear the pending retained message (called after successful command processing)
+void mqttClearPendingRetainedMessage() {
+    if (strlen(mqttRetainedTopicToClear) > 0 && mqttClient != nullptr && mqttConnected) {
+        Serial.printf("Clearing deferred retained message on topic %s (command processed successfully)\n", mqttRetainedTopicToClear);
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttRetainedTopicToClear, "", 0, 1, 1);
+        if (msg_id > 0) {
+            Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", mqttRetainedTopicToClear, msg_id);
+            mqttRetainedTopicToClear[0] = '\0';  // Clear the pending topic
+        } else {
+            Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
+                         mqttRetainedTopicToClear, msg_id, (void*)mqttClient);
+            // Don't clear mqttRetainedTopicToClear on failure - retry on next call
+        }
+    } else if (strlen(mqttRetainedTopicToClear) > 0) {
+        Serial.printf("WARNING: Cannot clear retained message on topic %s - MQTT not connected\n", mqttRetainedTopicToClear);
+        // Clear anyway to prevent infinite retries
+        mqttRetainedTopicToClear[0] = '\0';
+    }
 }
 
 // Load MQTT configuration (hardcoded values)
@@ -497,6 +518,13 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
                 } else if (strcmp(mqttMessageTopic, mqttTopicSubscribe) == 0 || strcmp(topic, mqttTopicSubscribe) == 0) {
                     lastMqttMessage = String((const char*)mqttMessageBuffer, mqttMessageBufferUsed);
                     mqttMessageReceived = true;
+                    // Store topic to clear AFTER command is processed (not immediately)
+                    // This prevents commands from being lost if processing fails or is skipped
+                    if (mqttMessageRetain && strlen(topicToClear) > 0) {
+                        strncpy(mqttRetainedTopicToClear, topicToClear, sizeof(mqttRetainedTopicToClear) - 1);
+                        mqttRetainedTopicToClear[sizeof(mqttRetainedTopicToClear) - 1] = '\0';
+                        Serial.printf("SMS bridge retained message received - will clear topic '%s' AFTER processing\n", mqttRetainedTopicToClear);
+                    }
                 }
             }
             
@@ -529,16 +557,38 @@ static void mqttEventHandler(void* handler_args, esp_event_base_t base, int32_t 
             }
             
             // Clear retained messages (must happen after processing, regardless of which path was taken)
-            // Always clear retained messages to prevent them from being processed again on next reconnect
+            // For web UI commands: clear immediately (they have their own deduplication logic)
+            // For SMS bridge commands: DON'T clear here - clear AFTER successful processing to prevent command loss
             // Check mqttMessageRetain directly (not shouldClearRetained) to ensure we clear even if message took non-retained path
             if (mqttMessageRetain && strlen(topicToClear) > 0 && client != nullptr) {
-                Serial.printf("Clearing retained message on topic %s (safety measure)...\n", topicToClear);
-                int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
-                if (msg_id > 0) {
-                    Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
+                // Only clear immediately for web UI commands (they have deduplication)
+                // SMS bridge commands will be cleared after successful processing
+                bool isWebUITopic = (strcmp(topicToClear, mqttTopicWebUI) == 0);
+                bool isSmsBridgeTopic = (strcmp(topicToClear, mqttTopicSubscribe) == 0);
+                
+                if (isWebUITopic) {
+                    // Web UI: clear immediately (deduplication prevents reprocessing)
+                    Serial.printf("Clearing retained web UI message on topic %s (immediate - has deduplication)\n", topicToClear);
+                    int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
+                    if (msg_id > 0) {
+                        Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
+                    } else {
+                        Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
+                                     topicToClear, msg_id, (void*)client);
+                    }
+                } else if (isSmsBridgeTopic) {
+                    // SMS bridge: topic already stored in mqttRetainedTopicToClear, will be cleared after processing
+                    Serial.printf("SMS bridge retained message on topic %s - deferring clear until AFTER processing\n", topicToClear);
                 } else {
-                    Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
-                                 topicToClear, msg_id, (void*)client);
+                    // Unknown topic: clear immediately to be safe
+                    Serial.printf("Clearing retained message on unknown topic %s (immediate)\n", topicToClear);
+                    int msg_id = esp_mqtt_client_publish(client, topicToClear, "", 0, 1, 1);
+                    if (msg_id > 0) {
+                        Serial.printf("Published blank retained message to clear topic %s (msg_id: %d)\n", topicToClear, msg_id);
+                    } else {
+                        Serial.printf("ERROR: Failed to publish blank message to clear topic %s (msg_id: %d, client=%p)\n", 
+                                     topicToClear, msg_id, (void*)client);
+                    }
                 }
             }
             

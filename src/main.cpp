@@ -2707,9 +2707,13 @@ static void auto_cycle_task(void* arg) {
         // Yield before MQTT check
         vTaskDelay(1);
         
+        // Check for and process commands AFTER scheduled activity completes
+        // Commands are processed here - blocking commands (like !manage) will prevent sleep
+        // until they complete (e.g., web server is closed)
         doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
         
-        // After scene is displayed and status sent, sleep until next minute
+        // Only sleep if no blocking command is running
+        // (doMqttCheckCycle() processes commands - blocking ones won't return until complete)
         Serial.println("Sleeping until next minute...");
         if (time_ok) {
             sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -2786,9 +2790,14 @@ static void auto_cycle_task(void* arg) {
         
         // Always send status update
         vTaskDelay(1);
+        
+        // Check for and process commands AFTER scheduled activity completes
+        // Commands are processed here - blocking commands (like !manage) will prevent sleep
+        // until they complete (e.g., web server is closed)
         doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
         
-        // Sleep until next minute
+        // Only sleep if no blocking command is running
+        // (doMqttCheckCycle() processes commands - blocking ones won't return until complete)
         Serial.println("Sleeping until next minute...");
         if (time_ok) {
             sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -2918,9 +2927,14 @@ static void auto_cycle_task(void* arg) {
         
         // Always send status update
         vTaskDelay(1);
+        
+        // Check for and process commands AFTER scheduled activity completes
+        // Commands are processed here - blocking commands (like !manage) will prevent sleep
+        // until they complete (e.g., web server is closed)
         doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
         
-        // Sleep until next minute
+        // Only sleep if no blocking command is running
+        // (doMqttCheckCycle() processes commands - blocking ones won't return until complete)
         Serial.println("Sleeping until next minute...");
         if (time_ok) {
             sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -2962,9 +2976,14 @@ static void auto_cycle_task(void* arg) {
             
             // Always send status update after display
             vTaskDelay(1);
+            
+            // Check for and process commands AFTER scheduled activity completes
+            // Commands are processed here - blocking commands (like !manage) will prevent sleep
+            // until they complete (e.g., web server is closed)
             doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
             
-            // Sleep until next minute
+            // Only sleep if no blocking command is running
+            // (doMqttCheckCycle() processes commands - blocking ones won't return until complete)
             Serial.println("Sleeping until next minute...");
             if (time_ok) {
                 sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -3029,9 +3048,14 @@ static void auto_cycle_task(void* arg) {
         
         // Always send status update after display
         vTaskDelay(1);
+        
+        // Check for and process commands AFTER scheduled activity completes
+        // Commands are processed here - blocking commands (like !manage) will prevent sleep
+        // until they complete (e.g., web server is closed)
         doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
         
-        // Sleep until next minute
+        // Only sleep if no blocking command is running
+        // (doMqttCheckCycle() processes commands - blocking ones won't return until complete)
         Serial.println("Sleeping until next minute...");
         if (time_ok) {
             sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -3126,11 +3150,13 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                     if (command.length() > 0) {
                         commandToProcess = command;  // Store for processing after disconnect
                         originalMessageForCommand = msg;  // Store original message for commands that need it
+                        Serial.printf("Command extracted for processing: %s\n", command.c_str());
                     }
                     
                     // Message already processed and cleared in event handler
                     // The blank retained message was published in the event handler
-                    // Reduced delay - publish completes quickly, 100ms is sufficient
+                    // NOTE: Command will be processed AFTER status is published (below)
+                    // Blocking commands (like !manage) will prevent sleep until they complete
                     delay(100);  // Allow time for blank retained message publish to complete
                 } else {
                     // Check if a large message is still being received
@@ -3211,30 +3237,38 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                         
                     // Process SMS bridge commands FIRST (before deferred web UI commands)
                     // This ensures critical commands like !ota can be executed even if web UI commands cause boot loops
+                    // NOTE: Blocking commands (like !manage) will block here until they complete
+                    // This prevents the scheduled event handler from sleeping until the command finishes
                     if (commandToProcess.length() > 0) {
-                        Serial.println("Processing SMS bridge command (priority) after MQTT disconnect");
+                        Serial.printf("Processing SMS bridge command (priority) after MQTT disconnect: %s\n", commandToProcess.c_str());
                         // handleMqttCommand returns false for both "command not recognized" and "command failed"
                         // We'll handle the "unknown command" message inside handleMqttCommand itself
                         // to distinguish between unrecognized commands and command execution failures
+                        // For blocking commands like !manage, this call will not return until the command completes
                         handleMqttCommand(commandToProcess, originalMessageForCommand);
+                        Serial.println("Command processing completed (blocking commands like !manage will block until finished)");
                     }
                     
                     // Process deferred web UI command (if any) AFTER SMS bridge commands
                     // This prevents stack overflow in the MQTT task context for heavy commands
                     // But we process it after SMS bridge commands so critical commands like !ota can run first
+                    // NOTE: Blocking commands (like !manage) will block here until they complete
+                    // This prevents the scheduled event handler from sleeping until the command finishes
                     if (webUICommandPending && pendingWebUICommand.length() > 0) {
                         Serial.println("Processing deferred web UI command after MQTT disconnect");
                         
                         // Process the command (handleWebInterfaceCommand handles decryption and completion publishing)
                         // Completion publishing is now handled by the command dispatcher, so we don't need to do it here
+                        // For blocking commands like !manage, this call will not return until the command completes
                         bool success = handleWebInterfaceCommand(pendingWebUICommand);
                         
                         // Clear the pending command flag
                         webUICommandPending = false;
                         pendingWebUICommand = "";
                         
-                        // Wait a bit to ensure the completion message is sent
+                        // Wait a bit to ensure the completion message is sent (for non-blocking commands)
                         delay(2000);  // 2 seconds should be enough for completion message to be sent
+                        Serial.println("Web UI command processing completed (blocking commands like !manage will block until finished)");
                     }
                     // Status already published above, no need to reconnect
                 } else {

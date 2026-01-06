@@ -1765,14 +1765,25 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     // Display location name at top (centered) - same size as time and temperature
     // Use formatted location if geocoding was used, otherwise use original placeName
     const float nameFontSize = 120.0f;  // Same as temp
-    int16_t nameY = 150;
+    int16_t nameY = 150;  // Keep place name at top where it is
+    
+    // Calculate equal spacing between all elements:
+    // name → time → temp → condition → hiLo → hourly block
+    // We want 5 equal gaps. Place name stays at 150, hourly block starts around 680.
+    // Available space: 680 - 150 = 530px for 5 gaps = 106px per gap
+    const int16_t equalGap = 106;
+    
+    int16_t timeY = nameY + equalGap;        // 150 + 106 = 256
+    int16_t tempY = timeY + equalGap;        // 256 + 106 = 362
+    int16_t conditionY = tempY + equalGap;   // 362 + 106 = 468
+    int16_t hiLoY = conditionY + equalGap;   // 468 + 106 = 574
+    
     ttf.drawTextAlignedOutlined(display.width() / 2, nameY, displayName, nameFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     
-    // Display current time below location name - equal spacing to time-to-temperature gap
+    // Display current time below location name - equal spacing
     // Use location's timezone offset to convert UTC timestamp to local time
-    int16_t timeY = nameY + 130;  // Equal spacing to time-to-temperature (130px)
     if (currentTime > 0) {
         // Convert UTC timestamp to local time using timezone offset
         time_t localTime = currentTime + timezoneOffset;
@@ -1787,33 +1798,31 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     
     // Display temperature below time (centered, same font size as name and time)
     const float tempFontSize = 120.0f;
-    int16_t tempY = timeY + 130;
     ttf.drawTextAlignedOutlined(display.width() / 2, tempY, tempStr, tempFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     
-    // Display high/low temperatures below current temperature
-    const float hiLoFontSize = 96.0f;  // Doubled from 48.0f
-    int16_t hiLoY = tempY + 140;  // Spacing from temperature (lowered by 10px)
+    // Display condition below current temperature - equal spacing
+    const float conditionFontSize = 96.0f;
+    ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
+                                EL133UF1_WHITE, EL133UF1_BLACK,
+                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    
+    // Display high/low temperatures below condition - equal spacing
+    const float hiLoFontSize = 96.0f;
     char hiLoStr[128];
     snprintf(hiLoStr, sizeof(hiLoStr), "High: %s / Low: %s", tempMaxStr, tempMinStr);
     ttf.drawTextAlignedOutlined(display.width() / 2, hiLoY, hiLoStr, hiLoFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
     
-    // Display condition halfway between current temperature and high/low
-    const float conditionFontSize = 96.0f;  // Doubled from 48.0f
-    int16_t conditionY = tempY + 70;  // Halfway between tempY and hiLoY: (0 + 140) / 2 = 70
-    ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
-                                EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, 2);
-    
     // Display hourly forecast strip (next 8 hours, skipping current hour) below high/low temperatures
+    // Equal spacing from hiLo (keep internal hourly spacing unchanged)
     if (hourlyCount > 0) {
         const float hourlyTimeFontSize = 58.0f;  // Increased from 24.0f
         const float hourlyTempFontSize = 80.0f;  // Doubled from 40.0f
         const float hourlyDescFontSize = 40.0f;  // Reduced from 52.0f
-        int16_t hourlyY = hiLoY + 130;  // Increased spacing for larger fonts above
+        int16_t hourlyY = hiLoY + equalGap;  // Equal spacing from hiLo (106px gap)
         int16_t displayWidth = display.width();
         int16_t stripWidth = displayWidth - 40;  // 20px margin on each side
         int16_t itemWidth = stripWidth / hourlyCount;

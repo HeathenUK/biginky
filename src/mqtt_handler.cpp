@@ -1329,6 +1329,15 @@ static void publishMQTTThumbnailInternalImpl() {
     LodePNGState state;
     lodepng_state_init(&state);
     
+    // Configure maximum compression for smaller file sizes
+    state.encoder.zlibsettings.btype = 2;           // Dynamic Huffman (best compression)
+    state.encoder.zlibsettings.windowsize = 32768;  // Maximum window size (32KB)
+    state.encoder.zlibsettings.minmatch = 3;        // Minimum match length
+    state.encoder.zlibsettings.nicematch = 258;     // Maximum match length to search for
+    state.encoder.zlibsettings.lazymatching = 1;    // Try next byte for better matches
+    state.encoder.filter_strategy = LFS_ZERO;       // No filtering for palette images (fastest, same compression)
+    state.encoder.filter_palette_zero = 1;          // Don't filter palette data
+    
     // Configure color mode for palette - input is already palette indices!
     state.info_png.color.colortype = LCT_PALETTE;
     state.info_png.color.bitdepth = 8; // 8-bit palette indices
@@ -1884,6 +1893,15 @@ bool processPngEncodeWork(PngEncodeWorkData* work) {
     // Set up LodePNGState with palette mode
     LodePNGState state;
     lodepng_state_init(&state);
+    
+    // Configure maximum compression for smaller file sizes
+    state.encoder.zlibsettings.btype = 2;           // Dynamic Huffman (best compression)
+    state.encoder.zlibsettings.windowsize = 32768;  // Maximum window size (32KB)
+    state.encoder.zlibsettings.minmatch = 3;        // Minimum match length
+    state.encoder.zlibsettings.nicematch = 258;     // Maximum match length to search for
+    state.encoder.zlibsettings.lazymatching = 1;    // Try next byte for better matches
+    state.encoder.filter_strategy = LFS_ZERO;       // No filtering for palette images (fastest, same compression)
+    state.encoder.filter_palette_zero = 1;          // Don't filter palette data
     
     // Configure color mode for palette - input is palette indices
     state.info_png.color.colortype = LCT_PALETTE;

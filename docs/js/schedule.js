@@ -388,6 +388,9 @@ async function saveScheduleToDevice() {
                     scene: sceneSelect.value
                 };
                 
+                // DEBUG: Log every slot being created
+                console.log(`[DEBUG] Hour ${hour}: Creating slot with minute=${minute} (raw value='${minuteValue}'), scene=${sceneSelect.value}`);
+                
                 const paramType = SCENE_TYPES[sceneSelect.value]?.paramType;
                 if (paramType === 'mapping_number') {
                     const input = slotRow.querySelector('.slot-parameter-mapping');
@@ -433,8 +436,15 @@ async function saveScheduleToDevice() {
         });
         
         slots.sort((a, b) => a.minute - b.minute);
+        
+        // DEBUG: Log all slots for this hour
+        console.log(`[DEBUG] Hour ${hour}: Final slots array (${slots.length} slots):`, JSON.stringify(slots));
+        
         schedule.push({ enabled: enabled, slots: slots });
     });
+    
+    // DEBUG: Log full schedule before sending
+    console.log('[DEBUG] Full schedule being sent:', JSON.stringify(schedule, null, 2));
     
     // Send schedule_set command via MQTT
     if (typeof saveScheduleCommand === 'function') {

@@ -217,10 +217,10 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    // Generate quarter-size thumbnail
-    // Quarter size: 200x150 for 800x600, or 400x300 for 1600x1200
-    const int thumbWidth = srcWidth / 4;   // Quarter width
-    const int thumbHeight = srcHeight / 4;  // Quarter height
+    // Generate eighth-size thumbnail (200x150 for 1600x1200, or 100x75 for 800x600)
+    // Reduced from quarter-size (400x300) to reduce media mappings payload size
+    const int thumbWidth = srcWidth / 8;   // Eighth width (200x150 for 1600x1200)
+    const int thumbHeight = srcHeight / 8;  // Eighth height
     
     // Map Spectra color codes to palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 5=BLUE, 6=GREEN
     // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
@@ -320,9 +320,11 @@ String generateThumbnailFromImageFile(const String& imagePath) {
         return "";
     }
     
-    Serial.println("Scaling palette indices (direct sampling every 4th pixel, like framebuffer)...");
+    // Calculate scale factor dynamically based on actual thumbnail size (should be 8 for eighth-size)
+    const int scale = srcWidth / thumbWidth;  // Should be 8 for 1600x1200 -> 200x150
+    Serial.printf("Scaling palette indices (direct sampling every %dth pixel, %dx%d -> %dx%d)...\n", 
+                  scale, srcWidth, srcHeight, thumbWidth, thumbHeight);
     uint32_t scaleStart = millis();
-    const int scale = 4;
     
     processImageChunked(thumbWidth, thumbHeight, [&](int tx, int ty) {
         int sx = tx * scale;

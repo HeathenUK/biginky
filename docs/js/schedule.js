@@ -400,11 +400,13 @@ async function saveScheduleToDevice() {
                             slot.parameter = String(mappingNum);
                         }
                     }
+                    slots.push(slot);  // Always push mapping_number slots
                 } else if (paramType === 'image_dropdown') {
                     const select = slotRow.querySelector('.slot-parameter-image');
                     if (select && select.value.trim().length > 0) {
                         slot.parameter = select.value.trim();
                     }
+                    slots.push(slot);  // Always push image_dropdown slots
                 } else if (paramType === 'weather_place') {
                     const latInput = slotRow.querySelector('.slot-parameter-lat');
                     const lonInput = slotRow.querySelector('.slot-parameter-lon');
@@ -427,10 +429,10 @@ async function saveScheduleToDevice() {
                     if (hasName || hasLatLon) {
                         slots.push(slot);
                     }
-                    // Skip empty slots - return early to avoid pushing slot without data
-                    return; // Skip to next iteration in forEach
+                    // Skip empty weather_place slots - return early
+                    return;
                 } else {
-                    slots.push(slot);
+                    slots.push(slot);  // Default: push all other slots (like weather)
                 }
             }
         });

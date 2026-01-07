@@ -2023,11 +2023,15 @@ void publishMQTTMediaMappings(bool waitForCompletion) {
     
     Serial.println("Queued media mappings generation to Core 1 worker task");
     
-    // Wait for completion if requested
+    // Wait for completion if requested (with timeout to prevent deadlock)
     if (waitForCompletion && completionSem != nullptr) {
-        xSemaphoreTake(completionSem, portMAX_DELAY);
+        // 60 second timeout - media mappings generation can take ~10s for 10 images + encryption
+        if (xSemaphoreTake(completionSem, pdMS_TO_TICKS(60000)) == pdTRUE) {
+            Serial.printf("Media mappings generation completed (success: %s)\n", success ? "yes" : "no");
+        } else {
+            Serial.println("WARNING: Media mappings generation timed out after 60s");
+        }
         vSemaphoreDelete(completionSem);
-        Serial.printf("Media mappings generation completed (success: %s)\n", success ? "yes" : "no");
     }
 }
 
@@ -2330,17 +2334,20 @@ static void publishMQTTMediaMappingsInternalImpl() {
         return;
     }
     
-    Serial.printf("[Core 1] Publishing to MQTT topic %s (payload size: %zu bytes)...\n", mqttTopicMedia, encryptedLen);
+    // Use QoS 0 for large media mappings payload (fire and forget) to avoid blocking on PUBACK
+    // QoS 1 with 138KB+ can hang waiting for broker acknowledgment
+    // retain=1 so the web UI can retrieve it when it connects
+    Serial.printf("[Core 1] Publishing to MQTT topic %s (payload size: %zu bytes, QoS 0)...\n", mqttTopicMedia, encryptedLen);
     uint32_t publishStart = millis();
-    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, encryptedBuffer, encryptedLen, 1, 1);
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicMedia, encryptedBuffer, encryptedLen, 0, 1);
     uint32_t publishDuration = millis() - publishStart;
     Serial.printf("[Core 1] MQTT publish call returned msg_id=%d after %lu ms\n", msg_id, (unsigned long)publishDuration);
-    if (msg_id > 0) {
+    if (msg_id >= 0) {  // QoS 0 returns 0 on success (not msg_id)
         bool isEncrypted = isEncryptionEnabled();
-        Serial.printf("[Core 1] Published %s media mappings to %s (msg_id: %d, size: %zu bytes)\n",
-                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicMedia, msg_id, encryptedLen);
+        Serial.printf("[Core 1] Published %s media mappings to %s (QoS 0, size: %zu bytes)\n",
+                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicMedia, encryptedLen);
     } else {
-        Serial.printf("[Core 1] Failed to publish media mappings (msg_id: %d)\n", msg_id);
+        Serial.printf("[Core 1] Failed to publish media mappings (error: %d)\n", msg_id);
     }
     
     free(encryptedBuffer);

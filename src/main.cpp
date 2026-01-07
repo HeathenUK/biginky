@@ -3810,9 +3810,15 @@ bool handleWebInterfaceCommand(const String& jsonMessage) {
                      isEncrypted ? " (decrypted)" : "");
         
         // Debug: print first 200 chars of decrypted message to verify it's valid JSON
+        // For schedule_set, print the full message to help debug minute 0 issues
         if (isEncrypted && messageToProcess.length() > 0) {
-            String preview = messageToProcess.substring(0, messageToProcess.length() < 200 ? messageToProcess.length() : 200);
-            Serial.printf("  Decrypted message preview: %s\n", preview.c_str());
+            if (command == "schedule_set") {
+                // Print full message for schedule_set to help debug minute 0 issues
+                Serial.printf("  Decrypted message (full): %s\n", messageToProcess.c_str());
+            } else {
+                String preview = messageToProcess.substring(0, messageToProcess.length() < 200 ? messageToProcess.length() : 200);
+                Serial.printf("  Decrypted message preview: %s\n", preview.c_str());
+            }
         }
     }
     

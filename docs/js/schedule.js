@@ -65,9 +65,11 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
     }
     availableMinutes.forEach(m => {
         const opt = document.createElement('option');
-        opt.value = m;
+        opt.value = String(m);  // Explicitly convert to string (select values are always strings)
         opt.text = String(hour).padStart(2, '0') + ':' + String(m).padStart(2, '0');
-        opt.selected = (m === slot.minute);
+        // Compare as numbers to ensure 0 === 0 works correctly (handle both string and number slot.minute)
+        const slotMinuteNum = typeof slot.minute === 'number' ? slot.minute : parseInt(slot.minute, 10);
+        opt.selected = (m === slotMinuteNum);
         minuteSelect.appendChild(opt);
     });
     minuteCell.appendChild(minuteSelect);
@@ -368,8 +370,21 @@ async function saveScheduleToDevice() {
             const minuteSelect = slotRow.querySelector('.slot-minute');
             const sceneSelect = slotRow.querySelector('.slot-scene');
             if (minuteSelect && sceneSelect) {
+                // Parse minute value - use Number() for better handling of "0"
+                // parseInt() works fine, but be explicit about handling 0
+                const minuteValue = minuteSelect.value;
+                const minute = (minuteValue === '' || minuteValue === null || minuteValue === undefined) 
+                    ? NaN 
+                    : parseInt(minuteValue, 10);
+                
+                // Validate minute is a valid number (0-59, including 0!)
+                if (isNaN(minute) || minute < 0 || minute >= 60) {
+                    console.warn(`Invalid minute value for hour ${hour}: ${minuteValue} -> ${minute}, skipping slot`);
+                    return; // Skip this slot if minute is invalid
+                }
+                
                 const slot = {
-                    minute: parseInt(minuteSelect.value),
+                    minute: minute,  // Use validated minute (0 is valid!)
                     scene: sceneSelect.value
                 };
                 

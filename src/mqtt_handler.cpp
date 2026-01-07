@@ -50,9 +50,10 @@
 
 // MQTT runtime state
 static esp_mqtt_client_handle_t mqttClient = nullptr;
-static bool mqttConnected = false;
+static volatile bool mqttConnected = false;  // volatile for cross-core visibility
 static SemaphoreHandle_t mqttPublishSem = nullptr;  // Semaphore to wait for publish completion
-static int mqttPendingPublishMsgId = -1;  // Message ID we're waiting for
+static SemaphoreHandle_t mqttStateMutex = nullptr;  // Mutex to protect mqttClient/mqttConnected access across cores
+static volatile int mqttPendingPublishMsgId = -1;  // Message ID we're waiting for (volatile for cross-core)
 static char mqttBroker[128] = MQTT_BROKER_HOSTNAME;
 static int mqttPort = MQTT_BROKER_PORT;
 static char mqttClientId[64] = MQTT_CLIENT_ID;
@@ -171,11 +172,32 @@ void mqttSaveConfig() {
     Serial.println("MQTT configuration is hardcoded - edit #defines in source code to change");
 }
 
+// Thread-safe check if MQTT is connected (for cross-core access)
+bool isMqttConnectedSafe() {
+    bool connected = false;
+    if (mqttStateMutex != nullptr && xSemaphoreTake(mqttStateMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        connected = mqttConnected && (mqttClient != nullptr);
+        xSemaphoreGive(mqttStateMutex);
+    } else {
+        // Fallback: volatile read without mutex (may be slightly stale but won't crash)
+        connected = mqttConnected && (mqttClient != nullptr);
+    }
+    return connected;
+}
+
 // Connect to MQTT broker
 bool mqttConnect() {
     if (strlen(mqttBroker) == 0) {
         Serial.println("No MQTT broker configured");
         return false;
+    }
+    
+    // Create state mutex if not already created (for cross-core synchronization)
+    if (mqttStateMutex == nullptr) {
+        mqttStateMutex = xSemaphoreCreateMutex();
+        if (mqttStateMutex == nullptr) {
+            Serial.println("WARNING: Failed to create MQTT state mutex");
+        }
     }
     
     // Create publish semaphore if not already created
@@ -1212,6 +1234,12 @@ bool publishPreparedStatus() {
 
 // Internal implementation of thumbnail generation (runs on Core 1)
 static void publishMQTTThumbnailInternalImpl() {
+    // Use thread-safe check for cross-core access
+    if (!isMqttConnectedSafe()) {
+        Serial.println("[Core 1] WARNING: MQTT not connected, cannot publish thumbnail");
+        return;
+    }
+    
     if (display.getBuffer() == nullptr) {
         Serial.println("[Core 1] WARNING: Display buffer is nullptr, cannot generate thumbnail");
         return;
@@ -1615,7 +1643,8 @@ static void mqttWorkerTask(void* param) {
             if (request.type == MQTT_WORK_THUMBNAIL) {
                 Serial.println("[Core 1] Processing thumbnail generation work...");
                 // Generate thumbnail and publish (this is CPU-intensive)
-                if (mqttClient != nullptr && mqttConnected) {
+                // Use thread-safe check for cross-core access
+                if (isMqttConnectedSafe()) {
                     // Call the actual thumbnail generation function (runs on Core 1)
                     publishMQTTThumbnailInternalImpl();
                     workSuccess = true;
@@ -1625,12 +1654,13 @@ static void mqttWorkerTask(void* param) {
             } else if (request.type == MQTT_WORK_MEDIA_MAPPINGS) {
                 Serial.println("[Core 1] Processing media mappings generation work...");
                 // Generate media mappings and publish (this is CPU-intensive)
-                if (mqttClient != nullptr && mqttConnected) {
+                // Use thread-safe check for cross-core access
+                if (isMqttConnectedSafe()) {
                     // Call the actual media mappings generation function (runs on Core 1)
                     // Note: Function may return early if MQTT disconnects during processing
                     publishMQTTMediaMappingsInternalImpl();
                     // Check if MQTT is still connected after processing (may have disconnected during thumbnail generation)
-                    if (mqttClient != nullptr && mqttConnected) {
+                    if (isMqttConnectedSafe()) {
                         workSuccess = true;
                     } else {
                         Serial.println("[Core 1] MQTT disconnected during media mappings processing - publish may have failed");
@@ -2037,7 +2067,8 @@ static void escapeJsonString(const char* input, char* output, size_t outputSize)
 
 // Internal implementation (actual work, runs on Core 1)
 static void publishMQTTMediaMappingsInternalImpl() {
-    if (mqttClient == nullptr || !mqttConnected) {
+    // Use thread-safe check for cross-core access
+    if (!isMqttConnectedSafe()) {
         Serial.println("[Core 1] ERROR: MQTT not connected, cannot publish media mappings");
         return;
     }
@@ -2068,6 +2099,12 @@ static void publishMQTTMediaMappingsInternalImpl() {
     thumbnailBase64s.reserve(g_media_mappings.size());
     
     for (size_t i = 0; i < g_media_mappings.size(); i++) {
+        // Check MQTT connection periodically during long-running thumbnail generation
+        if (!isMqttConnectedSafe()) {
+            Serial.println("[Core 1] MQTT disconnected during thumbnail generation - aborting");
+            return;
+        }
+        
         const MediaMapping& mm = g_media_mappings[i];
         Serial.printf("[Core 1] Generating thumbnail for [%zu] %s...\n", i, mm.imageName.c_str());
         String thumbnailBase64 = generateThumbnailFromImageFile(mm.imageName);
@@ -2286,9 +2323,9 @@ static void publishMQTTMediaMappingsInternalImpl() {
     encryptedBuffer[encryptedLen] = '\0';
     
     // Check MQTT connection status again before publishing (may have disconnected during thumbnail generation)
-    if (mqttClient == nullptr || !mqttConnected) {
-        Serial.printf("[Core 1] ERROR: MQTT disconnected during processing (client=%p, connected=%s), cannot publish media mappings\n", 
-                     (void*)mqttClient, mqttConnected ? "true" : "false");
+    // Use thread-safe check for cross-core access
+    if (!isMqttConnectedSafe()) {
+        Serial.println("[Core 1] ERROR: MQTT disconnected during processing, cannot publish media mappings");
         free(encryptedBuffer);
         return;
     }

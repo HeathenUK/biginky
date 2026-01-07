@@ -2043,13 +2043,16 @@ void publishMQTTMediaMappings(bool waitForCompletion) {
     
     // Wait for completion if requested (with timeout to prevent deadlock)
     if (waitForCompletion && completionSem != nullptr) {
-        // 60 second timeout - media mappings generation can take ~10s for 10 images + encryption
-        if (xSemaphoreTake(completionSem, pdMS_TO_TICKS(60000)) == pdTRUE) {
+        // 120 second timeout - thumbnail gen ~10s + encryption ~1s + MQTT publish can take 50s+ for 140KB
+        if (xSemaphoreTake(completionSem, pdMS_TO_TICKS(120000)) == pdTRUE) {
             Serial.printf("Media mappings generation completed (success: %s)\n", success ? "yes" : "no");
+            vSemaphoreDelete(completionSem);  // Only delete if we got the semaphore
         } else {
-            Serial.println("WARNING: Media mappings generation timed out after 60s");
+            // Timeout occurred - DO NOT delete semaphore here!
+            // Core 1 still has a reference and will crash if we delete it.
+            // Accept the small memory leak (~80 bytes) to avoid crash.
+            Serial.println("WARNING: Media mappings generation timed out after 120s (semaphore leaked to avoid crash)");
         }
-        vSemaphoreDelete(completionSem);
     }
 }
 

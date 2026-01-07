@@ -477,11 +477,12 @@ static bool handleScheduleSetUnified(const CommandContext& ctx) {
     Serial.println("[SCHEDULE_SET] Schedule updated and saved to NVS");
     
     // Republish media mappings to notify UI of schedule change
-    // Use synchronous mode (waitForCompletion=true) to ensure publish completes before device continues
-    // This prevents crashes if device enters sleep while Core 1 is still generating thumbnails
+    // Use async mode - schedule is already saved to NVS, media mappings is just a notification
+    // Synchronous mode causes crashes because 140KB+ payload can take 50+ seconds to transmit
+    // and Core 0 timeout leads to semaphore race condition with Core 1
     extern void publishMQTTMediaMappings(bool waitForCompletion);
-    publishMQTTMediaMappings(true);  // Wait for completion
-    Serial.println("[SCHEDULE_SET] Media mappings republished with updated schedule");
+    publishMQTTMediaMappings(false);  // Async - don't wait
+    Serial.println("[SCHEDULE_SET] Media mappings republish queued (async)");
     
     return true;
 }

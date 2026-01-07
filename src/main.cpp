@@ -3818,9 +3818,11 @@ bool handleWebInterfaceCommand(const String& jsonMessage) {
         if (isEncrypted && messageToProcess.length() > 0) {
             if (command == "schedule_set") {
                 // Print full message for schedule_set to help debug minute 0 issues
+                // Use Serial.print() instead of printf for long strings (printf has buffer limits)
                 Serial.println("  DEBUG: Printing full schedule_set message...");
                 Serial.flush();
-                Serial.printf("  Decrypted message (full): %s\n", messageToProcess.c_str());
+                Serial.print("  Decrypted message (full): ");
+                Serial.println(messageToProcess);
                 Serial.flush();  // Force flush to ensure output is visible
             } else {
                 String preview = messageToProcess.substring(0, messageToProcess.length() < 200 ? messageToProcess.length() : 200);

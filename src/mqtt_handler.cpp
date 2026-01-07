@@ -225,9 +225,14 @@ bool mqttConnect() {
     
     mqtt_cfg.session.keepalive = 60;
     mqtt_cfg.network.reconnect_timeout_ms = 0;  // Disable auto-reconnect
-    mqtt_cfg.network.timeout_ms = 10000;
+    mqtt_cfg.network.timeout_ms = 30000;  // 30s timeout for large messages
     mqtt_cfg.task.stack_size = 16384;  // 16KB stack for large messages
     mqtt_cfg.task.priority = 5;
+    
+    // Configure buffer sizes for large media mappings payloads (up to ~150KB encrypted)
+    mqtt_cfg.buffer.size = 256 * 1024;      // 256KB receive buffer
+    mqtt_cfg.buffer.out_size = 256 * 1024;  // 256KB send buffer
+    mqtt_cfg.outbox.limit = 512 * 1024;     // 512KB outbox limit
     
     // Create and start MQTT client
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);

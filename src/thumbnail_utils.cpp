@@ -1,0 +1,607 @@
+/**
+ * @file thumbnail_utils.cpp
+ * @brief Implementation of thumbnail generation and SD card operations
+ * 
+ * Extracted from main_esp32p4_test.cpp as part of Priority 1 refactoring.
+ */
+
+#include "thumbnail_utils.h"
+#include <Arduino.h>
+#include "ff.h"  // FatFs for SD card operations
+#include "sdmmc_cmd.h"  // For sdmmc_card_t
+#include "platform_hal.h"  // For hal_psram_malloc/free
+#include "image_hal.h"  // For PPA-accelerated scaling
+#include <pngle.h>  // For PNG decoding
+#include <string.h>  // For memset
+#include <esp_heap_caps.h>  // For heap_caps_aligned_alloc
+#include "mqtt_handler.h"  // For processPngEncodeWork
+#include "lodepng_psram.h"  // For lodepng_free (must be before lodepng.h)
+#include "lodepng.h"  // For lodepng_error_text
+#include "EL133UF1_Color.h"  // For spectra6Color global instance
+#include "chunked_processing.h"  // For chunked processing with automatic watchdog yielding
+
+// External dependencies from main file
+extern bool sdCardMounted;
+extern sdmmc_card_t* sd_card;
+bool sdInitDirect(bool mode1bit = false);  // Forward declaration for SD card mounting
+
+// Helper structure for PNG to RGB decoding
+static struct {
+    uint8_t* rgbBuffer;
+    uint32_t width;
+    uint32_t height;
+    bool success;
+} g_pngToRGBContext;
+
+// Callback for pngle to write directly to RGB buffer
+static void pngle_rgb_callback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t rgba[4]) {
+    if (!g_pngToRGBContext.rgbBuffer) return;
+    
+    uint32_t imgWidth = pngle_get_width(pngle);
+    
+    // Write RGBA to RGB888 buffer (alpha blending with white background)
+    for (uint32_t py = 0; py < h && (y + py) < g_pngToRGBContext.height; py++) {
+        for (uint32_t px = 0; px < w && (x + px) < g_pngToRGBContext.width; px++) {
+            uint32_t idx = ((y + py) * imgWidth + (x + px)) * 3;
+            if (idx + 2 < g_pngToRGBContext.width * g_pngToRGBContext.height * 3) {
+                // Convert RGBA to RGB888 (simple alpha blending with white background)
+                uint8_t alpha = rgba[3];
+                uint8_t r = (rgba[0] * alpha + 255 * (255 - alpha)) / 255;
+                uint8_t g = (rgba[1] * alpha + 255 * (255 - alpha)) / 255;
+                uint8_t b = (rgba[2] * alpha + 255 * (255 - alpha)) / 255;
+                
+                g_pngToRGBContext.rgbBuffer[idx + 0] = r;
+                g_pngToRGBContext.rgbBuffer[idx + 1] = g;
+                g_pngToRGBContext.rgbBuffer[idx + 2] = b;
+            }
+        }
+    }
+}
+
+// Check if PNG is paletted (color type 3)
+// PNG header: 8 bytes signature + IHDR chunk
+// Color type is at byte 25 (after signature, length, "IHDR", width, height, bit depth)
+static bool isPNGPaletted(const uint8_t* pngData, size_t pngLen) {
+    if (!pngData || pngLen < 30) return false;
+    
+    // Check PNG signature
+    static const uint8_t PNG_SIG[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (int i = 0; i < 8; i++) {
+        if (pngData[i] != PNG_SIG[i]) return false;
+    }
+    
+    // Check IHDR chunk type (bytes 12-15 should be "IHDR")
+    if (pngData[12] != 'I' || pngData[13] != 'H' || pngData[14] != 'D' || pngData[15] != 'R') {
+        return false;
+    }
+    
+    // Color type is at byte 25 (3 = palette)
+    uint8_t colorType = pngData[25];
+    return (colorType == 3);
+}
+
+// Decode PNG to RGB888 buffer (doesn't require display)
+static bool decodePNGToRGB(const uint8_t* pngData, size_t pngLen, uint8_t** rgbBuffer, uint32_t* width, uint32_t* height) {
+    if (!pngData || pngLen < 24) return false;
+    
+    // Check PNG signature
+    static const uint8_t PNG_SIG[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (int i = 0; i < 8; i++) {
+        if (pngData[i] != PNG_SIG[i]) return false;
+    }
+    
+    // Read dimensions from IHDR
+    *width = ((uint32_t)pngData[16] << 24) | ((uint32_t)pngData[17] << 16) | 
+             ((uint32_t)pngData[18] << 8) | pngData[19];
+    *height = ((uint32_t)pngData[20] << 24) | ((uint32_t)pngData[21] << 16) | 
+              ((uint32_t)pngData[22] << 8) | pngData[23];
+    
+    if (*width == 0 || *height == 0 || *width > 4096 || *height > 4096) {
+        Serial.printf("ERROR: Invalid PNG dimensions: %lux%lu\n", *width, *height);
+        return false;
+    }
+    
+    // Allocate RGB buffer (PPA requires cache-line alignment, so align it)
+    size_t rgbSize = *width * *height * 3;
+    // Round up to cache line size for PPA compatibility (64 bytes on ESP32-P4)
+    size_t alignedRgbSize = (rgbSize + 63) & ~63;
+    *rgbBuffer = (uint8_t*)heap_caps_aligned_alloc(64, alignedRgbSize, MALLOC_CAP_SPIRAM);
+    if (!*rgbBuffer) {
+        Serial.println("ERROR: Failed to allocate aligned PSRAM for RGB buffer");
+        return false;
+    }
+    memset(*rgbBuffer, 255, rgbSize);  // Initialize to white (only actual size, not padding)
+    
+    // Create pngle instance
+    pngle_t* pngle = pngle_new();
+    if (!pngle) {
+        Serial.println("ERROR: Failed to create pngle instance");
+        heap_caps_free(*rgbBuffer);
+        *rgbBuffer = nullptr;
+        return false;
+    }
+    
+    // Set up global context for callback
+    g_pngToRGBContext.rgbBuffer = *rgbBuffer;
+    g_pngToRGBContext.width = *width;
+    g_pngToRGBContext.height = *height;
+    g_pngToRGBContext.success = false;
+    
+    pngle_set_draw_callback(pngle, pngle_rgb_callback);
+    
+    // Decode PNG
+    int result = pngle_feed(pngle, pngData, pngLen);
+    if (result >= 0) {
+        g_pngToRGBContext.success = true;
+    } else {
+        Serial.printf("ERROR: PNG decode failed: %s\n", pngle_error(pngle));
+        heap_caps_free(*rgbBuffer);
+        *rgbBuffer = nullptr;
+    }
+    
+    pngle_destroy(pngle);
+    bool success = g_pngToRGBContext.success;
+    g_pngToRGBContext.rgbBuffer = nullptr;  // Clear context
+    return success;
+}
+
+char* loadThumbnailFromSD() {
+    if (!sdCardMounted) {
+        Serial.println("SD card not mounted, cannot load thumbnail");
+        return nullptr;
+    }
+    
+    const char* thumbPath = "0:/thumbnail.jpg";
+    FILINFO fno;
+    FRESULT res = f_stat(thumbPath, &fno);
+    if (res != FR_OK) {
+        Serial.println("Thumbnail file not found on SD card");
+        return nullptr;
+    }
+    
+    FIL thumbFile;
+    res = f_open(&thumbFile, thumbPath, FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open thumbnail file for reading: %d\n", res);
+        return nullptr;
+    }
+    
+    size_t fileSize = fno.fsize;
+    uint8_t* jpegData = (uint8_t*)malloc(fileSize);
+    if (jpegData == nullptr) {
+        Serial.println("ERROR: Failed to allocate memory for thumbnail");
+        f_close(&thumbFile);
+        return nullptr;
+    }
+    
+    UINT bytesRead = 0;
+    res = f_read(&thumbFile, jpegData, fileSize, &bytesRead);
+    f_close(&thumbFile);
+    
+    if (res != FR_OK || bytesRead != fileSize) {
+        Serial.printf("ERROR: Failed to read thumbnail from SD: res=%d, read=%d/%d\n", res, bytesRead, fileSize);
+        free(jpegData);
+        return nullptr;
+    }
+    
+    // Base64 encode the JPEG
+    size_t base64Size = ((fileSize + 2) / 3) * 4 + 1;
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        free(jpegData);
+        return nullptr;
+    }
+    
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < fileSize; i += 3) {
+        uint32_t b0 = jpegData[i];
+        uint32_t b1 = (i + 1 < fileSize) ? jpegData[i + 1] : 0;
+        uint32_t b2 = (i + 2 < fileSize) ? jpegData[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < fileSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < fileSize) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    free(jpegData);
+    
+    // Create JSON payload
+    size_t jsonSize = 55 + base64Idx + 1;
+    char* jsonBuffer = (char*)malloc(jsonSize);
+    if (jsonBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate JSON buffer");
+        free(base64Buffer);
+        return nullptr;
+    }
+    
+    int written = snprintf(jsonBuffer, jsonSize, 
+                          "{\"width\":400,\"height\":300,\"format\":\"jpeg\",\"data\":\"%s\"}",
+                          base64Buffer);
+    free(base64Buffer);
+    
+    if (written < 0 || written >= (int)jsonSize) {
+        Serial.printf("ERROR: JSON buffer too small (needed %d, had %d)\n", written, jsonSize);
+        free(jsonBuffer);
+        return nullptr;
+    }
+    
+    // Delete the file after loading
+    f_unlink(thumbPath);
+    Serial.printf("Loaded thumbnail from SD and created JSON (%d bytes)\n", written);
+    return jsonBuffer;
+}
+
+String generateThumbnailFromImageFile(const String& imagePath) {
+    // Ensure SD card is mounted (required for reading image and saving thumbnail)
+    if (!sdCardMounted) {
+        Serial.printf("SD card not mounted, attempting to mount for thumbnail generation...\n");
+        if (!sdInitDirect(false)) {
+            Serial.printf("ERROR: Failed to mount SD card, cannot generate thumbnail for %s\n", imagePath.c_str());
+            return "";
+        }
+        Serial.println("SD card mounted successfully for thumbnail generation");
+    }
+    
+    // Load image file from SD into memory (images are in images/ subdirectory)
+    String fullPath = "0:/images/" + imagePath;
+    
+    FILINFO fno;
+    FRESULT res = f_stat(fullPath.c_str(), &fno);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Image file not found: %s\n", fullPath.c_str());
+        return "";
+    }
+    size_t fileSize = fno.fsize;
+    
+    FIL imageFile;
+    res = f_open(&imageFile, fullPath.c_str(), FA_READ);
+    if (res != FR_OK) {
+        Serial.printf("ERROR: Failed to open image file: %s (res=%d)\n", fullPath.c_str(), res);
+        return "";
+    }
+    
+    uint8_t* imageData = (uint8_t*)hal_psram_malloc(fileSize);
+    if (!imageData) {
+        Serial.println("ERROR: Failed to allocate PSRAM for image data");
+        f_close(&imageFile);
+        return "";
+    }
+    
+    UINT bytesRead = 0;
+    res = f_read(&imageFile, imageData, fileSize, &bytesRead);
+    f_close(&imageFile);
+    
+    if (res != FR_OK || bytesRead != fileSize) {
+        Serial.printf("ERROR: Failed to read image file: res=%d, read=%u/%u\n", res, bytesRead, fileSize);
+        hal_psram_free(imageData);
+        return "";
+    }
+    
+    // Check if PNG is already paletted (color type 3)
+    bool isPaletted = isPNGPaletted(imageData, fileSize);
+    Serial.printf("PNG color type: %s\n", isPaletted ? "paletted" : "RGB");
+    
+    // Decode PNG to RGB buffer (works without display)
+    // Note: Even paletted PNGs are decoded to RGB by pngle, but we can optimize the conversion
+    uint8_t* rgbBuffer = nullptr;
+    uint32_t srcWidth = 0, srcHeight = 0;
+    bool loaded = false;
+    
+    // Try PNG first
+    if (decodePNGToRGB(imageData, fileSize, &rgbBuffer, &srcWidth, &srcHeight)) {
+        loaded = true;
+    } else {
+        // Try BMP as fallback (would need BMP decoder, but for now just skip)
+        Serial.printf("WARNING: PNG decode failed, BMP fallback not implemented yet\n");
+    }
+    
+    hal_psram_free(imageData);
+    
+    if (!loaded || !rgbBuffer) {
+        Serial.printf("ERROR: Failed to decode image %s for thumbnail generation\n", imagePath.c_str());
+        if (rgbBuffer) heap_caps_free(rgbBuffer);
+        return "";
+    }
+    
+    // Generate quarter-size thumbnail
+    // Quarter size: 200x150 for 800x600, or 400x300 for 1600x1200
+    const int thumbWidth = srcWidth / 4;   // Quarter width
+    const int thumbHeight = srcHeight / 4;  // Quarter height
+    
+    // Map Spectra color codes to palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 5=BLUE, 6=GREEN
+    // Palette indices: 0=BLACK, 1=WHITE, 2=YELLOW, 3=RED, 4=BLUE, 5=GREEN
+    static const uint8_t spectraToPaletteLUT[] = {
+        0,  // 0 → 0 (BLACK)
+        1,  // 1 → 1 (WHITE)
+        2,  // 2 → 2 (YELLOW)
+        3,  // 3 → 3 (RED)
+        1,  // 4 → 1 (WHITE, invalid e-ink color)
+        4,  // 5 → 4 (BLUE)
+        5,  // 6 → 5 (GREEN)
+        1   // 7 → 1 (WHITE, invalid e-ink color)
+    };
+    
+    // Our palette RGB values (matching lodepng palette)
+    static const uint8_t paletteRGB[6][3] = {
+        {10, 10, 10},        // 0: BLACK
+        {245, 245, 235},     // 1: WHITE
+        {245, 210, 50},      // 2: YELLOW
+        {190, 60, 55},       // 3: RED
+        {45, 75, 160},       // 4: BLUE
+        {55, 140, 85}        // 5: GREEN
+    };
+    
+    // Convert RGB to palette indices
+    // If PNG was already paletted, RGB values should match our palette exactly
+    uint32_t convertStart = millis();
+    size_t paletteSize = srcWidth * srcHeight;
+    uint8_t* paletteBuffer = (uint8_t*)hal_psram_malloc(paletteSize);
+    if (paletteBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate PSRAM for palette buffer");
+        heap_caps_free(rgbBuffer);
+        return "";
+    }
+    
+    if (isPaletted) {
+        // Fast path: PNG was already paletted, RGB values should match our palette
+        // Direct RGB matching (exact match with small tolerance for rounding)
+        Serial.println("Fast path: PNG is paletted, using direct RGB matching...");
+        processBufferChunked(paletteSize, [&](size_t i) {
+            uint8_t r = rgbBuffer[i * 3 + 0];
+            uint8_t g = rgbBuffer[i * 3 + 1];
+            uint8_t b = rgbBuffer[i * 3 + 2];
+            
+            // Try exact match first
+            bool matched = false;
+            for (int p = 0; p < 6; p++) {
+                if (r == paletteRGB[p][0] && g == paletteRGB[p][1] && b == paletteRGB[p][2]) {
+                    paletteBuffer[i] = p;
+                    matched = true;
+                    break;
+                }
+            }
+            
+            // If no exact match, use color matching (shouldn't happen for our paletted PNGs)
+            if (!matched) {
+                if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+                    spectra6Color.buildLUT();
+                }
+                uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
+                paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
+            }
+        });
+    } else {
+        // Normal path: RGB image, use color matching
+        Serial.println("Normal path: RGB image, using color matching...");
+        if (spectra6Color.hasCustomPalette() && !spectra6Color.hasLUT()) {
+            spectra6Color.buildLUT();
+        }
+        
+        processBufferChunked(paletteSize, [&](size_t i) {
+            uint8_t r = rgbBuffer[i * 3 + 0];
+            uint8_t g = rgbBuffer[i * 3 + 1];
+            uint8_t b = rgbBuffer[i * 3 + 2];
+            
+            // Map RGB to Spectra color code, then to palette index
+            uint8_t spectraCode = spectra6Color.mapColorFast(r, g, b);
+            paletteBuffer[i] = spectraToPaletteLUT[spectraCode & 0x07];
+        });
+    }
+    
+    uint32_t convertTime = millis() - convertStart;
+    Serial.printf("RGB to palette conversion completed: %lu ms (processing %zu pixels)\n", 
+                  convertTime, paletteSize);
+    
+    // Free RGB buffer (no longer needed)
+    heap_caps_free(rgbBuffer);
+    rgbBuffer = nullptr;
+    
+    // Now scale palette indices (exactly like framebuffer thumbnail - direct sampling)
+    // Sample every 4th pixel directly (no averaging) to match framebuffer thumbnail quality
+    size_t thumbPaletteSize = thumbWidth * thumbHeight;
+    uint8_t* thumbPaletteBuffer = (uint8_t*)hal_psram_malloc(thumbPaletteSize);
+    if (thumbPaletteBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate PSRAM for thumbnail palette buffer");
+        hal_psram_free(paletteBuffer);
+        return "";
+    }
+    
+    Serial.println("Scaling palette indices (direct sampling every 4th pixel, like framebuffer)...");
+    uint32_t scaleStart = millis();
+    const int scale = 4;
+    
+    processImageChunked(thumbWidth, thumbHeight, [&](int tx, int ty) {
+        int sx = tx * scale;
+        int sy = ty * scale;
+        
+        // Direct sampling (like framebuffer thumbnail) - just take the top-left pixel of each 4x4 block
+        int srcIdx = sy * srcWidth + sx;
+        if (srcIdx < (int)paletteSize) {
+            thumbPaletteBuffer[ty * thumbWidth + tx] = paletteBuffer[srcIdx];
+        } else {
+            thumbPaletteBuffer[ty * thumbWidth + tx] = 1;  // Default to white
+        }
+    });
+    
+    uint32_t scaleTime = millis() - scaleStart;
+    Serial.printf("Palette scaling completed: %lu ms\n", scaleTime);
+    
+    // Free full-size palette buffer
+    hal_psram_free(paletteBuffer);
+    paletteBuffer = nullptr;
+    
+    // Convert palette indices to RGB for processPngEncodeWork (it expects RGB input)
+    // Actually, wait - we should modify processPngEncodeWork to accept palette indices directly
+    // But for now, convert back to RGB
+    size_t thumbSize = thumbWidth * thumbHeight * 3;
+    size_t alignedThumbSize = (thumbSize + 63) & ~63;
+    uint8_t* thumbBuffer = (uint8_t*)heap_caps_aligned_alloc(64, alignedThumbSize, MALLOC_CAP_SPIRAM);
+    if (thumbBuffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate aligned PSRAM for thumbnail RGB buffer");
+        hal_psram_free(thumbPaletteBuffer);
+        return "";
+    }
+    
+    // Use paletteRGB already declared above
+    for (size_t i = 0; i < thumbPaletteSize; i++) {
+        uint8_t paletteIdx = thumbPaletteBuffer[i];
+        if (paletteIdx >= 6) paletteIdx = 1;  // Default to white
+        thumbBuffer[i * 3 + 0] = paletteRGB[paletteIdx][0];
+        thumbBuffer[i * 3 + 1] = paletteRGB[paletteIdx][1];
+        thumbBuffer[i * 3 + 2] = paletteRGB[paletteIdx][2];
+    }
+    
+    hal_psram_free(thumbPaletteBuffer);
+    thumbPaletteBuffer = nullptr;
+    
+    // Encode to PNG using processPngEncodeWork directly (we're already on Core 1)
+    // This matches the approach used in Canvas save, but calls processPngEncodeWork directly
+    // since generateThumbnailFromImageFile is called from Core 1 worker task
+    PngEncodeWorkData encodeWork = {0};
+    encodeWork.rgbData = thumbBuffer;
+    encodeWork.rgbDataLen = thumbSize;
+    encodeWork.width = thumbWidth;
+    encodeWork.height = thumbHeight;
+    encodeWork.pngData = nullptr;
+    encodeWork.pngSize = 0;
+    encodeWork.error = 0;
+    encodeWork.success = false;
+    
+    // Call processPngEncodeWork directly (we're already on Core 1)
+    if (!processPngEncodeWork(&encodeWork)) {
+        Serial.printf("ERROR: PNG encoding failed: %u %s\n", 
+                     encodeWork.error, encodeWork.error ? lodepng_error_text(encodeWork.error) : "unknown");
+        heap_caps_free(thumbBuffer);
+        return "";
+    }
+    
+    // PNG encoding completed - PNG data is now available
+    unsigned char* pngBuffer = encodeWork.pngData;
+    
+    size_t pngSize = encodeWork.pngSize;
+    
+    // Free thumbnail buffer (use aligned free since we used aligned alloc)
+    heap_caps_free(thumbBuffer);
+    thumbBuffer = nullptr;
+    
+    if (!pngBuffer || pngSize == 0) {
+        Serial.println("ERROR: PNG encoding returned empty data");
+        if (pngBuffer) lodepng_free(pngBuffer);
+        return "";
+    }
+    
+    Serial.printf("PNG encoded successfully: %zu bytes\n", pngSize);
+    
+    // Base64 encode the PNG
+    size_t base64Size = ((pngSize + 2) / 3) * 4 + 1;
+    char* base64Buffer = (char*)malloc(base64Size);
+    if (base64Buffer == nullptr) {
+        Serial.println("ERROR: Failed to allocate base64 buffer");
+        lodepng_free(pngBuffer);
+        return "";
+    }
+    
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t base64Idx = 0;
+    
+    for (size_t i = 0; i < pngSize; i += 3) {
+        uint32_t b0 = pngBuffer[i];
+        uint32_t b1 = (i + 1 < pngSize) ? pngBuffer[i + 1] : 0;
+        uint32_t b2 = (i + 2 < pngSize) ? pngBuffer[i + 2] : 0;
+        uint32_t value = (b0 << 16) | (b1 << 8) | b2;
+        
+        if (base64Idx + 4 < base64Size) {
+            base64Buffer[base64Idx++] = base64_chars[(value >> 18) & 0x3F];
+            base64Buffer[base64Idx++] = base64_chars[(value >> 12) & 0x3F];
+            base64Buffer[base64Idx++] = (i + 1 < pngSize) ? base64_chars[(value >> 6) & 0x3F] : '=';
+            base64Buffer[base64Idx++] = (i + 2 < pngSize) ? base64_chars[value & 0x3F] : '=';
+        }
+    }
+    base64Buffer[base64Idx] = '\0';
+    
+    lodepng_free(pngBuffer);
+    String result = String(base64Buffer);
+    free(base64Buffer);
+    
+    return result;
+}
+
+
+std::vector<String> listImageFilesVector() {
+    std::vector<String> files;
+    
+    if (!sdCardMounted) {
+        Serial.println("ERROR: SD card not mounted, cannot list image files");
+        return files;
+    }
+    
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, "0:/images");
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
+            // Check if it's a file (not directory) and has image extension
+            if (!(fno.fattrib & AM_DIR)) {
+                String filename = String(fno.fname);
+                String filenameLower = filename;
+                filenameLower.toLowerCase();
+                if (filenameLower.endsWith(".png") || filenameLower.endsWith(".bmp") || 
+                    filenameLower.endsWith(".jpg") || filenameLower.endsWith(".jpeg")) {
+                    files.push_back(filename);  // Just the filename, not the full path
+                }
+            }
+        }
+        f_closedir(&dir);
+    } else {
+        Serial.printf("ERROR: Failed to open images directory for image listing: %d\n", res);
+    }
+    
+    return files;
+}
+
+
+std::vector<String> listAudioFilesVector() {
+    std::vector<String> files;
+    
+    if (!sdCardMounted) {
+        Serial.println("ERROR: SD card not mounted, cannot list audio files");
+        return files;
+    }
+    
+    FF_DIR dir;
+    FILINFO fno;
+    FRESULT res = f_opendir(&dir, "0:/audio");
+    
+    if (res == FR_OK) {
+        while (true) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) break;
+            
+            // Check if it's a file (not directory) and has audio extension
+            if (!(fno.fattrib & AM_DIR)) {
+                String filename = String(fno.fname);
+                String filenameLower = filename;
+                filenameLower.toLowerCase();
+                if (filenameLower.endsWith(".wav") || filenameLower.endsWith(".mp3")) {
+                    files.push_back(filename);  // Just the filename, not the full path
+                }
+            }
+        }
+        f_closedir(&dir);
+    } else {
+        Serial.printf("ERROR: Failed to open audio directory for audio listing: %d\n", res);
+    }
+    
+    return files;
+}

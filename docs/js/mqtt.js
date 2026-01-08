@@ -184,12 +184,25 @@ async function handleStatusMessage(message) {
                 decrypted = await decryptMessage(payload.payload, payload.iv);
             } catch (decryptError) {
                 console.error('Failed to decrypt status message:', decryptError);
+                // If this is a retained message and decryption throws an exception, skip gracefully
+                // This handles the case where an old retained message was encrypted with a different key
+                if (message.retained) {
+                    console.warn('Skipping retained status message that failed to decrypt (exception) - will wait for new message');
+                    document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Waiting for new status... (retained message encrypted with different key)</p>';
+                    return;
+                }
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Failed to decrypt status message. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
                 return;
             }
             
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
+                // If this is a retained message and decryption fails, skip gracefully
+                if (message.retained) {
+                    console.warn('Skipping retained status message that failed to decrypt (empty result) - will wait for new message');
+                    document.getElementById('deviceStatus').innerHTML = '<p style="color:#ff9800;">Waiting for new status... (retained message encrypted with different key)</p>';
+                    return;
+                }
                 document.getElementById('deviceStatus').innerHTML = '<p style="color:#f44336;">Error: Decryption failed - empty result. <strong>Password mismatch detected</strong> - HMAC passed but decryption failed. Please verify the password matches the device password.</p>';
                 return;
             }
@@ -455,7 +468,26 @@ async function handleThumbnailMessage(message) {
                     console.warn('Thumbnail: IV base64 length is', cleanIv.length, '(expected 24 for 16 bytes)');
                 }
                 if (cleanPayload.length % 4 !== 0) {
-                    console.warn('Thumbnail: Payload base64 length is', cleanPayload.length, '(not a multiple of 4, may be corrupted)');
+                    console.error('Thumbnail: Payload base64 length is', cleanPayload.length, '(not a multiple of 4 - MESSAGE IS TRUNCATED/CORRUPTED)');
+                    if (message.retained) {
+                        console.error('Thumbnail: This retained message is corrupted. The device needs to publish a fresh thumbnail.');
+                        document.getElementById('thumbnailStatus').textContent = 'Retained thumbnail corrupted (truncated). Waiting for device to publish fresh thumbnail...';
+                        return;
+                    }
+                }
+                
+                // Pre-check: decode base64 and validate ciphertext length before attempting decryption
+                try {
+                    const testPayload = atob(cleanPayload);
+                    if (testPayload.length % 16 !== 0) {
+                        console.error('Thumbnail: Decoded ciphertext length', testPayload.length, 'is not multiple of 16 (remainder:', testPayload.length % 16, ') - MESSAGE IS TRUNCATED');
+                        if (message.retained) {
+                            document.getElementById('thumbnailStatus').textContent = 'Retained thumbnail corrupted (ciphertext truncated). Waiting for fresh thumbnail...';
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.error('Thumbnail: Failed to decode payload base64 for validation:', e);
                 }
                 
                 // Verify HMAC first (on encrypted message)
@@ -510,27 +542,35 @@ async function handleThumbnailMessage(message) {
             } catch (decryptError) {
                 console.error('Failed to decrypt thumbnail message:', decryptError);
                 console.error('Thumbnail decryption failed for retained message:', message.retained);
-                document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Password may be incorrect or message corrupted.';
+                console.error('Thumbnail payload details - IV length:', payload.iv ? payload.iv.length : 'missing', 
+                    'Payload length:', payload.payload ? payload.payload.length : 'missing');
+                // If this is a retained message and decryption throws an exception, skip gracefully
+                if (message.retained) {
+                    console.warn('Skipping retained thumbnail message that failed to decrypt (exception) - will wait for new message');
+                    console.warn('Check browser console for specific decryption error');
+                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message failed to decrypt - check console for details)';
+                    return;
+                }
+                document.getElementById('thumbnailStatus').textContent = 'Error: Failed to decrypt thumbnail message. Check console for details.';
                 return;
             }
             
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
                 console.error('Thumbnail decryption returned empty for retained message:', message.retained);
+                console.error('Thumbnail payload details - IV length:', payload.iv ? payload.iv.length : 'missing', 
+                    'Payload length:', payload.payload ? payload.payload.length : 'missing');
                 
-                // If this is a retained message and decryption fails, it may have been encrypted
-                // with a different key/method. Since new messages work, we'll just skip this one.
-                // Optionally, we could request a fresh thumbnail by sending a command, but that
-                // might be too aggressive - better to wait for the next automatic update.
+                // If this is a retained message and decryption fails, skip gracefully.
+                // This can happen due to: stale retained message, message corruption, or broker issues with large payloads.
                 if (message.retained) {
                     console.warn('Skipping retained thumbnail message that failed to decrypt - will wait for new message');
-                    console.warn('This usually means the retained message was encrypted with a different key/method');
-                    console.warn('New thumbnails will work fine - trigger a canvas draw or wait for next automatic update');
-                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message encrypted with different key)';
+                    console.warn('Check browser console for specific decryption error (IV length, ciphertext length, padding issues)');
+                    document.getElementById('thumbnailStatus').textContent = 'Waiting for new thumbnail... (retained message failed to decrypt - check console for details)';
                     return;
                 }
                 
-                document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
+                document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Check console for details.';
                 return;
             }
             

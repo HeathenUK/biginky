@@ -219,13 +219,14 @@ async function encryptMessage(plaintext) {
 //                 or (payloadBase64, ivBase64) for new format with separate IV
 async function decryptMessage(payloadBase64, ivBase64) {
     if (!webUIPassword) {
-        console.error('No password configured for decryption');
+        console.error('decryptMessage: No password configured for decryption');
         return null;
     }
     
-    // Diagnostic: Log password info (first few chars only for security)
-    // console.log('decryptMessage: password length =', webUIPassword ? webUIPassword.length : 0);
-    // console.log('decryptMessage: password preview =', webUIPassword ? webUIPassword.substring(0, 3) + '...' : 'null');
+    // Diagnostic logging for debugging decryption failures
+    console.log('decryptMessage: Starting decryption, password length =', webUIPassword.length,
+        ', ivBase64 length =', ivBase64 ? ivBase64.length : 'null',
+        ', payloadBase64 length =', payloadBase64 ? payloadBase64.length : 'null');
     
     try {
         let iv, ciphertext;
@@ -310,8 +311,9 @@ async function decryptMessage(payloadBase64, ivBase64) {
         
         // Validate ciphertext length is multiple of 16 (AES block size)
         if (ciphertext.length % 16 !== 0) {
-            console.error('Invalid ciphertext length (not multiple of 16):', ciphertext.length, 'remainder:', ciphertext.length % 16);
-            console.error('This will cause Web Crypto API to fail. Ciphertext may be truncated or corrupted.');
+            console.error('decryptMessage: Invalid ciphertext length (not multiple of 16):', ciphertext.length, 'remainder:', ciphertext.length % 16);
+            console.error('decryptMessage: This usually means the message was truncated during MQTT transmission or broker storage.');
+            console.error('decryptMessage: For retained messages, try clearing the retained message on the broker and republishing.');
             return null;
         }
         

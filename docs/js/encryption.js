@@ -218,6 +218,10 @@ async function encryptMessage(plaintext) {
 // Accepts either: (ciphertextBase64) for legacy format with IV prepended
 //                 or (payloadBase64, ivBase64) for new format with separate IV
 async function decryptMessage(payloadBase64, ivBase64) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryption.js:decryptMessage:entry',message:'Starting decryption',data:{payloadLen:payloadBase64?payloadBase64.length:0,ivLen:ivBase64?ivBase64.length:0,hasPassword:!!webUIPassword},timestamp:Date.now(),hypothesisId:'A,B'})}).catch(()=>{});
+    // #endregion
+    
     if (!webUIPassword) {
         console.error('No password configured for decryption');
         return null;
@@ -312,8 +316,15 @@ async function decryptMessage(payloadBase64, ivBase64) {
         if (ciphertext.length % 16 !== 0) {
             console.error('Invalid ciphertext length (not multiple of 16):', ciphertext.length, 'remainder:', ciphertext.length % 16);
             console.error('This will cause Web Crypto API to fail. Ciphertext may be truncated or corrupted.');
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryption.js:decryptMessage:invalid_ciphertext_len',message:'Ciphertext length not multiple of 16',data:{ciphertextLen:ciphertext.length,remainder:ciphertext.length%16},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{});
+            // #endregion
             return null;
         }
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryption.js:decryptMessage:validated',message:'Ciphertext validated',data:{ivLen:iv.length,ciphertextLen:ciphertext.length,ivFirst4Hex:Array.from(iv.slice(0,4)).map(b=>b.toString(16).padStart(2,'0')).join('')},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         
         // Derive encryption key from password
         const encryptionKey = await deriveEncryptionKey(webUIPassword);
@@ -352,8 +363,14 @@ async function decryptMessage(payloadBase64, ivBase64) {
                 key,
                 ciphertext
             );
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryption.js:decryptMessage:decrypt_success',message:'Decryption successful',data:{plaintextLen:plaintext.byteLength},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+            // #endregion
             // console.log('decryptMessage: Decryption successful, plaintext length:', plaintext.byteLength, 'bytes');
         } catch (decryptError) {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'encryption.js:decryptMessage:decrypt_failed',message:'Decryption failed',data:{error:decryptError.message,ivLen:iv.length,ciphertextLen:ciphertext.length},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+            // #endregion
             console.error('crypto.subtle.decrypt failed:', decryptError);
             console.error('Decryption failure details:');
             console.error('  - IV length:', iv.length);

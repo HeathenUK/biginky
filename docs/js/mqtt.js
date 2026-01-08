@@ -384,6 +384,10 @@ async function handleStatusMessage(message) {
 }
 
 async function handleThumbnailMessage(message) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mqtt.js:handleThumbnailMessage:entry',message:'Thumbnail message received',data:{payloadLen:message.payloadString?message.payloadString.length:0,retained:message.retained},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+    
     // console.log('Thumbnail message received, parsing...');
     // console.log('Message retained flag:', message.retained);
     // console.log('Message payload string length:', message.payloadString ? message.payloadString.length : 0);
@@ -392,6 +396,9 @@ async function handleThumbnailMessage(message) {
     if (!message.payloadString || message.payloadString.length === 0) {
         console.error('Thumbnail message has empty payload');
         document.getElementById('thumbnailStatus').textContent = 'Error: Empty thumbnail message received';
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mqtt.js:handleThumbnailMessage:empty_payload',message:'Empty payload received',data:{},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+        // #endregion
         return;
     }
     
@@ -451,11 +458,17 @@ async function handleThumbnailMessage(message) {
                 // Validate base64 string lengths (16 bytes IV = 24 base64 chars, payload should be multiple of 4)
                 const cleanIv = payload.iv.replace(/\s/g, '');
                 const cleanPayload = payload.payload.replace(/\s/g, '');
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mqtt.js:handleThumbnailMessage:before_decrypt',message:'About to decrypt thumbnail',data:{ivLen:cleanIv.length,payloadLen:cleanPayload.length,ivFirst20:cleanIv.substring(0,20),payloadFirst20:cleanPayload.substring(0,20),payloadLast20:cleanPayload.substring(Math.max(0,cleanPayload.length-20))},timestamp:Date.now(),hypothesisId:'A,B,C'})}).catch(()=>{});
+                // #endregion
                 if (cleanIv.length !== 24) {
                     console.warn('Thumbnail: IV base64 length is', cleanIv.length, '(expected 24 for 16 bytes)');
                 }
                 if (cleanPayload.length % 4 !== 0) {
                     console.warn('Thumbnail: Payload base64 length is', cleanPayload.length, '(not a multiple of 4, may be corrupted)');
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mqtt.js:handleThumbnailMessage:payload_not_mult4',message:'Payload base64 length not multiple of 4',data:{payloadLen:cleanPayload.length,remainder:cleanPayload.length%4},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+                    // #endregion
                 }
                 
                 // Verify HMAC first (on encrypted message)
@@ -517,6 +530,9 @@ async function handleThumbnailMessage(message) {
             if (!decrypted || decrypted.length === 0) {
                 console.error('Decryption returned empty result');
                 console.error('Thumbnail decryption returned empty for retained message:', message.retained);
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mqtt.js:handleThumbnailMessage:decrypt_empty',message:'Decryption returned empty result',data:{retained:message.retained,payloadLen:payload.payload?payload.payload.length:0},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+                // #endregion
                 
                 // If this is a retained message and decryption fails, it may have been encrypted
                 // with a different key/method. Since new messages work, we'll just skip this one.
@@ -533,6 +549,10 @@ async function handleThumbnailMessage(message) {
                 document.getElementById('thumbnailStatus').textContent = 'Error: Decryption failed - empty result. Message may be corrupted.';
                 return;
             }
+            
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/a29c8232-e39e-4255-a8fa-d765857553c4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mqtt.js:handleThumbnailMessage:decrypt_success',message:'Thumbnail decrypted successfully',data:{decryptedLen:decrypted.length,first50:decrypted.substring(0,50)},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+            // #endregion
             
             // Parse decrypted JSON
             try {

@@ -360,17 +360,13 @@ table th,table td{padding:6px;font-size:12px;}
 <option value="custom">Custom (enter NaPTAN ID below)</option>
 </select>
 <label>Line (optional):</label>
-<select id="tflLineSelect" style="width:100%;padding:8px;margin-bottom:10px;background:#2a2a2a;color:#e0e0e0;border:1px solid #555;">
+<select id="tflLineSelect" onchange="updateTflDirections()" style="width:100%;padding:8px;margin-bottom:10px;background:#2a2a2a;color:#e0e0e0;border:1px solid #555;">
 <option value="">All lines</option>
 </select>
 <div id="tflLineLoading" style="display:none;color:#888;font-size:12px;margin-bottom:10px;">Loading lines...</div>
 <label>Direction (optional):</label>
 <select id="tflDirectionSelect" style="width:100%;padding:8px;margin-bottom:10px;background:#2a2a2a;color:#e0e0e0;border:1px solid #555;">
 <option value="">All directions</option>
-<option value="Northbound">Northbound</option>
-<option value="Southbound">Southbound</option>
-<option value="Eastbound">Eastbound</option>
-<option value="Westbound">Westbound</option>
 </select>
 <label>Custom NaPTAN ID:</label>
 <input type="text" id="tflCustomStation" placeholder="e.g., 940GZZLUBST" disabled>

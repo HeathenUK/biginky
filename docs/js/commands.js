@@ -93,6 +93,52 @@ async function sendWeatherPlace() {
 }
 
 // Fetch and populate lines for a TfL station
+// Line direction mappings - which directions each line uses
+const lineDirections = {
+    'northern': ['Northbound', 'Southbound'],
+    'victoria': ['Northbound', 'Southbound'],
+    'jubilee': ['Northbound', 'Southbound'],
+    'bakerloo': ['Northbound', 'Southbound'],
+    'waterloo-city': ['Northbound', 'Southbound'],
+    'metropolitan': ['Northbound', 'Southbound'],
+    'central': ['Eastbound', 'Westbound'],
+    'district': ['Eastbound', 'Westbound'],
+    'circle': ['Eastbound', 'Westbound'],
+    'hammersmith-city': ['Eastbound', 'Westbound'],
+    'piccadilly': ['Eastbound', 'Westbound'],
+    'elizabeth': ['Eastbound', 'Westbound']
+};
+
+// Update direction dropdown based on selected line
+function updateTflDirections() {
+    const lineSelect = document.getElementById('tflLineSelect');
+    const directionSelect = document.getElementById('tflDirectionSelect');
+    
+    const lineId = lineSelect.value;
+    
+    // Reset direction dropdown
+    directionSelect.innerHTML = '<option value="">All directions</option>';
+    
+    // If a line is selected and we know its directions, add them
+    if (lineId && lineDirections[lineId]) {
+        for (const direction of lineDirections[lineId]) {
+            const option = document.createElement('option');
+            option.value = direction;
+            option.textContent = direction;
+            directionSelect.appendChild(option);
+        }
+    } else if (lineId) {
+        // Unknown line - show all four directions as fallback
+        for (const direction of ['Northbound', 'Southbound', 'Eastbound', 'Westbound']) {
+            const option = document.createElement('option');
+            option.value = direction;
+            option.textContent = direction;
+            directionSelect.appendChild(option);
+        }
+    }
+    // If no line selected, keep just "All directions"
+}
+
 async function onTflStationChange() {
     const selectEl = document.getElementById('tflStationSelect');
     const customInput = document.getElementById('tflCustomStation');
@@ -107,8 +153,9 @@ async function onTflStationChange() {
         customInput.value = '';
     }
     
-    // Reset line dropdown
+    // Reset line dropdown and direction dropdown
     lineSelect.innerHTML = '<option value="">All lines</option>';
+    updateTflDirections();  // Reset directions too
     
     // If no station selected or custom, don't fetch lines
     if (!stationId || stationId === '' || stationId === 'custom') {

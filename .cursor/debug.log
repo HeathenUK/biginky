@@ -468,3 +468,6 @@
 {"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767986137321,"hypothesisId":"A,B"}
 {"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"0b01af8b"},"timestamp":1767986137321,"hypothesisId":"B"}
 {"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767986137328,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767987309711,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a5528f0c"},"timestamp":1767987309711,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767987309711,"hypothesisId":"B"}

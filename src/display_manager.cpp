@@ -2382,6 +2382,9 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
         drawTextAmberDithered(&display, &ttf, display.width() / 2, firstRowY + rowHeight,
                              "NO TRAINS", destFontSize, ALIGN_CENTER, ALIGN_MIDDLE);
     } else {
+        const int16_t destStartX = leftMargin + 80;  // Where destination text begins
+        const int16_t padding = 40;                   // Minimum gap between destination and time
+        
         for (int i = 0; i < arrivalCount && i < maxArrivals; i++) {
             int16_t rowY = firstRowY + (i * rowHeight);
             
@@ -2391,21 +2394,7 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
             drawTextAmberDithered(&display, &ttf, leftMargin, rowY,
                                  rowNum, destFontSize, ALIGN_LEFT, ALIGN_MIDDLE);
             
-            // Destination (truncate if too long)
-            char dest[32];
-            strncpy(dest, arrivals[i].destination, sizeof(dest) - 1);
-            dest[sizeof(dest) - 1] = '\0';
-            // Truncate long destinations
-            if (strlen(dest) > 20) {
-                dest[17] = '.';
-                dest[18] = '.';
-                dest[19] = '.';
-                dest[20] = '\0';
-            }
-            drawTextAmberDithered(&display, &ttf, leftMargin + 80, rowY,
-                                 dest, destFontSize, ALIGN_LEFT, ALIGN_MIDDLE);
-            
-            // Time (right-aligned) - show "Due" if < 1 min, otherwise "X min"
+            // Build time string first so we know how much space it needs
             char timeStr[16];
             int mins = arrivals[i].timeToStation / 60;
             if (mins < 1) {
@@ -2413,6 +2402,38 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
             } else {
                 snprintf(timeStr, sizeof(timeStr), "%d min", mins);
             }
+            int16_t timeWidth = ttf.getTextWidth(timeStr, timeFontSize);
+            
+            // Calculate available width for destination
+            int16_t availableWidth = rightMargin - timeWidth - padding - destStartX;
+            
+            // Prepare destination text, truncating only if needed
+            char dest[64];
+            strncpy(dest, arrivals[i].destination, sizeof(dest) - 1);
+            dest[sizeof(dest) - 1] = '\0';
+            
+            int16_t destWidth = ttf.getTextWidth(dest, destFontSize);
+            if (destWidth > availableWidth) {
+                // Need to truncate - find how many characters fit
+                int16_t ellipsisWidth = ttf.getTextWidth("...", destFontSize);
+                int16_t targetWidth = availableWidth - ellipsisWidth;
+                
+                // Binary search for the right truncation point
+                size_t len = strlen(dest);
+                while (len > 0 && ttf.getTextWidth(dest, destFontSize) > targetWidth) {
+                    dest[--len] = '\0';
+                }
+                // Remove trailing space if present
+                while (len > 0 && dest[len-1] == ' ') {
+                    dest[--len] = '\0';
+                }
+                strcat(dest, "...");
+            }
+            
+            drawTextAmberDithered(&display, &ttf, destStartX, rowY,
+                                 dest, destFontSize, ALIGN_LEFT, ALIGN_MIDDLE);
+            
+            // Draw time (right-aligned)
             drawTextAmberDithered(&display, &ttf, rightMargin, rowY,
                                  timeStr, timeFontSize, ALIGN_RIGHT, ALIGN_MIDDLE);
         }

@@ -16,22 +16,24 @@
 
 // Schedule action types (returned by getScheduleAction)
 enum class ScheduleAction {
-    SCHEDULE_DISABLED,      // Hour is disabled - sleep until next enabled hour
-    SCHEDULE_ENABLED,       // Hour is enabled - proceed with normal operations (media mapping)
-    SCHEDULE_NTP_RESYNC,    // Special action: resync NTP (e.g., at 30 minutes past hour)
-    SCHEDULE_HAPPY_WEATHER, // Special action: display Happy weather scene at :30
-    SCHEDULE_IMAGE,         // Display specific image (parameter: filename)
-    SCHEDULE_WEATHER_PLACE, // Display weather for specific place (parameter: location)
-    SCHEDULE_TFL_DEPARTURES // Display TfL Underground departure board (parameter: stationId)
+    SCHEDULE_DISABLED,       // Hour is disabled - sleep until next enabled hour
+    SCHEDULE_ENABLED,        // Hour is enabled - proceed with normal operations (media mapping)
+    SCHEDULE_NTP_RESYNC,     // Special action: resync NTP (e.g., at 30 minutes past hour)
+    SCHEDULE_HAPPY_WEATHER,  // Special action: display Happy weather scene at :30
+    SCHEDULE_IMAGE,          // Display specific image (parameter: filename)
+    SCHEDULE_WEATHER_PLACE,  // Display weather for specific place (parameter: location)
+    SCHEDULE_TFL_DEPARTURES, // Display TfL Underground departure board (parameter: JSON with stationId, lineId, direction)
+    SCHEDULE_SWIM_CONDITIONS // Display swim conditions for Fionphort (no parameter)
 };
 
 // Scene types for schedule slots
 enum class SceneType {
-    MEDIA,          // Next Media Mapping (no parameter)
-    WEATHER,        // Happy Places Weather (no parameter)
-    IMAGE,          // Show specific image (parameter: filename)
-    WEATHER_PLACE,  // Weather for specific place (parameter: location)
-    TFL_DEPARTURES  // TfL Underground departure board (parameter: stationId)
+    MEDIA,           // Next Media Mapping (no parameter)
+    WEATHER,         // Happy Places Weather (no parameter)
+    IMAGE,           // Show specific image (parameter: filename)
+    WEATHER_PLACE,   // Weather for specific place (parameter: location)
+    TFL_DEPARTURES,  // TfL Underground departure board (parameter: JSON with stationId, lineId, direction)
+    SWIM_CONDITIONS  // Swim conditions for Fionphort (no parameter)
 };
 
 // Schedule slot: minute + scene type + optional parameter

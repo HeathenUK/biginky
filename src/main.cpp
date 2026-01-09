@@ -2675,6 +2675,9 @@ static void auto_cycle_task(void* arg) {
         case ScheduleAction::SCHEDULE_TFL_DEPARTURES:
             actionName = "TFL_DEPARTURES";
             break;
+        case ScheduleAction::SCHEDULE_SWIM_CONDITIONS:
+            actionName = "SWIM_CONDITIONS";
+            break;
     }
     Serial.printf("Schedule action: %s (hour=%d, minute=%d)\n", actionName, currentHour, currentMinute);
     if (action == ScheduleAction::SCHEDULE_DISABLED) {
@@ -2968,10 +2971,84 @@ static void auto_cycle_task(void* arg) {
         if (parameter.length() == 0) {
             Serial.println("ERROR: No station ID specified for TfL departures");
         } else {
-            bool success = displayTflDepartureBoard(parameter.c_str());
+            // Parameter can be either a simple station ID (for backwards compatibility)
+            // or a JSON object with stationId, lineId, direction
+            String stationId = parameter;
+            const char* lineId = nullptr;
+            const char* direction = nullptr;
+            String lineIdStr, directionStr;  // Keep strings in scope
+            
+            // Try to parse as JSON
+            cJSON* root = cJSON_Parse(parameter.c_str());
+            if (root) {
+                cJSON* stationItem = cJSON_GetObjectItem(root, "stationId");
+                if (stationItem && cJSON_IsString(stationItem)) {
+                    stationId = String(cJSON_GetStringValue(stationItem));
+                }
+                cJSON* lineItem = cJSON_GetObjectItem(root, "lineId");
+                if (lineItem && cJSON_IsString(lineItem)) {
+                    lineIdStr = String(cJSON_GetStringValue(lineItem));
+                    if (lineIdStr.length() > 0) {
+                        lineId = lineIdStr.c_str();
+                    }
+                }
+                cJSON* directionItem = cJSON_GetObjectItem(root, "direction");
+                if (directionItem && cJSON_IsString(directionItem)) {
+                    directionStr = String(cJSON_GetStringValue(directionItem));
+                    if (directionStr.length() > 0) {
+                        direction = directionStr.c_str();
+                    }
+                }
+                cJSON_Delete(root);
+                Serial.printf("TfL params: station=%s, line=%s, direction=%s\n",
+                             stationId.c_str(),
+                             lineId ? lineId : "(all)",
+                             direction ? direction : "(all)");
+            }
+            
+            bool success = displayTflDepartureBoard(stationId.c_str(), lineId, direction);
             if (!success) {
                 Serial.println("ERROR: Failed to display TfL departure board");
             }
+        }
+        
+        // Always send status update
+        vTaskDelay(1);
+        
+        // Check for and process commands AFTER scheduled activity completes
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
+    }
+    
+    // Handle scheduled swim conditions
+    if (action == ScheduleAction::SCHEDULE_SWIM_CONDITIONS) {
+        Serial.println("=== Scheduled swim conditions: Fionphort, Isle of Mull ===");
+        
+        // Do NTP resync first (if needed) to ensure accurate time
+        doNtpResyncIfNeeded(time_ok);
+        
+        // Update time variables after potential NTP sync
+        now = time(nullptr);
+        if (now > 1577836800) {
+            gmtime_r(&now, &tm_utc);
+            isTopOfHour = (tm_utc.tm_min == 0);
+            currentHour = tm_utc.tm_hour;
+            currentMinute = tm_utc.tm_min;
+            time_ok = true;
+        }
+        
+        bool success = displaySwimConditionsScene();
+        if (!success) {
+            Serial.println("ERROR: Failed to display swim conditions");
         }
         
         // Always send status update
@@ -4255,6 +4332,9 @@ static void serial_monitor_task(void* arg) {
                                     break;
                                 case ScheduleAction::SCHEDULE_TFL_DEPARTURES:
                                     sceneStr = "tfl_departures";
+                                    break;
+                                case ScheduleAction::SCHEDULE_SWIM_CONDITIONS:
+                                    sceneStr = "swim_conditions";
                                     break;
                                 default:
                                     sceneStr = "none";

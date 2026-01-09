@@ -2056,7 +2056,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
 
 /**
  * 4x4 Bayer dither matrix for amber color effect
- * Values 0-15, threshold at ~12 gives ~75% yellow, ~25% red
+ * Values 0-15, threshold controls yellow/red ratio
  */
 static const uint8_t bayerMatrix4x4[4][4] = {
     {  0,  8,  2, 10 },
@@ -2067,7 +2067,7 @@ static const uint8_t bayerMatrix4x4[4][4] = {
 
 /**
  * Draw text with amber dithered color (yellow + red ordered dithering)
- * Uses Bayer 4x4 matrix with ~75% yellow, ~25% red for authentic LED look
+ * Uses Bayer 4x4 matrix with ~62% yellow, ~38% red for warmer amber
  */
 static void drawTextAmberDithered(EL133UF1* disp, EL133UF1_TTF* font,
                                    int16_t x, int16_t y, const char* text, float fontSize,
@@ -2090,8 +2090,8 @@ static void drawTextAmberDithered(EL133UF1* disp, EL133UF1_TTF* font,
     font->drawText(drawX, drawY, text, fontSize, EL133UF1_YELLOW, 0xFF);
     
     // Second pass: apply red dithering to create amber effect
-    // We iterate over the text bounding box and flip ~25% of yellow pixels to red
-    const int threshold = 12;  // ~75% yellow (threshold 12/16 = 75%)
+    // We iterate over the text bounding box and flip ~38% of yellow pixels to red
+    const int threshold = 10;  // ~62% yellow (threshold 10/16 = 62.5%)
     
     for (int16_t py = 0; py < textHeight + 4; py++) {
         for (int16_t px = 0; px < textWidth + 4; px++) {

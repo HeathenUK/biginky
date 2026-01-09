@@ -2136,12 +2136,13 @@ static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int max
     Serial.printf("TfL API: Fetching arrivals for station %s\n", stationId);
     
     HTTPClient http;
-    WiFiClient client;
+    WiFiClientSecure client;
+    client.setInsecure();  // Skip certificate verification for simplicity
     client.setTimeout(10000);
     
-    // Build TfL API URL (no API key required for basic access)
+    // Build TfL API URL (HTTPS required)
     char url[256];
-    snprintf(url, sizeof(url), "http://api.tfl.gov.uk/StopPoint/%s/Arrivals", stationId);
+    snprintf(url, sizeof(url), "https://api.tfl.gov.uk/StopPoint/%s/Arrivals", stationId);
     
     Serial.printf("TfL API: URL: %s\n", url);
     

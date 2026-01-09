@@ -28,10 +28,13 @@
 #include <stdio.h>  // For fopen, fread, etc.
 
 // Underground fonts (compiled-in for TfL departure board scene)
-// ug_reg: regular weight with letters and numbers
-// ug_bold: bold weight with ONLY numbers (for clock display)
+// Underground fonts (compiled-in for TfL departure board scene)
+// ug_reg: regular weight with letters and numbers (arrivals)
+// ug_bold: bold weight with ONLY numbers (clock display)
+// ug_heavy: heavy weight with letters and numbers (station name)
 #include "fonts/ug_reg.h"
 #include "fonts/ug_bold.h"
+#include "fonts/ug_heavy.h"
 
 // External references to globals and functions from main.cpp
 extern SPIClass displaySPI;
@@ -2359,11 +2362,16 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
     const int16_t stationY = topSafe + 80;  // 130 - station name near top
     const int16_t firstRowY = 310;          // First arrival row
     const int16_t rowHeight = 170;          // Height between arrival rows
-    const int16_t timeDisplayY = bottomSafe - 60;  // 1070 - clock near bottom
+    const int16_t timeDisplayY = bottomSafe - 80;  // 1050 - clock near bottom (+20px margin)
     
-    // Draw station name at top (centered)
+    // Draw station name at top (centered) using Heavy font
     const float stationFontSize = 90.0f;
     if (stationName[0] != '\0') {
+        // Load Underground Heavy font for station name
+        if (!ttf.loadFont(ug_heavy_ttf, sizeof(ug_heavy_ttf))) {
+            Serial.println("WARNING: Failed to load Underground Heavy font for station name");
+        }
+        
         // Convert to uppercase for authentic look
         char upperName[64];
         for (size_t i = 0; i < sizeof(upperName) - 1 && stationName[i]; i++) {
@@ -2372,6 +2380,11 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
         }
         drawTextAmberDithered(&display, &ttf, display.width() / 2, stationY,
                              upperName, stationFontSize, ALIGN_CENTER, ALIGN_MIDDLE);
+        
+        // Switch back to Regular font for arrivals
+        if (!ttf.loadFont(ug_reg_ttf, sizeof(ug_reg_ttf))) {
+            Serial.println("WARNING: Failed to reload Underground Regular font");
+        }
     }
     
     // Draw arrivals

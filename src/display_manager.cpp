@@ -2118,6 +2118,7 @@ struct TflArrival {
     char platform[32];
     int timeToStation;  // seconds
     char lineName[32];
+    char lineId[32];    // For filtering (e.g., "northern", "victoria")
 };
 
 /**
@@ -2127,15 +2128,21 @@ struct TflArrival {
  * @param maxArrivals Maximum number of arrivals to fetch
  * @param stationName Output station name (from API response)
  * @param stationNameSize Size of stationName buffer
+ * @param lineIdFilter Optional line ID filter (e.g., "northern"). Pass nullptr for all lines.
  * @return Number of arrivals fetched, or -1 on error
  */
 static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int maxArrivals,
-                            char* stationName, size_t stationNameSize) {
+                            char* stationName, size_t stationNameSize,
+                            const char* lineIdFilter = nullptr) {
     if (stationId == nullptr || arrivals == nullptr || maxArrivals <= 0) {
         return -1;
     }
     
-    Serial.printf("TfL API: Fetching arrivals for station %s\n", stationId);
+    if (lineIdFilter) {
+        Serial.printf("TfL API: Fetching arrivals for station %s, line %s\n", stationId, lineIdFilter);
+    } else {
+        Serial.printf("TfL API: Fetching arrivals for station %s (all lines)\n", stationId);
+    }
     
     HTTPClient http;
     WiFiClientSecure client;
@@ -2205,7 +2212,7 @@ static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int max
     }
     
     // Sort arrivals by timeToStation (bubble sort is fine for small arrays)
-    // First, collect all arrivals into a temporary array
+    // First, collect all arrivals into a temporary array (filtering by line if specified)
     int count = 0;
     for (int i = 0; i < arraySize && count < maxArrivals * 2; i++) {
         cJSON* item = cJSON_GetArrayItem(json, i);
@@ -2214,9 +2221,17 @@ static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int max
         cJSON* dest = cJSON_GetObjectItem(item, "destinationName");
         cJSON* platform = cJSON_GetObjectItem(item, "platformName");
         cJSON* time = cJSON_GetObjectItem(item, "timeToStation");
-        cJSON* line = cJSON_GetObjectItem(item, "lineName");
+        cJSON* lineName = cJSON_GetObjectItem(item, "lineName");
+        cJSON* lineId = cJSON_GetObjectItem(item, "lineId");
         
         if (!time || !cJSON_IsNumber(time)) continue;
+        
+        // Filter by line if specified
+        if (lineIdFilter && lineId && cJSON_IsString(lineId)) {
+            if (strcasecmp(lineId->valuestring, lineIdFilter) != 0) {
+                continue;  // Skip this arrival - wrong line
+            }
+        }
         
         arrivals[count].timeToStation = (int)time->valuedouble;
         
@@ -2234,11 +2249,18 @@ static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int max
             strcpy(arrivals[count].platform, "");
         }
         
-        if (line && cJSON_IsString(line)) {
-            strncpy(arrivals[count].lineName, line->valuestring, sizeof(arrivals[count].lineName) - 1);
+        if (lineName && cJSON_IsString(lineName)) {
+            strncpy(arrivals[count].lineName, lineName->valuestring, sizeof(arrivals[count].lineName) - 1);
             arrivals[count].lineName[sizeof(arrivals[count].lineName) - 1] = '\0';
         } else {
             strcpy(arrivals[count].lineName, "");
+        }
+        
+        if (lineId && cJSON_IsString(lineId)) {
+            strncpy(arrivals[count].lineId, lineId->valuestring, sizeof(arrivals[count].lineId) - 1);
+            arrivals[count].lineId[sizeof(arrivals[count].lineId) - 1] = '\0';
+        } else {
+            strcpy(arrivals[count].lineId, "");
         }
         
         count++;
@@ -2266,10 +2288,15 @@ static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int max
  * Shows live arrivals for a specified station in authentic amber LED style
  * 
  * @param stationId NaPTAN ID of the station (e.g., "940GZZLUBST" for Baker Street)
+ * @param lineId Optional line ID filter (e.g., "northern", "victoria"). Pass nullptr for all lines.
  * @return true on success, false on failure
  */
-bool displayTflDepartureBoard(const char* stationId) {
-    Serial.printf("=== TfL Departure Board: %s ===\n", stationId);
+bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
+    if (lineId) {
+        Serial.printf("=== TfL Departure Board: %s (line: %s) ===\n", stationId, lineId);
+    } else {
+        Serial.printf("=== TfL Departure Board: %s (all lines) ===\n", stationId);
+    }
     
     // Ensure display is initialized
     if (display.getBuffer() == nullptr) {
@@ -2314,7 +2341,7 @@ bool displayTflDepartureBoard(const char* stationId) {
     TflArrival arrivals[maxArrivals * 2];  // Extra space for sorting
     char stationName[64] = "";
     
-    int arrivalCount = fetchTflArrivals(stationId, arrivals, maxArrivals, stationName, sizeof(stationName));
+    int arrivalCount = fetchTflArrivals(stationId, arrivals, maxArrivals, stationName, sizeof(stationName), lineId);
     
     if (arrivalCount < 0) {
         drawTextAmberDithered(&display, &ttf, display.width() / 2, display.height() / 2,

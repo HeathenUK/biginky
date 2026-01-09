@@ -410,8 +410,16 @@ static bool handleTflUnified(const CommandContext& ctx) {
         return false;
     }
     
-    Serial.printf("[TFL] Displaying departures for station: %s\n", stationId.c_str());
-    return displayTflDepartureBoard(stationId.c_str());
+    // Extract optional line ID filter
+    String lineId = extractJsonStringField(ctx.originalMessage, "lineId");
+    
+    if (lineId.length() > 0) {
+        Serial.printf("[TFL] Displaying departures for station: %s, line: %s\n", stationId.c_str(), lineId.c_str());
+        return displayTflDepartureBoard(stationId.c_str(), lineId.c_str());
+    } else {
+        Serial.printf("[TFL] Displaying departures for station: %s (all lines)\n", stationId.c_str());
+        return displayTflDepartureBoard(stationId.c_str(), nullptr);
+    }
 }
 
 // Helper function to escape CSV field (wrap in quotes if contains comma or quote, escape quotes)

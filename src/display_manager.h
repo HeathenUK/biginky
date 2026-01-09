@@ -141,8 +141,9 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName);
  *                  - "940GZZLUHGT" - Highgate
  *                  - "940GZZLUACY" - Archway
  *                  - "940GZZLUEFN" - East Finchley
+ * @param lineId Optional line filter (e.g., "northern", "victoria"). Pass nullptr for all lines.
  * @return true if successful, false otherwise
  */
-bool displayTflDepartureBoard(const char* stationId);
+bool displayTflDepartureBoard(const char* stationId, const char* lineId = nullptr);
 
 #endif // DISPLAY_MANAGER_H

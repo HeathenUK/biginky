@@ -187,6 +187,7 @@ async function sendTflDepartures() {
     const selectEl = document.getElementById('tflStationSelect');
     const customInput = document.getElementById('tflCustomStation');
     const lineSelect = document.getElementById('tflLineSelect');
+    const directionSelect = document.getElementById('tflDirectionSelect');
     
     let stationId = selectEl.value;
     
@@ -213,10 +214,20 @@ async function sendTflDepartures() {
         payload.lineId = lineId;
     }
     
+    // Add direction if a specific direction is selected
+    const direction = directionSelect.value;
+    if (direction && direction !== '') {
+        payload.direction = direction;
+    }
+    
     if (await publishMessage(payload)) {
         const stationName = selectEl.options[selectEl.selectedIndex]?.text || stationId;
         const lineName = lineSelect.options[lineSelect.selectedIndex]?.text || 'All lines';
-        showStatus('tflStatus', `TfL departures command sent for ${stationName} (${lineName})!`, false);
+        const directionName = directionSelect.options[directionSelect.selectedIndex]?.text || 'All directions';
+        let statusMsg = `TfL departures command sent for ${stationName}`;
+        if (lineId) statusMsg += ` (${lineName})`;
+        if (direction) statusMsg += ` - ${directionName}`;
+        showStatus('tflStatus', statusMsg + '!', false);
         setBusyState(true, 'Command sent, waiting for device response...');
     } else {
         showStatus('tflStatus', 'Failed to send command', true);

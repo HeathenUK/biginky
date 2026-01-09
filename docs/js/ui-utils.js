@@ -212,12 +212,58 @@ function updateDeviceStatus(status) {
     statusEl.innerHTML = html;
 }
 
-// Format time remaining until next wake
-function formatTimeUntilWake() {
-    if (!nextWakeTime) return null;
+// Calculate next aligned wake time based on sleep interval
+// Device wakes at aligned times (e.g., every 5 min = :00, :05, :10, etc.)
+function calculateNextWakeTime() {
+    if (!sleepIntervalMinutes || sleepIntervalMinutes <= 0) return null;
     
     const now = new Date();
-    const diff = nextWakeTime.getTime() - now.getTime();
+    const currentMinute = now.getMinutes();
+    const currentSecond = now.getSeconds();
+    
+    // Find the next aligned minute
+    const minutesSinceHour = currentMinute + (currentSecond > 0 ? 1 : 0);  // Round up if mid-minute
+    const nextAlignedMinute = Math.ceil(minutesSinceHour / sleepIntervalMinutes) * sleepIntervalMinutes;
+    
+    const nextWake = new Date(now);
+    nextWake.setSeconds(0, 0);  // Clear seconds and milliseconds
+    
+    if (nextAlignedMinute >= 60) {
+        // Rolls over to next hour
+        nextWake.setMinutes(nextAlignedMinute - 60);
+        nextWake.setHours(nextWake.getHours() + 1);
+    } else {
+        nextWake.setMinutes(nextAlignedMinute);
+    }
+    
+    // If we calculated a time in the past (edge case), add one interval
+    if (nextWake.getTime() <= now.getTime()) {
+        nextWake.setMinutes(nextWake.getMinutes() + sleepIntervalMinutes);
+    }
+    
+    return nextWake;
+}
+
+// Get the best available next wake time (stored or calculated)
+function getEffectiveNextWakeTime() {
+    const now = new Date();
+    
+    // If we have a stored next wake time and it's in the future, use it
+    if (nextWakeTime && nextWakeTime.getTime() > now.getTime()) {
+        return nextWakeTime;
+    }
+    
+    // Otherwise, calculate from sleep interval
+    return calculateNextWakeTime();
+}
+
+// Format time remaining until next wake
+function formatTimeUntilWake() {
+    const effectiveWakeTime = getEffectiveNextWakeTime();
+    if (!effectiveWakeTime) return null;
+    
+    const now = new Date();
+    const diff = effectiveWakeTime.getTime() - now.getTime();
     
     if (diff <= 0) {
         return 'Device should be awake now';
@@ -246,27 +292,24 @@ function updateBusyMessage() {
     const msgEl = document.getElementById('busyOverlay')?.querySelector('.message');
     if (!msgEl) return;
     
+    const effectiveWakeTime = getEffectiveNextWakeTime();
     const timeUntilWake = formatTimeUntilWake();
-    if (timeUntilWake && nextWakeTime) {
+    
+    if (timeUntilWake && effectiveWakeTime) {
         const now = new Date();
-        const diff = nextWakeTime.getTime() - now.getTime();
+        const diff = effectiveWakeTime.getTime() - now.getTime();
         
         if (diff <= 0) {
             // Device should be awake now
             msgEl.textContent = 'Device should be awake. Command will be processed shortly...';
         } else {
             // Device is asleep - show precise countdown
-            const wakeTimeStr = nextWakeTime.toLocaleTimeString();
+            const wakeTimeStr = effectiveWakeTime.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
             msgEl.textContent = `Device is asleep. Command will be processed at ${wakeTimeStr} (in ${timeUntilWake})`;
         }
     } else {
-        // No next_wake time available - show generic message with sleep interval if known
-        let message = 'Command sent. Waiting for device response...';
-        if (sleepIntervalMinutes !== null && sleepIntervalMinutes !== undefined) {
-            const intervalText = sleepIntervalMinutes === 1 ? '1 minute' : `${sleepIntervalMinutes} minutes`;
-            message += ` (this may take up to ${intervalText})`;
-        }
-        msgEl.textContent = message;
+        // No timing info at all - show generic message
+        msgEl.textContent = 'Command sent. Waiting for device response...';
     }
 }
 
@@ -286,11 +329,12 @@ function setBusyState(busy, message) {
     if (overlay) {
         if (busy) {
             overlay.classList.add('active');
-            const msgEl = overlay.querySelector('.message');
             
-            // Immediately check if we have next_wake time and show appropriate message
-            if (nextWakeTime) {
-                // We have next_wake time - show countdown immediately
+            // Check if we can show a countdown (have stored wake time OR can calculate from interval)
+            const effectiveWakeTime = getEffectiveNextWakeTime();
+            
+            if (effectiveWakeTime) {
+                // We can show a countdown - update immediately and start interval
                 updateBusyMessage();
                 
                 // Start countdown interval to update message every second
@@ -303,27 +347,19 @@ function setBusyState(busy, message) {
                     }
                 }, 1000);
             } else if (message) {
-                // No next_wake time yet - use provided message with sleep interval if available
-                // Will be updated when status message arrives with next_wake
+                // No timing info at all - just show the provided message
+                const msgEl = overlay.querySelector('.message');
                 if (msgEl) {
-                    let finalMessage = message;
-                    // Add sleep interval info if available and message is the default
-                    if (sleepIntervalMinutes !== null && sleepIntervalMinutes !== undefined && 
-                        (message.includes('Command sent') && message.includes('waiting for device response'))) {
-                        const intervalText = sleepIntervalMinutes === 1 ? '1 minute' : `${sleepIntervalMinutes} minutes`;
-                        finalMessage += ` (this may take up to ${intervalText})`;
-                    }
-                    msgEl.textContent = finalMessage;
+                    msgEl.textContent = message;
                 }
                 
-                // Set timeout: if no status message arrives within 5 seconds, check again
+                // Set timeout: if status message arrives within 5 seconds with timing info, update
                 busyTimeoutId = setTimeout(() => {
                     if (isBusy) {
-                        // Status message should have arrived by now - update with countdown if available
-                        updateBusyMessage();
-                        
-                        // Start countdown interval if we now have next_wake time
-                        if (nextWakeTime && !busyCountdownInterval) {
+                        // Check if we now have timing info
+                        const wakeTime = getEffectiveNextWakeTime();
+                        if (wakeTime && !busyCountdownInterval) {
+                            updateBusyMessage();
                             busyCountdownInterval = setInterval(() => {
                                 if (isBusy) {
                                     updateBusyMessage();

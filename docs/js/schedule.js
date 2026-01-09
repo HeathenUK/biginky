@@ -4,7 +4,8 @@ const SCENE_TYPES = {
     media: { name: 'Media Mapping', paramType: 'mapping_number' },
     weather: { name: 'Happy Places Weather', paramType: null },
     image: { name: 'Show Image', paramType: 'image_dropdown' },
-    weather_place: { name: 'Weather for Place', paramType: 'weather_place' }
+    weather_place: { name: 'Weather for Place', paramType: 'weather_place' },
+    tfl_departures: { name: 'TfL Departures', paramType: 'tfl_station' }
 };
 
 let currentSchedule = null;  // Store current schedule data
@@ -191,6 +192,42 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             nameInput.style.border = '1px solid #444';
             nameInput.style.padding = '4px';
             paramCell.appendChild(nameInput);
+        } else if (paramType === 'tfl_station') {
+            const select = document.createElement('select');
+            select.className = 'slot-parameter slot-parameter-tfl';
+            select.style.background = '#1a1a1a';
+            select.style.color = '#e0e0e0';
+            select.style.border = '1px solid #444';
+            select.style.padding = '4px';
+            select.style.width = '200px';
+            
+            const stations = [
+                { id: '', name: '-- Select Station --' },
+                { id: '940GZZLUEMB', name: 'Embankment' },
+                { id: '940GZZLUHGT', name: 'Highgate' },
+                { id: '940GZZLUACY', name: 'Archway' },
+                { id: '940GZZLUEFN', name: 'East Finchley' },
+                { id: '940GZZLUBST', name: 'Baker Street' },
+                { id: '940GZZLUKSX', name: 'King\'s Cross' },
+                { id: '940GZZLUWLO', name: 'Waterloo' },
+                { id: '940GZZLUVIC', name: 'Victoria' },
+                { id: '940GZZLUPCC', name: 'Piccadilly Circus' },
+                { id: '940GZZLUOXC', name: 'Oxford Circus' },
+                { id: '940GZZLUGPK', name: 'Green Park' },
+                { id: '940GZZLUBNK', name: 'Bank' },
+                { id: '940GZZLULVT', name: 'Liverpool Street' },
+                { id: '940GZZLUPAC', name: 'Paddington' }
+            ];
+            
+            stations.forEach(station => {
+                const opt = document.createElement('option');
+                opt.value = station.id;
+                opt.text = station.name;
+                opt.selected = (station.id === paramValue);
+                select.appendChild(opt);
+            });
+            
+            paramCell.appendChild(select);
         }
     }
     
@@ -430,6 +467,14 @@ async function saveScheduleToDevice() {
                         slots.push(slot);
                     }
                     // Skip empty weather_place slots - return early
+                    return;
+                } else if (paramType === 'tfl_station') {
+                    const select = slotRow.querySelector('.slot-parameter-tfl');
+                    if (select && select.value.trim().length > 0) {
+                        slot.parameter = select.value.trim();
+                        slots.push(slot);
+                    }
+                    // Skip empty tfl_station slots
                     return;
                 } else {
                     slots.push(slot);  // Default: push all other slots (like weather)

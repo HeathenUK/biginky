@@ -92,6 +92,53 @@ async function sendWeatherPlace() {
     }
 }
 
+async function sendTflDepartures() {
+    const selectEl = document.getElementById('tflStationSelect');
+    const customInput = document.getElementById('tflCustomStation');
+    
+    let stationId = selectEl.value;
+    
+    // If custom is selected, use the custom input value
+    if (stationId === 'custom') {
+        stationId = customInput.value.trim();
+    }
+    
+    if (!stationId || stationId === '') {
+        showStatus('tflStatus', 'Please select a station or enter a custom NaPTAN ID', true);
+        return;
+    }
+    
+    showStatus('tflStatus', 'Sending TfL departures command...', false);
+    
+    const payload = {
+        command: 'tfl_departures',
+        stationId: stationId
+    };
+    
+    if (await publishMessage(payload)) {
+        const stationName = selectEl.options[selectEl.selectedIndex]?.text || stationId;
+        showStatus('tflStatus', `TfL departures command sent for ${stationName}!`, false);
+        setBusyState(true, 'Command sent, waiting for device response...');
+    } else {
+        showStatus('tflStatus', 'Failed to send command', true);
+    }
+}
+
+// Initialize TfL station select to enable/disable custom input
+document.addEventListener('DOMContentLoaded', function() {
+    const selectEl = document.getElementById('tflStationSelect');
+    const customInput = document.getElementById('tflCustomStation');
+    
+    if (selectEl && customInput) {
+        selectEl.addEventListener('change', function() {
+            customInput.disabled = (selectEl.value !== 'custom');
+            if (selectEl.value !== 'custom') {
+                customInput.value = '';
+            }
+        });
+    }
+});
+
 async function sendCanvasToDisplay() {
     console.log('sendCanvasToDisplay() called');
     const canvas = document.getElementById('drawCanvas');

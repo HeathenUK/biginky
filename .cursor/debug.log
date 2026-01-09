@@ -1,0 +1,443 @@
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767902347003,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767902347003,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767902347003,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767902347286,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767902347307,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767902347309,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767902347315,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767902347315,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767902347318,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767902347336,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767902347337,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767902347338,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767902376239,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767902376240,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767902376240,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767902376495,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767902376517,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767902376519,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767902376522,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767902376523,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767902376525,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767902376541,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767902376542,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767902376543,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767902405933,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767902405933,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767902405933,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767902406271,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767902406295,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767902406297,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767902406301,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767902406301,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767902406305,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767902406323,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767902406324,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767902406324,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767902409086,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767902409086,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767902409086,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767902409371,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767902409395,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767902409397,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767902409401,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767902409401,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767902409403,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767902409413,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767902409414,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767902409414,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767902417964,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767902417964,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767902417965,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767902418296,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767902418314,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767902418316,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767902418320,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767902418320,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767902418322,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767902418353,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767902418354,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767902418354,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767902426234,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767902426235,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767902426235,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767902426491,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767902426515,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767902426517,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767902426521,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767902426521,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767902426523,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767902426549,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767902426550,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767902426550,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767948076843,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767948076844,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767948076844,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767948077464,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767948077484,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767948077487,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767948077491,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767948077491,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767948077492,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767948077492,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767948077495,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767948077502,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767949610431,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"514fb6d7"},"timestamp":1767949610431,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767949610431,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767949610668,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767949610693,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767949610698,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767949610701,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767949610703,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"3aaa00a7"},"timestamp":1767949610704,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767949610704,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767949610706,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767949610714,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767950780532,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"6baff190"},"timestamp":1767950780532,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767950780532,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767950824804,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"4af825a9"},"timestamp":1767950824805,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767950824806,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767950866597,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"6baff190"},"timestamp":1767950866597,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767950866597,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":420725,"retained":true},"timestamp":1767950866868,"hypothesisId":"C"}
+{"location":"mqtt.js:handleThumbnailMessage:before_decrypt","message":"About to decrypt thumbnail","data":{"ivLen":24,"payloadLen":420588,"ivFirst20":"cISI8SJ6us+Rm32wGlEz","payloadFirst20":"4m3Z0M2Q9cUEau3jDDnE","payloadLast20":"ia8OHrL0CbcKMXiFrNw="},"timestamp":1767950866890,"hypothesisId":"A,B,C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":420588,"ivLen":24,"hasPassword":true},"timestamp":1767950866892,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":315440,"ivFirst4Hex":"708488f1"},"timestamp":1767950866896,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":315428},"timestamp":1767950866896,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:decrypt_success","message":"Thumbnail decrypted successfully","data":{"decryptedLen":315428,"first50":"{\"width\":1600,\"height\":1200,\"format\":\"png\",\"palett"},"timestamp":1767950866898,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767950866917,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"4af825a9"},"timestamp":1767950866918,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767950866918,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767951055511,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"700d2fb0"},"timestamp":1767951055511,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767951055511,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":216,"ivLen":24,"hasPassword":true},"timestamp":1767951160572,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":160,"ivFirst4Hex":"0aa1fb13"},"timestamp":1767951160572,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":151},"timestamp":1767951160573,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767951165699,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"1db09dcf"},"timestamp":1767951165699,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767951165699,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767951211188,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"a7327835"},"timestamp":1767951211190,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767951211190,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767951597005,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"5e416781"},"timestamp":1767951597005,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767951597005,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767951641197,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"49380f44"},"timestamp":1767951641198,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767951641199,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":216,"ivLen":24,"hasPassword":true},"timestamp":1767951938069,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":160,"ivFirst4Hex":"cd0f593a"},"timestamp":1767951938069,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":151},"timestamp":1767951938070,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":828822,"retained":false},"timestamp":1767951943845,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767951943890,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"d3cf7ab7"},"timestamp":1767951943891,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767951943905,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":216,"ivLen":24,"hasPassword":true},"timestamp":1767952281424,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":160,"ivFirst4Hex":"0ac39e68"},"timestamp":1767952281425,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":151},"timestamp":1767952281425,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":590762,"retained":false},"timestamp":1767952353058,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767952354716,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"2d2a4bf5"},"timestamp":1767952354716,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767952354717,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767952399374,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"d2d35f88"},"timestamp":1767952399377,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767952399377,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767952509917,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"ee526c04"},"timestamp":1767952509918,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767952509918,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":344,"ivLen":24,"hasPassword":true},"timestamp":1767953458564,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":256,"ivFirst4Hex":"994ad188"},"timestamp":1767953458565,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":251},"timestamp":1767953458565,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767953708524,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"072a03af"},"timestamp":1767953708525,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767953708525,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767954008151,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"c5f16c7d"},"timestamp":1767954008151,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767954008151,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767954307470,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"9f94e325"},"timestamp":1767954307470,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767954307471,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":590442,"retained":false},"timestamp":1767954707229,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767954707765,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"60717b4e"},"timestamp":1767954707765,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767954707765,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767954910105,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"22939bc5"},"timestamp":1767954910105,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767954910105,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767955209528,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"eabf787b"},"timestamp":1767955209528,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767955209528,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767955508950,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"134b4451"},"timestamp":1767955508950,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767955508950,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767955808474,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"513ef0e7"},"timestamp":1767955808474,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767955808475,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767956107799,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"2701a248"},"timestamp":1767956107799,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767956107799,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":698826,"retained":false},"timestamp":1767956465197,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":344,"ivLen":24,"hasPassword":true},"timestamp":1767956468552,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":256,"ivFirst4Hex":"0bf45eb5"},"timestamp":1767956468552,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":251},"timestamp":1767956468552,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767956707046,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"101a203d"},"timestamp":1767956707046,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767956707047,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767957006570,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"bd03b075"},"timestamp":1767957006570,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767957006570,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767957306194,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a7360875"},"timestamp":1767957306194,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767957306194,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767957605623,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"7bbfe5b6"},"timestamp":1767957605623,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767957605623,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767957904936,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"138d9911"},"timestamp":1767957904936,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767957904936,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":591018,"retained":false},"timestamp":1767958304310,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767958304894,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"cfec35d4"},"timestamp":1767958304895,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767958304895,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767958510026,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"590fed50"},"timestamp":1767958510026,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767958510026,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767958809445,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"78b25dcf"},"timestamp":1767958809445,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767958809445,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767959108866,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"d5614078"},"timestamp":1767959108866,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767959108866,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767959408288,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"9d01a7dc"},"timestamp":1767959408288,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767959408288,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767959707606,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"603aa2c8"},"timestamp":1767959707606,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767959707606,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":771078,"retained":false},"timestamp":1767960071546,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":364,"ivLen":24,"hasPassword":true},"timestamp":1767960074305,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":272,"ivFirst4Hex":"759caaed"},"timestamp":1767960074305,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":258},"timestamp":1767960074305,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767960309112,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"cf034b64"},"timestamp":1767960309112,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767960309112,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767960608842,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a8f1a8ef"},"timestamp":1767960608842,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767960608842,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767960908474,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"2aaaff62"},"timestamp":1767960908474,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767960908474,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767961208198,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"33a09cfc"},"timestamp":1767961208198,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767961208198,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767961507927,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"c45d7893"},"timestamp":1767961507927,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767961507928,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":216,"ivLen":24,"hasPassword":true},"timestamp":1767962035365,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":160,"ivFirst4Hex":"df0662c4"},"timestamp":1767962035365,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":151},"timestamp":1767962035365,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":1041346,"retained":false},"timestamp":1767962041512,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767962043126,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a94fc9b3"},"timestamp":1767962043126,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767962043126,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767962087592,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"a063fe3a"},"timestamp":1767962087595,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767962087596,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767962110465,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"812184de"},"timestamp":1767962110465,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767962110465,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767962871006,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"f1bc2368"},"timestamp":1767962871006,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767962871006,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":140440,"ivLen":24,"hasPassword":true},"timestamp":1767962915274,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":105328,"ivFirst4Hex":"f7fd174f"},"timestamp":1767962915277,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":105325},"timestamp":1767962915277,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767963009953,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767963009953,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"d044c632"},"timestamp":1767963009953,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":216,"ivLen":24,"hasPassword":true},"timestamp":1767963336418,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":160,"ivFirst4Hex":"ba75f7eb"},"timestamp":1767963336418,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":151},"timestamp":1767963336418,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":1297110,"retained":false},"timestamp":1767963342611,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767963342771,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"203fd0db"},"timestamp":1767963342771,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767963342771,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767963608539,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"8a1b247c"},"timestamp":1767963608540,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767963608540,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767963908060,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"c409dc8b"},"timestamp":1767963908060,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767963908060,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767965106620,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a6f51649"},"timestamp":1767965106620,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767965106620,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":852802,"retained":false},"timestamp":1767965419268,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767965434214,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"e93b84b9"},"timestamp":1767965434214,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767965434214,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767965709560,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"6996ebf5"},"timestamp":1767965709560,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767965709560,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767966009287,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"26581654"},"timestamp":1767966009288,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767966009288,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767966309324,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"74af66af"},"timestamp":1767966309325,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767966309325,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767966609153,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"b0fcf229"},"timestamp":1767966609153,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767966609153,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767966908688,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"36b0f794"},"timestamp":1767966908688,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767966908688,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":1034710,"retained":false},"timestamp":1767967220461,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":344,"ivLen":24,"hasPassword":true},"timestamp":1767967243226,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":256,"ivFirst4Hex":"a9f8eb25"},"timestamp":1767967243227,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":250},"timestamp":1767967243227,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767967507532,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"92f15e20"},"timestamp":1767967507533,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767967507533,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767967807153,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"b9c22743"},"timestamp":1767967807153,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767967807153,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767968106573,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"7d4e28e1"},"timestamp":1767968106573,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767968106573,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767968406282,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"9945133f"},"timestamp":1767968406284,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767968406284,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767968705314,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"4d9fc411"},"timestamp":1767968705314,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767968705314,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":853450,"retained":false},"timestamp":1767969018394,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767969033571,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"1bdb6b2c"},"timestamp":1767969033571,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767969033571,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767969309791,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"fb1e9dc5"},"timestamp":1767969309791,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767969309791,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767969609108,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"4e91a852"},"timestamp":1767969609108,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767969609109,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767969908843,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"ea0c1135"},"timestamp":1767969908843,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767969908843,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767970208778,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a69b0e09"},"timestamp":1767970208778,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767970208778,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767970507679,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"eefd58ba"},"timestamp":1767970507679,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767970507679,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":1037302,"retained":false},"timestamp":1767970819197,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":344,"ivLen":24,"hasPassword":true},"timestamp":1767970836184,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":256,"ivFirst4Hex":"72e18c2f"},"timestamp":1767970836184,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":250},"timestamp":1767970836185,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767971106628,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"8637c2dd"},"timestamp":1767971106629,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767971106629,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767971406245,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"e2bfbde3"},"timestamp":1767971406246,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767971406246,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767971705778,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"b4493e90"},"timestamp":1767971705779,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767971705779,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767972005508,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"8439d85e"},"timestamp":1767972005508,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767972005509,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767972304725,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"6b1dc2ba"},"timestamp":1767972304726,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767972304727,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":852582,"retained":false},"timestamp":1767972618948,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767972632718,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"261ed865"},"timestamp":1767972632718,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767972632718,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767972909815,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"850be053"},"timestamp":1767972909815,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767972909816,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767973208516,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"c268ff11"},"timestamp":1767973208517,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767973208517,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767973507940,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"96ba9897"},"timestamp":1767973507940,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767973507941,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767973807671,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"2a36d486"},"timestamp":1767973807673,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767973807673,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767974107394,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"02e7bfcf"},"timestamp":1767974107394,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767974107394,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":658634,"retained":false},"timestamp":1767974418425,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":344,"ivLen":24,"hasPassword":true},"timestamp":1767974443820,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":256,"ivFirst4Hex":"91d9792b"},"timestamp":1767974443820,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":250},"timestamp":1767974443820,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767974706238,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"c06b80a2"},"timestamp":1767974706238,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767974706238,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767975005221,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"4c7518bf"},"timestamp":1767975005221,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767975005221,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767975304779,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a5843b09"},"timestamp":1767975304779,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767975304779,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767975604103,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"eaa7415f"},"timestamp":1767975604103,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767975604104,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767975903629,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"a44c23ee"},"timestamp":1767975903629,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767975903630,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":853254,"retained":false},"timestamp":1767976216506,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767976231614,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"53a6e645"},"timestamp":1767976231614,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767976231614,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767976510048,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"58b16f6a"},"timestamp":1767976510048,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767976510049,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767976809773,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"9cd5bad0"},"timestamp":1767976809773,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767976809773,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767977109808,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"ada9f4a7"},"timestamp":1767977109809,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767977109809,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767977409738,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"bacf6804"},"timestamp":1767977409738,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767977409738,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767977709157,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"29b351c4"},"timestamp":1767977709157,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767977709157,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":758934,"retained":false},"timestamp":1767978020439,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":344,"ivLen":24,"hasPassword":true},"timestamp":1767978037874,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":256,"ivFirst4Hex":"3fc6ebc7"},"timestamp":1767978037874,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":250},"timestamp":1767978037874,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767978309955,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"6da19036"},"timestamp":1767978309955,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767978309955,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767978609478,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"7957aa9c"},"timestamp":1767978609478,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767978609479,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767978908797,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"1ec9f372"},"timestamp":1767978908797,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767978908797,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767979208628,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"c33ca8a9"},"timestamp":1767979208628,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767979208628,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767979508568,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"6f580152"},"timestamp":1767979508568,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767979508568,"hypothesisId":"B"}
+{"location":"mqtt.js:handleThumbnailMessage:entry","message":"Thumbnail message received","data":{"payloadLen":853354,"retained":false},"timestamp":1767979823310,"hypothesisId":"C"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767979838356,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"0ab33fb9"},"timestamp":1767979838356,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767979838356,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767980109454,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"b881dd78"},"timestamp":1767980109455,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767980109455,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767980408875,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"b9d180e4"},"timestamp":1767980408875,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767980408875,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:entry","message":"Starting decryption","data":{"payloadLen":256,"ivLen":24,"hasPassword":true},"timestamp":1767980708398,"hypothesisId":"A,B"}
+{"location":"encryption.js:decryptMessage:validated","message":"Ciphertext validated","data":{"ivLen":16,"ciphertextLen":192,"ivFirst4Hex":"354badcb"},"timestamp":1767980708399,"hypothesisId":"B"}
+{"location":"encryption.js:decryptMessage:decrypt_success","message":"Decryption successful","data":{"plaintextLen":185},"timestamp":1767980708399,"hypothesisId":"B"}

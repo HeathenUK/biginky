@@ -337,6 +337,35 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 <div class="section">
+<h2 onclick="toggleSection(this)">TfL Departures</h2>
+<div class="section-content" id="section-tfl">
+<p>Display a London Underground departure board with live train arrivals. Select a station from the dropdown or enter a custom NaPTAN ID.</p>
+<label>Station:</label>
+<select id="tflStationSelect" style="width:100%;padding:8px;margin-bottom:10px;background:#2a2a2a;color:#e0e0e0;border:1px solid #555;">
+<option value="">-- Select a station --</option>
+<option value="940GZZLUEMB">Embankment</option>
+<option value="940GZZLUHGT">Highgate</option>
+<option value="940GZZLUACY">Archway</option>
+<option value="940GZZLUEFN">East Finchley</option>
+<option value="940GZZLUBST">Baker Street</option>
+<option value="940GZZLUKSX">King's Cross St. Pancras</option>
+<option value="940GZZLUWLO">Waterloo</option>
+<option value="940GZZLUVIC">Victoria</option>
+<option value="940GZZLUPCC">Piccadilly Circus</option>
+<option value="940GZZLUOXC">Oxford Circus</option>
+<option value="940GZZLUGPK">Green Park</option>
+<option value="940GZZLUBNK">Bank</option>
+<option value="940GZZLULVT">Liverpool Street</option>
+<option value="940GZZLUPAC">Paddington</option>
+<option value="custom">Custom (enter NaPTAN ID below)</option>
+</select>
+<label>Custom NaPTAN ID:</label>
+<input type="text" id="tflCustomStation" placeholder="e.g., 940GZZLUBST" disabled>
+<button onclick="sendTflDepartures()" id="tflDeparturesBtn" disabled style="margin-top:15px;">Display Departures</button>
+<div id="tflStatus"></div>
+</div>
+</div>
+<div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
 <div class="canvas-controls-wrapper" style="margin-bottom:8px;">

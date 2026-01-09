@@ -413,13 +413,19 @@ static bool handleTflUnified(const CommandContext& ctx) {
     // Extract optional line ID filter
     String lineId = extractJsonStringField(ctx.originalMessage, "lineId");
     
-    if (lineId.length() > 0) {
-        Serial.printf("[TFL] Displaying departures for station: %s, line: %s\n", stationId.c_str(), lineId.c_str());
-        return displayTflDepartureBoard(stationId.c_str(), lineId.c_str());
-    } else {
-        Serial.printf("[TFL] Displaying departures for station: %s (all lines)\n", stationId.c_str());
-        return displayTflDepartureBoard(stationId.c_str(), nullptr);
-    }
+    // Extract optional direction filter
+    String direction = extractJsonStringField(ctx.originalMessage, "direction");
+    
+    Serial.printf("[TFL] Displaying departures for station: %s", stationId.c_str());
+    if (lineId.length() > 0) Serial.printf(", line: %s", lineId.c_str());
+    if (direction.length() > 0) Serial.printf(", direction: %s", direction.c_str());
+    Serial.println();
+    
+    return displayTflDepartureBoard(
+        stationId.c_str(),
+        lineId.length() > 0 ? lineId.c_str() : nullptr,
+        direction.length() > 0 ? direction.c_str() : nullptr
+    );
 }
 
 static bool handleSwimConditionsUnified(const CommandContext& ctx) {

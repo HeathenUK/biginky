@@ -142,9 +142,10 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName);
  *                  - "940GZZLUACY" - Archway
  *                  - "940GZZLUEFN" - East Finchley
  * @param lineId Optional line filter (e.g., "northern", "victoria"). Pass nullptr for all lines.
+ * @param direction Optional direction filter (e.g., "Northbound", "Southbound"). Pass nullptr for all directions.
  * @return true if successful, false otherwise
  */
-bool displayTflDepartureBoard(const char* stationId, const char* lineId = nullptr);
+bool displayTflDepartureBoard(const char* stationId, const char* lineId = nullptr, const char* direction = nullptr);
 
 /**
  * Display Open Water Swimming conditions dashboard for Fionphort, Isle of Mull

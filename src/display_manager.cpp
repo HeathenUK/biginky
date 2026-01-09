@@ -2132,20 +2132,21 @@ struct TflArrival {
  * @param stationName Output station name (from API response)
  * @param stationNameSize Size of stationName buffer
  * @param lineIdFilter Optional line ID filter (e.g., "northern"). Pass nullptr for all lines.
+ * @param directionFilter Optional direction filter (e.g., "Northbound"). Pass nullptr for all directions.
  * @return Number of arrivals fetched, or -1 on error
  */
 static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int maxArrivals,
                             char* stationName, size_t stationNameSize,
-                            const char* lineIdFilter = nullptr) {
+                            const char* lineIdFilter = nullptr,
+                            const char* directionFilter = nullptr) {
     if (stationId == nullptr || arrivals == nullptr || maxArrivals <= 0) {
         return -1;
     }
     
-    if (lineIdFilter) {
-        Serial.printf("TfL API: Fetching arrivals for station %s, line %s\n", stationId, lineIdFilter);
-    } else {
-        Serial.printf("TfL API: Fetching arrivals for station %s (all lines)\n", stationId);
-    }
+    Serial.printf("TfL API: Fetching arrivals for station %s", stationId);
+    if (lineIdFilter) Serial.printf(", line: %s", lineIdFilter);
+    if (directionFilter) Serial.printf(", direction: %s", directionFilter);
+    Serial.println();
     
     HTTPClient http;
     WiFiClientSecure client;
@@ -2236,6 +2237,13 @@ static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int max
             }
         }
         
+        // Filter by direction if specified (checks if platformName starts with direction)
+        if (directionFilter && platform && cJSON_IsString(platform)) {
+            if (strncasecmp(platform->valuestring, directionFilter, strlen(directionFilter)) != 0) {
+                continue;  // Skip this arrival - wrong direction
+            }
+        }
+        
         arrivals[count].timeToStation = (int)time->valuedouble;
         
         if (dest && cJSON_IsString(dest)) {
@@ -2292,14 +2300,14 @@ static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int max
  * 
  * @param stationId NaPTAN ID of the station (e.g., "940GZZLUBST" for Baker Street)
  * @param lineId Optional line ID filter (e.g., "northern", "victoria"). Pass nullptr for all lines.
+ * @param direction Optional direction filter (e.g., "Northbound", "Southbound"). Pass nullptr for all directions.
  * @return true on success, false on failure
  */
-bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
-    if (lineId) {
-        Serial.printf("=== TfL Departure Board: %s (line: %s) ===\n", stationId, lineId);
-    } else {
-        Serial.printf("=== TfL Departure Board: %s (all lines) ===\n", stationId);
-    }
+bool displayTflDepartureBoard(const char* stationId, const char* lineId, const char* direction) {
+    Serial.printf("=== TfL Departure Board: %s", stationId);
+    if (lineId) Serial.printf(" (line: %s)", lineId);
+    if (direction) Serial.printf(" (%s)", direction);
+    Serial.println(" ===");
     
     // Ensure display is initialized
     if (display.getBuffer() == nullptr) {
@@ -2344,7 +2352,7 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
     TflArrival arrivals[maxArrivals * 2];  // Extra space for sorting
     char stationName[64] = "";
     
-    int arrivalCount = fetchTflArrivals(stationId, arrivals, maxArrivals, stationName, sizeof(stationName), lineId);
+    int arrivalCount = fetchTflArrivals(stationId, arrivals, maxArrivals, stationName, sizeof(stationName), lineId, direction);
     
     if (arrivalCount < 0) {
         drawTextAmberDithered(&display, &ttf, display.width() / 2, display.height() / 2,

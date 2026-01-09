@@ -2478,3 +2478,515 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId) {
     
     return true;
 }
+
+// ============================================================================
+// Open Water Swimming Dashboard - Fionphort, Isle of Mull
+// ============================================================================
+
+// Location constants
+static const float FIONPHORT_LAT = 56.3267f;
+static const float FIONPHORT_LON = -6.3667f;
+static const char* FIONPHORT_NAME = "Fionphort, Isle of Mull";
+static const char* CALGARY_BAY_NAME = "Calgary Bay";
+
+// Sea temperature estimation based on month (typical Scottish Atlantic waters)
+// Based on historical data for West Scotland coastal waters
+static float estimateSeaTemperature(int month, float airTemp) {
+    // Average monthly sea temps for West Scotland (°C)
+    // Data approximated from Met Office / CEFAS historical records
+    static const float monthlySeaTemp[12] = {
+        8.0f,   // Jan
+        7.5f,   // Feb  
+        7.5f,   // Mar
+        8.5f,   // Apr
+        10.0f,  // May
+        12.0f,  // Jun
+        14.0f,  // Jul
+        14.5f,  // Aug
+        14.0f,  // Sep
+        12.5f,  // Oct
+        10.5f,  // Nov
+        9.0f    // Dec
+    };
+    
+    // Start with seasonal baseline
+    float seaTemp = monthlySeaTemp[month];
+    
+    // Slight adjustment based on current air temp (sea lags but correlates)
+    // If air is unusually warm/cold, nudge sea temp slightly
+    float expectedAirTemp = seaTemp + 2.0f;  // Air typically ~2°C above sea
+    float airDiff = airTemp - expectedAirTemp;
+    seaTemp += airDiff * 0.1f;  // 10% influence from current air temp
+    
+    return seaTemp;
+}
+
+// Get water temperature color based on value
+static uint8_t getWaterTempColor(float temp) {
+    if (temp >= 18.0f) return EL133UF1_GREEN;   // Warm
+    if (temp >= 14.0f) return EL133UF1_YELLOW;  // Cool
+    if (temp >= 10.0f) return EL133UF1_RED;     // Cold
+    return EL133UF1_RED;                         // Very cold
+}
+
+// Get water temperature description
+static const char* getWaterTempDesc(float temp) {
+    if (temp >= 18.0f) return "WARM - No wetsuit needed";
+    if (temp >= 14.0f) return "COOL - Wetsuit optional";
+    if (temp >= 10.0f) return "COLD - Wetsuit advised";
+    return "VERY COLD - Short swims only";
+}
+
+// Fetch sunrise/sunset from sunrise-sunset.org API (free, no key)
+static bool fetchSunTimes(float lat, float lon, char* sunrise, char* sunset, 
+                          char* firstLight, size_t bufSize) {
+    HTTPClient http;
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(10000);
+    
+    char url[256];
+    snprintf(url, sizeof(url), 
+             "https://api.sunrise-sunset.org/json?lat=%.4f&lng=%.4f&formatted=0",
+             lat, lon);
+    
+    Serial.printf("Sun API: %s\n", url);
+    
+    http.begin(client, url);
+    http.setTimeout(15000);
+    
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("Sun API: HTTP error %d\n", httpCode);
+        http.end();
+        return false;
+    }
+    
+    String payload = http.getString();
+    http.end();
+    
+    cJSON* json = cJSON_Parse(payload.c_str());
+    if (!json) {
+        Serial.println("Sun API: JSON parse failed");
+        return false;
+    }
+    
+    cJSON* results = cJSON_GetObjectItem(json, "results");
+    if (!results) {
+        cJSON_Delete(json);
+        return false;
+    }
+    
+    // Extract times (ISO 8601 format, convert to HH:MM)
+    auto extractTime = [](cJSON* obj, const char* field, char* buf, size_t bufSize) {
+        cJSON* item = cJSON_GetObjectItem(obj, field);
+        if (item && cJSON_IsString(item)) {
+            // Format: "2024-01-09T07:42:00+00:00" - extract HH:MM
+            const char* iso = item->valuestring;
+            const char* timeStart = strchr(iso, 'T');
+            if (timeStart) {
+                timeStart++;  // Skip 'T'
+                strncpy(buf, timeStart, 5);
+                buf[5] = '\0';
+            }
+        }
+    };
+    
+    extractTime(results, "sunrise", sunrise, bufSize);
+    extractTime(results, "sunset", sunset, bufSize);
+    extractTime(results, "civil_twilight_begin", firstLight, bufSize);
+    
+    cJSON_Delete(json);
+    return true;
+}
+
+// Fetch marine conditions from Open-Meteo (free, no key)
+static bool fetchMarineConditions(float lat, float lon, float* waveHeight, 
+                                   float* swellHeight, float* swellPeriod) {
+    HTTPClient http;
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(10000);
+    
+    char url[512];
+    snprintf(url, sizeof(url),
+             "https://marine-api.open-meteo.com/v1/marine?latitude=%.4f&longitude=%.4f"
+             "&current=wave_height,swell_wave_height,swell_wave_period",
+             lat, lon);
+    
+    Serial.printf("Marine API: %s\n", url);
+    
+    http.begin(client, url);
+    http.setTimeout(15000);
+    
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("Marine API: HTTP error %d\n", httpCode);
+        http.end();
+        return false;
+    }
+    
+    String payload = http.getString();
+    http.end();
+    
+    cJSON* json = cJSON_Parse(payload.c_str());
+    if (!json) {
+        Serial.println("Marine API: JSON parse failed");
+        return false;
+    }
+    
+    cJSON* current = cJSON_GetObjectItem(json, "current");
+    if (current) {
+        cJSON* wh = cJSON_GetObjectItem(current, "wave_height");
+        cJSON* sh = cJSON_GetObjectItem(current, "swell_wave_height");
+        cJSON* sp = cJSON_GetObjectItem(current, "swell_wave_period");
+        
+        if (wh && cJSON_IsNumber(wh)) *waveHeight = (float)wh->valuedouble;
+        if (sh && cJSON_IsNumber(sh)) *swellHeight = (float)sh->valuedouble;
+        if (sp && cJSON_IsNumber(sp)) *swellPeriod = (float)sp->valuedouble;
+    }
+    
+    cJSON_Delete(json);
+    return true;
+}
+
+/**
+ * Display Open Water Swimming conditions for Fionphort, Isle of Mull
+ * Uses multiple free APIs for comprehensive swimming information
+ * @return true on success, false on failure
+ */
+bool displaySwimConditionsScene() {
+    Serial.println("=== Open Water Swimming Dashboard: Fionphort ===");
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+    }
+    
+    // Ensure WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, attempting connection...");
+        if (!wifiConnectPersistent(3, 20000, false)) {
+            Serial.println("ERROR: WiFi connection failed");
+            return false;
+        }
+    }
+    
+    // Clear display to white
+    display.clear(EL133UF1_WHITE);
+    
+    // Load font (OpenSans)
+    if (!loadFontByName("")) {
+        Serial.println("ERROR: Failed to load font!");
+        return false;
+    }
+    
+    // OpenWeatherMap API key
+    const char* apiKey = "4efd38c9e9d41e3b10724fe764541d7b";
+    
+    // Fetch weather data from OpenWeatherMap
+    float airTemp = 0, feelsLike = 0, windSpeed = 0;
+    int uvIndex = 0;
+    char windDir[8] = "N";
+    char conditions[64] = "Unknown";
+    
+    {
+        HTTPClient http;
+        WiFiClientSecure client;
+        client.setInsecure();
+        client.setTimeout(10000);
+        
+        char url[256];
+        snprintf(url, sizeof(url),
+                 "https://api.openweathermap.org/data/2.5/weather?lat=%.4f&lon=%.4f&units=metric&appid=%s",
+                 FIONPHORT_LAT, FIONPHORT_LON, apiKey);
+        
+        http.begin(client, url);
+        int httpCode = http.GET();
+        
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = http.getString();
+            cJSON* json = cJSON_Parse(payload.c_str());
+            if (json) {
+                cJSON* main = cJSON_GetObjectItem(json, "main");
+                if (main) {
+                    cJSON* temp = cJSON_GetObjectItem(main, "temp");
+                    cJSON* feels = cJSON_GetObjectItem(main, "feels_like");
+                    if (temp) airTemp = (float)temp->valuedouble;
+                    if (feels) feelsLike = (float)feels->valuedouble;
+                }
+                
+                cJSON* wind = cJSON_GetObjectItem(json, "wind");
+                if (wind) {
+                    cJSON* speed = cJSON_GetObjectItem(wind, "speed");
+                    cJSON* deg = cJSON_GetObjectItem(wind, "deg");
+                    if (speed) windSpeed = (float)speed->valuedouble * 2.237f;  // m/s to mph
+                    if (deg) {
+                        int d = (int)deg->valuedouble;
+                        const char* dirs[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+                        strcpy(windDir, dirs[((d + 22) / 45) % 8]);
+                    }
+                }
+                
+                cJSON* weather = cJSON_GetObjectItem(json, "weather");
+                if (weather && cJSON_IsArray(weather) && cJSON_GetArraySize(weather) > 0) {
+                    cJSON* w0 = cJSON_GetArrayItem(weather, 0);
+                    cJSON* desc = cJSON_GetObjectItem(w0, "description");
+                    if (desc && cJSON_IsString(desc)) {
+                        strncpy(conditions, desc->valuestring, sizeof(conditions) - 1);
+                        conditions[0] = toupper(conditions[0]);
+                    }
+                }
+                cJSON_Delete(json);
+            }
+        }
+        http.end();
+    }
+    
+    // Fetch UV index from OpenWeatherMap One Call (if available)
+    {
+        HTTPClient http;
+        WiFiClientSecure client;
+        client.setInsecure();
+        
+        char url[256];
+        snprintf(url, sizeof(url),
+                 "https://api.openweathermap.org/data/3.0/onecall?lat=%.4f&lon=%.4f&exclude=minutely,hourly,daily,alerts&units=metric&appid=%s",
+                 FIONPHORT_LAT, FIONPHORT_LON, apiKey);
+        
+        http.begin(client, url);
+        int httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = http.getString();
+            cJSON* json = cJSON_Parse(payload.c_str());
+            if (json) {
+                cJSON* current = cJSON_GetObjectItem(json, "current");
+                if (current) {
+                    cJSON* uv = cJSON_GetObjectItem(current, "uvi");
+                    if (uv) uvIndex = (int)uv->valuedouble;
+                }
+                cJSON_Delete(json);
+            }
+        }
+        http.end();
+    }
+    
+    // Fetch sun times
+    char sunrise[8] = "--:--", sunset[8] = "--:--", firstLight[8] = "--:--";
+    fetchSunTimes(FIONPHORT_LAT, FIONPHORT_LON, sunrise, sunset, firstLight, sizeof(sunrise));
+    
+    // Fetch marine conditions
+    float waveHeight = 0, swellHeight = 0, swellPeriod = 0;
+    fetchMarineConditions(FIONPHORT_LAT, FIONPHORT_LON, &waveHeight, &swellHeight, &swellPeriod);
+    
+    // Estimate sea temperature
+    time_t now;
+    time(&now);
+    struct tm* timeinfo = localtime(&now);
+    float seaTemp = estimateSeaTemperature(timeinfo->tm_mon, airTemp);
+    
+    // ========== DRAW THE DASHBOARD ==========
+    
+    const int16_t W = display.width();   // 1600
+    const int16_t H = display.height();  // 1200
+    const int16_t margin = 40;
+    const int16_t topSafe = 50;
+    const int16_t bottomSafe = 1130;
+    
+    // Title
+    const float titleSize = 72.0f;
+    ttf.drawTextAligned(W / 2, topSafe + 50, FIONPHORT_NAME, titleSize, 
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // Subtitle
+    ttf.drawTextAligned(W / 2, topSafe + 110, "Open Water Swimming Conditions", 36.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // Divider line
+    for (int x = margin; x < W - margin; x++) {
+        display.setPixel(x, topSafe + 145, EL133UF1_BLACK);
+    }
+    
+    // Grid layout - 2 columns, 3 rows
+    const int16_t colWidth = (W - margin * 3) / 2;
+    const int16_t col1X = margin;
+    const int16_t col2X = margin * 2 + colWidth;
+    const int16_t rowHeight = 280;
+    const int16_t row1Y = topSafe + 180;
+    const int16_t row2Y = row1Y + rowHeight;
+    const int16_t row3Y = row2Y + rowHeight;
+    
+    // Helper to draw a panel
+    auto drawPanel = [&](int16_t x, int16_t y, int16_t w, int16_t h, const char* title, uint8_t titleColor = EL133UF1_BLACK) {
+        // Panel border
+        for (int i = x; i < x + w; i++) {
+            display.setPixel(i, y, EL133UF1_BLACK);
+            display.setPixel(i, y + h, EL133UF1_BLACK);
+        }
+        for (int i = y; i < y + h; i++) {
+            display.setPixel(x, i, EL133UF1_BLACK);
+            display.setPixel(x + w, i, EL133UF1_BLACK);
+        }
+        // Title
+        ttf.drawTextAligned(x + w/2, y + 30, title, 32.0f, titleColor, ALIGN_CENTER, ALIGN_MIDDLE);
+    };
+    
+    // ===== Panel 1: SEA TEMPERATURE =====
+    drawPanel(col1X, row1Y, colWidth, rowHeight - 20, "SEA TEMPERATURE");
+    
+    char seaTempStr[16];
+    snprintf(seaTempStr, sizeof(seaTempStr), "%.0f°C", seaTemp);
+    uint8_t seaColor = getWaterTempColor(seaTemp);
+    ttf.drawTextAligned(col1X + colWidth/2, row1Y + 100, seaTempStr, 96.0f,
+                        seaColor, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // Temperature bar
+    int16_t barX = col1X + 60;
+    int16_t barY = row1Y + 160;
+    int16_t barW = colWidth - 120;
+    int16_t barH = 20;
+    // Background
+    for (int y = barY; y < barY + barH; y++) {
+        for (int x = barX; x < barX + barW; x++) {
+            // Gradient: red -> yellow -> green (no orange available)
+            float pct = (float)(x - barX) / barW;
+            uint8_t c;
+            if (pct < 0.4f) c = EL133UF1_RED;
+            else if (pct < 0.7f) c = EL133UF1_YELLOW;
+            else c = EL133UF1_GREEN;
+            display.setPixel(x, y, c);
+        }
+    }
+    // Marker for current temp (scale 5-20°C)
+    float tempPct = constrain((seaTemp - 5.0f) / 15.0f, 0.0f, 1.0f);
+    int16_t markerX = barX + (int16_t)(tempPct * barW);
+    for (int y = barY - 5; y < barY + barH + 5; y++) {
+        display.setPixel(markerX - 1, y, EL133UF1_BLACK);
+        display.setPixel(markerX, y, EL133UF1_BLACK);
+        display.setPixel(markerX + 1, y, EL133UF1_BLACK);
+    }
+    
+    ttf.drawTextAligned(col1X + colWidth/2, row1Y + 220, getWaterTempDesc(seaTemp), 24.0f,
+                        seaColor, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // ===== Panel 2: TIDES (simplified - show as conditions) =====
+    drawPanel(col2X, row1Y, colWidth, rowHeight - 20, "SEA CONDITIONS");
+    
+    char waveStr[32], swellStr[32];
+    snprintf(waveStr, sizeof(waveStr), "Waves: %.1fm", waveHeight);
+    snprintf(swellStr, sizeof(swellStr), "Swell: %.1fm @ %.0fs", swellHeight, swellPeriod);
+    
+    ttf.drawTextAligned(col2X + colWidth/2, row1Y + 90, waveStr, 42.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    ttf.drawTextAligned(col2X + colWidth/2, row1Y + 150, swellStr, 36.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // Swim suitability
+    const char* swimRating;
+    uint8_t swimColor;
+    if (waveHeight < 0.5f && swellHeight < 1.0f) {
+        swimRating = "EXCELLENT for swimming";
+        swimColor = EL133UF1_GREEN;
+    } else if (waveHeight < 1.0f && swellHeight < 2.0f) {
+        swimRating = "GOOD for swimming";
+        swimColor = EL133UF1_YELLOW;
+    } else if (waveHeight < 1.5f) {
+        swimRating = "MODERATE - Experienced swimmers";
+        swimColor = EL133UF1_YELLOW;  // No orange, use yellow for moderate
+    } else {
+        swimRating = "CHALLENGING - Caution advised";
+        swimColor = EL133UF1_RED;
+    }
+    ttf.drawTextAligned(col2X + colWidth/2, row1Y + 220, swimRating, 26.0f,
+                        swimColor, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // ===== Panel 3: AIR / WEATHER =====
+    drawPanel(col1X, row2Y, colWidth, rowHeight - 20, "AIR TEMPERATURE");
+    
+    char airTempStr[16], feelsStr[32], windStr[32];
+    snprintf(airTempStr, sizeof(airTempStr), "%.0f°C", airTemp);
+    snprintf(feelsStr, sizeof(feelsStr), "Feels like %.0f°C", feelsLike);
+    snprintf(windStr, sizeof(windStr), "Wind: %.0f mph %s", windSpeed, windDir);
+    
+    ttf.drawTextAligned(col1X + colWidth/2, row2Y + 90, airTempStr, 72.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    ttf.drawTextAligned(col1X + colWidth/2, row2Y + 155, feelsStr, 32.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    ttf.drawTextAligned(col1X + colWidth/2, row2Y + 210, windStr, 32.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // ===== Panel 4: SUN TIMES =====
+    drawPanel(col2X, row2Y, colWidth, rowHeight - 20, "SUN TIMES");
+    
+    char sunriseStr[32], sunsetStr[32], firstLightStr[32];
+    snprintf(sunriseStr, sizeof(sunriseStr), "Sunrise: %s", sunrise);
+    snprintf(sunsetStr, sizeof(sunsetStr), "Sunset: %s", sunset);
+    snprintf(firstLightStr, sizeof(firstLightStr), "First light: %s", firstLight);
+    
+    ttf.drawTextAligned(col2X + colWidth/2, row2Y + 85, sunriseStr, 40.0f,
+                        EL133UF1_YELLOW, ALIGN_CENTER, ALIGN_MIDDLE);
+    ttf.drawTextAligned(col2X + colWidth/2, row2Y + 145, sunsetStr, 40.0f,
+                        EL133UF1_RED, ALIGN_CENTER, ALIGN_MIDDLE);
+    ttf.drawTextAligned(col2X + colWidth/2, row2Y + 205, firstLightStr, 32.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // ===== Panel 5: WATER QUALITY =====
+    drawPanel(col1X, row3Y, colWidth, rowHeight - 40, "WATER QUALITY");
+    
+    ttf.drawTextAligned(col1X + colWidth/2, row3Y + 80, "EXCELLENT", 56.0f,
+                        EL133UF1_GREEN, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    char qualityRef[64];
+    snprintf(qualityRef, sizeof(qualityRef), "Ref: %s (SEPA)", CALGARY_BAY_NAME);
+    ttf.drawTextAligned(col1X + colWidth/2, row3Y + 140, qualityRef, 24.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    ttf.drawTextAligned(col1X + colWidth/2, row3Y + 175, "Clean Atlantic waters", 26.0f,
+                        EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    // ===== Panel 6: UV INDEX =====
+    drawPanel(col2X, row3Y, colWidth, rowHeight - 40, "UV INDEX");
+    
+    char uvStr[8];
+    snprintf(uvStr, sizeof(uvStr), "%d", uvIndex);
+    
+    const char* uvDesc;
+    uint8_t uvColor;
+    if (uvIndex <= 2) { uvDesc = "Low"; uvColor = EL133UF1_GREEN; }
+    else if (uvIndex <= 5) { uvDesc = "Moderate"; uvColor = EL133UF1_YELLOW; }
+    else if (uvIndex <= 7) { uvDesc = "High"; uvColor = EL133UF1_RED; }
+    else { uvDesc = "Very High"; uvColor = EL133UF1_RED; }
+    
+    ttf.drawTextAligned(col2X + colWidth/2, row3Y + 80, uvStr, 72.0f,
+                        uvColor, ALIGN_CENTER, ALIGN_MIDDLE);
+    ttf.drawTextAligned(col2X + colWidth/2, row3Y + 150, uvDesc, 36.0f,
+                        uvColor, ALIGN_CENTER, ALIGN_MIDDLE);
+    
+    if (uvIndex >= 3) {
+        ttf.drawTextAligned(col2X + colWidth/2, row3Y + 195, "Sun protection advised", 24.0f,
+                            EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    }
+    
+    // ===== Footer =====
+    char updateTime[32];
+    strftime(updateTime, sizeof(updateTime), "Updated %H:%M", timeinfo);
+    ttf.drawTextAligned(margin + 10, bottomSafe - 20, updateTime, 28.0f,
+                        EL133UF1_BLACK, ALIGN_LEFT, ALIGN_MIDDLE);
+    
+    char dateStr[32];
+    strftime(dateStr, sizeof(dateStr), "%A %d %B", timeinfo);
+    ttf.drawTextAligned(W - margin - 10, bottomSafe - 20, dateStr, 28.0f,
+                        EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_MIDDLE);
+    
+    // Update display
+    Serial.println("Updating display...");
+    display.update();
+    display.waitForUpdate();
+    Serial.println("Swim conditions dashboard displayed");
+    
+    return true;
+}

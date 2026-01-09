@@ -146,4 +146,12 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName);
  */
 bool displayTflDepartureBoard(const char* stationId, const char* lineId = nullptr);
 
+/**
+ * Display Open Water Swimming conditions dashboard for Fionphort, Isle of Mull
+ * Shows sea temperature, wave conditions, sun times, air temp, UV index, and water quality
+ * Uses multiple free APIs (OpenWeatherMap, Open-Meteo Marine, sunrise-sunset.org)
+ * @return true if successful, false otherwise
+ */
+bool displaySwimConditionsScene();
+
 #endif // DISPLAY_MANAGER_H

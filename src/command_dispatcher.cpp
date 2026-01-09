@@ -422,6 +422,11 @@ static bool handleTflUnified(const CommandContext& ctx) {
     }
 }
 
+static bool handleSwimConditionsUnified(const CommandContext& ctx) {
+    Serial.println("[SWIM] Displaying swim conditions for Fionphort, Isle of Mull");
+    return displaySwimConditionsScene();
+}
+
 // Helper function to escape CSV field (wrap in quotes if contains comma or quote, escape quotes)
 static String escapeCSVField(const String& field) {
     // If field contains comma, quote, or newline, wrap in quotes and escape quotes
@@ -892,6 +897,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleTflUnified,
         .requiresAuth = true,
         .description = "Display TfL Underground departure board"
+    },
+    
+    // Open Water Swimming conditions (Fionphort, Isle of Mull)
+    {
+        .mqttName = nullptr,
+        .webUIName = "swim_conditions",
+        .httpEndpoint = "/api/scene/swim",
+        .handler = handleSwimConditionsUnified,
+        .requiresAuth = true,
+        .description = "Display swim conditions for Fionphort, Isle of Mull"
     },
     
     // Schedule set (update detailed schedule)

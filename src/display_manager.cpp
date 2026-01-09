@@ -27,6 +27,10 @@
 #include <SPI.h>
 #include <stdio.h>  // For fopen, fread, etc.
 
+// Underground fonts (compiled-in for TfL departure board scene)
+#include "fonts/ug_med.h"
+#include "fonts/ug_bold.h"
+
 // External references to globals and functions from main.cpp
 extern SPIClass displaySPI;
 extern EL133UF1 display;
@@ -104,11 +108,15 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
  * @param placeName Place name to geocode
  * @param lat Output latitude (set on success)
  * @param lon Output longitude (set on success)
- * @param formattedLocation Output formatted location string "Name, State, Country" (optional, can be nullptr)
- * @param formattedLocationSize Size of formattedLocation buffer (ignored if formattedLocation is nullptr)
+ * @param locationName Output location name only (optional, can be nullptr)
+ * @param locationNameSize Size of locationName buffer
+ * @param regionCountry Output "State, Country" or "Country" (optional, can be nullptr)
+ * @param regionCountrySize Size of regionCountry buffer
  * @return true if geocoding successful, false otherwise
  */
-static bool geocodePlaceName(const char* placeName, float* lat, float* lon, char* formattedLocation = nullptr, size_t formattedLocationSize = 0) {
+static bool geocodePlaceName(const char* placeName, float* lat, float* lon, 
+                             char* locationName = nullptr, size_t locationNameSize = 0,
+                             char* regionCountry = nullptr, size_t regionCountrySize = 0) {
     const char* apiKey = "4efd38c9e9d41e3b10724fe764541d7b";  // TODO: Replace with actual API key or load from NVS
     
     if (placeName == nullptr || placeName[0] == '\0' || lat == nullptr || lon == nullptr) {
@@ -196,16 +204,19 @@ static bool geocodePlaceName(const char* placeName, float* lat, float* lon, char
                             country = countryItem->valuestring;
                         }
                         
-                        // Format location string as "Name, State, Country" (if formattedLocation buffer provided)
-                        if (formattedLocation != nullptr && formattedLocationSize > 0) {
+                        // Store location name separately (if buffer provided)
+                        if (locationName != nullptr && locationNameSize > 0) {
+                            snprintf(locationName, locationNameSize, "%s", resolvedName);
+                        }
+                        
+                        // Store region/country separately (if buffer provided)
+                        if (regionCountry != nullptr && regionCountrySize > 0) {
                             if (state[0] != '\0' && country[0] != '\0') {
-                                snprintf(formattedLocation, formattedLocationSize, "%s, %s, %s", 
-                                        resolvedName, state, country);
+                                snprintf(regionCountry, regionCountrySize, "%s, %s", state, country);
                             } else if (country[0] != '\0') {
-                                snprintf(formattedLocation, formattedLocationSize, "%s, %s", 
-                                        resolvedName, country);
+                                snprintf(regionCountry, regionCountrySize, "%s", country);
                             } else {
-                                snprintf(formattedLocation, formattedLocationSize, "%s", resolvedName);
+                                regionCountry[0] = '\0';  // No region/country info
                             }
                         }
                         
@@ -1561,7 +1572,8 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     float actualLat = lat;
     float actualLon = lon;
     bool usedGeocoding = false;
-    char formattedLocation[256] = "";  // Store formatted location string from geocoding
+    char locationName[128] = "";     // Store location name from geocoding (e.g., "London")
+    char regionCountry[128] = "";    // Store region/country from geocoding (e.g., "England, GB")
     
     // Always use geocoding if place name is provided
     if (placeName != nullptr && placeName[0] != '\0') {
@@ -1587,12 +1599,12 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         }
         
         if (wifiConnected) {
-            if (geocodePlaceName(placeName, &actualLat, &actualLon, formattedLocation, sizeof(formattedLocation))) {
+            if (geocodePlaceName(placeName, &actualLat, &actualLon, 
+                                 locationName, sizeof(locationName),
+                                 regionCountry, sizeof(regionCountry))) {
                 usedGeocoding = true;
                 Serial.printf("Geocoding SUCCESS: %s -> (%.4f, %.4f)\n", placeName, actualLat, actualLon);
-                if (formattedLocation[0] != '\0') {
-                    Serial.printf("Formatted location: %s\n", formattedLocation);
-                }
+                Serial.printf("Location: %s, Region/Country: %s\n", locationName, regionCountry);
             } else {
                 Serial.printf("Geocoding FAILED for: %s\n", placeName);
                 // If geocoding fails and no valid lat/lon provided, return error
@@ -1614,8 +1626,10 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         }
     }
     
-    // Use formatted location if geocoding was used and succeeded, otherwise use original placeName
-    const char* displayName = (usedGeocoding && formattedLocation[0] != '\0') ? formattedLocation : placeName;
+    // Use geocoded location name if available, otherwise use original placeName
+    const char* displayName = (usedGeocoding && locationName[0] != '\0') ? locationName : placeName;
+    // Region/country only shown if geocoding succeeded and returned region info
+    const char* displayRegion = (usedGeocoding && regionCountry[0] != '\0') ? regionCountry : nullptr;
     
     Serial.printf("=== Weather for Place: %s (%.4f, %.4f)%s ===\n", 
                  displayName, actualLat, actualLon, usedGeocoding ? " [geocoded]" : "");
@@ -1762,27 +1776,72 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         }
     }
     
-    // Display location name at top (centered) - same size as time and temperature
-    // Use formatted location if geocoding was used, otherwise use original placeName
-    const float nameFontSize = 120.0f;  // Same as temp
-    int16_t nameY = 150;  // Keep place name at top where it is
+    // Layout calculation:
+    // - Display height: 1200px
+    // - Hourly section internal layout from hourlyY:
+    //   - timeY = hourlyY - 10 (time text)
+    //   - iconY = hourlyY + 5 (128px icon)
+    //   - tempY = iconY + 150 = hourlyY + 155 (temp text)
+    //   - descY = tempY + 70 = hourlyY + 225 (description start)
+    //   - With 3 lines @ 40pt (~50px height, 62px spacing):
+    //     Line 2 bottom = descY + 25 + 124 + 25 = hourlyY + 399
+    // - For 50px bottom margin: hourlyY + 399 <= 1150, so hourlyY <= 751
+    // - Set hourlyY = 710 for comfortable margin (~90px from bottom with 3 lines)
     
-    // Calculate equal spacing between all elements:
-    // name → time → temp → condition → hiLo → hourly block
-    // We want 5 equal gaps. Place name stays at 150, hourly block starts around 680.
-    // Available space: 680 - 150 = 530px for 5 gaps = 106px per gap
-    const int16_t equalGap = 106;
+    const int16_t hourlyStartY = 710;  // Hourly block top position
     
-    int16_t timeY = nameY + equalGap;        // 150 + 106 = 256
-    int16_t tempY = timeY + equalGap;        // 256 + 106 = 362
-    int16_t conditionY = tempY + equalGap;   // 362 + 106 = 468
-    int16_t hiLoY = conditionY + equalGap;   // 468 + 106 = 574
+    // Font sizes for other elements
+    const float timeFontSize = 140.0f;
+    const float tempFontSize = 170.0f;      // Most prominent
+    const float conditionFontSize = 90.0f;
+    const float hiLoFontSize = 80.0f;
+    const float regionFontSize = 70.0f;     // Smaller font for region/country line
     
-    ttf.drawTextAlignedOutlined(display.width() / 2, nameY, displayName, nameFontSize,
+    // Display location name at top (auto-scaled to fit on one line)
+    // Target font size 140, but scale down if text is too wide
+    const float targetNameFontSize = 140.0f;
+    const float minNameFontSize = 60.0f;    // Don't go smaller than this
+    const int16_t maxNameWidth = display.width() - 100;  // 50px margin each side
+    
+    float actualNameFontSize = targetNameFontSize;
+    int16_t nameWidth = ttf.getTextWidth(displayName, targetNameFontSize);
+    
+    if (nameWidth > maxNameWidth) {
+        // Scale down to fit
+        actualNameFontSize = targetNameFontSize * (float)maxNameWidth / (float)nameWidth;
+        if (actualNameFontSize < minNameFontSize) {
+            actualNameFontSize = minNameFontSize;  // Don't go too small
+        }
+        Serial.printf("Scaled location name font from %.0f to %.0f to fit width\n", 
+                     targetNameFontSize, actualNameFontSize);
+    }
+    
+    // Position location name - if we have region info, leave room for second line
+    int16_t nameY = displayRegion ? 80 : 100;
+    int16_t regionY = nameY + 70;  // Second line below location name
+    
+    // Calculate layout positions based on whether we have a region line
+    int16_t layoutStartY = displayRegion ? regionY + 30 : nameY;  // Start spacing from after location block
+    const int16_t equalGap = (hourlyStartY - layoutStartY) / 4;   // 4 gaps for time→temp→condition→hiLo
+    
+    int16_t timeY = layoutStartY + equalGap;
+    int16_t tempY = timeY + equalGap;
+    int16_t conditionY = tempY + equalGap;
+    int16_t hiLoY = conditionY + equalGap;
+    
+    // Draw location name (scaled to fit)
+    ttf.drawTextAlignedOutlined(display.width() / 2, nameY, displayName, actualNameFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 3);
     
-    // Display current time below location name - equal spacing
+    // Draw region/country on second line if available
+    if (displayRegion) {
+        ttf.drawTextAlignedOutlined(display.width() / 2, regionY, displayRegion, regionFontSize,
+                                    EL133UF1_WHITE, EL133UF1_BLACK,
+                                    ALIGN_CENTER, ALIGN_MIDDLE, 2);
+    }
+    
+    // Display current time below location name
     // Use location's timezone offset to convert UTC timestamp to local time
     if (currentTime > 0) {
         // Convert UTC timestamp to local time using timezone offset
@@ -1790,39 +1849,36 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
         struct tm* timeinfo = gmtime(&localTime);  // Use gmtime since we already applied offset
         char timeBuf[16];
         strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
-        const float timeFontSize = 120.0f;  // Same as name and temp
         ttf.drawTextAlignedOutlined(display.width() / 2, timeY, timeBuf, timeFontSize,
                                     EL133UF1_WHITE, EL133UF1_BLACK,
                                     ALIGN_CENTER, ALIGN_MIDDLE, 3);
     }
     
-    // Display temperature below time (centered, same font size as name and time)
-    const float tempFontSize = 120.0f;
+    // Display temperature below time (most prominent element)
     ttf.drawTextAlignedOutlined(display.width() / 2, tempY, tempStr, tempFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
-                                ALIGN_CENTER, ALIGN_MIDDLE, 3);
+                                ALIGN_CENTER, ALIGN_MIDDLE, 4);  // Thicker outline for larger text
     
-    // Display condition below current temperature - equal spacing
-    const float conditionFontSize = 96.0f;
+    // Display condition below current temperature
     ttf.drawTextAlignedOutlined(display.width() / 2, conditionY, conditionStr, conditionFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
     
-    // Display high/low temperatures below condition - equal spacing
-    const float hiLoFontSize = 96.0f;
+    // Display high/low temperatures below condition
     char hiLoStr[128];
     snprintf(hiLoStr, sizeof(hiLoStr), "High: %s / Low: %s", tempMaxStr, tempMinStr);
     ttf.drawTextAlignedOutlined(display.width() / 2, hiLoY, hiLoStr, hiLoFontSize,
                                 EL133UF1_WHITE, EL133UF1_BLACK,
                                 ALIGN_CENTER, ALIGN_MIDDLE, 2);
     
-    // Display hourly forecast strip (next 8 hours, skipping current hour) below high/low temperatures
-    // Equal spacing from hiLo (keep internal hourly spacing unchanged)
+    // Display hourly forecast strip (next 8 hours, skipping current hour)
+    // Treat as one block positioned to ensure 50px bottom margin
+    // Hourly section internal layout: time → icon (128px) → temp → description (multi-line)
     if (hourlyCount > 0) {
-        const float hourlyTimeFontSize = 58.0f;  // Increased from 24.0f
-        const float hourlyTempFontSize = 80.0f;  // Doubled from 40.0f
-        const float hourlyDescFontSize = 40.0f;  // Reduced from 52.0f
-        int16_t hourlyY = hiLoY + equalGap;  // Equal spacing from hiLo (106px gap)
+        const float hourlyTimeFontSize = 58.0f;
+        const float hourlyTempFontSize = 80.0f;
+        const float hourlyDescFontSize = 40.0f;
+        int16_t hourlyY = hourlyStartY;  // Use pre-calculated position ensuring bottom margin
         int16_t displayWidth = display.width();
         int16_t stripWidth = displayWidth - 40;  // 20px margin on each side
         int16_t itemWidth = stripWidth / hourlyCount;
@@ -1985,6 +2041,373 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     hal_psram_free(hourlyIcons);
     
     // No icon data to free (SVGs are loaded on-demand from LittleFS and freed immediately after rendering)
+    
+    return true;
+}
+
+// ============================================================================
+// TfL Underground Departure Board Scene
+// ============================================================================
+
+/**
+ * 4x4 Bayer dither matrix for amber color effect
+ * Values 0-15, threshold at ~12 gives ~75% yellow, ~25% red
+ */
+static const uint8_t bayerMatrix4x4[4][4] = {
+    {  0,  8,  2, 10 },
+    { 12,  4, 14,  6 },
+    {  3, 11,  1,  9 },
+    { 15,  7, 13,  5 }
+};
+
+/**
+ * Draw text with amber dithered color (yellow + red ordered dithering)
+ * Uses Bayer 4x4 matrix with ~75% yellow, ~25% red for authentic LED look
+ */
+static void drawTextAmberDithered(EL133UF1* disp, EL133UF1_TTF* font,
+                                   int16_t x, int16_t y, const char* text, float fontSize,
+                                   TextAlignH alignH, TextAlignV alignV) {
+    // Get text dimensions for alignment
+    int16_t textWidth = font->getTextWidth(text, fontSize);
+    int16_t textHeight = font->getTextHeight(fontSize);
+    
+    // Calculate draw position based on alignment
+    int16_t drawX = x;
+    int16_t drawY = y;
+    
+    if (alignH == ALIGN_CENTER) drawX = x - textWidth / 2;
+    else if (alignH == ALIGN_RIGHT) drawX = x - textWidth;
+    
+    if (alignV == ALIGN_MIDDLE) drawY = y - textHeight / 2;
+    else if (alignV == ALIGN_BOTTOM) drawY = y - textHeight;
+    
+    // First pass: draw text in yellow
+    font->drawText(drawX, drawY, text, fontSize, EL133UF1_YELLOW, 0xFF);
+    
+    // Second pass: apply red dithering to create amber effect
+    // We iterate over the text bounding box and flip ~25% of yellow pixels to red
+    const int threshold = 12;  // ~75% yellow (threshold 12/16 = 75%)
+    
+    for (int16_t py = 0; py < textHeight + 4; py++) {
+        for (int16_t px = 0; px < textWidth + 4; px++) {
+            int16_t pixX = drawX + px - 2;
+            int16_t pixY = drawY + py - 2;
+            
+            if (pixX < 0 || pixX >= disp->width() || pixY < 0 || pixY >= disp->height()) continue;
+            
+            // Check if this pixel is yellow (part of the text)
+            if (disp->getPixel(pixX, pixY) == EL133UF1_YELLOW) {
+                // Apply Bayer dithering
+                uint8_t bayerValue = bayerMatrix4x4[pixY & 3][pixX & 3];
+                if (bayerValue >= threshold) {
+                    // This pixel becomes red (~25% of pixels)
+                    disp->setPixel(pixX, pixY, EL133UF1_RED);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * TfL arrival data structure
+ */
+struct TflArrival {
+    char destination[64];
+    char platform[32];
+    int timeToStation;  // seconds
+    char lineName[32];
+};
+
+/**
+ * Fetch arrivals from TfL API for a given station
+ * @param stationId NaPTAN ID of the station (e.g., "940GZZLUBST" for Baker Street)
+ * @param arrivals Output array of arrivals
+ * @param maxArrivals Maximum number of arrivals to fetch
+ * @param stationName Output station name (from API response)
+ * @param stationNameSize Size of stationName buffer
+ * @return Number of arrivals fetched, or -1 on error
+ */
+static int fetchTflArrivals(const char* stationId, TflArrival* arrivals, int maxArrivals,
+                            char* stationName, size_t stationNameSize) {
+    if (stationId == nullptr || arrivals == nullptr || maxArrivals <= 0) {
+        return -1;
+    }
+    
+    Serial.printf("TfL API: Fetching arrivals for station %s\n", stationId);
+    
+    HTTPClient http;
+    WiFiClient client;
+    client.setTimeout(10000);
+    
+    // Build TfL API URL (no API key required for basic access)
+    char url[256];
+    snprintf(url, sizeof(url), "http://api.tfl.gov.uk/StopPoint/%s/Arrivals", stationId);
+    
+    Serial.printf("TfL API: URL: %s\n", url);
+    
+    vTaskDelay(1);  // Yield before HTTP
+    http.begin(client, url);
+    http.setTimeout(15000);
+    
+    int httpCode = http.GET();
+    vTaskDelay(1);  // Yield after HTTP
+    
+    Serial.printf("TfL API: HTTP response code %d\n", httpCode);
+    
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("TfL API: HTTP error %d\n", httpCode);
+        http.end();
+        return -1;
+    }
+    
+    String payload = http.getString();
+    http.end();
+    
+    Serial.printf("TfL API: Received %d bytes\n", payload.length());
+    vTaskDelay(1);
+    
+    // Parse JSON array of arrivals
+    cJSON* json = cJSON_Parse(payload.c_str());
+    if (!json || !cJSON_IsArray(json)) {
+        Serial.println("TfL API: Failed to parse JSON");
+        if (json) cJSON_Delete(json);
+        return -1;
+    }
+    
+    int arraySize = cJSON_GetArraySize(json);
+    Serial.printf("TfL API: Found %d arrivals\n", arraySize);
+    
+    // First, get station name from first arrival
+    if (arraySize > 0 && stationName && stationNameSize > 0) {
+        cJSON* first = cJSON_GetArrayItem(json, 0);
+        cJSON* nameItem = cJSON_GetObjectItem(first, "stationName");
+        if (nameItem && cJSON_IsString(nameItem)) {
+            // Remove " Underground Station" suffix if present
+            const char* name = nameItem->valuestring;
+            const char* suffix = strstr(name, " Underground Station");
+            if (suffix) {
+                size_t len = suffix - name;
+                if (len < stationNameSize) {
+                    strncpy(stationName, name, len);
+                    stationName[len] = '\0';
+                } else {
+                    strncpy(stationName, name, stationNameSize - 1);
+                    stationName[stationNameSize - 1] = '\0';
+                }
+            } else {
+                strncpy(stationName, name, stationNameSize - 1);
+                stationName[stationNameSize - 1] = '\0';
+            }
+        }
+    }
+    
+    // Sort arrivals by timeToStation (bubble sort is fine for small arrays)
+    // First, collect all arrivals into a temporary array
+    int count = 0;
+    for (int i = 0; i < arraySize && count < maxArrivals * 2; i++) {
+        cJSON* item = cJSON_GetArrayItem(json, i);
+        if (!item) continue;
+        
+        cJSON* dest = cJSON_GetObjectItem(item, "destinationName");
+        cJSON* platform = cJSON_GetObjectItem(item, "platformName");
+        cJSON* time = cJSON_GetObjectItem(item, "timeToStation");
+        cJSON* line = cJSON_GetObjectItem(item, "lineName");
+        
+        if (!time || !cJSON_IsNumber(time)) continue;
+        
+        arrivals[count].timeToStation = (int)time->valuedouble;
+        
+        if (dest && cJSON_IsString(dest)) {
+            strncpy(arrivals[count].destination, dest->valuestring, sizeof(arrivals[count].destination) - 1);
+            arrivals[count].destination[sizeof(arrivals[count].destination) - 1] = '\0';
+        } else {
+            strcpy(arrivals[count].destination, "Unknown");
+        }
+        
+        if (platform && cJSON_IsString(platform)) {
+            strncpy(arrivals[count].platform, platform->valuestring, sizeof(arrivals[count].platform) - 1);
+            arrivals[count].platform[sizeof(arrivals[count].platform) - 1] = '\0';
+        } else {
+            strcpy(arrivals[count].platform, "");
+        }
+        
+        if (line && cJSON_IsString(line)) {
+            strncpy(arrivals[count].lineName, line->valuestring, sizeof(arrivals[count].lineName) - 1);
+            arrivals[count].lineName[sizeof(arrivals[count].lineName) - 1] = '\0';
+        } else {
+            strcpy(arrivals[count].lineName, "");
+        }
+        
+        count++;
+    }
+    
+    // Sort by timeToStation
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = 0; j < count - i - 1; j++) {
+            if (arrivals[j].timeToStation > arrivals[j + 1].timeToStation) {
+                TflArrival temp = arrivals[j];
+                arrivals[j] = arrivals[j + 1];
+                arrivals[j + 1] = temp;
+            }
+        }
+    }
+    
+    cJSON_Delete(json);
+    
+    // Return only up to maxArrivals
+    return (count > maxArrivals) ? maxArrivals : count;
+}
+
+/**
+ * Display TfL Underground departure board scene
+ * Shows live arrivals for a specified station in authentic amber LED style
+ * 
+ * @param stationId NaPTAN ID of the station (e.g., "940GZZLUBST" for Baker Street)
+ * @return true on success, false on failure
+ */
+bool displayTflDepartureBoard(const char* stationId) {
+    Serial.printf("=== TfL Departure Board: %s ===\n", stationId);
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+        Serial.println("Display initialized");
+    }
+    
+    // Load Underground Medium font for main text
+    if (!ttf.loadFont(ug_med, sizeof(ug_med))) {
+        Serial.println("ERROR: Failed to load Underground Medium font!");
+        return false;
+    }
+    Serial.println("Loaded Underground Medium font");
+    
+    // Clear display to black (authentic departure board background)
+    display.clear(EL133UF1_BLACK);
+    
+    // Ensure WiFi is connected
+    bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+    if (!wifiConnected) {
+        Serial.println("TfL: WiFi not connected, attempting connection...");
+        if (wifiConnectPersistent(3, 20000, false)) {
+            wifiConnected = true;
+        }
+    }
+    
+    if (!wifiConnected) {
+        // Show error message
+        drawTextAmberDithered(&display, &ttf, display.width() / 2, display.height() / 2,
+                             "NO NETWORK CONNECTION", 72.0f, ALIGN_CENTER, ALIGN_MIDDLE);
+        display.update();
+        return false;
+    }
+    
+    // Fetch arrivals from TfL API
+    const int maxArrivals = 4;
+    TflArrival arrivals[maxArrivals * 2];  // Extra space for sorting
+    char stationName[64] = "";
+    
+    int arrivalCount = fetchTflArrivals(stationId, arrivals, maxArrivals, stationName, sizeof(stationName));
+    
+    if (arrivalCount < 0) {
+        drawTextAmberDithered(&display, &ttf, display.width() / 2, display.height() / 2,
+                             "SERVICE INFORMATION UNAVAILABLE", 60.0f, ALIGN_CENTER, ALIGN_MIDDLE);
+        display.update();
+        return false;
+    }
+    
+    // Layout constants
+    const int16_t leftMargin = 60;
+    const int16_t rightMargin = display.width() - 60;
+    const int16_t stationY = 100;
+    const int16_t firstRowY = 280;
+    const int16_t rowHeight = 180;
+    const int16_t timeDisplayY = display.height() - 80;
+    
+    // Draw station name at top (centered)
+    const float stationFontSize = 90.0f;
+    if (stationName[0] != '\0') {
+        // Convert to uppercase for authentic look
+        char upperName[64];
+        for (size_t i = 0; i < sizeof(upperName) - 1 && stationName[i]; i++) {
+            upperName[i] = toupper(stationName[i]);
+            upperName[i + 1] = '\0';
+        }
+        drawTextAmberDithered(&display, &ttf, display.width() / 2, stationY,
+                             upperName, stationFontSize, ALIGN_CENTER, ALIGN_MIDDLE);
+    }
+    
+    // Draw arrivals
+    const float destFontSize = 72.0f;
+    const float timeFontSize = 72.0f;
+    
+    if (arrivalCount == 0) {
+        drawTextAmberDithered(&display, &ttf, display.width() / 2, firstRowY + rowHeight,
+                             "NO TRAINS", destFontSize, ALIGN_CENTER, ALIGN_MIDDLE);
+    } else {
+        for (int i = 0; i < arrivalCount && i < maxArrivals; i++) {
+            int16_t rowY = firstRowY + (i * rowHeight);
+            
+            // Row number (1, 2, 3, 4)
+            char rowNum[4];
+            snprintf(rowNum, sizeof(rowNum), "%d", i + 1);
+            drawTextAmberDithered(&display, &ttf, leftMargin, rowY,
+                                 rowNum, destFontSize, ALIGN_LEFT, ALIGN_MIDDLE);
+            
+            // Destination (truncate if too long)
+            char dest[32];
+            strncpy(dest, arrivals[i].destination, sizeof(dest) - 1);
+            dest[sizeof(dest) - 1] = '\0';
+            // Truncate long destinations
+            if (strlen(dest) > 20) {
+                dest[17] = '.';
+                dest[18] = '.';
+                dest[19] = '.';
+                dest[20] = '\0';
+            }
+            drawTextAmberDithered(&display, &ttf, leftMargin + 80, rowY,
+                                 dest, destFontSize, ALIGN_LEFT, ALIGN_MIDDLE);
+            
+            // Time (right-aligned) - show "Due" if < 1 min, otherwise "X min"
+            char timeStr[16];
+            int mins = arrivals[i].timeToStation / 60;
+            if (mins < 1) {
+                strcpy(timeStr, "Due");
+            } else {
+                snprintf(timeStr, sizeof(timeStr), "%d min", mins);
+            }
+            drawTextAmberDithered(&display, &ttf, rightMargin, rowY,
+                                 timeStr, timeFontSize, ALIGN_RIGHT, ALIGN_MIDDLE);
+        }
+    }
+    
+    // Load Underground Bold font for the time display
+    if (!ttf.loadFont(ug_bold, sizeof(ug_bold))) {
+        Serial.println("WARNING: Failed to load Underground Bold font, using Medium");
+    } else {
+        Serial.println("Loaded Underground Bold font for time");
+    }
+    
+    // Draw current time at bottom right
+    time_t now;
+    time(&now);
+    struct tm* timeinfo = localtime(&now);
+    char timeBuf[8];
+    strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
+    
+    const float clockFontSize = 100.0f;
+    drawTextAmberDithered(&display, &ttf, rightMargin, timeDisplayY,
+                         timeBuf, clockFontSize, ALIGN_RIGHT, ALIGN_MIDDLE);
+    
+    // Update display
+    Serial.println("Updating display...");
+    display.update();
+    display.waitForUpdate();
+    Serial.println("TfL departure board displayed");
     
     return true;
 }

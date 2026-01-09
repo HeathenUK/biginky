@@ -46,7 +46,7 @@
 #define MQTT_TOPIC_STATUS "devices/web-ui/status"
 #define MQTT_TOPIC_THUMB "devices/web-ui/thumb"
 #define MQTT_TOPIC_MEDIA "devices/web-ui/media"
-#define MQTT_MAX_MESSAGE_SIZE (1024 * 1024)  // 1MB maximum message size
+#define MQTT_MAX_MESSAGE_SIZE (2 * 1024 * 1024)  // 2MB maximum message size (for full-size thumbnails)
 
 // MQTT runtime state
 static esp_mqtt_client_handle_t mqttClient = nullptr;
@@ -251,10 +251,11 @@ bool mqttConnect() {
     mqtt_cfg.task.stack_size = 16384;  // 16KB stack for large messages
     mqtt_cfg.task.priority = 5;
     
-    // Configure buffer sizes for large media mappings payloads (up to ~150KB encrypted)
-    mqtt_cfg.buffer.size = 256 * 1024;      // 256KB receive buffer
-    mqtt_cfg.buffer.out_size = 256 * 1024;  // 256KB send buffer
-    mqtt_cfg.outbox.limit = 512 * 1024;     // 512KB outbox limit
+    // Configure buffer sizes for large payloads (full-size thumbnails, media mappings)
+    // Full 1600x1200 thumbnail with HMAC-only wrapping is ~830KB
+    mqtt_cfg.buffer.size = 256 * 1024;       // 256KB receive buffer
+    mqtt_cfg.buffer.out_size = 1024 * 1024;  // 1MB send buffer for full-size thumbnails
+    mqtt_cfg.outbox.limit = 2 * 1024 * 1024; // 2MB outbox limit
     
     // Create and start MQTT client
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
@@ -1246,21 +1247,17 @@ static void publishMQTTThumbnailInternalImpl() {
     }
     
     // Thumbnail is generated from framebuffer and published directly to MQTT (no SD card fallback)
+    // Full resolution required for Canvas Draw functionality in web UI
     
-    const int srcWidth = 1600;
-    const int srcHeight = 1200;
-    // Use native size for preview thumbnail (no scaling)
-    const int thumbWidth = srcWidth;
-    const int thumbHeight = srcHeight;
+    const int thumbWidth = 1600;
+    const int thumbHeight = 1200;
     
     bool isARGBMode = false;
 #if EL133UF1_USE_ARGB8888
     isARGBMode = display.isARGBMode();
 #endif
     
-    // Allocate buffer for RGB values (3 bytes per pixel) - we'll convert palette indices to RGB
-    // Optimization #1: Allocate buffer for palette indices directly (1 byte per pixel instead of 3)
-    // This reduces memory usage by 3x and eliminates redundant RGB conversion
+    // Allocate buffer for palette indices (1 byte per pixel)
     size_t thumbSize = thumbWidth * thumbHeight;
     uint8_t* thumbBuffer = (uint8_t*)hal_psram_malloc(thumbSize);
     if (thumbBuffer == nullptr) {
@@ -1268,7 +1265,7 @@ static void publishMQTTThumbnailInternalImpl() {
         return;
     }
     
-    Serial.printf("[Core 1] Generating native-size thumbnail: %dx%d (mode: %s, palette-based)\n", 
+    Serial.printf("[Core 1] Generating full-size thumbnail: %dx%d (mode: %s, palette-based)\n", 
                   thumbWidth, thumbHeight, isARGBMode ? "ARGB8888" : "L8");
     
     uint32_t convertStart = millis();
@@ -1287,19 +1284,18 @@ static void publishMQTTThumbnailInternalImpl() {
         1   // 7 → 1 (WHITE, invalid e-ink color)
     };
     
-    // Optimization #3: Process in cache-friendly row-by-row order (already optimal)
-    // Extract e-ink color indices and convert directly to palette indices (no RGB conversion)
-    // Use chunked processing to automatically yield to watchdog
+    // Process in cache-friendly row-by-row order with chunked processing for watchdog
+    // Extract e-ink color indices and convert directly to palette indices
     if (isARGBMode) {
 #if EL133UF1_USE_ARGB8888
         uint32_t* argbBuffer = display.getBufferARGB();
         if (argbBuffer != nullptr) {
             processImageChunked(thumbWidth, thumbHeight, [&](int x, int y) {
-                int srcIdx = y * srcWidth + x;
-                uint32_t argb = argbBuffer[srcIdx];
+                int idx = y * thumbWidth + x;
+                uint32_t argb = argbBuffer[idx];
                 uint8_t einkColor = EL133UF1::argbToColor(argb);
                 // Direct LUT lookup - no branching, no RGB conversion
-                thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor & 0x07];
+                thumbBuffer[idx] = einkToPaletteLUT[einkColor & 0x07];
             });
         }
 #endif
@@ -1307,10 +1303,10 @@ static void publishMQTTThumbnailInternalImpl() {
         uint8_t* framebuffer = display.getBuffer();
         if (framebuffer != nullptr) {
             processImageChunked(thumbWidth, thumbHeight, [&](int x, int y) {
-                int srcIdx = y * srcWidth + x;
-                uint8_t einkColor = framebuffer[srcIdx] & 0x07;
+                int idx = y * thumbWidth + x;
+                uint8_t einkColor = framebuffer[idx] & 0x07;
                 // Direct LUT lookup - no branching, no RGB conversion
-                thumbBuffer[y * thumbWidth + x] = einkToPaletteLUT[einkColor];
+                thumbBuffer[idx] = einkToPaletteLUT[einkColor];
             });
         }
     }
@@ -1329,20 +1325,22 @@ static void publishMQTTThumbnailInternalImpl() {
     LodePNGState state;
     lodepng_state_init(&state);
     
-    // Configure maximum compression for smaller file sizes
-    state.encoder.zlibsettings.btype = 2;           // Dynamic Huffman (best compression)
-    state.encoder.zlibsettings.windowsize = 32768;  // Maximum window size (32KB)
+    // Configure light/fast compression (reasonable size, fast encoding)
+    state.encoder.zlibsettings.btype = 1;           // Fixed Huffman (fast, decent compression)
+    state.encoder.zlibsettings.windowsize = 1024;   // Small window = fast
     state.encoder.zlibsettings.minmatch = 3;        // Minimum match length
-    state.encoder.zlibsettings.nicematch = 258;     // Maximum match length to search for
-    state.encoder.zlibsettings.lazymatching = 1;    // Try next byte for better matches
-    state.encoder.filter_strategy = LFS_ZERO;       // No filtering for palette images (fastest, same compression)
-    state.encoder.filter_palette_zero = 1;          // Don't filter palette data
+    state.encoder.zlibsettings.nicematch = 16;      // Very short match search
+    state.encoder.zlibsettings.lazymatching = 0;    // Disabled for speed
+    state.encoder.filter_strategy = LFS_ZERO;       // No filtering
+    state.encoder.filter_palette_zero = 1;          // No filtering on palette data either
     
-    // Configure color mode for palette - input is already palette indices!
+    // Configure color mode for palette - input is 8-bit indices, output is 4-bit
+    // We only have 6 colors (0-5), so 4-bit (supports 0-15) is sufficient
+    // This halves the uncompressed pixel data size before deflate compression
     state.info_png.color.colortype = LCT_PALETTE;
-    state.info_png.color.bitdepth = 8; // 8-bit palette indices
-    state.info_raw.colortype = LCT_PALETTE; // Input is palette indices (1 byte per pixel) - optimization #1
-    state.info_raw.bitdepth = 8;
+    state.info_png.color.bitdepth = 4;  // 4-bit palette indices in output PNG (6 colors fit in 4 bits)
+    state.info_raw.colortype = LCT_PALETTE;
+    state.info_raw.bitdepth = 8;  // Input is still 8-bit (1 byte per pixel) - lodepng will pack to 4-bit
     
     // Disable auto-convert to ensure palette mode is used
     state.encoder.auto_convert = 0;
@@ -1393,7 +1391,7 @@ static void publishMQTTThumbnailInternalImpl() {
     }
     
     uint32_t encodeTime = millis() - encodeStart;
-    Serial.printf("[Core 1] PNG palette encoded successfully: %zu bytes (native %dx%d) in %lu ms\n", 
+    Serial.printf("[Core 1] PNG palette encoded successfully: %zu bytes (%dx%d) in %lu ms\n", 
                   pngSize, thumbWidth, thumbHeight, encodeTime);
     
     // Use the encoded PNG data directly (no need for processPngEncodeWork)
@@ -1459,39 +1457,70 @@ static void publishMQTTThumbnailInternalImpl() {
     }
     
     free(base64Buffer);
-    String plaintextJson = String(jsonBuffer);
-    String encryptedJson = encryptAndFormatMessage(plaintextJson);
+    
+    // =========================================================================
+    // PREVIEW THUMBNAIL: Use HMAC-only (no encryption) for reliability
+    // =========================================================================
+    // The preview thumbnail shows what's already visible on the physical display,
+    // so it has no confidentiality value. Encryption adds complexity and potential
+    // failure points for large payloads. HMAC ensures integrity and authenticity.
+    // =========================================================================
+    
+    // Validate JSON size before formatting - fail fast if too large
+    // Maximum reasonable size: ~2MB for the final MQTT message
+    const size_t MAX_THUMBNAIL_MESSAGE_SIZE = 2 * 1024 * 1024;
+    size_t estimatedFinalSize = written + 150;  // JSON overhead + HMAC + base64 expansion
+    if (estimatedFinalSize > MAX_THUMBNAIL_MESSAGE_SIZE) {
+        Serial.printf("[Core 1] ERROR: Thumbnail too large (%zu bytes estimated, max %zu)\n", 
+                     estimatedFinalSize, MAX_THUMBNAIL_MESSAGE_SIZE);
+        free(jsonBuffer);
+        return;
+    }
+    
+    // Format with HMAC only (no encryption) - simpler, more reliable for large payloads
+    String hmacOnlyMessage = formatMessageHmacOnly(jsonBuffer, written);
     free(jsonBuffer);
+    jsonBuffer = nullptr;
     
-    if (encryptedJson.length() == 0) {
-        Serial.println("ERROR: Failed to encrypt thumbnail - publishing without encryption");
+    if (hmacOnlyMessage.length() == 0) {
+        Serial.println("[Core 1] ERROR: Failed to format HMAC-only thumbnail message");
         return;
     }
     
-    size_t encryptedLen = encryptedJson.length();
-    jsonBuffer = (char*)malloc(encryptedLen + 1);
-    if (!jsonBuffer) {
-        Serial.println("ERROR: Failed to allocate memory for encrypted JSON");
+    // Final size validation
+    size_t finalMessageLen = hmacOnlyMessage.length();
+    if (finalMessageLen > MAX_THUMBNAIL_MESSAGE_SIZE) {
+        Serial.printf("[Core 1] ERROR: Final thumbnail message too large (%zu bytes, max %zu)\n", 
+                     finalMessageLen, MAX_THUMBNAIL_MESSAGE_SIZE);
         return;
     }
     
-    strncpy(jsonBuffer, encryptedJson.c_str(), encryptedLen);
-    jsonBuffer[encryptedLen] = '\0';
-    written = encryptedLen;
+    // Allocate buffer for MQTT publish (avoid String::c_str() issues with large strings)
+    char* publishBuffer = (char*)malloc(finalMessageLen + 1);
+    if (!publishBuffer) {
+        Serial.println("[Core 1] ERROR: Failed to allocate memory for MQTT publish buffer");
+        return;
+    }
+    memcpy(publishBuffer, hmacOnlyMessage.c_str(), finalMessageLen);
+    publishBuffer[finalMessageLen] = '\0';
     
-    bool isEncrypted = isEncryptionEnabled();
-    Serial.printf("[Core 1] Publishing %s thumbnail JSON (%d bytes) to %s...\n", 
-                  isEncrypted ? "encrypted" : "unencrypted", written, mqttTopicThumb);
-    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, jsonBuffer, written, 1, 1);
+    // Clear the String to free memory before publishing
+    hmacOnlyMessage = "";
+    
+    Serial.printf("[Core 1] Publishing HMAC-only thumbnail (%zu bytes) to %s...\n", 
+                  finalMessageLen, mqttTopicThumb);
+    
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicThumb, publishBuffer, finalMessageLen, 1, 1);
+    
     if (msg_id > 0) {
-        bool isEncrypted = isEncryptionEnabled();
-        Serial.printf("\n[Core 1] Published %s thumbnail to %s (msg_id: %d)\n", 
-                      isEncrypted ? "encrypted" : "unencrypted", mqttTopicThumb, msg_id);
+        Serial.printf("[Core 1] SUCCESS: Published preview thumbnail to %s (msg_id: %d, size: %zu bytes)\n", 
+                      mqttTopicThumb, msg_id, finalMessageLen);
     } else {
-        Serial.printf("[Core 1] Failed to publish thumbnail to %s (msg_id: %d)\n", mqttTopicThumb, msg_id);
+        Serial.printf("[Core 1] ERROR: Failed to publish thumbnail to %s (msg_id: %d)\n", 
+                      mqttTopicThumb, msg_id);
     }
     
-    free(jsonBuffer);
+    free(publishBuffer);
 }
 
 // Public function - queues work to Core 1 worker task

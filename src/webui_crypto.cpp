@@ -799,4 +799,89 @@ String base64Decode(const String& encoded) {
     return result;
 }
 
+String formatMessageHmacOnly(const char* plaintextJson, size_t plaintextLen) {
+    if (!isWebUIPasswordSet()) {
+        Serial.println("ERROR: Cannot format HMAC-only message - password not set");
+        return "";
+    }
+    
+    if (!plaintextJson || plaintextLen == 0) {
+        Serial.println("ERROR: Empty plaintext for HMAC-only message");
+        return "";
+    }
+    
+    // Step 1: Base64 encode the plaintext JSON
+    size_t base64Len = ((plaintextLen + 2) / 3) * 4 + 1;
+    char* base64Payload = (char*)malloc(base64Len);
+    if (!base64Payload) {
+        Serial.println("ERROR: Failed to allocate memory for base64 payload in formatMessageHmacOnly");
+        return "";
+    }
+    
+    size_t base64ActualLen = 0;
+    if (mbedtls_base64_encode((unsigned char*)base64Payload, base64Len, &base64ActualLen,
+                              (const unsigned char*)plaintextJson, plaintextLen) != 0) {
+        Serial.println("ERROR: Failed to base64 encode payload in formatMessageHmacOnly");
+        free(base64Payload);
+        return "";
+    }
+    base64Payload[base64ActualLen] = '\0';
+    
+    // Step 2: Build message for HMAC computation (without hmac field)
+    // Format: {"encrypted":false,"payload":"<base64>"}
+    // Calculate size: ~35 bytes overhead + base64 payload length
+    size_t messageForHmacLen = 40 + base64ActualLen;
+    char* messageForHmac = (char*)malloc(messageForHmacLen);
+    if (!messageForHmac) {
+        Serial.println("ERROR: Failed to allocate memory for HMAC message");
+        free(base64Payload);
+        return "";
+    }
+    
+    int written = snprintf(messageForHmac, messageForHmacLen,
+                          "{\"encrypted\":false,\"payload\":\"%s\"}", base64Payload);
+    if (written < 0 || written >= (int)messageForHmacLen) {
+        Serial.printf("ERROR: HMAC message buffer too small (needed %d, had %zu)\n", written, messageForHmacLen);
+        free(base64Payload);
+        free(messageForHmac);
+        return "";
+    }
+    
+    // Step 3: Compute HMAC
+    String hmac = computeHMAC(String(messageForHmac));
+    free(messageForHmac);
+    
+    if (hmac.length() == 0) {
+        Serial.println("ERROR: Failed to compute HMAC in formatMessageHmacOnly");
+        free(base64Payload);
+        return "";
+    }
+    
+    // Step 4: Build final JSON with HMAC
+    // Format: {"encrypted":false,"payload":"<base64>","hmac":"<64-char-hex>"}
+    // HMAC is always 64 characters (32 bytes in hex)
+    size_t resultLen = 60 + base64ActualLen + 64;  // overhead + payload + hmac
+    char* resultBuffer = (char*)malloc(resultLen);
+    if (!resultBuffer) {
+        Serial.println("ERROR: Failed to allocate memory for result in formatMessageHmacOnly");
+        free(base64Payload);
+        return "";
+    }
+    
+    written = snprintf(resultBuffer, resultLen,
+                      "{\"encrypted\":false,\"payload\":\"%s\",\"hmac\":\"%s\"}",
+                      base64Payload, hmac.c_str());
+    free(base64Payload);
+    
+    if (written < 0 || written >= (int)resultLen) {
+        Serial.printf("ERROR: Result buffer too small in formatMessageHmacOnly (needed %d, had %zu)\n", written, resultLen);
+        free(resultBuffer);
+        return "";
+    }
+    
+    String result = String(resultBuffer);
+    free(resultBuffer);
+    
+    return result;
+}
 

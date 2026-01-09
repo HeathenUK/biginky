@@ -123,4 +123,26 @@ bool displayHappyWeatherScene(const HappyWeatherConfig* config = nullptr);
  */
 bool displayWeatherForPlace(float lat, float lon, const char* placeName);
 
+/**
+ * Display TfL Underground departure board scene
+ * Shows live arrivals for a specified station in authentic amber LED style
+ * Black background with dithered amber (yellow + red) text
+ * 
+ * @param stationId NaPTAN ID of the station (e.g., "940GZZLUBST" for Baker Street)
+ *                  Common station IDs:
+ *                  - "940GZZLUBST" - Baker Street
+ *                  - "940GZZLUKSX" - King's Cross St. Pancras
+ *                  - "940GZZLUWLO" - Waterloo
+ *                  - "940GZZLUVIC" - Victoria
+ *                  - "940GZZLUPCC" - Piccadilly Circus
+ *                  - "940GZZLUOXC" - Oxford Circus
+ *                  - "940GZZLUGPK" - Green Park
+ *                  - "940GZZLUEMB" - Embankment
+ *                  - "940GZZLUHGT" - Highgate
+ *                  - "940GZZLUACY" - Archway
+ *                  - "940GZZLUEFN" - East Finchley
+ * @return true if successful, false otherwise
+ */
+bool displayTflDepartureBoard(const char* stationId);
+
 #endif // DISPLAY_MANAGER_H

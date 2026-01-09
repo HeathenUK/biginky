@@ -2672,6 +2672,9 @@ static void auto_cycle_task(void* arg) {
         case ScheduleAction::SCHEDULE_WEATHER_PLACE:
             actionName = "WEATHER_PLACE";
             break;
+        case ScheduleAction::SCHEDULE_TFL_DEPARTURES:
+            actionName = "TFL_DEPARTURES";
+            break;
     }
     Serial.printf("Schedule action: %s (hour=%d, minute=%d)\n", actionName, currentHour, currentMinute);
     if (action == ScheduleAction::SCHEDULE_DISABLED) {
@@ -2934,6 +2937,50 @@ static void auto_cycle_task(void* arg) {
         
         // Only sleep if no blocking command is running
         // (doMqttCheckCycle() processes commands - blocking ones won't return until complete)
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
+    }
+    
+    // Handle scheduled TfL departure board
+    if (action == ScheduleAction::SCHEDULE_TFL_DEPARTURES) {
+        String parameter = getScheduleSlotParameter(currentHour, currentMinute);
+        Serial.printf("=== Scheduled TfL departure board: %s ===\n", parameter.c_str());
+        
+        // Do NTP resync first (if needed) to ensure accurate time
+        doNtpResyncIfNeeded(time_ok);
+        
+        // Update time variables after potential NTP sync
+        now = time(nullptr);
+        if (now > 1577836800) {
+            gmtime_r(&now, &tm_utc);
+            isTopOfHour = (tm_utc.tm_min == 0);
+            currentHour = tm_utc.tm_hour;
+            currentMinute = tm_utc.tm_min;
+            time_ok = true;
+        }
+        
+        if (parameter.length() == 0) {
+            Serial.println("ERROR: No station ID specified for TfL departures");
+        } else {
+            bool success = displayTflDepartureBoard(parameter.c_str());
+            if (!success) {
+                Serial.println("ERROR: Failed to display TfL departure board");
+            }
+        }
+        
+        // Always send status update
+        vTaskDelay(1);
+        
+        // Check for and process commands AFTER scheduled activity completes
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
         Serial.println("Sleeping until next minute...");
         if (time_ok) {
             sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
@@ -4205,6 +4252,9 @@ static void serial_monitor_task(void* arg) {
                                     break;
                                 case ScheduleAction::SCHEDULE_WEATHER_PLACE:
                                     sceneStr = "weather_place";
+                                    break;
+                                case ScheduleAction::SCHEDULE_TFL_DEPARTURES:
+                                    sceneStr = "tfl_departures";
                                     break;
                                 default:
                                     sceneStr = "none";

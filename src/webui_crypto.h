@@ -102,6 +102,21 @@ String base64Encode(const String& plaintext);
  */
 String base64Decode(const String& encoded);
 
+/**
+ * Format a message with HMAC only (no encryption) - optimized for large payloads
+ * This is used for preview thumbnails where encryption adds complexity without benefit.
+ * The thumbnail is a preview of what's already visible on the physical display.
+ * 
+ * @param plaintextJson The JSON string to format (will be base64-encoded in payload)
+ * @param plaintextLen Length of the plaintext (use strlen if null-terminated)
+ * @return JSON string with format: {"encrypted":false,"payload":"<base64>","hmac":"..."}
+ *         or empty string on failure
+ * 
+ * @note This function always uses HMAC-only mode regardless of the isEncryptionEnabled() setting.
+ *       It's specifically designed for large payloads like preview thumbnails.
+ */
+String formatMessageHmacOnly(const char* plaintextJson, size_t plaintextLen);
+
 #endif // WEBUI_CRYPTO_H
 
 

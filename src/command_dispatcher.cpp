@@ -396,6 +396,24 @@ static bool handleHappyUnified(const CommandContext& ctx) {
     return displayHappyWeatherScene();
 }
 
+static bool handleTflUnified(const CommandContext& ctx) {
+    if (ctx.source != CommandSource::WEB_UI) {
+        Serial.println("[TFL] ERROR: Only WEB_UI source supported for tfl_departures command");
+        return false;
+    }
+    
+    // Extract station ID from JSON
+    String stationId = extractJsonStringField(ctx.originalMessage, "stationId");
+    
+    if (stationId.length() == 0) {
+        Serial.println("[TFL] ERROR: Missing stationId parameter");
+        return false;
+    }
+    
+    Serial.printf("[TFL] Displaying departures for station: %s\n", stationId.c_str());
+    return displayTflDepartureBoard(stationId.c_str());
+}
+
 // Helper function to escape CSV field (wrap in quotes if contains comma or quote, escape quotes)
 static String escapeCSVField(const String& field) {
     // If field contains comma, quote, or newline, wrap in quotes and escape quotes
@@ -856,6 +874,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleHappyUnified,
         .requiresAuth = true,
         .description = "Display Happy weather scene"
+    },
+    
+    // TfL Underground departure board
+    {
+        .mqttName = nullptr,
+        .webUIName = "tfl_departures",
+        .httpEndpoint = "/api/scene/tfl",
+        .handler = handleTflUnified,
+        .requiresAuth = true,
+        .description = "Display TfL Underground departure board"
     },
     
     // Schedule set (update detailed schedule)

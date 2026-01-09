@@ -21,7 +21,8 @@ enum class ScheduleAction {
     SCHEDULE_NTP_RESYNC,    // Special action: resync NTP (e.g., at 30 minutes past hour)
     SCHEDULE_HAPPY_WEATHER, // Special action: display Happy weather scene at :30
     SCHEDULE_IMAGE,         // Display specific image (parameter: filename)
-    SCHEDULE_WEATHER_PLACE  // Display weather for specific place (parameter: location)
+    SCHEDULE_WEATHER_PLACE, // Display weather for specific place (parameter: location)
+    SCHEDULE_TFL_DEPARTURES // Display TfL Underground departure board (parameter: stationId)
 };
 
 // Scene types for schedule slots
@@ -29,7 +30,8 @@ enum class SceneType {
     MEDIA,          // Next Media Mapping (no parameter)
     WEATHER,        // Happy Places Weather (no parameter)
     IMAGE,          // Show specific image (parameter: filename)
-    WEATHER_PLACE   // Weather for specific place (parameter: location)
+    WEATHER_PLACE,  // Weather for specific place (parameter: location)
+    TFL_DEPARTURES  // TfL Underground departure board (parameter: stationId)
 };
 
 // Schedule slot: minute + scene type + optional parameter

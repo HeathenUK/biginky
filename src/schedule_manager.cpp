@@ -137,6 +137,8 @@ void detailedScheduleLoadFromNVS() {
                         slot.scene = SceneType::IMAGE;
                     } else if (sceneStr == "weather_place") {
                         slot.scene = SceneType::WEATHER_PLACE;
+                    } else if (sceneStr == "tfl_departures") {
+                        slot.scene = SceneType::TFL_DEPARTURES;
                     } else {
                         continue;  // Invalid scene type
                     }
@@ -209,6 +211,7 @@ void detailedScheduleSaveToNVS() {
                     case SceneType::WEATHER: sceneStr = "weather"; break;
                     case SceneType::IMAGE: sceneStr = "image"; break;
                     case SceneType::WEATHER_PLACE: sceneStr = "weather_place"; break;
+                    case SceneType::TFL_DEPARTURES: sceneStr = "tfl_departures"; break;
                 }
                 cJSON_AddStringToObject(slotObj, "scene", sceneStr);
                 
@@ -310,6 +313,8 @@ ScheduleAction getScheduleAction(int hour, int minute) {
                     return ScheduleAction::SCHEDULE_IMAGE;
                 case SceneType::WEATHER_PLACE:
                     return ScheduleAction::SCHEDULE_WEATHER_PLACE;
+                case SceneType::TFL_DEPARTURES:
+                    return ScheduleAction::SCHEDULE_TFL_DEPARTURES;
                 default:
                     return ScheduleAction::SCHEDULE_ENABLED;  // Default to media
             }
@@ -360,6 +365,7 @@ String getDetailedScheduleJSON() {
                     case SceneType::WEATHER: sceneStr = "weather"; break;
                     case SceneType::IMAGE: sceneStr = "image"; break;
                     case SceneType::WEATHER_PLACE: sceneStr = "weather_place"; break;
+                    case SceneType::TFL_DEPARTURES: sceneStr = "tfl_departures"; break;
                 }
                 cJSON_AddStringToObject(slotObj, "scene", sceneStr);
                 
@@ -460,6 +466,8 @@ bool updateDetailedScheduleFromJSON(const String& json) {
                         slot.scene = SceneType::IMAGE;
                     } else if (sceneStr == "weather_place") {
                         slot.scene = SceneType::WEATHER_PLACE;
+                    } else if (sceneStr == "tfl_departures") {
+                        slot.scene = SceneType::TFL_DEPARTURES;
                     } else {
                         Serial.printf("ERROR: Invalid scene type '%s' in hour %d\n", sceneStr.c_str(), h);
                         cJSON_Delete(root);

@@ -5,8 +5,63 @@ const SCENE_TYPES = {
     weather: { name: 'Happy Places Weather', paramType: null },
     image: { name: 'Show Image', paramType: 'image_dropdown' },
     weather_place: { name: 'Weather for Place', paramType: 'weather_place' },
-    tfl_departures: { name: 'TfL Departures', paramType: 'tfl_station' }
+    tfl_departures: { name: 'TfL Departures', paramType: 'tfl_station_full' },
+    swim_conditions: { name: 'Swim Conditions (Fionphort)', paramType: null }
 };
+
+// TfL line directions lookup (based on actual line routes)
+const TFL_LINE_DIRECTIONS = {
+    'bakerloo': ['Northbound', 'Southbound'],
+    'central': ['Eastbound', 'Westbound'],
+    'circle': ['Inner Rail', 'Outer Rail'],
+    'district': ['Eastbound', 'Westbound'],
+    'dlr': ['All'],
+    'elizabeth': ['Eastbound', 'Westbound'],
+    'hammersmith-city': ['Eastbound', 'Westbound'],
+    'jubilee': ['Eastbound', 'Westbound'],
+    'metropolitan': ['Northbound', 'Southbound'],
+    'northern': ['Northbound', 'Southbound'],
+    'piccadilly': ['Eastbound', 'Westbound'],
+    'victoria': ['Northbound', 'Southbound'],
+    'waterloo-city': ['Northbound', 'Southbound']
+};
+
+// TfL stations list
+const TFL_STATIONS = [
+    { id: '', name: '-- Select Station --' },
+    { id: '940GZZLUEMB', name: 'Embankment' },
+    { id: '940GZZLUHGT', name: 'Highgate' },
+    { id: '940GZZLUACY', name: 'Archway' },
+    { id: '940GZZLUEFN', name: 'East Finchley' },
+    { id: '940GZZLUBST', name: 'Baker Street' },
+    { id: '940GZZLUKSX', name: "King's Cross" },
+    { id: '940GZZLUWLO', name: 'Waterloo' },
+    { id: '940GZZLUVIC', name: 'Victoria' },
+    { id: '940GZZLUPCC', name: 'Piccadilly Circus' },
+    { id: '940GZZLUOXC', name: 'Oxford Circus' },
+    { id: '940GZZLUGPK', name: 'Green Park' },
+    { id: '940GZZLUBNK', name: 'Bank' },
+    { id: '940GZZLULVT', name: 'Liverpool Street' },
+    { id: '940GZZLUPAC', name: 'Paddington' }
+];
+
+// TfL lines list
+const TFL_LINES = [
+    { id: '', name: '-- All Lines --' },
+    { id: 'bakerloo', name: 'Bakerloo' },
+    { id: 'central', name: 'Central' },
+    { id: 'circle', name: 'Circle' },
+    { id: 'district', name: 'District' },
+    { id: 'dlr', name: 'DLR' },
+    { id: 'elizabeth', name: 'Elizabeth' },
+    { id: 'hammersmith-city', name: 'Hammersmith & City' },
+    { id: 'jubilee', name: 'Jubilee' },
+    { id: 'metropolitan', name: 'Metropolitan' },
+    { id: 'northern', name: 'Northern' },
+    { id: 'piccadilly', name: 'Piccadilly' },
+    { id: 'victoria', name: 'Victoria' },
+    { id: 'waterloo-city', name: 'Waterloo & City' }
+];
 
 let currentSchedule = null;  // Store current schedule data
 
@@ -192,42 +247,92 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             nameInput.style.border = '1px solid #444';
             nameInput.style.padding = '4px';
             paramCell.appendChild(nameInput);
-        } else if (paramType === 'tfl_station') {
-            const select = document.createElement('select');
-            select.className = 'slot-parameter slot-parameter-tfl';
-            select.style.background = '#1a1a1a';
-            select.style.color = '#e0e0e0';
-            select.style.border = '1px solid #444';
-            select.style.padding = '4px';
-            select.style.width = '200px';
+        } else if (paramType === 'tfl_station_full') {
+            // Parse existing JSON parameter if present
+            let tflParams = { stationId: '', lineId: '', direction: '' };
+            if (paramValue) {
+                try {
+                    const parsed = JSON.parse(paramValue);
+                    tflParams = { ...tflParams, ...parsed };
+                } catch (e) {
+                    // If not JSON, treat as plain station ID (backwards compatibility)
+                    tflParams.stationId = paramValue;
+                }
+            }
             
-            const stations = [
-                { id: '', name: '-- Select Station --' },
-                { id: '940GZZLUEMB', name: 'Embankment' },
-                { id: '940GZZLUHGT', name: 'Highgate' },
-                { id: '940GZZLUACY', name: 'Archway' },
-                { id: '940GZZLUEFN', name: 'East Finchley' },
-                { id: '940GZZLUBST', name: 'Baker Street' },
-                { id: '940GZZLUKSX', name: 'King\'s Cross' },
-                { id: '940GZZLUWLO', name: 'Waterloo' },
-                { id: '940GZZLUVIC', name: 'Victoria' },
-                { id: '940GZZLUPCC', name: 'Piccadilly Circus' },
-                { id: '940GZZLUOXC', name: 'Oxford Circus' },
-                { id: '940GZZLUGPK', name: 'Green Park' },
-                { id: '940GZZLUBNK', name: 'Bank' },
-                { id: '940GZZLULVT', name: 'Liverpool Street' },
-                { id: '940GZZLUPAC', name: 'Paddington' }
-            ];
+            // Station dropdown
+            const stationSelect = document.createElement('select');
+            stationSelect.className = 'slot-parameter slot-parameter-tfl-station';
+            stationSelect.style.background = '#1a1a1a';
+            stationSelect.style.color = '#e0e0e0';
+            stationSelect.style.border = '1px solid #444';
+            stationSelect.style.padding = '4px';
+            stationSelect.style.width = '160px';
+            stationSelect.style.marginRight = '4px';
             
-            stations.forEach(station => {
+            TFL_STATIONS.forEach(station => {
                 const opt = document.createElement('option');
                 opt.value = station.id;
                 opt.text = station.name;
-                opt.selected = (station.id === paramValue);
-                select.appendChild(opt);
+                opt.selected = (station.id === tflParams.stationId);
+                stationSelect.appendChild(opt);
             });
+            paramCell.appendChild(stationSelect);
             
-            paramCell.appendChild(select);
+            // Line dropdown
+            const lineSelect = document.createElement('select');
+            lineSelect.className = 'slot-parameter slot-parameter-tfl-line';
+            lineSelect.style.background = '#1a1a1a';
+            lineSelect.style.color = '#e0e0e0';
+            lineSelect.style.border = '1px solid #444';
+            lineSelect.style.padding = '4px';
+            lineSelect.style.width = '140px';
+            lineSelect.style.marginRight = '4px';
+            
+            TFL_LINES.forEach(line => {
+                const opt = document.createElement('option');
+                opt.value = line.id;
+                opt.text = line.name;
+                opt.selected = (line.id === tflParams.lineId);
+                lineSelect.appendChild(opt);
+            });
+            paramCell.appendChild(lineSelect);
+            
+            // Direction dropdown
+            const directionSelect = document.createElement('select');
+            directionSelect.className = 'slot-parameter slot-parameter-tfl-direction';
+            directionSelect.style.background = '#1a1a1a';
+            directionSelect.style.color = '#e0e0e0';
+            directionSelect.style.border = '1px solid #444';
+            directionSelect.style.padding = '4px';
+            directionSelect.style.width = '120px';
+            
+            // Populate direction based on selected line
+            function updateDirectionOptions() {
+                const selectedLine = lineSelect.value;
+                directionSelect.innerHTML = '';
+                
+                const defaultOpt = document.createElement('option');
+                defaultOpt.value = '';
+                defaultOpt.text = '-- All --';
+                defaultOpt.selected = !tflParams.direction;
+                directionSelect.appendChild(defaultOpt);
+                
+                if (selectedLine && TFL_LINE_DIRECTIONS[selectedLine]) {
+                    TFL_LINE_DIRECTIONS[selectedLine].forEach(dir => {
+                        const opt = document.createElement('option');
+                        opt.value = dir;
+                        opt.text = dir;
+                        opt.selected = (dir === tflParams.direction);
+                        directionSelect.appendChild(opt);
+                    });
+                }
+            }
+            
+            updateDirectionOptions();
+            lineSelect.onchange = updateDirectionOptions;
+            
+            paramCell.appendChild(directionSelect);
         }
     }
     
@@ -468,10 +573,21 @@ async function saveScheduleToDevice() {
                     }
                     // Skip empty weather_place slots - return early
                     return;
-                } else if (paramType === 'tfl_station') {
-                    const select = slotRow.querySelector('.slot-parameter-tfl');
-                    if (select && select.value.trim().length > 0) {
-                        slot.parameter = select.value.trim();
+                } else if (paramType === 'tfl_station_full') {
+                    const stationSelect = slotRow.querySelector('.slot-parameter-tfl-station');
+                    const lineSelect = slotRow.querySelector('.slot-parameter-tfl-line');
+                    const directionSelect = slotRow.querySelector('.slot-parameter-tfl-direction');
+                    
+                    const stationId = stationSelect ? stationSelect.value.trim() : '';
+                    const lineId = lineSelect ? lineSelect.value.trim() : '';
+                    const direction = directionSelect ? directionSelect.value.trim() : '';
+                    
+                    if (stationId.length > 0) {
+                        // Store as JSON object
+                        const tflParam = { stationId };
+                        if (lineId) tflParam.lineId = lineId;
+                        if (direction) tflParam.direction = direction;
+                        slot.parameter = JSON.stringify(tflParam);
                         slots.push(slot);
                     }
                     // Skip empty tfl_station slots

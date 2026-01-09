@@ -377,8 +377,9 @@ RTC_DATA_ATTR uint32_t g_cycle_count = 0;
 static TaskHandle_t g_auto_cycle_task = nullptr;
 static bool g_config_mode_needed = false;  // Flag to indicate config mode is needed
 bool g_is_cold_boot = false;  // Flag to indicate this is a cold boot (not deep sleep wake) (non-static for webui_crypto module access)
-static volatile bool g_ota_requested = false;  // Flag to indicate 'o' key was pressed for OTA mode
+static volatile bool g_ota_requested = false;  // Flag to indicate OTA mode requested (deferred until safe point)
 static volatile bool g_manage_requested = false;  // Flag to indicate 'm' key was pressed for web interface
+static volatile bool g_manage_should_exit = false;  // Flag to signal management interface to exit immediately
 static volatile bool g_happy_weather_requested = false;  // Flag to indicate 'h' key was pressed for Happy weather scene
 static TaskHandle_t g_serial_monitor_task = nullptr;  // Task handle for serial monitor
 
@@ -4207,6 +4208,8 @@ bool handleOAICommand(const String& parameter) {
  * This avoids flash write issues during network transfer (ESP-IDF issue #4120)
  */
 // Handler for !ota command implementation (defined here after ota_server_task is declared)
+// OTA is deferred - we just set the flag and OTA starts at a safe point (before sleep)
+// This avoids SDIO contention between WiFi/MQTT and SD card operations
 bool handleOtaCommand(const String& originalMessage) {
     String senderNumber = extractFromFieldFromMessage(originalMessage);
     if (senderNumber != "+447816969344") {
@@ -4214,12 +4217,12 @@ bool handleOtaCommand(const String& originalMessage) {
         return false;
     }
     
-    // Clear retained message on devices/web-ui/cmd BEFORE starting blocking OTA server
+    // Clear retained message on devices/web-ui/cmd immediately
     // This prevents the OTA command from being replayed on reconnect
     extern esp_mqtt_client_handle_t getMqttClient();
     esp_mqtt_client_handle_t client = getMqttClient();
     if (client != nullptr) {
-        Serial.println("Clearing retained OTA command from devices/web-ui/cmd before starting OTA server...");
+        Serial.println("Clearing retained OTA command from devices/web-ui/cmd...");
         int msg_id = esp_mqtt_client_publish(client, "devices/web-ui/cmd", "", 0, 1, 1);
         if (msg_id > 0) {
             Serial.printf("Published blank retained message to clear OTA command (msg_id: %d)\n", msg_id);
@@ -4237,13 +4240,12 @@ bool handleOtaCommand(const String& originalMessage) {
         }
         // guard automatically calls end() in destructor
     }
-    // Create task with sufficient stack to avoid stack protection fault
-    TaskHandle_t otaTaskHandle = nullptr;
-    xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
-    // Wait for task to complete (it will delete itself)
-    while (otaTaskHandle != nullptr && eTaskGetState(otaTaskHandle) != eDeleted) {
-        delay(100);
-    }
+    
+    // Set the deferred OTA flag - OTA will start at the next safe point
+    // (in sleepNowSeconds(), after MQTT is disconnected but before WiFi disconnect)
+    g_ota_requested = true;
+    Serial.println(">>> OTA requested - will start at next safe point (before sleep) <<<");
+    
     return true;
 }
 
@@ -8465,26 +8467,25 @@ bool handleManageCommand() {
         return response->send(200, "application/json", jsonResponse.c_str());
     });
     
-    // POST /api/ota/start - Start OTA update mode
+    // POST /api/ota/start - Request OTA update mode (deferred until management interface closes)
     server.on("/api/ota/start", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);
         Serial.println("OTA start request received from web interface");
         
-        // Start OTA server in a separate task (non-blocking)
-        TaskHandle_t otaTaskHandle = nullptr;
-        xTaskCreatePinnedToCore(ota_server_task, "ota_server", 16384, nullptr, 5, &otaTaskHandle, 0);
+        // Set flags to defer OTA and close management interface
+        // OTA will start when management interface exits (via checkAndStartOTA in main flow)
+        g_ota_requested = true;
+        g_manage_should_exit = true;
         
-        if (otaTaskHandle != nullptr) {
-            String ip = WiFi.localIP().toString();
-            String resp = "{\"success\":true,\"message\":\"OTA server starting\",\"ip\":\"";
-            resp += ip;
-            resp += "\",\"url\":\"http://";
-            resp += ip;
-            resp += "/update\"}";
-            return response->send(200, "application/json", resp.c_str());
-        } else {
-            return response->send(500, "application/json", "{\"success\":false,\"error\":\"Failed to start OTA server task\"}");
-        }
+        Serial.println(">>> OTA requested - management interface will close, then OTA starts <<<");
+        
+        String ip = WiFi.localIP().toString();
+        String resp = "{\"success\":true,\"message\":\"OTA server will start after management interface closes\",\"ip\":\"";
+        resp += ip;
+        resp += "\",\"url\":\"http://";
+        resp += ip;
+        resp += "/update\"}";
+        return response->send(200, "application/json", resp.c_str());
     });
     
     // Start the server
@@ -8513,7 +8514,7 @@ bool handleManageCommand() {
     
     // Simple loop - PsychicHttp handles requests internally
     // Check for timeout based on last activity, not just start time
-    while (!serverShouldClose) {
+    while (!serverShouldClose && !g_manage_should_exit) {
         uint32_t now = millis();
         uint32_t timeSinceActivity = now - lastActivityTime;
         
@@ -8532,11 +8533,19 @@ bool handleManageCommand() {
     // Stop the server
     server.stop();
     
-    if (millis() - startTime >= timeoutMs) {
+    if (g_manage_should_exit) {
+        Serial.println("Management interface closed (OTA requested)");
+        g_manage_should_exit = false;  // Reset flag
+        // OTA will start via checkAndStartOTA() after this function returns
+    } else if (millis() - startTime >= timeoutMs) {
         Serial.println("Management interface timeout");
     } else {
         Serial.println("Management interface closed");
     }
+    
+    // Check if OTA was requested while management interface was running
+    // Start it now before returning (WiFi is still connected)
+    checkAndStartOTA();
     
     return true;
 }

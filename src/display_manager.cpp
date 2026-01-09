@@ -28,7 +28,9 @@
 #include <stdio.h>  // For fopen, fread, etc.
 
 // Underground fonts (compiled-in for TfL departure board scene)
-#include "fonts/ug_med.h"
+// ug_reg: regular weight with letters and numbers
+// ug_bold: bold weight with ONLY numbers (for clock display)
+#include "fonts/ug_reg.h"
 #include "fonts/ug_bold.h"
 
 // External references to globals and functions from main.cpp
@@ -2280,12 +2282,12 @@ bool displayTflDepartureBoard(const char* stationId) {
         Serial.println("Display initialized");
     }
     
-    // Load Underground Medium font for main text
-    if (!ttf.loadFont(ug_med, sizeof(ug_med))) {
-        Serial.println("ERROR: Failed to load Underground Medium font!");
+    // Load Underground Regular font for main text (has letters and numbers)
+    if (!ttf.loadFont(ug_reg_ttf, sizeof(ug_reg_ttf))) {
+        Serial.println("ERROR: Failed to load Underground Regular font!");
         return false;
     }
-    Serial.println("Loaded Underground Medium font");
+    Serial.println("Loaded Underground Regular font");
     
     // Clear display to black (authentic departure board background)
     display.clear(EL133UF1_BLACK);
@@ -2321,13 +2323,16 @@ bool displayTflDepartureBoard(const char* stationId) {
         return false;
     }
     
-    // Layout constants
+    // Layout constants - account for ~50px covered at top, ~70px covered at bottom
+    // Visible area is approximately y=50 to y=1130
     const int16_t leftMargin = 60;
     const int16_t rightMargin = display.width() - 60;
-    const int16_t stationY = 100;
-    const int16_t firstRowY = 280;
-    const int16_t rowHeight = 180;
-    const int16_t timeDisplayY = display.height() - 80;
+    const int16_t topSafe = 50;      // Top of visible area
+    const int16_t bottomSafe = 1130; // Bottom of visible area (1200 - 70)
+    const int16_t stationY = topSafe + 80;  // 130 - station name near top
+    const int16_t firstRowY = 310;          // First arrival row
+    const int16_t rowHeight = 170;          // Height between arrival rows
+    const int16_t timeDisplayY = bottomSafe - 60;  // 1070 - clock near bottom
     
     // Draw station name at top (centered)
     const float stationFontSize = 90.0f;

@@ -92,9 +92,101 @@ async function sendWeatherPlace() {
     }
 }
 
+// Fetch and populate lines for a TfL station
+async function onTflStationChange() {
+    const selectEl = document.getElementById('tflStationSelect');
+    const customInput = document.getElementById('tflCustomStation');
+    const lineSelect = document.getElementById('tflLineSelect');
+    const loadingEl = document.getElementById('tflLineLoading');
+    
+    const stationId = selectEl.value;
+    
+    // Enable/disable custom input
+    customInput.disabled = (stationId !== 'custom');
+    if (stationId !== 'custom') {
+        customInput.value = '';
+    }
+    
+    // Reset line dropdown
+    lineSelect.innerHTML = '<option value="">All lines</option>';
+    
+    // If no station selected or custom, don't fetch lines
+    if (!stationId || stationId === '' || stationId === 'custom') {
+        return;
+    }
+    
+    // Show loading indicator
+    loadingEl.style.display = 'block';
+    
+    try {
+        // Fetch station details from TfL API to get lines
+        const response = await fetch(`https://api.tfl.gov.uk/StopPoint/${stationId}`);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Extract unique line IDs from the station data
+        const lines = new Set();
+        if (data.lineModeGroups) {
+            for (const group of data.lineModeGroups) {
+                if (group.modeName === 'tube' && group.lineIdentifier) {
+                    for (const lineId of group.lineIdentifier) {
+                        lines.add(lineId);
+                    }
+                }
+            }
+        }
+        
+        // Also check lines array if present
+        if (data.lines) {
+            for (const line of data.lines) {
+                if (line.id) {
+                    lines.add(line.id);
+                }
+            }
+        }
+        
+        // Line name mappings (TfL uses lowercase IDs)
+        const lineNames = {
+            'bakerloo': 'Bakerloo',
+            'central': 'Central',
+            'circle': 'Circle',
+            'district': 'District',
+            'hammersmith-city': 'Hammersmith & City',
+            'jubilee': 'Jubilee',
+            'metropolitan': 'Metropolitan',
+            'northern': 'Northern',
+            'piccadilly': 'Piccadilly',
+            'victoria': 'Victoria',
+            'waterloo-city': 'Waterloo & City',
+            'elizabeth': 'Elizabeth',
+            'dlr': 'DLR',
+            'overground': 'Overground',
+            'tram': 'Tramlink'
+        };
+        
+        // Add lines to dropdown
+        for (const lineId of Array.from(lines).sort()) {
+            const option = document.createElement('option');
+            option.value = lineId;
+            option.textContent = lineNames[lineId] || lineId;
+            lineSelect.appendChild(option);
+        }
+        
+    } catch (error) {
+        console.error('Failed to fetch TfL station lines:', error);
+        // Silently fail - user can still use "All lines"
+    } finally {
+        loadingEl.style.display = 'none';
+    }
+}
+
 async function sendTflDepartures() {
     const selectEl = document.getElementById('tflStationSelect');
     const customInput = document.getElementById('tflCustomStation');
+    const lineSelect = document.getElementById('tflLineSelect');
     
     let stationId = selectEl.value;
     
@@ -115,28 +207,25 @@ async function sendTflDepartures() {
         stationId: stationId
     };
     
+    // Add lineId if a specific line is selected
+    const lineId = lineSelect.value;
+    if (lineId && lineId !== '') {
+        payload.lineId = lineId;
+    }
+    
     if (await publishMessage(payload)) {
         const stationName = selectEl.options[selectEl.selectedIndex]?.text || stationId;
-        showStatus('tflStatus', `TfL departures command sent for ${stationName}!`, false);
+        const lineName = lineSelect.options[lineSelect.selectedIndex]?.text || 'All lines';
+        showStatus('tflStatus', `TfL departures command sent for ${stationName} (${lineName})!`, false);
         setBusyState(true, 'Command sent, waiting for device response...');
     } else {
         showStatus('tflStatus', 'Failed to send command', true);
     }
 }
 
-// Initialize TfL station select to enable/disable custom input
+// Initialize TfL custom input state on page load
 document.addEventListener('DOMContentLoaded', function() {
-    const selectEl = document.getElementById('tflStationSelect');
-    const customInput = document.getElementById('tflCustomStation');
-    
-    if (selectEl && customInput) {
-        selectEl.addEventListener('change', function() {
-            customInput.disabled = (selectEl.value !== 'custom');
-            if (selectEl.value !== 'custom') {
-                customInput.value = '';
-            }
-        });
-    }
+    // Custom input starts disabled (handled by onTflStationChange)
 });
 
 async function sendCanvasToDisplay() {

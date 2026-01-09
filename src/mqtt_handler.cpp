@@ -94,6 +94,7 @@ struct MqttWorkRequest {
 static QueueHandle_t mqttWorkQueue = nullptr;
 static TaskHandle_t mqttWorkerTaskHandle = nullptr;
 static bool mqttWorkerTaskInitialized = false;
+static volatile bool g_media_mappings_in_progress = false;  // Track if media mappings is being generated/published
 static uint8_t* mqttMessageBuffer = nullptr;
 static size_t mqttMessageBufferSize = 0;
 static size_t mqttMessageBufferTotalLen = 0;
@@ -1691,6 +1692,7 @@ static void mqttWorkerTask(void* param) {
                 }
             } else if (request.type == MQTT_WORK_MEDIA_MAPPINGS) {
                 Serial.println("[Core 1] Processing media mappings generation work...");
+                g_media_mappings_in_progress = true;  // Signal to main loop not to disconnect MQTT
                 // Generate media mappings and publish (this is CPU-intensive)
                 // Use thread-safe check for cross-core access
                 if (isMqttConnectedSafe()) {
@@ -1708,6 +1710,7 @@ static void mqttWorkerTask(void* param) {
                     Serial.println("[Core 1] MQTT not connected, skipping media mappings publish");
                     workSuccess = false;
                 }
+                g_media_mappings_in_progress = false;  // Done - main loop can disconnect MQTT now
             } else if (request.type == MQTT_WORK_CANVAS_DECODE) {
                 Serial.println("[Core 1] Processing canvas decode/decompress work...");
                 if (request.data.canvasDecode != nullptr) {
@@ -2027,6 +2030,10 @@ void initMqttWorkerTask() {
     
     mqttWorkerTaskInitialized = true;
     Serial.println("[Core 1] MQTT worker task initialized");
+}
+
+bool isMqttWorkerBusy() {
+    return g_media_mappings_in_progress;
 }
 
 void publishMQTTMediaMappings(bool waitForCompletion) {

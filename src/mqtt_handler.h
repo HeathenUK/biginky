@@ -138,6 +138,12 @@ void publishMQTTMediaMappings(bool waitForCompletion);
  */
 void initMqttWorkerTask();
 
+/**
+ * Check if Core 1 has pending work (media mappings publishing in progress)
+ * @return true if work is pending, false otherwise
+ */
+bool isMqttWorkerBusy();
+
 // Canvas decode work data (passed between cores)
 struct CanvasDecodeWorkData {
     const char* base64Data;      // Input: base64 string (owned by caller, must remain valid)

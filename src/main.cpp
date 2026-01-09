@@ -3429,9 +3429,28 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
                 } else {
                     // No commands - just disconnect (status already published)
                     Serial.println("No commands - disconnecting MQTT (status already published)");
-                    mqttDisconnect();
-                    delay(50);
                 }
+                
+                // Wait for Core 1 worker to finish any pending media mappings publishing
+                // This ensures schedule changes are fully published before MQTT disconnects
+                extern bool isMqttWorkerBusy();
+                if (isMqttWorkerBusy()) {
+                    Serial.println("Waiting for Core 1 media mappings to complete...");
+                    uint32_t waitStart = millis();
+                    const uint32_t maxWait = 120000;  // 120 second timeout (media mappings can take 50+ seconds)
+                    while (isMqttWorkerBusy() && (millis() - waitStart) < maxWait) {
+                        delay(100);
+                    }
+                    if (isMqttWorkerBusy()) {
+                        Serial.println("WARNING: Timed out waiting for Core 1 - media mappings may not be published");
+                    } else {
+                        Serial.printf("Core 1 finished in %lu ms\n", millis() - waitStart);
+                    }
+                }
+                
+                // Now safe to disconnect MQTT
+                mqttDisconnect();
+                delay(50);
                 
                 // Check if OTA or Happy weather scene was requested before sleeping
                 checkAndStartOTA();

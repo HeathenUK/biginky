@@ -228,6 +228,21 @@ document.addEventListener('DOMContentLoaded', function() {
     // Custom input starts disabled (handled by onTflStationChange)
 });
 
+async function sendSwimConditions() {
+    showStatus('swimStatus', 'Sending swim conditions command...', false);
+    
+    const payload = {
+        command: 'swim_conditions'
+    };
+    
+    if (await publishMessage(payload)) {
+        showStatus('swimStatus', 'Swim conditions command sent for Fionphort, Isle of Mull!', false);
+        setBusyState(true, 'Command sent, waiting for device response...');
+    } else {
+        showStatus('swimStatus', 'Failed to send command', true);
+    }
+}
+
 async function sendCanvasToDisplay() {
     console.log('sendCanvasToDisplay() called');
     const canvas = document.getElementById('drawCanvas');

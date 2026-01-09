@@ -371,6 +371,15 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 <div class="section">
+<h2 onclick="toggleSection(this)">🏊 Swim Conditions</h2>
+<div class="section-content" id="section-swim">
+<p>Display open water swimming conditions for <strong>Fionphort, Isle of Mull</strong>. Shows sea temperature, wave conditions, sun times, air temperature, UV index, and water quality.</p>
+<p style="color:#888;font-size:13px;">Data sources: OpenWeatherMap, Open-Meteo Marine, sunrise-sunset.org, SEPA (Calgary Bay)</p>
+<button onclick="sendSwimConditions()" id="swimConditionsBtn" disabled style="margin-top:15px;">Display Swim Conditions</button>
+<div id="swimStatus"></div>
+</div>
+</div>
+<div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
 <div class="canvas-controls-wrapper" style="margin-bottom:8px;">

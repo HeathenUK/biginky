@@ -14,6 +14,7 @@
 #include "text_elements.h"
 #include "wifi_manager.h"  // For wifiConnectPersistent (NOT wifi_guard.h - it disconnects WiFi!)
 #include "platform_hal.h"  // For hal_psram_malloc/free
+#include "nvs_manager.h"  // For display margin functions
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
@@ -2995,6 +2996,255 @@ bool displaySwimConditionsScene() {
     display.update();
     display.waitForUpdate();
     Serial.println("Swim conditions dashboard displayed");
+    
+    return true;
+}
+
+/**
+ * Display calibration test pattern for screen margins
+ * Shows visual indicators to help calibrate display safe area
+ */
+bool displayCalibrationPattern() {
+    Serial.println("Displaying calibration pattern...");
+    
+    // Initialize display if needed
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+    }
+    
+    const int16_t W = display.width();   // 1600
+    const int16_t H = display.height();  // 1200
+    
+    // Get current margins
+    int16_t marginTop = getDisplayMarginTop();
+    int16_t marginBottom = getDisplayMarginBottom();
+    int16_t marginLeft = getDisplayMarginLeft();
+    int16_t marginRight = getDisplayMarginRight();
+    
+    Serial.printf("Current margins: top=%d, bottom=%d, left=%d, right=%d\n",
+                  marginTop, marginBottom, marginLeft, marginRight);
+    
+    // Clear to white
+    display.clear(EL133UF1_WHITE);
+    
+    // ===== Draw checkerboard border at absolute edge =====
+    // This helps identify exactly where the display edge is
+    const int16_t checkerSize = 10;
+    
+    // Top edge checkerboard
+    for (int16_t x = 0; x < W; x += checkerSize) {
+        for (int16_t row = 0; row < 2; row++) {
+            uint8_t color = ((x / checkerSize) + row) % 2 ? EL133UF1_BLACK : EL133UF1_WHITE;
+            for (int16_t dx = 0; dx < checkerSize && x + dx < W; dx++) {
+                for (int16_t dy = 0; dy < checkerSize && row * checkerSize + dy < H; dy++) {
+                    display.setPixel(x + dx, row * checkerSize + dy, color);
+                }
+            }
+        }
+    }
+    
+    // Bottom edge checkerboard
+    for (int16_t x = 0; x < W; x += checkerSize) {
+        for (int16_t row = 0; row < 2; row++) {
+            uint8_t color = ((x / checkerSize) + row) % 2 ? EL133UF1_BLACK : EL133UF1_WHITE;
+            int16_t startY = H - (2 - row) * checkerSize;
+            for (int16_t dx = 0; dx < checkerSize && x + dx < W; dx++) {
+                for (int16_t dy = 0; dy < checkerSize && startY + dy < H; dy++) {
+                    display.setPixel(x + dx, startY + dy, color);
+                }
+            }
+        }
+    }
+    
+    // Left edge checkerboard (excluding corners)
+    for (int16_t y = 2 * checkerSize; y < H - 2 * checkerSize; y += checkerSize) {
+        for (int16_t col = 0; col < 2; col++) {
+            uint8_t color = ((y / checkerSize) + col) % 2 ? EL133UF1_BLACK : EL133UF1_WHITE;
+            for (int16_t dy = 0; dy < checkerSize && y + dy < H - 2 * checkerSize; dy++) {
+                for (int16_t dx = 0; dx < checkerSize && col * checkerSize + dx < W; dx++) {
+                    display.setPixel(col * checkerSize + dx, y + dy, color);
+                }
+            }
+        }
+    }
+    
+    // Right edge checkerboard (excluding corners)
+    for (int16_t y = 2 * checkerSize; y < H - 2 * checkerSize; y += checkerSize) {
+        for (int16_t col = 0; col < 2; col++) {
+            uint8_t color = ((y / checkerSize) + col) % 2 ? EL133UF1_BLACK : EL133UF1_WHITE;
+            int16_t startX = W - (2 - col) * checkerSize;
+            for (int16_t dy = 0; dy < checkerSize && y + dy < H - 2 * checkerSize; dy++) {
+                for (int16_t dx = 0; dx < checkerSize && startX + dx < W; dx++) {
+                    display.setPixel(startX + dx, y + dy, color);
+                }
+            }
+        }
+    }
+    
+    // ===== Draw safe area rectangle at current margins =====
+    // This shows where content will be positioned with current settings
+    int16_t safeLeft = marginLeft;
+    int16_t safeRight = W - marginRight;
+    int16_t safeTop = marginTop;
+    int16_t safeBottom = H - marginBottom;
+    
+    // Draw safe area border (3px thick black line)
+    for (int16_t t = 0; t < 3; t++) {
+        // Top line
+        for (int16_t x = safeLeft; x < safeRight; x++) {
+            display.setPixel(x, safeTop + t, EL133UF1_BLACK);
+        }
+        // Bottom line
+        for (int16_t x = safeLeft; x < safeRight; x++) {
+            display.setPixel(x, safeBottom - 1 - t, EL133UF1_BLACK);
+        }
+        // Left line
+        for (int16_t y = safeTop; y < safeBottom; y++) {
+            display.setPixel(safeLeft + t, y, EL133UF1_BLACK);
+        }
+        // Right line
+        for (int16_t y = safeTop; y < safeBottom; y++) {
+            display.setPixel(safeRight - 1 - t, y, EL133UF1_BLACK);
+        }
+    }
+    
+    // ===== Draw tick marks every 20 pixels from each edge =====
+    const int16_t tickSpacing = 20;
+    const int16_t tickLength = 15;
+    
+    // Top edge ticks (pointing down)
+    for (int16_t x = 0; x < W; x += tickSpacing) {
+        for (int16_t y = 20; y < 20 + tickLength; y++) {
+            display.setPixel(x, y, EL133UF1_BLACK);
+        }
+        // Draw longer tick every 100px
+        if (x % 100 == 0) {
+            for (int16_t y = 20; y < 20 + tickLength + 10; y++) {
+                if (x > 0 && x < W - 1) {
+                    display.setPixel(x - 1, y, EL133UF1_BLACK);
+                    display.setPixel(x + 1, y, EL133UF1_BLACK);
+                }
+            }
+        }
+    }
+    
+    // Bottom edge ticks (pointing up)
+    for (int16_t x = 0; x < W; x += tickSpacing) {
+        for (int16_t y = H - 20 - tickLength; y < H - 20; y++) {
+            display.setPixel(x, y, EL133UF1_BLACK);
+        }
+        if (x % 100 == 0) {
+            for (int16_t y = H - 20 - tickLength - 10; y < H - 20; y++) {
+                if (x > 0 && x < W - 1) {
+                    display.setPixel(x - 1, y, EL133UF1_BLACK);
+                    display.setPixel(x + 1, y, EL133UF1_BLACK);
+                }
+            }
+        }
+    }
+    
+    // Left edge ticks (pointing right)
+    for (int16_t y = 0; y < H; y += tickSpacing) {
+        for (int16_t x = 20; x < 20 + tickLength; x++) {
+            display.setPixel(x, y, EL133UF1_BLACK);
+        }
+        if (y % 100 == 0) {
+            for (int16_t x = 20; x < 20 + tickLength + 10; x++) {
+                if (y > 0 && y < H - 1) {
+                    display.setPixel(x, y - 1, EL133UF1_BLACK);
+                    display.setPixel(x, y + 1, EL133UF1_BLACK);
+                }
+            }
+        }
+    }
+    
+    // Right edge ticks (pointing left)
+    for (int16_t y = 0; y < H; y += tickSpacing) {
+        for (int16_t x = W - 20 - tickLength; x < W - 20; x++) {
+            display.setPixel(x, y, EL133UF1_BLACK);
+        }
+        if (y % 100 == 0) {
+            for (int16_t x = W - 20 - tickLength - 10; x < W - 20; x++) {
+                if (y > 0 && y < H - 1) {
+                    display.setPixel(x, y - 1, EL133UF1_BLACK);
+                    display.setPixel(x, y + 1, EL133UF1_BLACK);
+                }
+            }
+        }
+    }
+    
+    // ===== Draw info text in center =====
+    // TTF should already be initialized with a font from setup()
+    if (ttf.fontLoaded()) {
+        char buf[128];
+        const int16_t centerX = W / 2;
+        const int16_t centerY = H / 2;
+        
+        // Title
+        ttf.drawTextAligned(centerX, centerY - 120, "CALIBRATION PATTERN", 48.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        
+        // Current margin values
+        snprintf(buf, sizeof(buf), "Top: %d   Bottom: %d", marginTop, marginBottom);
+        ttf.drawTextAligned(centerX, centerY - 40, buf, 36.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        
+        snprintf(buf, sizeof(buf), "Left: %d   Right: %d", marginLeft, marginRight);
+        ttf.drawTextAligned(centerX, centerY + 10, buf, 36.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        
+        // Safe area dimensions
+        snprintf(buf, sizeof(buf), "Safe area: %dx%d", safeRight - safeLeft, safeBottom - safeTop);
+        ttf.drawTextAligned(centerX, centerY + 70, buf, 32.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        
+        // Instructions
+        ttf.drawTextAligned(centerX, centerY + 140, "Adjust until black border is fully visible", 28.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        
+        ttf.drawTextAligned(centerX, centerY + 180, "Commands: !margin_top N  !margin_bottom N", 24.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        
+        ttf.drawTextAligned(centerX, centerY + 210, "!margin_left N  !margin_right N  !margins", 24.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+    }
+    
+    // ===== Corner markers with coordinates =====
+    // Draw small coordinates at safe area corners
+    if (ttf.fontLoaded()) {
+        char coordBuf[32];
+        
+        // Top-left
+        snprintf(coordBuf, sizeof(coordBuf), "(%d,%d)", safeLeft, safeTop);
+        ttf.drawTextAligned(safeLeft + 10, safeTop + 20, coordBuf, 20.0f,
+                           EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
+        
+        // Top-right
+        snprintf(coordBuf, sizeof(coordBuf), "(%d,%d)", safeRight, safeTop);
+        ttf.drawTextAligned(safeRight - 10, safeTop + 20, coordBuf, 20.0f,
+                           EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_TOP);
+        
+        // Bottom-left
+        snprintf(coordBuf, sizeof(coordBuf), "(%d,%d)", safeLeft, safeBottom);
+        ttf.drawTextAligned(safeLeft + 10, safeBottom - 20, coordBuf, 20.0f,
+                           EL133UF1_BLACK, ALIGN_LEFT, ALIGN_BOTTOM);
+        
+        // Bottom-right
+        snprintf(coordBuf, sizeof(coordBuf), "(%d,%d)", safeRight, safeBottom);
+        ttf.drawTextAligned(safeRight - 10, safeBottom - 20, coordBuf, 20.0f,
+                           EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_BOTTOM);
+    }
+    
+    // Update display
+    Serial.println("Updating display with calibration pattern...");
+    display.update();
+    display.waitForUpdate();
+    Serial.println("Calibration pattern displayed");
     
     return true;
 }

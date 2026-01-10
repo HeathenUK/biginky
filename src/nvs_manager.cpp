@@ -218,3 +218,93 @@ void manageTimeoutDisabledSaveToNVS() {
     Serial.printf("Saved management interface timeout disabled state to NVS: %s\n",
                  g_manage_timeout_disabled ? "DISABLED (no timeout)" : "ENABLED (5 min timeout)");
 }
+
+// ============================================================================
+// Display Margins (for calibrating visible screen area)
+// ============================================================================
+
+// External reference to Preferences object in main file
+extern Preferences displayPrefs;
+
+// Display margin values (in pixels from each edge)
+// Defaults based on typical e-ink display overscan
+static int16_t g_display_margin_top = 50;      // Top margin
+static int16_t g_display_margin_bottom = 70;   // Bottom margin (usually larger due to connector)
+static int16_t g_display_margin_left = 60;     // Left margin
+static int16_t g_display_margin_right = 60;    // Right margin
+
+int16_t getDisplayMarginTop() { return g_display_margin_top; }
+int16_t getDisplayMarginBottom() { return g_display_margin_bottom; }
+int16_t getDisplayMarginLeft() { return g_display_margin_left; }
+int16_t getDisplayMarginRight() { return g_display_margin_right; }
+
+void setDisplayMargins(int16_t top, int16_t bottom, int16_t left, int16_t right) {
+    g_display_margin_top = top;
+    g_display_margin_bottom = bottom;
+    g_display_margin_left = left;
+    g_display_margin_right = right;
+}
+
+void setDisplayMarginTop(int16_t value) { g_display_margin_top = value; }
+void setDisplayMarginBottom(int16_t value) { g_display_margin_bottom = value; }
+void setDisplayMarginLeft(int16_t value) { g_display_margin_left = value; }
+void setDisplayMarginRight(int16_t value) { g_display_margin_right = value; }
+
+void displayMarginsLoadFromNVS() {
+    NVSGuard guard(displayPrefs, "display", true);  // Read-only
+    if (!guard.isOpen()) {
+        Serial.println("WARNING: Failed to open NVS for display margins - using defaults");
+        // Keep default values
+        return;
+    }
+    
+    // Load margins with defaults
+    g_display_margin_top = guard.get().getShort("margin_top", 50);
+    g_display_margin_bottom = guard.get().getShort("margin_bot", 70);
+    g_display_margin_left = guard.get().getShort("margin_left", 60);
+    g_display_margin_right = guard.get().getShort("margin_right", 60);
+    
+    // Clamp to reasonable values (0-200 pixels)
+    if (g_display_margin_top < 0) g_display_margin_top = 0;
+    if (g_display_margin_top > 200) g_display_margin_top = 200;
+    if (g_display_margin_bottom < 0) g_display_margin_bottom = 0;
+    if (g_display_margin_bottom > 200) g_display_margin_bottom = 200;
+    if (g_display_margin_left < 0) g_display_margin_left = 0;
+    if (g_display_margin_left > 200) g_display_margin_left = 200;
+    if (g_display_margin_right < 0) g_display_margin_right = 0;
+    if (g_display_margin_right > 200) g_display_margin_right = 200;
+    
+    if (g_is_cold_boot) {
+        Serial.printf("Loaded display margins from NVS: top=%d, bottom=%d, left=%d, right=%d\n",
+                     g_display_margin_top, g_display_margin_bottom, 
+                     g_display_margin_left, g_display_margin_right);
+    }
+}
+
+void displayMarginsSaveToNVS() {
+    NVSGuard guard(displayPrefs, "display", false);  // Read-write
+    if (!guard.isOpen()) {
+        Serial.println("WARNING: Failed to open NVS for saving display margins");
+        return;
+    }
+    
+    guard.get().putShort("margin_top", g_display_margin_top);
+    guard.get().putShort("margin_bot", g_display_margin_bottom);
+    guard.get().putShort("margin_left", g_display_margin_left);
+    guard.get().putShort("margin_right", g_display_margin_right);
+    
+    Serial.printf("Saved display margins to NVS: top=%d, bottom=%d, left=%d, right=%d\n",
+                 g_display_margin_top, g_display_margin_bottom, 
+                 g_display_margin_left, g_display_margin_right);
+}
+
+DisplayBounds getDisplayBounds(int16_t displayWidth, int16_t displayHeight) {
+    DisplayBounds bounds;
+    bounds.left = g_display_margin_left;
+    bounds.right = displayWidth - g_display_margin_right;
+    bounds.top = g_display_margin_top;
+    bounds.bottom = displayHeight - g_display_margin_bottom;
+    bounds.width = bounds.right - bounds.left;
+    bounds.height = bounds.bottom - bounds.top;
+    return bounds;
+}

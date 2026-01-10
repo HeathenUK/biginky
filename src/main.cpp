@@ -356,6 +356,7 @@ Preferences mediaPrefs;  // NVS preferences for media index storage (non-static 
 Preferences detailedSchedulePrefs;  // NVS preferences for detailed schedule (slots + scenes)
 Preferences authPrefs;  // NVS preferences for web UI authentication (non-static for webui_crypto module access)
 Preferences managePrefs;  // NVS preferences for management interface settings (non-static for nvs_manager module access)
+Preferences displayPrefs;  // NVS preferences for display margins (non-static for nvs_manager module access)
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 int8_t g_sleep_interval_minutes = 1;  // Sleep interval: >0 = wake every N mins, 0 = always-on, -1 = event-driven (non-static for nvs_manager module access)
@@ -2089,6 +2090,12 @@ bool handleDelNumberCommand(const String& parameter);  // Made non-static for un
 bool handleListNumbersCommand(const String& originalMessage = "");  // Made non-static for unified dispatcher
 bool handleShowCommand(const String& parameter);  // Made non-static for unified dispatcher
 bool handleSleepIntervalCommand(const String& parameter);  // Made non-static for unified dispatcher
+bool handleCalibrateCommand();  // Display calibration test pattern
+bool handleMarginsCommand();  // Show current display margins
+bool handleMarginTopCommand(const String& parameter);  // Set top margin
+bool handleMarginBottomCommand(const String& parameter);  // Set bottom margin
+bool handleMarginLeftCommand(const String& parameter);  // Set left margin
+bool handleMarginRightCommand(const String& parameter);  // Set right margin
 bool handleOAICommand(const String& parameter);  // Made non-static for unified dispatcher
 bool handleManageCommand();  // Made non-static for unified dispatcher
 static bool startSdBufferedOTA();  // Start SD-buffered OTA web server
@@ -2102,6 +2109,8 @@ void mediaIndexLoadFromNVS();  // Load media index from NVS (called on startup)
 void mediaIndexSaveToNVS();  // Save media index to NVS
 void mediaIndexModeLoadFromNVS();  // Load media index mode from NVS (called on startup)
 void mediaIndexModeSaveToNVS();  // Save media index mode to NVS
+void displayMarginsLoadFromNVS();  // Load display margins from NVS (called on startup)
+void displayMarginsSaveToNVS();  // Save display margins to NVS
 // Media mappings index management functions
 int getNextMediaIndex();  // Get next index based on current mode (sequential or shuffle) - advances index
 int peekNextMediaIndex();  // Peek at next index without advancing (for status messages)
@@ -5461,6 +5470,12 @@ String exportConfigJSON() {
     cJSON_AddNumberToObject(root, "sleep_interval", g_sleep_interval_minutes);
     cJSON_AddBoolToObject(root, "timeout_disabled", getManageTimeoutDisabled());
     cJSON_AddBoolToObject(root, "encryption_enabled", isEncryptionEnabled());
+    
+    // Add display margins
+    cJSON_AddNumberToObject(root, "margin_top", getDisplayMarginTop());
+    cJSON_AddNumberToObject(root, "margin_bottom", getDisplayMarginBottom());
+    cJSON_AddNumberToObject(root, "margin_left", getDisplayMarginLeft());
+    cJSON_AddNumberToObject(root, "margin_right", getDisplayMarginRight());
 
     // Add detailed schedule
     String detailedScheduleJson = getDetailedScheduleJSON();
@@ -5622,6 +5637,47 @@ bool importConfigJSON(const String& json) {
             }
         }
         Serial.printf("  Restored %d allowed numbers\n", addedCount);
+    }
+
+    // Display Margins
+    bool marginsChanged = false;
+    item = cJSON_GetObjectItem(root, "margin_top");
+    if (item && cJSON_IsNumber(item)) {
+        int16_t v = (int16_t)cJSON_GetNumberValue(item);
+        if (v >= 0 && v <= 200) {
+            setDisplayMarginTop(v);
+            marginsChanged = true;
+        }
+    }
+    item = cJSON_GetObjectItem(root, "margin_bottom");
+    if (item && cJSON_IsNumber(item)) {
+        int16_t v = (int16_t)cJSON_GetNumberValue(item);
+        if (v >= 0 && v <= 200) {
+            setDisplayMarginBottom(v);
+            marginsChanged = true;
+        }
+    }
+    item = cJSON_GetObjectItem(root, "margin_left");
+    if (item && cJSON_IsNumber(item)) {
+        int16_t v = (int16_t)cJSON_GetNumberValue(item);
+        if (v >= 0 && v <= 200) {
+            setDisplayMarginLeft(v);
+            marginsChanged = true;
+        }
+    }
+    item = cJSON_GetObjectItem(root, "margin_right");
+    if (item && cJSON_IsNumber(item)) {
+        int16_t v = (int16_t)cJSON_GetNumberValue(item);
+        if (v >= 0 && v <= 200) {
+            setDisplayMarginRight(v);
+            marginsChanged = true;
+        }
+    }
+    if (marginsChanged) {
+        displayMarginsSaveToNVS();
+        Serial.printf("  Restored display margins: top=%d, bottom=%d, left=%d, right=%d\n",
+                     getDisplayMarginTop(), getDisplayMarginBottom(),
+                     getDisplayMarginLeft(), getDisplayMarginRight());
     }
 
     // WiFi Credentials
@@ -10415,6 +10471,138 @@ bool handleSleepIntervalCommand(const String& parameter) {
     }
 }
 
+// ============================================================================
+// Display Calibration & Margin Commands
+// ============================================================================
+
+/**
+ * Handle !calibrate command - display calibration test pattern
+ * Shows visual markers to help calibrate display margins
+ */
+bool handleCalibrateCommand() {
+    Serial.println("Processing !calibrate command...");
+    return displayCalibrationPattern();
+}
+
+/**
+ * Handle !margins command - show current display margins
+ */
+bool handleMarginsCommand() {
+    Serial.println("Processing !margins command...");
+    Serial.printf("Current display margins:\n");
+    Serial.printf("  Top:    %d px\n", getDisplayMarginTop());
+    Serial.printf("  Bottom: %d px\n", getDisplayMarginBottom());
+    Serial.printf("  Left:   %d px\n", getDisplayMarginLeft());
+    Serial.printf("  Right:  %d px\n", getDisplayMarginRight());
+    Serial.printf("Use !margin_top/bottom/left/right <pixels> to adjust\n");
+    Serial.printf("Use !calibrate to display test pattern\n");
+    return true;
+}
+
+/**
+ * Handle !margin_top command - set top display margin
+ * Format: !margin_top <pixels>
+ * Example: !margin_top 60
+ */
+bool handleMarginTopCommand(const String& parameter) {
+    Serial.println("Processing !margin_top command...");
+    
+    if (parameter.length() == 0) {
+        Serial.printf("Current top margin: %d px\n", getDisplayMarginTop());
+        Serial.println("Usage: !margin_top <pixels> (0-200)");
+        return false;
+    }
+    
+    int value = parameter.toInt();
+    if (value < 0 || value > 200) {
+        Serial.printf("ERROR: Invalid margin value (got: %d, must be 0-200)\n", value);
+        return false;
+    }
+    
+    setDisplayMarginTop((int16_t)value);
+    displayMarginsSaveToNVS();
+    Serial.printf("Top margin set to %d px\n", value);
+    return true;
+}
+
+/**
+ * Handle !margin_bottom command - set bottom display margin
+ * Format: !margin_bottom <pixels>
+ * Example: !margin_bottom 80
+ */
+bool handleMarginBottomCommand(const String& parameter) {
+    Serial.println("Processing !margin_bottom command...");
+    
+    if (parameter.length() == 0) {
+        Serial.printf("Current bottom margin: %d px\n", getDisplayMarginBottom());
+        Serial.println("Usage: !margin_bottom <pixels> (0-200)");
+        return false;
+    }
+    
+    int value = parameter.toInt();
+    if (value < 0 || value > 200) {
+        Serial.printf("ERROR: Invalid margin value (got: %d, must be 0-200)\n", value);
+        return false;
+    }
+    
+    setDisplayMarginBottom((int16_t)value);
+    displayMarginsSaveToNVS();
+    Serial.printf("Bottom margin set to %d px\n", value);
+    return true;
+}
+
+/**
+ * Handle !margin_left command - set left display margin
+ * Format: !margin_left <pixels>
+ * Example: !margin_left 50
+ */
+bool handleMarginLeftCommand(const String& parameter) {
+    Serial.println("Processing !margin_left command...");
+    
+    if (parameter.length() == 0) {
+        Serial.printf("Current left margin: %d px\n", getDisplayMarginLeft());
+        Serial.println("Usage: !margin_left <pixels> (0-200)");
+        return false;
+    }
+    
+    int value = parameter.toInt();
+    if (value < 0 || value > 200) {
+        Serial.printf("ERROR: Invalid margin value (got: %d, must be 0-200)\n", value);
+        return false;
+    }
+    
+    setDisplayMarginLeft((int16_t)value);
+    displayMarginsSaveToNVS();
+    Serial.printf("Left margin set to %d px\n", value);
+    return true;
+}
+
+/**
+ * Handle !margin_right command - set right display margin
+ * Format: !margin_right <pixels>
+ * Example: !margin_right 50
+ */
+bool handleMarginRightCommand(const String& parameter) {
+    Serial.println("Processing !margin_right command...");
+    
+    if (parameter.length() == 0) {
+        Serial.printf("Current right margin: %d px\n", getDisplayMarginRight());
+        Serial.println("Usage: !margin_right <pixels> (0-200)");
+        return false;
+    }
+    
+    int value = parameter.toInt();
+    if (value < 0 || value > 200) {
+        Serial.printf("ERROR: Invalid margin value (got: %d, must be 0-200)\n", value);
+        return false;
+    }
+    
+    setDisplayMarginRight((int16_t)value);
+    displayMarginsSaveToNVS();
+    Serial.printf("Right margin set to %d px\n", value);
+    return true;
+}
+
 /**
  * Handle !newno command - add a phone number to the allowed list
  * Format: !newno <phone_number>
@@ -12702,6 +12890,9 @@ void setup() {
     // Sync loaded value to g_mediaIndexMode enum
     uint8_t modeValue = getMediaIndexModeValue();
     g_mediaIndexMode = (modeValue == 1) ? MediaIndexMode::SHUFFLE : MediaIndexMode::SEQUENTIAL;
+    
+    // Load display margins from NVS (for screen calibration)
+    displayMarginsLoadFromNVS();
     
     // Initialize text placement mutex (protects textPlacement analyzer from concurrent access)
     // Text placement mutex removed - not available in this branch

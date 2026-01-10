@@ -33,6 +33,12 @@ extern bool handleSleepIntervalCommand(const String& parameter);
 extern bool handleOAICommand(const String& parameter);
 extern bool handleManageCommand();
 extern bool handleOtaCommand(const String& originalMessage);
+extern bool handleCalibrateCommand();
+extern bool handleMarginsCommand();
+extern bool handleMarginTopCommand(const String& parameter);
+extern bool handleMarginBottomCommand(const String& parameter);
+extern bool handleMarginLeftCommand(const String& parameter);
+extern bool handleMarginRightCommand(const String& parameter);
 extern bool isNumberAllowed(const String& number);
 extern String extractFromFieldFromMessage(const String& message);
 extern String extractCommandParameter(const String& command);
@@ -301,6 +307,58 @@ static bool handleSleepIntervalUnified(const CommandContext& ctx) {
         param = extractJsonStringField(ctx.originalMessage, "parameter");
     }
     return handleSleepIntervalCommand(param);
+}
+
+// ===== Display Calibration & Margin Commands =====
+
+static bool handleCalibrateUnified(const CommandContext& ctx) {
+    (void)ctx;
+    return handleCalibrateCommand();
+}
+
+static bool handleMarginsUnified(const CommandContext& ctx) {
+    (void)ctx;
+    return handleMarginsCommand();
+}
+
+static bool handleMarginTopUnified(const CommandContext& ctx) {
+    String param = "";
+    if (ctx.source == CommandSource::MQTT_SMS) {
+        param = extractCommandParameter(ctx.command);
+    } else {
+        param = extractJsonStringField(ctx.originalMessage, "parameter");
+    }
+    return handleMarginTopCommand(param);
+}
+
+static bool handleMarginBottomUnified(const CommandContext& ctx) {
+    String param = "";
+    if (ctx.source == CommandSource::MQTT_SMS) {
+        param = extractCommandParameter(ctx.command);
+    } else {
+        param = extractJsonStringField(ctx.originalMessage, "parameter");
+    }
+    return handleMarginBottomCommand(param);
+}
+
+static bool handleMarginLeftUnified(const CommandContext& ctx) {
+    String param = "";
+    if (ctx.source == CommandSource::MQTT_SMS) {
+        param = extractCommandParameter(ctx.command);
+    } else {
+        param = extractJsonStringField(ctx.originalMessage, "parameter");
+    }
+    return handleMarginLeftCommand(param);
+}
+
+static bool handleMarginRightUnified(const CommandContext& ctx) {
+    String param = "";
+    if (ctx.source == CommandSource::MQTT_SMS) {
+        param = extractCommandParameter(ctx.command);
+    } else {
+        param = extractJsonStringField(ctx.originalMessage, "parameter");
+    }
+    return handleMarginRightCommand(param);
 }
 
 static bool handleOAIUnified(const CommandContext& ctx) {
@@ -957,6 +1015,66 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleSleepIntervalUnified,
         .requiresAuth = true,
         .description = "Set sleep interval"
+    },
+    
+    // Display calibration
+    {
+        .mqttName = "!calibrate",
+        .webUIName = "calibrate",
+        .httpEndpoint = nullptr,
+        .handler = handleCalibrateUnified,
+        .requiresAuth = true,
+        .description = "Display calibration pattern"
+    },
+    
+    // Show current margins
+    {
+        .mqttName = "!margins",
+        .webUIName = "margins",
+        .httpEndpoint = nullptr,
+        .handler = handleMarginsUnified,
+        .requiresAuth = true,
+        .description = "Show current display margins"
+    },
+    
+    // Set margin top
+    {
+        .mqttName = "!margin_top",
+        .webUIName = nullptr,
+        .httpEndpoint = nullptr,
+        .handler = handleMarginTopUnified,
+        .requiresAuth = true,
+        .description = "Set top display margin"
+    },
+    
+    // Set margin bottom
+    {
+        .mqttName = "!margin_bottom",
+        .webUIName = nullptr,
+        .httpEndpoint = nullptr,
+        .handler = handleMarginBottomUnified,
+        .requiresAuth = true,
+        .description = "Set bottom display margin"
+    },
+    
+    // Set margin left
+    {
+        .mqttName = "!margin_left",
+        .webUIName = nullptr,
+        .httpEndpoint = nullptr,
+        .handler = handleMarginLeftUnified,
+        .requiresAuth = true,
+        .description = "Set left display margin"
+    },
+    
+    // Set margin right
+    {
+        .mqttName = "!margin_right",
+        .webUIName = nullptr,
+        .httpEndpoint = nullptr,
+        .handler = handleMarginRightUnified,
+        .requiresAuth = true,
+        .description = "Set right display margin"
     },
     
     // OAI

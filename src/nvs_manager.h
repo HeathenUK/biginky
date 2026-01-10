@@ -101,6 +101,68 @@ bool getManageTimeoutDisabled();
  */
 void setManageTimeoutDisabled(bool disabled);
 
+// ============================================================================
+// Display Margins (for calibrating visible screen area)
+// ============================================================================
+
+/**
+ * Load display margins from NVS
+ * Called on startup to restore the last margin settings
+ */
+void displayMarginsLoadFromNVS();
+
+/**
+ * Save display margins to NVS
+ * Called whenever margins are changed
+ */
+void displayMarginsSaveToNVS();
+
+/**
+ * Get display margins (in pixels)
+ * These define the safe area where content should be displayed
+ */
+int16_t getDisplayMarginTop();
+int16_t getDisplayMarginBottom();
+int16_t getDisplayMarginLeft();
+int16_t getDisplayMarginRight();
+
+/**
+ * Set display margins (in pixels)
+ * @param top Pixels from top edge to safe area
+ * @param bottom Pixels from bottom edge to safe area  
+ * @param left Pixels from left edge to safe area
+ * @param right Pixels from right edge to safe area
+ */
+void setDisplayMargins(int16_t top, int16_t bottom, int16_t left, int16_t right);
+
+/**
+ * Set individual display margins
+ */
+void setDisplayMarginTop(int16_t value);
+void setDisplayMarginBottom(int16_t value);
+void setDisplayMarginLeft(int16_t value);
+void setDisplayMarginRight(int16_t value);
+
+/**
+ * Helper struct for getting display safe bounds
+ */
+struct DisplayBounds {
+    int16_t left;      // Safe left edge (margin_left)
+    int16_t right;     // Safe right edge (display_width - margin_right)
+    int16_t top;       // Safe top edge (margin_top)
+    int16_t bottom;    // Safe bottom edge (display_height - margin_bottom)
+    int16_t width;     // Safe width (right - left)
+    int16_t height;    // Safe height (bottom - top)
+};
+
+/**
+ * Get display safe bounds based on current margins
+ * @param displayWidth Full display width (e.g., 1600)
+ * @param displayHeight Full display height (e.g., 1200)
+ * @return DisplayBounds struct with safe area coordinates
+ */
+DisplayBounds getDisplayBounds(int16_t displayWidth, int16_t displayHeight);
+
 #endif // NVS_MANAGER_H
 
 

@@ -155,4 +155,20 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId = nullpt
  */
 bool displaySwimConditionsScene();
 
+/**
+ * Display calibration test pattern for screen margins
+ * Shows a checkerboard border and margin indicators to help calibrate
+ * the display safe area. Use with !margin_top, !margin_bottom, etc. commands
+ * to adjust margins until the pattern is fully visible.
+ * 
+ * The pattern includes:
+ * - Checkerboard border at the absolute edge of the display
+ * - A solid rectangle at the current configured margin boundaries
+ * - Tick marks every 10 pixels for precise measurement
+ * - Current margin values displayed in the center
+ * 
+ * @return true if successful, false otherwise
+ */
+bool displayCalibrationPattern();
+
 #endif // DISPLAY_MANAGER_H

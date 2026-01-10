@@ -6566,6 +6566,72 @@ bool handleManageCommand() {
         return response->send(200, "application/json", resp.c_str());
     });
     
+    // GET /api/margins - Get display margins
+    server.on("/api/margins", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        char json[128];
+        snprintf(json, sizeof(json), "{\"margin_top\":%d,\"margin_bottom\":%d,\"margin_left\":%d,\"margin_right\":%d}",
+                getDisplayMarginTop(), getDisplayMarginBottom(), getDisplayMarginLeft(), getDisplayMarginRight());
+        return response->send(200, "application/json", json);
+    });
+    
+    // POST /api/margins - Update display margins
+    server.on("/api/margins", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String body = request->body();
+        
+        // Parse JSON using cJSON
+        cJSON* root = cJSON_Parse(body.c_str());
+        if (!root) {
+            return response->send(200, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+        }
+        
+        bool changed = false;
+        cJSON* item;
+        
+        item = cJSON_GetObjectItem(root, "margin_top");
+        if (item && cJSON_IsNumber(item)) {
+            int16_t v = (int16_t)cJSON_GetNumberValue(item);
+            if (v >= 0 && v <= 200) { setDisplayMarginTop(v); changed = true; }
+        }
+        item = cJSON_GetObjectItem(root, "margin_bottom");
+        if (item && cJSON_IsNumber(item)) {
+            int16_t v = (int16_t)cJSON_GetNumberValue(item);
+            if (v >= 0 && v <= 200) { setDisplayMarginBottom(v); changed = true; }
+        }
+        item = cJSON_GetObjectItem(root, "margin_left");
+        if (item && cJSON_IsNumber(item)) {
+            int16_t v = (int16_t)cJSON_GetNumberValue(item);
+            if (v >= 0 && v <= 200) { setDisplayMarginLeft(v); changed = true; }
+        }
+        item = cJSON_GetObjectItem(root, "margin_right");
+        if (item && cJSON_IsNumber(item)) {
+            int16_t v = (int16_t)cJSON_GetNumberValue(item);
+            if (v >= 0 && v <= 200) { setDisplayMarginRight(v); changed = true; }
+        }
+        
+        cJSON_Delete(root);
+        
+        if (changed) {
+            displayMarginsSaveToNVS();
+            Serial.printf("Margins updated via web: top=%d, bottom=%d, left=%d, right=%d\n",
+                         getDisplayMarginTop(), getDisplayMarginBottom(),
+                         getDisplayMarginLeft(), getDisplayMarginRight());
+        }
+        
+        String resp = changed ? "{\"success\":true}" : "{\"success\":false,\"error\":\"No valid margins provided\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // POST /api/calibrate - Run calibration pattern
+    server.on("/api/calibrate", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        Serial.println("Calibration pattern requested via web UI");
+        bool success = displayCalibrationPattern();
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to display calibration pattern\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
     // GET /api/schedule - Get detailed schedule (slots + scenes)
     server.on("/api/schedule", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
         addCorsHeaders(response);

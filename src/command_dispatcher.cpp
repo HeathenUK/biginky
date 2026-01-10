@@ -600,6 +600,12 @@ static bool handleConfigSetUnified(const CommandContext& ctx) {
     }
     
     Serial.println("[CONFIG_SET] Configuration imported successfully");
+    
+    // Republish media mappings so web UI gets updated config
+    extern void publishMQTTMediaMappings(bool waitForCompletion);
+    publishMQTTMediaMappings(false);  // Async - don't wait
+    Serial.println("[CONFIG_SET] Media mappings republish queued (async)");
+    
     return true;
 }
 

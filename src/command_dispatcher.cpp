@@ -491,6 +491,36 @@ static bool handleSwimConditionsUnified(const CommandContext& ctx) {
     return displaySwimConditionsScene();
 }
 
+static bool handleFeedUnified(const CommandContext& ctx) {
+    // Extract URL from JSON parameter
+    String url = extractJsonStringField(ctx.originalMessage, "url");
+    
+    if (url.length() == 0) {
+        Serial.println("[FEED] ERROR: Missing url parameter");
+        return false;
+    }
+    
+    // Extract optional count (default 5)
+    int count = 5;
+    String countStr = extractJsonStringField(ctx.originalMessage, "count");
+    if (countStr.length() > 0) {
+        count = countStr.toInt();
+        if (count < 1) count = 1;
+        if (count > 10) count = 10;
+    }
+    
+    // Extract optional title override
+    String title = extractJsonStringField(ctx.originalMessage, "title");
+    
+    Serial.printf("[FEED] Displaying feed: %s (max %d items)\n", url.c_str(), count);
+    
+    return displayFeedScene(
+        url.c_str(),
+        count,
+        title.length() > 0 ? title.c_str() : nullptr
+    );
+}
+
 // Helper function to escape CSV field (wrap in quotes if contains comma or quote, escape quotes)
 static String escapeCSVField(const String& field) {
     // If field contains comma, quote, or newline, wrap in quotes and escape quotes
@@ -1185,6 +1215,16 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleSwimConditionsUnified,
         .requiresAuth = true,
         .description = "Display swim conditions for Fionphort, Isle of Mull"
+    },
+    
+    // RSS/Atom/JSON Feed scene
+    {
+        .mqttName = nullptr,
+        .webUIName = "feed",
+        .httpEndpoint = "/api/scene/feed",
+        .handler = handleFeedUnified,
+        .requiresAuth = true,
+        .description = "Display RSS/Atom/JSON feed entries"
     },
     
     // Schedule set (update detailed schedule)

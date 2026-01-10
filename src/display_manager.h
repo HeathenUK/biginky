@@ -171,4 +171,21 @@ bool displaySwimConditionsScene();
  */
 bool displayCalibrationPattern();
 
+/**
+ * Display RSS/Atom/JSON Feed entries
+ * Fetches and displays the latest entries from a web feed.
+ * Supports:
+ * - JSON Feed (jsonfeed.org)
+ * - RSS 2.0
+ * - Atom
+ * 
+ * Auto-detects format based on content. White background with black text.
+ * 
+ * @param feedUrl URL of the feed to fetch
+ * @param maxItems Maximum number of items to display (1-10, default 5)
+ * @param title Optional title override (uses feed title if nullptr)
+ * @return true if successful, false otherwise
+ */
+bool displayFeedScene(const char* feedUrl, int maxItems = 5, const char* title = nullptr);
+
 #endif // DISPLAY_MANAGER_H

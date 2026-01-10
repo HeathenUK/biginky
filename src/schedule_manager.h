@@ -23,7 +23,8 @@ enum class ScheduleAction {
     SCHEDULE_IMAGE,          // Display specific image (parameter: filename)
     SCHEDULE_WEATHER_PLACE,  // Display weather for specific place (parameter: location)
     SCHEDULE_TFL_DEPARTURES, // Display TfL Underground departure board (parameter: JSON with stationId, lineId, direction)
-    SCHEDULE_SWIM_CONDITIONS // Display swim conditions for Fionphort (no parameter)
+    SCHEDULE_SWIM_CONDITIONS,// Display swim conditions for Fionphort (no parameter)
+    SCHEDULE_FEED            // Display RSS/Atom/JSON feed entries (parameter: JSON with url, count)
 };
 
 // Scene types for schedule slots
@@ -33,7 +34,8 @@ enum class SceneType {
     IMAGE,           // Show specific image (parameter: filename)
     WEATHER_PLACE,   // Weather for specific place (parameter: location)
     TFL_DEPARTURES,  // TfL Underground departure board (parameter: JSON with stationId, lineId, direction)
-    SWIM_CONDITIONS  // Swim conditions for Fionphort (no parameter)
+    SWIM_CONDITIONS, // Swim conditions for Fionphort (no parameter)
+    FEED             // RSS/Atom/JSON Feed entries (parameter: JSON with url, count)
 };
 
 // Schedule slot: minute + scene type + optional parameter

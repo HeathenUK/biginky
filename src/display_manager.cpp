@@ -3016,6 +3016,616 @@ bool displaySwimConditionsScene() {
     return true;
 }
 
+// ============================================================================
+// RSS/Atom/JSON Feed Scene
+// ============================================================================
+
+// Feed item structure
+struct FeedItem {
+    char title[256];
+    char description[512];
+    char link[256];
+    char pubDate[64];
+};
+
+// Helper: Extract text between XML tags (simple, non-recursive)
+static bool extractXmlTag(const char* xml, const char* tagName, char* buffer, size_t bufSize) {
+    if (!xml || !tagName || !buffer || bufSize == 0) return false;
+    buffer[0] = '\0';
+    
+    // Build open tag
+    char openTag[64];
+    snprintf(openTag, sizeof(openTag), "<%s", tagName);
+    
+    const char* start = strstr(xml, openTag);
+    if (!start) return false;
+    
+    // Find end of open tag (could have attributes)
+    start = strchr(start, '>');
+    if (!start) return false;
+    start++;  // Move past '>'
+    
+    // Handle CDATA sections
+    if (strncmp(start, "<![CDATA[", 9) == 0) {
+        start += 9;
+        const char* end = strstr(start, "]]>");
+        if (!end) return false;
+        size_t len = min((size_t)(end - start), bufSize - 1);
+        strncpy(buffer, start, len);
+        buffer[len] = '\0';
+        return true;
+    }
+    
+    // Build close tag
+    char closeTag[64];
+    snprintf(closeTag, sizeof(closeTag), "</%s>", tagName);
+    
+    const char* end = strstr(start, closeTag);
+    if (!end) return false;
+    
+    size_t len = min((size_t)(end - start), bufSize - 1);
+    strncpy(buffer, start, len);
+    buffer[len] = '\0';
+    
+    // Strip HTML entities (basic)
+    // TODO: More comprehensive HTML entity handling if needed
+    
+    return strlen(buffer) > 0;
+}
+
+// Helper: Parse RSS 2.0 feed
+static int parseRssFeed(const char* xml, FeedItem* items, int maxItems, char* feedTitle, size_t titleSize) {
+    Serial.println("Parsing as RSS 2.0...");
+    
+    // Get feed title from <channel><title>
+    const char* channel = strstr(xml, "<channel");
+    if (channel) {
+        // Find title within channel but before first item
+        const char* firstItem = strstr(channel, "<item");
+        if (firstItem) {
+            // Search for title only in the header section
+            char headerSection[2048];
+            size_t headerLen = min((size_t)(firstItem - channel), sizeof(headerSection) - 1);
+            strncpy(headerSection, channel, headerLen);
+            headerSection[headerLen] = '\0';
+            extractXmlTag(headerSection, "title", feedTitle, titleSize);
+        }
+    }
+    
+    int count = 0;
+    const char* item = strstr(xml, "<item");
+    
+    while (item && count < maxItems) {
+        // Find end of this item
+        const char* itemEnd = strstr(item + 1, "</item>");
+        if (!itemEnd) break;
+        
+        // Extract item content (limit scope to this item)
+        size_t itemLen = itemEnd - item + 7;  // +7 for "</item>"
+        char* itemCopy = (char*)malloc(itemLen + 1);
+        if (!itemCopy) break;
+        strncpy(itemCopy, item, itemLen);
+        itemCopy[itemLen] = '\0';
+        
+        // Extract fields
+        extractXmlTag(itemCopy, "title", items[count].title, sizeof(items[count].title));
+        extractXmlTag(itemCopy, "description", items[count].description, sizeof(items[count].description));
+        extractXmlTag(itemCopy, "link", items[count].link, sizeof(items[count].link));
+        extractXmlTag(itemCopy, "pubDate", items[count].pubDate, sizeof(items[count].pubDate));
+        
+        free(itemCopy);
+        
+        if (items[count].title[0] != '\0') {
+            count++;
+        }
+        
+        // Move to next item
+        item = strstr(itemEnd, "<item");
+    }
+    
+    Serial.printf("RSS: Found %d items\n", count);
+    return count;
+}
+
+// Helper: Parse Atom feed
+static int parseAtomFeed(const char* xml, FeedItem* items, int maxItems, char* feedTitle, size_t titleSize) {
+    Serial.println("Parsing as Atom...");
+    
+    // Get feed title (before first entry)
+    const char* firstEntry = strstr(xml, "<entry");
+    if (firstEntry) {
+        char headerSection[2048];
+        size_t headerLen = min((size_t)(firstEntry - xml), sizeof(headerSection) - 1);
+        strncpy(headerSection, xml, headerLen);
+        headerSection[headerLen] = '\0';
+        extractXmlTag(headerSection, "title", feedTitle, titleSize);
+    }
+    
+    int count = 0;
+    const char* entry = strstr(xml, "<entry");
+    
+    while (entry && count < maxItems) {
+        const char* entryEnd = strstr(entry + 1, "</entry>");
+        if (!entryEnd) break;
+        
+        size_t entryLen = entryEnd - entry + 8;  // +8 for "</entry>"
+        char* entryCopy = (char*)malloc(entryLen + 1);
+        if (!entryCopy) break;
+        strncpy(entryCopy, entry, entryLen);
+        entryCopy[entryLen] = '\0';
+        
+        extractXmlTag(entryCopy, "title", items[count].title, sizeof(items[count].title));
+        
+        // Try summary first, then content
+        if (!extractXmlTag(entryCopy, "summary", items[count].description, sizeof(items[count].description))) {
+            extractXmlTag(entryCopy, "content", items[count].description, sizeof(items[count].description));
+        }
+        
+        // Atom links are different: <link href="..."/>
+        const char* linkTag = strstr(entryCopy, "<link");
+        if (linkTag) {
+            const char* href = strstr(linkTag, "href=\"");
+            if (href) {
+                href += 6;  // Move past href="
+                const char* hrefEnd = strchr(href, '"');
+                if (hrefEnd) {
+                    size_t len = min((size_t)(hrefEnd - href), sizeof(items[count].link) - 1);
+                    strncpy(items[count].link, href, len);
+                    items[count].link[len] = '\0';
+                }
+            }
+        }
+        
+        // Try published, then updated
+        if (!extractXmlTag(entryCopy, "published", items[count].pubDate, sizeof(items[count].pubDate))) {
+            extractXmlTag(entryCopy, "updated", items[count].pubDate, sizeof(items[count].pubDate));
+        }
+        
+        free(entryCopy);
+        
+        if (items[count].title[0] != '\0') {
+            count++;
+        }
+        
+        entry = strstr(entryEnd, "<entry");
+    }
+    
+    Serial.printf("Atom: Found %d items\n", count);
+    return count;
+}
+
+// Helper: Parse JSON Feed
+static int parseJsonFeed(const char* json, FeedItem* items, int maxItems, char* feedTitle, size_t titleSize) {
+    Serial.println("Parsing as JSON Feed...");
+    
+    cJSON* root = cJSON_Parse(json);
+    if (!root) {
+        Serial.println("JSON Feed: Failed to parse JSON");
+        return 0;
+    }
+    
+    // Get feed title
+    cJSON* title = cJSON_GetObjectItem(root, "title");
+    if (title && cJSON_IsString(title)) {
+        strncpy(feedTitle, title->valuestring, titleSize - 1);
+        feedTitle[titleSize - 1] = '\0';
+    }
+    
+    // Get items array
+    cJSON* itemsArray = cJSON_GetObjectItem(root, "items");
+    if (!itemsArray || !cJSON_IsArray(itemsArray)) {
+        Serial.println("JSON Feed: No items array found");
+        cJSON_Delete(root);
+        return 0;
+    }
+    
+    int count = 0;
+    int arraySize = cJSON_GetArraySize(itemsArray);
+    
+    for (int i = 0; i < arraySize && count < maxItems; i++) {
+        cJSON* item = cJSON_GetArrayItem(itemsArray, i);
+        if (!item) continue;
+        
+        // Title
+        cJSON* itemTitle = cJSON_GetObjectItem(item, "title");
+        if (itemTitle && cJSON_IsString(itemTitle)) {
+            strncpy(items[count].title, itemTitle->valuestring, sizeof(items[count].title) - 1);
+            items[count].title[sizeof(items[count].title) - 1] = '\0';
+        } else {
+            items[count].title[0] = '\0';
+        }
+        
+        // Content (try content_text first, then content_html, then summary)
+        cJSON* content = cJSON_GetObjectItem(item, "content_text");
+        if (!content) content = cJSON_GetObjectItem(item, "content_html");
+        if (!content) content = cJSON_GetObjectItem(item, "summary");
+        if (content && cJSON_IsString(content)) {
+            strncpy(items[count].description, content->valuestring, sizeof(items[count].description) - 1);
+            items[count].description[sizeof(items[count].description) - 1] = '\0';
+        } else {
+            items[count].description[0] = '\0';
+        }
+        
+        // URL
+        cJSON* url = cJSON_GetObjectItem(item, "url");
+        if (url && cJSON_IsString(url)) {
+            strncpy(items[count].link, url->valuestring, sizeof(items[count].link) - 1);
+            items[count].link[sizeof(items[count].link) - 1] = '\0';
+        } else {
+            items[count].link[0] = '\0';
+        }
+        
+        // Date (date_published or date_modified)
+        cJSON* date = cJSON_GetObjectItem(item, "date_published");
+        if (!date) date = cJSON_GetObjectItem(item, "date_modified");
+        if (date && cJSON_IsString(date)) {
+            strncpy(items[count].pubDate, date->valuestring, sizeof(items[count].pubDate) - 1);
+            items[count].pubDate[sizeof(items[count].pubDate) - 1] = '\0';
+        } else {
+            items[count].pubDate[0] = '\0';
+        }
+        
+        if (items[count].title[0] != '\0') {
+            count++;
+        }
+    }
+    
+    cJSON_Delete(root);
+    Serial.printf("JSON Feed: Found %d items\n", count);
+    return count;
+}
+
+// Helper: Strip HTML tags from a string (basic)
+static void stripHtmlTags(char* str) {
+    if (!str) return;
+    
+    char* read = str;
+    char* write = str;
+    bool inTag = false;
+    
+    while (*read) {
+        if (*read == '<') {
+            inTag = true;
+        } else if (*read == '>') {
+            inTag = false;
+        } else if (!inTag) {
+            // Also convert &nbsp; and other common entities
+            if (strncmp(read, "&nbsp;", 6) == 0) {
+                *write++ = ' ';
+                read += 5;  // Will be incremented by loop
+            } else if (strncmp(read, "&amp;", 5) == 0) {
+                *write++ = '&';
+                read += 4;
+            } else if (strncmp(read, "&lt;", 4) == 0) {
+                *write++ = '<';
+                read += 3;
+            } else if (strncmp(read, "&gt;", 4) == 0) {
+                *write++ = '>';
+                read += 3;
+            } else if (strncmp(read, "&quot;", 6) == 0) {
+                *write++ = '"';
+                read += 5;
+            } else if (strncmp(read, "&#39;", 5) == 0 || strncmp(read, "&apos;", 6) == 0) {
+                *write++ = '\'';
+                read += (read[2] == '3') ? 4 : 5;
+            } else {
+                *write++ = *read;
+            }
+        }
+        read++;
+    }
+    *write = '\0';
+    
+    // Clean up whitespace
+    read = str;
+    write = str;
+    bool lastWasSpace = false;
+    while (*read) {
+        if (*read == '\n' || *read == '\r' || *read == '\t') {
+            if (!lastWasSpace) {
+                *write++ = ' ';
+                lastWasSpace = true;
+            }
+        } else if (*read == ' ') {
+            if (!lastWasSpace) {
+                *write++ = ' ';
+                lastWasSpace = true;
+            }
+        } else {
+            *write++ = *read;
+            lastWasSpace = false;
+        }
+        read++;
+    }
+    *write = '\0';
+}
+
+// Fetch feed content from URL
+static String fetchFeedContent(const char* url) {
+    Serial.printf("Fetching feed: %s\n", url);
+    
+    HTTPClient http;
+    WiFiClientSecure secureClient;
+    WiFiClient plainClient;
+    
+    secureClient.setInsecure();  // Skip cert verification for simplicity
+    secureClient.setTimeout(15000);
+    plainClient.setTimeout(15000);
+    
+    // Determine if HTTPS or HTTP
+    bool isHttps = (strncmp(url, "https://", 8) == 0);
+    
+    if (isHttps) {
+        if (!http.begin(secureClient, url)) {
+            Serial.println("Feed: Failed to begin HTTPS connection");
+            return "";
+        }
+    } else {
+        if (!http.begin(plainClient, url)) {
+            Serial.println("Feed: Failed to begin HTTP connection");
+            return "";
+        }
+    }
+    
+    // Set headers for feed compatibility
+    http.addHeader("Accept", "application/json, application/rss+xml, application/atom+xml, text/xml, */*");
+    http.addHeader("User-Agent", "BigInky/1.0 (ESP32 E-Ink Display)");
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    
+    int httpCode = http.GET();
+    String payload = "";
+    
+    if (httpCode == HTTP_CODE_OK) {
+        payload = http.getString();
+        Serial.printf("Feed: Received %d bytes\n", payload.length());
+    } else {
+        Serial.printf("Feed: HTTP error %d\n", httpCode);
+    }
+    
+    http.end();
+    return payload;
+}
+
+bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverride) {
+    Serial.printf("=== Feed Scene: %s (max %d items) ===\n", feedUrl, maxItems);
+    
+    // Validate parameters
+    if (!feedUrl || strlen(feedUrl) == 0) {
+        Serial.println("Feed: No URL provided");
+        return false;
+    }
+    maxItems = constrain(maxItems, 1, 10);
+    
+    // Ensure display is initialized
+    if (display.getBuffer() == nullptr) {
+        Serial.println("Display not initialized - initializing now...");
+        displaySPI.begin(PIN_SPI_SCK, -1, PIN_SPI_MOSI, -1);
+        if (!display.begin(PIN_CS0, PIN_CS1, PIN_DC, PIN_RESET, PIN_BUSY)) {
+            Serial.println("ERROR: Display initialization failed!");
+            return false;
+        }
+    }
+    
+    // Load font
+    if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
+        Serial.println("WARNING: Failed to load OpenSans font");
+    }
+    
+    // Clear to white background
+    display.clear(EL133UF1_WHITE);
+    
+    // Ensure WiFi is connected
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("Feed: WiFi not connected, attempting connection...");
+        if (!wifiConnectPersistent(3, 20000, false)) {
+            ttf.drawTextAligned(display.width() / 2, display.height() / 2,
+                               "No Network Connection", 48.0f,
+                               EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+            display.update();
+            return false;
+        }
+    }
+    
+    // Fetch feed content
+    String content = fetchFeedContent(feedUrl);
+    if (content.length() == 0) {
+        ttf.drawTextAligned(display.width() / 2, display.height() / 2,
+                           "Failed to Load Feed", 48.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        display.update();
+        return false;
+    }
+    
+    // Parse feed (auto-detect format)
+    FeedItem* items = (FeedItem*)malloc(sizeof(FeedItem) * maxItems);
+    if (!items) {
+        Serial.println("Feed: Failed to allocate items buffer");
+        return false;
+    }
+    memset(items, 0, sizeof(FeedItem) * maxItems);
+    
+    char feedTitle[128] = "";
+    int itemCount = 0;
+    
+    // Detect format and parse
+    const char* contentStr = content.c_str();
+    
+    if (strstr(contentStr, "\"version\"") && strstr(contentStr, "\"items\"")) {
+        // JSON Feed
+        itemCount = parseJsonFeed(contentStr, items, maxItems, feedTitle, sizeof(feedTitle));
+    } else if (strstr(contentStr, "<rss") || strstr(contentStr, "<channel")) {
+        // RSS 2.0
+        itemCount = parseRssFeed(contentStr, items, maxItems, feedTitle, sizeof(feedTitle));
+    } else if (strstr(contentStr, "<feed") || strstr(contentStr, "xmlns=\"http://www.w3.org/2005/Atom\"")) {
+        // Atom
+        itemCount = parseAtomFeed(contentStr, items, maxItems, feedTitle, sizeof(feedTitle));
+    } else {
+        Serial.println("Feed: Unknown format");
+        free(items);
+        ttf.drawTextAligned(display.width() / 2, display.height() / 2,
+                           "Unknown Feed Format", 48.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        display.update();
+        return false;
+    }
+    
+    if (itemCount == 0) {
+        free(items);
+        ttf.drawTextAligned(display.width() / 2, display.height() / 2,
+                           "No Items in Feed", 48.0f,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        display.update();
+        return false;
+    }
+    
+    // Use title override if provided
+    if (titleOverride && strlen(titleOverride) > 0) {
+        strncpy(feedTitle, titleOverride, sizeof(feedTitle) - 1);
+        feedTitle[sizeof(feedTitle) - 1] = '\0';
+    }
+    
+    // Strip HTML from descriptions
+    for (int i = 0; i < itemCount; i++) {
+        stripHtmlTags(items[i].title);
+        stripHtmlTags(items[i].description);
+    }
+    
+    // Layout - use content bounds with 30px padding
+    const int16_t FEED_PADDING = 30;
+    ContentBounds bounds = getContentBounds(display.width(), display.height(), FEED_PADDING);
+    
+    const int16_t leftMargin = bounds.left;
+    const int16_t rightMargin = bounds.right;
+    const int16_t topMargin = bounds.top;
+    const int16_t bottomMargin = bounds.bottom;
+    const int16_t contentWidth = rightMargin - leftMargin;
+    
+    // Draw feed title at top
+    const float titleFontSize = 56.0f;
+    const float itemTitleFontSize = 36.0f;
+    const float descFontSize = 28.0f;
+    
+    int16_t y = topMargin + 40;
+    
+    if (feedTitle[0] != '\0') {
+        // Truncate title if too wide
+        char displayTitle[128];
+        strncpy(displayTitle, feedTitle, sizeof(displayTitle) - 1);
+        displayTitle[sizeof(displayTitle) - 1] = '\0';
+        
+        while (ttf.getTextWidth(displayTitle, titleFontSize) > contentWidth && strlen(displayTitle) > 3) {
+            displayTitle[strlen(displayTitle) - 4] = '\0';
+            strcat(displayTitle, "...");
+        }
+        
+        ttf.drawTextAligned(display.width() / 2, y, displayTitle, titleFontSize,
+                           EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
+        y += 80;
+        
+        // Draw separator line
+        for (int16_t x = leftMargin; x < rightMargin; x++) {
+            display.setPixelARGB(x, y, EL133UF1_DARK_GRAY);
+        }
+        y += 30;
+    }
+    
+    // Calculate space available for items
+    int16_t availableHeight = bottomMargin - y - 60;  // Leave room for timestamp
+    int16_t itemHeight = availableHeight / itemCount;
+    itemHeight = min(itemHeight, (int16_t)180);  // Cap item height
+    
+    // Draw items
+    for (int i = 0; i < itemCount && y < bottomMargin - 80; i++) {
+        // Draw item number/bullet
+        char bullet[8];
+        snprintf(bullet, sizeof(bullet), "%d.", i + 1);
+        ttf.drawTextAligned(leftMargin, y, bullet, itemTitleFontSize,
+                           EL133UF1_DARK_GRAY, ALIGN_LEFT, ALIGN_TOP);
+        
+        // Draw item title (with word wrap if needed)
+        char title[256];
+        strncpy(title, items[i].title, sizeof(title) - 1);
+        title[sizeof(title) - 1] = '\0';
+        
+        int16_t titleX = leftMargin + 50;
+        int16_t titleWidth = rightMargin - titleX;
+        
+        // Simple word wrap for title
+        int16_t titleY = y;
+        char* word = strtok(title, " ");
+        char line[128] = "";
+        
+        while (word) {
+            char testLine[128];
+            if (line[0] == '\0') {
+                strncpy(testLine, word, sizeof(testLine) - 1);
+            } else {
+                snprintf(testLine, sizeof(testLine), "%s %s", line, word);
+            }
+            testLine[sizeof(testLine) - 1] = '\0';
+            
+            if (ttf.getTextWidth(testLine, itemTitleFontSize) > titleWidth) {
+                // Draw current line and start new one
+                if (line[0] != '\0') {
+                    ttf.drawTextAligned(titleX, titleY, line, itemTitleFontSize,
+                                       EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
+                    titleY += 44;
+                }
+                strncpy(line, word, sizeof(line) - 1);
+            } else {
+                strncpy(line, testLine, sizeof(line) - 1);
+            }
+            line[sizeof(line) - 1] = '\0';
+            word = strtok(NULL, " ");
+        }
+        // Draw remaining text
+        if (line[0] != '\0') {
+            ttf.drawTextAligned(titleX, titleY, line, itemTitleFontSize,
+                               EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
+            titleY += 44;
+        }
+        
+        // Draw description (truncated, single line)
+        if (items[i].description[0] != '\0' && titleY < y + itemHeight - 30) {
+            char desc[256];
+            strncpy(desc, items[i].description, sizeof(desc) - 1);
+            desc[sizeof(desc) - 1] = '\0';
+            
+            // Truncate to fit
+            while (ttf.getTextWidth(desc, descFontSize) > titleWidth && strlen(desc) > 3) {
+                desc[strlen(desc) - 4] = '\0';
+                strcat(desc, "...");
+            }
+            
+            ttf.drawTextAligned(titleX, titleY, desc, descFontSize,
+                               EL133UF1_DARK_GRAY, ALIGN_LEFT, ALIGN_TOP);
+        }
+        
+        y += itemHeight;
+    }
+    
+    // Draw update time at bottom
+    time_t now;
+    time(&now);
+    struct tm* timeinfo = localtime(&now);
+    char timeBuf[64];
+    strftime(timeBuf, sizeof(timeBuf), "Updated %H:%M", timeinfo);
+    
+    ttf.drawTextAligned(rightMargin, bottomMargin - 30, timeBuf, 28.0f,
+                       EL133UF1_DARK_GRAY, ALIGN_RIGHT, ALIGN_MIDDLE);
+    
+    // Free items
+    free(items);
+    
+    // Update display
+    Serial.println("Updating display...");
+    display.update();
+    display.waitForUpdate();
+    Serial.printf("Feed scene displayed: %d items\n", itemCount);
+    
+    return true;
+}
+
 /**
  * Display calibration test pattern for screen margins
  * Shows visual indicators to help calibrate display safe area

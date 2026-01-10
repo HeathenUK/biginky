@@ -2783,6 +2783,9 @@ static void auto_cycle_task(void* arg) {
         case ScheduleAction::SCHEDULE_SWIM_CONDITIONS:
             actionName = "SWIM_CONDITIONS";
             break;
+        case ScheduleAction::SCHEDULE_FEED:
+            actionName = "FEED";
+            break;
     }
     Serial.printf("Schedule action: %s (hour=%d, minute=%d)\n", actionName, currentHour, currentMinute);
     if (action == ScheduleAction::SCHEDULE_DISABLED) {
@@ -3154,6 +3157,78 @@ static void auto_cycle_task(void* arg) {
         bool success = displaySwimConditionsScene();
         if (!success) {
             Serial.println("ERROR: Failed to display swim conditions");
+        }
+        
+        // Always send status update
+        vTaskDelay(1);
+        
+        // Check for and process commands AFTER scheduled activity completes
+        doMqttCheckCycle(time_ok, isTopOfHour, currentHour);
+        
+        // Sleep until next minute
+        Serial.println("Sleeping until next minute...");
+        if (time_ok) {
+            sleepUntilNextMinuteOrFallback(kCycleSleepSeconds);
+        } else {
+            sleepNowSeconds(kCycleSleepSeconds);
+        }
+        // Never returns - device enters deep sleep
+        return;
+    }
+    
+    // Handle scheduled feed scene
+    if (action == ScheduleAction::SCHEDULE_FEED) {
+        String parameter = getScheduleSlotParameter(currentHour, currentMinute);
+        Serial.printf("=== Scheduled feed scene: %s ===\n", parameter.c_str());
+        
+        // Do NTP resync first (if needed) to ensure accurate time
+        doNtpResyncIfNeeded(time_ok);
+        
+        // Update time variables after potential NTP sync
+        now = time(nullptr);
+        if (now > 1577836800) {
+            gmtime_r(&now, &tm_utc);
+            isTopOfHour = (tm_utc.tm_min == 0);
+            currentHour = tm_utc.tm_hour;
+            currentMinute = tm_utc.tm_min;
+            time_ok = true;
+        }
+        
+        // Parse parameter JSON (expects: {"url": "...", "count": 5, "title": "..."})
+        String feedUrl = "";
+        int feedCount = 5;
+        String feedTitle = "";
+        
+        if (parameter.length() > 0) {
+            cJSON* paramRoot = cJSON_Parse(parameter.c_str());
+            if (paramRoot) {
+                cJSON* urlItem = cJSON_GetObjectItem(paramRoot, "url");
+                if (urlItem && cJSON_IsString(urlItem)) {
+                    feedUrl = urlItem->valuestring;
+                }
+                cJSON* countItem = cJSON_GetObjectItem(paramRoot, "count");
+                if (countItem && cJSON_IsNumber(countItem)) {
+                    feedCount = countItem->valueint;
+                }
+                cJSON* titleItem = cJSON_GetObjectItem(paramRoot, "title");
+                if (titleItem && cJSON_IsString(titleItem)) {
+                    feedTitle = titleItem->valuestring;
+                }
+                cJSON_Delete(paramRoot);
+            } else {
+                // If not JSON, treat entire parameter as URL
+                feedUrl = parameter;
+            }
+        }
+        
+        bool success = false;
+        if (feedUrl.length() > 0) {
+            success = displayFeedScene(feedUrl.c_str(), feedCount, 
+                                       feedTitle.length() > 0 ? feedTitle.c_str() : nullptr);
+        }
+        
+        if (!success) {
+            Serial.println("ERROR: Failed to display feed scene");
         }
         
         // Always send status update
@@ -4466,6 +4541,9 @@ static void serial_monitor_task(void* arg) {
                                     break;
                                 case ScheduleAction::SCHEDULE_SWIM_CONDITIONS:
                                     sceneStr = "swim_conditions";
+                                    break;
+                                case ScheduleAction::SCHEDULE_FEED:
+                                    sceneStr = "feed";
                                     break;
                                 default:
                                     sceneStr = "none";

@@ -163,15 +163,17 @@ bool wifiAddNetwork(const char* ssid, const char* psk, bool hidden, bool enabled
     // Check if network already exists (update it)
     for (int i = 0; i < g_wifiNetworkCount; i++) {
         if (strcmp(g_wifiNetworks[i].ssid, ssid) == 0) {
-            // Update existing
-            if (psk) {
+            // Update existing - only update password if a non-empty one is provided
+            // This allows "save all" to preserve existing passwords when loading shows blank
+            if (psk && strlen(psk) > 0) {
                 strncpy(g_wifiNetworks[i].psk, psk, sizeof(g_wifiNetworks[i].psk) - 1);
                 g_wifiNetworks[i].psk[sizeof(g_wifiNetworks[i].psk) - 1] = '\0';
             }
             g_wifiNetworks[i].hidden = hidden;
             g_wifiNetworks[i].enabled = enabled;
             saveNetworksToNVS();
-            Serial.printf("Updated WiFi network: %s\n", ssid);
+            Serial.printf("Updated WiFi network: %s (password %s)\n", ssid, 
+                         (psk && strlen(psk) > 0) ? "updated" : "preserved");
             return true;
         }
     }

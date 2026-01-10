@@ -990,10 +990,8 @@ static void sleepNowSeconds(uint32_t seconds) {
  * This function is defined here (before sleepUntilNextMinuteOrFallback) so it can be used there
  */
 bool isHourEnabled(int hour) {
-    if (hour < 0 || hour >= 24) {
-        return true;  // Invalid hour, default to enabled
-    }
-    return g_hour_schedule[hour];
+    // Use schedule_manager as single source of truth for hour enable/disable
+    return isHourEnabledInSchedule(hour);
 }
 
 static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSleepSeconds) {
@@ -2020,9 +2018,7 @@ void setMediaIndexMode(MediaIndexMode mode);  // Set mode (sequential/shuffle)
 MediaIndexMode getMediaIndexMode();  // Get current mode
 uint8_t getMediaIndexModeAsInt();  // Get current mode as integer (0=SEQUENTIAL, 1=SHUFFLE) - for use in other compilation units
 void setMediaIndexModeFromInt(uint8_t modeValue);  // Set mode from integer (0=SEQUENTIAL, 1=SHUFFLE) - for command dispatcher
-void hourScheduleLoadFromNVS();  // Load hour schedule from NVS (called on startup)
-void hourScheduleSaveToNVS();  // Save hour schedule to NVS
-bool isHourEnabled(int hour);  // Check if a specific hour (0-23) is enabled for waking (defined after hourScheduleLoadFromNVS)
+bool isHourEnabled(int hour);  // Check if a specific hour (0-23) is enabled - delegates to schedule_manager
 bool isNumberAllowed(const String& number);  // Check if number is in allowed list
 bool addAllowedNumber(const String& number);  // Add number to allowed list in NVS
 bool removeAllowedNumber(const String& number);  // Remove number from allowed list in NVS
@@ -5256,22 +5252,18 @@ static bool deleteSDFile(const char* filename) {
 static String getDeviceSettingsJSON() {
     String json = "{";
     json += "\"volume\":" + String(g_audio_volume_pct) + ",";
-    json += "\"sleepInterval\":" + String(g_sleep_interval_minutes) + ",";
-    json += "\"hourSchedule\":\"";
-    for (int i = 0; i < 24; i++) {
-        json += (g_hour_schedule[i] ? "1" : "0");
-    }
-    json += "\"";
+    json += "\"sleepInterval\":" + String(g_sleep_interval_minutes);
+    // Note: hourSchedule removed - use /api/schedule for detailed schedule management
     json += "}";
     return json;
 }
 
 
 static bool updateDeviceSettings(const String& json) {
-    // Simple JSON parsing for volume, sleepInterval, and hourSchedule
+    // Simple JSON parsing for volume and sleepInterval
+    // Note: hourSchedule removed - use /api/schedule for detailed schedule management
     int volumeStart = json.indexOf("\"volume\":");
     int sleepStart = json.indexOf("\"sleepInterval\":");
-    int hourScheduleStart = json.indexOf("\"hourSchedule\":");
     
     if (volumeStart >= 0) {
         int colonPos = json.indexOf(':', volumeStart);
@@ -5309,21 +5301,497 @@ static bool updateDeviceSettings(const String& json) {
         }
     }
     
-    if (hourScheduleStart >= 0) {
-        // Extract hourSchedule field using json_utils.h
-        String scheduleStr = extractJsonStringField(json, "hourSchedule");
-        if (scheduleStr.length() == 24) {
-            // Parse the schedule string
-            for (int i = 0; i < 24; i++) {
-                g_hour_schedule[i] = (scheduleStr.charAt(i) == '1');
-            }
-            hourScheduleSaveToNVS();
-            Serial.println("Hour schedule updated");
-        }
-    }
-    
     return true;
 }
+
+// ============================================================================
+// Configuration Backup/Restore Functions
+// ============================================================================
+
+/**
+ * Get all allowed phone numbers as a cJSON array
+ * Helper function for config export
+ */
+static cJSON* getAllowedNumbersJSON() {
+    cJSON* arr = cJSON_CreateArray();
+    if (!arr) {
+        Serial.println("ERROR: Failed to create JSON array for allowed numbers");
+        return nullptr;
+    }
+
+    // Open NVS for reading allowed numbers
+    Preferences numbersPrefs;
+    if (!numbersPrefs.begin("numbers", true)) { // Read-only
+        Serial.println("WARNING: Failed to open NVS for allowed numbers - returning empty array");
+        return arr;
+    }
+
+    int count = numbersPrefs.getInt("count", 0);
+    for (int i = 0; i < count && i < 100; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "num%d", i);
+        String number = numbersPrefs.getString(key, "");
+        if (number.length() > 0) {
+            cJSON_AddItemToArray(arr, cJSON_CreateString(number.c_str()));
+        }
+    }
+    numbersPrefs.end();
+    return arr;
+}
+
+/**
+ * Export all NVS configuration as a JSON string.
+ * Includes volume, media settings, sleep interval, schedule, allowed numbers, and WiFi credentials.
+ * @return JSON string with all configuration, or error JSON on failure.
+ */
+String exportConfigJSON() {
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        Serial.println("ERROR: Failed to create JSON root for config export");
+        return "{\"error\":\"Internal JSON error\"}";
+    }
+
+    cJSON_AddNumberToObject(root, "version", 1);
+    
+    // Get current timestamp in ISO 8601 format
+    time_t now = time(nullptr);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    char timestamp_buf[32];
+    strftime(timestamp_buf, sizeof(timestamp_buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    cJSON_AddStringToObject(root, "created", timestamp_buf);
+
+    // Add individual config items
+    cJSON_AddNumberToObject(root, "volume", g_audio_volume_pct);
+    cJSON_AddNumberToObject(root, "media_mode", getMediaIndexModeValue());
+    cJSON_AddNumberToObject(root, "media_index", lastMediaIndex);
+    cJSON_AddNumberToObject(root, "sleep_interval", g_sleep_interval_minutes);
+    cJSON_AddBoolToObject(root, "timeout_disabled", getManageTimeoutDisabled());
+    cJSON_AddBoolToObject(root, "encryption_enabled", isEncryptionEnabled());
+
+    // Add detailed schedule
+    String detailedScheduleJson = getDetailedScheduleJSON();
+    if (!detailedScheduleJson.startsWith("{\"error\"")) {
+        cJSON* scheduleObj = cJSON_Parse(detailedScheduleJson.c_str());
+        if (scheduleObj) {
+            cJSON_AddItemToObject(root, "detailed_schedule", scheduleObj);
+        }
+    }
+
+    // Add allowed numbers
+    cJSON* allowedNumbers = getAllowedNumbersJSON();
+    if (allowedNumbers) {
+        cJSON_AddItemToObject(root, "allowed_numbers", allowedNumbers);
+    }
+
+    // Add WiFi credentials
+    cJSON_AddStringToObject(root, "wifi_ssid", wifiSSID);
+    cJSON_AddStringToObject(root, "wifi_psk", wifiPSK);
+
+    char* jsonStr = cJSON_PrintUnformatted(root);
+    String result = "";
+    if (jsonStr) {
+        result = String(jsonStr);
+        free(jsonStr);
+    } else {
+        Serial.println("ERROR: Failed to convert config to JSON string");
+        result = "{\"error\":\"Failed to serialize config\"}";
+    }
+    cJSON_Delete(root);
+
+    Serial.printf("Config export: %d bytes\n", result.length());
+    return result;
+}
+
+/**
+ * Import NVS configuration from a JSON string.
+ * Robust to missing or extra fields - uses current values for missing fields.
+ * @param json The JSON configuration string.
+ * @return True on success, false on failure.
+ */
+bool importConfigJSON(const String& json) {
+    cJSON* root = cJSON_Parse(json.c_str());
+    if (!root) {
+        Serial.println("ERROR: Failed to parse config JSON for import");
+        return false;
+    }
+
+    Serial.println("Importing configuration...");
+    cJSON* item;
+
+    // Volume
+    item = cJSON_GetObjectItem(root, "volume");
+    if (item && cJSON_IsNumber(item)) {
+        int v = (int)cJSON_GetNumberValue(item);
+        if (v >= 0 && v <= 100) {
+            g_audio_volume_pct = v;
+            volumeSaveToNVS();
+            Serial.printf("  Restored volume: %d%%\n", v);
+        }
+    }
+
+    // Media Mode
+    item = cJSON_GetObjectItem(root, "media_mode");
+    if (item && cJSON_IsNumber(item)) {
+        uint8_t mode = (uint8_t)cJSON_GetNumberValue(item);
+        if (mode <= 1) {
+            setMediaIndexModeValue(mode);
+            mediaIndexModeSaveToNVS();
+            Serial.printf("  Restored media mode: %s\n", (mode == 1) ? "SHUFFLE" : "SEQUENTIAL");
+        }
+    }
+
+    // Media Index
+    item = cJSON_GetObjectItem(root, "media_index");
+    if (item && cJSON_IsNumber(item)) {
+        uint32_t index = (uint32_t)cJSON_GetNumberValue(item);
+        lastMediaIndex = index;
+        mediaIndexSaveToNVS();
+        Serial.printf("  Restored media index: %lu\n", (unsigned long)index);
+    }
+
+    // Sleep Interval
+    item = cJSON_GetObjectItem(root, "sleep_interval");
+    if (item && cJSON_IsNumber(item)) {
+        uint8_t interval = (uint8_t)cJSON_GetNumberValue(item);
+        if (interval > 0 && interval <= 60 && (60 % interval == 0)) {
+            g_sleep_interval_minutes = interval;
+            sleepDurationSaveToNVS();
+            Serial.printf("  Restored sleep interval: %d minutes\n", interval);
+        }
+    }
+
+    // Management Timeout Disabled
+    item = cJSON_GetObjectItem(root, "timeout_disabled");
+    if (item && cJSON_IsBool(item)) {
+        bool disabled = cJSON_IsTrue(item);
+        setManageTimeoutDisabled(disabled);
+        manageTimeoutDisabledSaveToNVS();
+        Serial.printf("  Restored timeout disabled: %s\n", disabled ? "true" : "false");
+    }
+
+    // Encryption Enabled
+    item = cJSON_GetObjectItem(root, "encryption_enabled");
+    if (item && cJSON_IsBool(item)) {
+        bool enabled = cJSON_IsTrue(item);
+        setEncryptionEnabled(enabled);
+        Serial.printf("  Restored encryption: %s\n", enabled ? "ENABLED" : "DISABLED");
+    }
+
+    // Detailed Schedule
+    item = cJSON_GetObjectItem(root, "detailed_schedule");
+    if (item && cJSON_IsObject(item)) {
+        char* scheduleStr = cJSON_PrintUnformatted(item);
+        if (scheduleStr) {
+            if (updateDetailedScheduleFromJSON(String(scheduleStr))) {
+                Serial.println("  Restored detailed schedule");
+            }
+            free(scheduleStr);
+        }
+    }
+
+    // Allowed Numbers
+    item = cJSON_GetObjectItem(root, "allowed_numbers");
+    if (item && cJSON_IsArray(item)) {
+        // Clear existing numbers first
+        Preferences numbersPrefs;
+        if (numbersPrefs.begin("numbers", false)) {
+            numbersPrefs.clear();
+            numbersPrefs.end();
+        }
+
+        int arraySize = cJSON_GetArraySize(item);
+        int addedCount = 0;
+        for (int i = 0; i < arraySize; i++) {
+            cJSON* numItem = cJSON_GetArrayItem(item, i);
+            if (numItem && cJSON_IsString(numItem)) {
+                String number = cJSON_GetStringValue(numItem);
+                if (number != "+447816969344") { // Don't add hardcoded number
+                    if (addAllowedNumber(number)) {
+                        addedCount++;
+                    }
+                }
+            }
+        }
+        Serial.printf("  Restored %d allowed numbers\n", addedCount);
+    }
+
+    // WiFi Credentials
+    String restoredSsid = "";
+    String restoredPsk = "";
+
+    item = cJSON_GetObjectItem(root, "wifi_ssid");
+    if (item && cJSON_IsString(item)) {
+        restoredSsid = cJSON_GetStringValue(item);
+    }
+    item = cJSON_GetObjectItem(root, "wifi_psk");
+    if (item && cJSON_IsString(item)) {
+        restoredPsk = cJSON_GetStringValue(item);
+    }
+
+    if (restoredSsid.length() > 0) {
+        strncpy(wifiSSID, restoredSsid.c_str(), sizeof(wifiSSID) - 1);
+        wifiSSID[sizeof(wifiSSID) - 1] = '\0';
+        strncpy(wifiPSK, restoredPsk.c_str(), sizeof(wifiPSK) - 1);
+        wifiPSK[sizeof(wifiPSK) - 1] = '\0';
+        wifiSaveCredentials();
+        Serial.printf("  Restored WiFi credentials for SSID: %s\n", wifiSSID);
+    }
+
+    cJSON_Delete(root);
+    Serial.println("Configuration import complete");
+    return true;
+}
+
+
+// ============================================================================
+// Configuration Backup/Restore Functions
+// ============================================================================
+
+/**
+ * Get all allowed phone numbers as a cJSON array
+ * Helper function for config export
+ */
+static cJSON* getAllowedNumbersJSON() {
+    cJSON* arr = cJSON_CreateArray();
+    if (!arr) {
+        Serial.println("ERROR: Failed to create JSON array for allowed numbers");
+        return nullptr;
+    }
+
+    // Open NVS for reading allowed numbers
+    Preferences numbersPrefs;
+    if (!numbersPrefs.begin("numbers", true)) { // Read-only
+        Serial.println("WARNING: Failed to open NVS for allowed numbers - returning empty array");
+        return arr;
+    }
+
+    int count = numbersPrefs.getInt("count", 0);
+    for (int i = 0; i < count && i < 100; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "num%d", i);
+        String number = numbersPrefs.getString(key, "");
+        if (number.length() > 0) {
+            cJSON_AddItemToArray(arr, cJSON_CreateString(number.c_str()));
+        }
+    }
+    numbersPrefs.end();
+    return arr;
+}
+
+/**
+ * Export all NVS configuration as a JSON string.
+ * Includes WiFi credentials, media index, schedule, and allowed numbers.
+ * This returns UNENCRYPTED JSON - caller is responsible for encryption.
+ * @return JSON string or error JSON on failure.
+ */
+String exportConfigJSON() {
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        Serial.println("ERROR: Failed to create JSON root for config export");
+        return "{\"error\":\"Internal JSON error\"}";
+    }
+
+    cJSON_AddNumberToObject(root, "version", 1);
+    // Get current timestamp in ISO 8601 format
+    time_t now = time(nullptr);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    char timestamp_buf[32];
+    strftime(timestamp_buf, sizeof(timestamp_buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    cJSON_AddStringToObject(root, "created", timestamp_buf);
+
+    // Add individual config items
+    cJSON_AddNumberToObject(root, "volume", g_audio_volume_pct);
+    cJSON_AddNumberToObject(root, "media_mode", getMediaIndexModeValue());
+    cJSON_AddNumberToObject(root, "media_index", lastMediaIndex);
+    cJSON_AddNumberToObject(root, "sleep_interval", g_sleep_interval_minutes);
+    cJSON_AddBoolToObject(root, "timeout_disabled", getManageTimeoutDisabled());
+    cJSON_AddBoolToObject(root, "encryption_enabled", isEncryptionEnabled());
+
+    // Add detailed schedule
+    String detailedScheduleJson = getDetailedScheduleJSON();
+    if (!detailedScheduleJson.startsWith("{\"error\"")) {
+        cJSON* scheduleObj = cJSON_Parse(detailedScheduleJson.c_str());
+        if (scheduleObj) {
+            cJSON_AddItemToObject(root, "detailed_schedule", scheduleObj);
+        }
+    }
+
+    // Add allowed numbers
+    cJSON* allowedNumbers = getAllowedNumbersJSON();
+    if (allowedNumbers) {
+        cJSON_AddItemToObject(root, "allowed_numbers", allowedNumbers);
+    }
+
+    // Add WiFi credentials
+    cJSON_AddStringToObject(root, "wifi_ssid", wifiSSID);
+    cJSON_AddStringToObject(root, "wifi_psk", wifiPSK);
+
+    char* jsonStr = cJSON_Print(root);
+    String result = "";
+    if (jsonStr) {
+        result = String(jsonStr);
+        free(jsonStr);
+    } else {
+        Serial.println("ERROR: Failed to convert config to JSON string");
+        result = "{\"error\":\"Failed to convert to JSON\"}";
+    }
+    cJSON_Delete(root);
+
+    return result;
+}
+
+/**
+ * Import NVS configuration from a JSON string.
+ * Robust to missing/extra fields - missing fields retain current values.
+ * @param json The plain JSON string (already decrypted by caller).
+ * @return True on success, false on failure.
+ */
+bool importConfigJSON(const String& json) {
+    cJSON* root = cJSON_Parse(json.c_str());
+    if (!root) {
+        Serial.println("ERROR: Failed to parse config JSON for import");
+        return false;
+    }
+
+    Serial.println("Importing configuration from backup...");
+
+    // Apply settings - robust to missing/extra fields
+    cJSON* item;
+    bool success = true;
+
+    // Volume
+    item = cJSON_GetObjectItem(root, "volume");
+    if (item && cJSON_IsNumber(item)) {
+        int v = (int)cJSON_GetNumberValue(item);
+        if (v >= 0 && v <= 100) {
+            g_audio_volume_pct = v;
+            volumeSaveToNVS();
+            Serial.printf("Restored volume to %d%%\n", v);
+        } else {
+            Serial.printf("WARNING: Invalid volume value in backup: %d\n", v);
+        }
+    }
+
+    // Media Mode
+    item = cJSON_GetObjectItem(root, "media_mode");
+    if (item && cJSON_IsNumber(item)) {
+        uint8_t mode = (uint8_t)cJSON_GetNumberValue(item);
+        if (mode == 0 || mode == 1) {
+            setMediaIndexModeValue(mode);
+            mediaIndexModeSaveToNVS();
+            Serial.printf("Restored media mode to %s\n", (mode == 1) ? "SHUFFLE" : "SEQUENTIAL");
+        } else {
+            Serial.printf("WARNING: Invalid media mode value in backup: %d\n", mode);
+        }
+    }
+
+    // Media Index
+    item = cJSON_GetObjectItem(root, "media_index");
+    if (item && cJSON_IsNumber(item)) {
+        uint32_t index = (uint32_t)cJSON_GetNumberValue(item);
+        lastMediaIndex = index;
+        mediaIndexSaveToNVS();
+        Serial.printf("Restored media index to %lu\n", (unsigned long)index);
+    }
+
+    // Sleep Interval
+    item = cJSON_GetObjectItem(root, "sleep_interval");
+    if (item && cJSON_IsNumber(item)) {
+        uint8_t interval = (uint8_t)cJSON_GetNumberValue(item);
+        if (interval > 0 && interval <= 60 && (60 % interval == 0)) {
+            g_sleep_interval_minutes = interval;
+            sleepDurationSaveToNVS();
+            Serial.printf("Restored sleep interval to %d minutes\n", interval);
+        } else {
+            Serial.printf("WARNING: Invalid sleep interval value in backup: %d\n", interval);
+        }
+    }
+
+    // Management Timeout Disabled
+    item = cJSON_GetObjectItem(root, "timeout_disabled");
+    if (item && cJSON_IsBool(item)) {
+        bool disabled = cJSON_IsTrue(item);
+        setManageTimeoutDisabled(disabled);
+        manageTimeoutDisabledSaveToNVS();
+        Serial.printf("Restored management timeout disabled state to %s\n", disabled ? "true" : "false");
+    }
+
+    // Encryption Enabled
+    item = cJSON_GetObjectItem(root, "encryption_enabled");
+    if (item && cJSON_IsBool(item)) {
+        bool enabled = cJSON_IsTrue(item);
+        setEncryptionEnabled(enabled);
+        Serial.printf("Restored encryption enabled state to %s\n", enabled ? "true" : "false");
+    }
+
+    // Detailed Schedule
+    item = cJSON_GetObjectItem(root, "detailed_schedule");
+    if (item && cJSON_IsObject(item)) {
+        char* scheduleJson = cJSON_Print(item);
+        if (scheduleJson) {
+            if (updateDetailedScheduleFromJSON(String(scheduleJson))) {
+                Serial.println("Restored detailed schedule.");
+            } else {
+                Serial.println("WARNING: Failed to restore detailed schedule.");
+            }
+            free(scheduleJson);
+        }
+    }
+
+    // Allowed Numbers
+    item = cJSON_GetObjectItem(root, "allowed_numbers");
+    if (item && cJSON_IsArray(item)) {
+        // Clear existing numbers first
+        Preferences numbersPrefs;
+        if (numbersPrefs.begin("numbers", false)) { // Read-write
+            numbersPrefs.clear(); // Clear all custom numbers
+            numbersPrefs.end();
+        }
+
+        int arraySize = cJSON_GetArraySize(item);
+        for (int i = 0; i < arraySize; i++) {
+            cJSON* numItem = cJSON_GetArrayItem(item, i);
+            if (numItem && cJSON_IsString(numItem)) {
+                String number = cJSON_GetStringValue(numItem);
+                if (number != "+447816969344") { // Don't add hardcoded number if it's in backup
+                    addAllowedNumber(number); // This saves to NVS
+                }
+            }
+        }
+        Serial.printf("Restored %d allowed numbers.\n", arraySize);
+    }
+
+    // WiFi Credentials
+    String restoredSsid = "";
+    String restoredPsk = "";
+
+    item = cJSON_GetObjectItem(root, "wifi_ssid");
+    if (item && cJSON_IsString(item)) {
+        restoredSsid = cJSON_GetStringValue(item);
+    }
+    item = cJSON_GetObjectItem(root, "wifi_psk");
+    if (item && cJSON_IsString(item)) {
+        restoredPsk = cJSON_GetStringValue(item);
+    }
+
+    if (restoredSsid.length() > 0) {
+        strncpy(wifiSSID, restoredSsid.c_str(), sizeof(wifiSSID) - 1);
+        wifiSSID[sizeof(wifiSSID) - 1] = '\0';
+        strncpy(wifiPSK, restoredPsk.c_str(), sizeof(wifiPSK) - 1);
+        wifiPSK[sizeof(wifiPSK) - 1] = '\0';
+        wifiSaveCredentials();
+        Serial.printf("Restored WiFi credentials for SSID: %s\n", wifiSSID);
+    } else {
+        Serial.println("WARNING: No WiFi SSID found in backup, skipping WiFi credentials restore.");
+    }
+
+    cJSON_Delete(root);
+    Serial.println("Configuration import complete.");
+    return success;
+}
+
 
 
 
@@ -12342,10 +12810,8 @@ void setup() {
     // Load sleep duration interval from NVS
     sleepDurationLoadFromNVS();
     
-    // Load hour schedule from NVS
-    hourScheduleLoadFromNVS();
-    
     // Load detailed schedule (slots + scenes) from NVS
+    // Note: hour schedule now embedded in detailed schedule - no separate hourScheduleLoadFromNVS call
     detailedScheduleLoadFromNVS();
     
     // Load management interface timeout disabled state from NVS

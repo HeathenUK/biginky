@@ -1139,10 +1139,16 @@ function updateConfigBackupUI(configAvailable) {
 }
 
 // Export configuration from cached media mappings (no command needed!)
-function requestConfigBackup() {
+// Config is ENCRYPTED before saving to protect sensitive data (WiFi credentials, etc.)
+async function requestConfigBackup() {
     // Use cached config from media mappings - no need to request from device
     if (!cachedDeviceConfig) {
         showStatus('configBackupStatus', 'No configuration available. Wait for media mappings to load.', true);
+        return;
+    }
+    
+    if (!webUIPassword) {
+        showStatus('configBackupStatus', 'Error: Password required to encrypt backup', true);
         return;
     }
     
@@ -1155,23 +1161,57 @@ function requestConfigBackup() {
         return;
     }
     
-    // Create downloadable blob from cached config data
-    const configJson = JSON.stringify(cachedDeviceConfig, null, 2);
-    const blob = new Blob([configJson], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+    showStatus('configBackupStatus', 'Encrypting configuration...', false);
     
-    // Generate filename with timestamp
-    const now = new Date();
-    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
-    const filename = `biginky_config_${timestamp}.backup`;
-    
-    configDownloadLink.href = url;
-    configDownloadLink.download = filename;
-    configDownloadLink.textContent = `Download ${filename}`;
-    configBackupDownload.style.display = 'block';
-    
-    showStatus('configBackupStatus', 'Configuration backup ready for download!', false);
-    console.log('Config export prepared from cached media mappings data');
+    try {
+        // Encrypt the config JSON (contains sensitive data like WiFi credentials)
+        const configJson = JSON.stringify(cachedDeviceConfig);
+        const encryptedPayload = await encryptMessage(configJson);
+        
+        if (!encryptedPayload) {
+            showStatus('configBackupStatus', 'Error: Failed to encrypt configuration', true);
+            return;
+        }
+        
+        // Create encrypted message structure (same format firmware uses)
+        const encryptedMessage = {
+            encrypted: true,
+            payload: encryptedPayload
+        };
+        
+        // Compute HMAC for integrity verification
+        const messageForHMAC = JSON.stringify(encryptedMessage);
+        const hmac = await computeHMAC(messageForHMAC);
+        
+        if (!hmac) {
+            showStatus('configBackupStatus', 'Error: Failed to compute HMAC', true);
+            return;
+        }
+        
+        // Add HMAC to encrypted message
+        encryptedMessage.hmac = hmac;
+        
+        // Create downloadable blob from ENCRYPTED config
+        const encryptedJson = JSON.stringify(encryptedMessage, null, 2);
+        const blob = new Blob([encryptedJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        
+        // Generate filename with timestamp
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const filename = `biginky_config_${timestamp}.backup`;
+        
+        configDownloadLink.href = url;
+        configDownloadLink.download = filename;
+        configDownloadLink.textContent = `Download ${filename}`;
+        configBackupDownload.style.display = 'block';
+        
+        showStatus('configBackupStatus', 'Encrypted configuration backup ready for download!', false);
+        console.log('Config export prepared (encrypted) from cached media mappings data');
+    } catch (error) {
+        console.error('Config backup encryption error:', error);
+        showStatus('configBackupStatus', 'Error encrypting configuration: ' + error.message, true);
+    }
 }
 
 // Legacy handler - kept for backward compatibility but no longer used
@@ -1205,17 +1245,18 @@ async function handleConfigImport(event) {
                 return;
             }
             
-            // Check if this is a plaintext config (new format from media_mappings)
+            // Check if this is an encrypted backup (standard format)
+            // Encrypted backups have: {encrypted: true, payload: "...", hmac: "..."}
+            const isEncryptedBackup = parsed.encrypted !== undefined && 
+                                      parsed.payload !== undefined;
+            
+            // Check if this is a legacy plaintext config (for backward compatibility)
             // Plaintext configs have fields like: version, volume, media_mode, sleep_interval, etc.
             const isPlaintextConfig = parsed.version !== undefined || 
                                       parsed.volume !== undefined || 
                                       parsed.sleep_interval !== undefined;
             
-            // Check if this is an encrypted backup (old format)
-            const isEncryptedBackup = parsed.encrypted !== undefined && 
-                                      parsed.payload !== undefined;
-            
-            if (!isPlaintextConfig && !isEncryptedBackup) {
+            if (!isEncryptedBackup && !isPlaintextConfig) {
                 showStatus('configBackupStatus', 'Error: Invalid backup file format (not a valid config file)', true);
                 document.getElementById('configFileInput').value = '';
                 return;
@@ -1223,7 +1264,7 @@ async function handleConfigImport(event) {
             
             showStatus('configBackupStatus', 'Sending configuration to device for restore...', false);
             
-            // Send config to device - it handles both formats
+            // Send config to device - firmware decrypts encrypted backups
             const payload = {
                 command: 'config_set',
                 config: parsed  // Send the config (plaintext or encrypted)

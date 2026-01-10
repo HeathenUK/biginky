@@ -907,11 +907,12 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
     int16_t quoteW, quoteH;
     quoteElement.getDimensions(quoteW, quoteH);
     float quoteScale = 1.0f;
-    // Use visible bounds (bezel only) for quote scaling - quotes can go closer to edge
-    VisibleBounds visBounds = getVisibleBounds(1600, 1200);
-    int16_t verticalPadding = (1200 - visBounds.height);  // Total bezel
+    // Use content bounds with 30px padding for quotes
+    const int16_t QUOTE_PADDING = 30;
+    ContentBounds quoteBounds = getContentBounds(1600, 1200, QUOTE_PADDING);
+    int16_t verticalPadding = (1200 - quoteBounds.height);  // Total bezel + padding
     int16_t quoteHeightMargin = quoteOnTop ? verticalPadding : (verticalPadding + 10);
-    int16_t quoteWidthMargin = 1600 - visBounds.width;  // Total horizontal bezel
+    int16_t quoteWidthMargin = 1600 - quoteBounds.width;  // Total horizontal bezel + padding
     if (quoteW > (halfW - quoteWidthMargin) || quoteH > (halfH_area - quoteHeightMargin)) {
         float scaleW = (float)(halfW - quoteWidthMargin) / quoteW;
         float scaleH = (float)(halfH_area - quoteHeightMargin) / quoteH;
@@ -2370,8 +2371,8 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId, const c
     }
     
     // Layout constants - use content bounds with scene-specific padding
-    // TfL board uses 20px padding for a clean, station-like appearance
-    const int16_t TFL_PADDING = 20;
+    // TfL board uses 30px padding for comfortable spacing from visible edge
+    const int16_t TFL_PADDING = 30;
     ContentBounds bounds = getContentBounds(display.width(), display.height(), TFL_PADDING);
     const int16_t leftMargin = bounds.left;
     const int16_t rightMargin = bounds.right;

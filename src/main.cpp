@@ -5982,11 +5982,13 @@ bool handleManageCommand() {
     
     // Set up all route handlers
     // Root path - serve HTML management interface
-    // HTML is embedded from web/index.html at compile time (no stack issues)
+    // HTML is gzip-compressed at build time to reduce memory for TLS encryption
     server.on("/", HTTP_GET, [](PsychicRequest *request, PsychicResponse *response) {
-        Serial.println("GET / - Serving embedded HTML page...");
-        // HTML is embedded in flash memory, safe to send directly
-        return response->send(200, "text/html", WEB_HTML_CONTENT);
+        Serial.printf("GET / - Serving gzip-compressed HTML (%d bytes compressed)...\n", WEB_HTML_GZIPPED_LEN);
+        
+        // Serve gzipped content - all modern browsers support gzip
+        response->addHeader("Content-Encoding", "gzip");
+        return response->send(200, "text/html", WEB_HTML_GZIPPED, WEB_HTML_GZIPPED_LEN);
     });
     
     // Handle favicon requests (browsers request this automatically)

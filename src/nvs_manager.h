@@ -102,66 +102,119 @@ bool getManageTimeoutDisabled();
 void setManageTimeoutDisabled(bool disabled);
 
 // ============================================================================
-// Display Margins (for calibrating visible screen area)
+// Display Bezel (hidden area calibration) and Content Padding
+// ============================================================================
+// 
+// Two concepts:
+// 1. BEZEL - Physical display area hidden by frame/bezel (visibility boundary)
+//    Used for: calibration pattern, canvas safe area overlay
+// 
+// 2. CONTENT PADDING - Aesthetic spacing from visible edge to content
+//    Used for: text positioning, UI elements, scene layouts
+//
+// Content boundary = bezel + padding
 // ============================================================================
 
 /**
- * Load display margins from NVS
- * Called on startup to restore the last margin settings
+ * Load display bezel settings from NVS
+ * Called on startup to restore the last bezel calibration
  */
-void displayMarginsLoadFromNVS();
+void displayBezelLoadFromNVS();
 
 /**
- * Save display margins to NVS
- * Called whenever margins are changed
+ * Save display bezel settings to NVS
+ * Called whenever bezel is recalibrated
  */
-void displayMarginsSaveToNVS();
+void displayBezelSaveToNVS();
 
 /**
- * Get display margins (in pixels)
- * These define the safe area where content should be displayed
+ * Get display bezel (in pixels) - the area hidden by the physical frame
+ * These define the VISIBLE area boundary
  */
-int16_t getDisplayMarginTop();
-int16_t getDisplayMarginBottom();
-int16_t getDisplayMarginLeft();
-int16_t getDisplayMarginRight();
+int16_t getDisplayBezelTop();
+int16_t getDisplayBezelBottom();
+int16_t getDisplayBezelLeft();
+int16_t getDisplayBezelRight();
 
 /**
- * Set display margins (in pixels)
- * @param top Pixels from top edge to safe area
- * @param bottom Pixels from bottom edge to safe area  
- * @param left Pixels from left edge to safe area
- * @param right Pixels from right edge to safe area
+ * Set display bezel (in pixels)
+ * @param top Pixels hidden at top edge
+ * @param bottom Pixels hidden at bottom edge
+ * @param left Pixels hidden at left edge
+ * @param right Pixels hidden at right edge
  */
-void setDisplayMargins(int16_t top, int16_t bottom, int16_t left, int16_t right);
+void setDisplayBezel(int16_t top, int16_t bottom, int16_t left, int16_t right);
 
 /**
- * Set individual display margins
+ * Set individual display bezel values
  */
-void setDisplayMarginTop(int16_t value);
-void setDisplayMarginBottom(int16_t value);
-void setDisplayMarginLeft(int16_t value);
-void setDisplayMarginRight(int16_t value);
+void setDisplayBezelTop(int16_t value);
+void setDisplayBezelBottom(int16_t value);
+void setDisplayBezelLeft(int16_t value);
+void setDisplayBezelRight(int16_t value);
 
 /**
- * Helper struct for getting display safe bounds
+ * Content padding - aesthetic spacing from visible edge to content
  */
-struct DisplayBounds {
-    int16_t left;      // Safe left edge (margin_left)
-    int16_t right;     // Safe right edge (display_width - margin_right)
-    int16_t top;       // Safe top edge (margin_top)
-    int16_t bottom;    // Safe bottom edge (display_height - margin_bottom)
-    int16_t width;     // Safe width (right - left)
-    int16_t height;    // Safe height (bottom - top)
+int16_t getContentPadding();
+void setContentPadding(int16_t value);
+void contentPaddingLoadFromNVS();
+void contentPaddingSaveToNVS();
+
+/**
+ * Helper struct for visible bounds (bezel only)
+ */
+struct VisibleBounds {
+    int16_t left;      // Visible left edge (bezel_left)
+    int16_t right;     // Visible right edge (display_width - bezel_right)
+    int16_t top;       // Visible top edge (bezel_top)
+    int16_t bottom;    // Visible bottom edge (display_height - bezel_bottom)
+    int16_t width;     // Visible width
+    int16_t height;    // Visible height
 };
 
 /**
- * Get display safe bounds based on current margins
- * @param displayWidth Full display width (e.g., 1600)
- * @param displayHeight Full display height (e.g., 1200)
- * @return DisplayBounds struct with safe area coordinates
+ * Helper struct for content bounds (bezel + padding)
  */
-DisplayBounds getDisplayBounds(int16_t displayWidth, int16_t displayHeight);
+struct ContentBounds {
+    int16_t left;      // Content left edge (bezel_left + padding)
+    int16_t right;     // Content right edge (display_width - bezel_right - padding)
+    int16_t top;       // Content top edge (bezel_top + padding)
+    int16_t bottom;    // Content bottom edge (display_height - bezel_bottom - padding)
+    int16_t width;     // Content width
+    int16_t height;    // Content height
+};
+
+/**
+ * Get visible bounds (bezel only) - what's physically visible on display
+ * Use this for: calibration overlay, canvas safe area
+ */
+VisibleBounds getVisibleBounds(int16_t displayWidth, int16_t displayHeight);
+
+/**
+ * Get content bounds (bezel + padding) - where content should be placed
+ * Use this for: text positioning, UI elements, scene layouts
+ */
+ContentBounds getContentBounds(int16_t displayWidth, int16_t displayHeight);
+
+// ============================================================================
+// Legacy aliases for backward compatibility (deprecated - use Bezel functions)
+// ============================================================================
+inline void displayMarginsLoadFromNVS() { displayBezelLoadFromNVS(); }
+inline void displayMarginsSaveToNVS() { displayBezelSaveToNVS(); }
+inline int16_t getDisplayMarginTop() { return getDisplayBezelTop(); }
+inline int16_t getDisplayMarginBottom() { return getDisplayBezelBottom(); }
+inline int16_t getDisplayMarginLeft() { return getDisplayBezelLeft(); }
+inline int16_t getDisplayMarginRight() { return getDisplayBezelRight(); }
+inline void setDisplayMargins(int16_t t, int16_t b, int16_t l, int16_t r) { setDisplayBezel(t, b, l, r); }
+inline void setDisplayMarginTop(int16_t v) { setDisplayBezelTop(v); }
+inline void setDisplayMarginBottom(int16_t v) { setDisplayBezelBottom(v); }
+inline void setDisplayMarginLeft(int16_t v) { setDisplayBezelLeft(v); }
+inline void setDisplayMarginRight(int16_t v) { setDisplayBezelRight(v); }
+
+// Legacy DisplayBounds - now returns VisibleBounds
+typedef VisibleBounds DisplayBounds;
+inline DisplayBounds getDisplayBounds(int16_t w, int16_t h) { return getVisibleBounds(w, h); }
 
 #endif // NVS_MANAGER_H
 

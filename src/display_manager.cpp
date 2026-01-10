@@ -903,14 +903,15 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
     
     // Scale quote to fit half area (using configured margins)
     // Important: quoteH includes both quote text AND author, so scaling considers the full element
-    // When quote is on bottom, add 10px extra to bottom margin for visual balance
+    // When quote is on bottom, add 10px extra for visual balance
     int16_t quoteW, quoteH;
     quoteElement.getDimensions(quoteW, quoteH);
     float quoteScale = 1.0f;
-    int16_t marginTop = getDisplayMarginTop();
-    int16_t marginBottom = getDisplayMarginBottom();
-    int16_t quoteHeightMargin = quoteOnTop ? (marginTop + marginBottom) : (marginTop + marginBottom + 10);
-    int16_t quoteWidthMargin = getDisplayMarginLeft() + getDisplayMarginRight();
+    // Use content bounds (bezel + padding) for scaling calculations
+    ContentBounds bounds = getContentBounds(1600, 1200);
+    int16_t verticalPadding = (1200 - bounds.height);  // Total vertical padding
+    int16_t quoteHeightMargin = quoteOnTop ? verticalPadding : (verticalPadding + 10);
+    int16_t quoteWidthMargin = 1600 - bounds.width;  // Total horizontal padding
     if (quoteW > (halfW - quoteWidthMargin) || quoteH > (halfH_area - quoteHeightMargin)) {
         float scaleW = (float)(halfW - quoteWidthMargin) / quoteW;
         float scaleH = (float)(halfH_area - quoteHeightMargin) / quoteH;
@@ -1810,7 +1811,8 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     // Target font size 140, but scale down if text is too wide
     const float targetNameFontSize = 140.0f;
     const float minNameFontSize = 60.0f;    // Don't go smaller than this
-    const int16_t maxNameWidth = display.width() - getDisplayMarginLeft() - getDisplayMarginRight();
+    ContentBounds weatherBounds = getContentBounds(display.width(), display.height());
+    const int16_t maxNameWidth = weatherBounds.width;
     
     float actualNameFontSize = targetNameFontSize;
     int16_t nameWidth = ttf.getTextWidth(displayName, targetNameFontSize);
@@ -2365,12 +2367,13 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId, const c
         return false;
     }
     
-    // Layout constants - use configured display margins for safe area
-    const int16_t leftMargin = getDisplayMarginLeft();
-    const int16_t rightMargin = display.width() - getDisplayMarginRight();
-    const int16_t topSafe = getDisplayMarginTop();
-    const int16_t bottomSafe = display.height() - getDisplayMarginBottom();
-    const int16_t stationY = topSafe + 80;  // Station name near top
+    // Layout constants - use content bounds (bezel + padding) for safe area
+    ContentBounds bounds = getContentBounds(display.width(), display.height());
+    const int16_t leftMargin = bounds.left;
+    const int16_t rightMargin = bounds.right;
+    const int16_t topSafe = bounds.top;
+    const int16_t bottomSafe = bounds.bottom;
+    const int16_t stationY = topSafe + 60;  // Station name near top
     const int16_t firstRowY = 310;          // First arrival row
     const int16_t rowHeight = 170;          // Height between arrival rows
     const int16_t timeDisplayY = bottomSafe - 80;  // 1050 - clock near bottom (+20px margin)
@@ -2805,11 +2808,12 @@ bool displaySwimConditionsScene() {
     
     const int16_t W = display.width();   // 1600
     const int16_t H = display.height();  // 1200
-    const int16_t marginL = getDisplayMarginLeft();
-    const int16_t marginR = getDisplayMarginRight();
-    const int16_t topSafe = getDisplayMarginTop();
-    const int16_t bottomSafe = H - getDisplayMarginBottom();
-    const int16_t contentWidth = W - marginL - marginR;
+    ContentBounds bounds = getContentBounds(W, H);
+    const int16_t marginL = bounds.left;
+    const int16_t marginR = W - bounds.right;  // pixels from right edge
+    const int16_t topSafe = bounds.top;
+    const int16_t bottomSafe = bounds.bottom;
+    const int16_t contentWidth = bounds.width;
     const int16_t gapBetweenCols = 40;  // Internal gap between columns
     
     // Title

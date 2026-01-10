@@ -194,11 +194,9 @@ void QuoteElement::wrapQuote() {
     // Use existing text placement analyzer for wrapping
     // Calculate available width (accounting for keepout and outline)
     // Quote is in half-screen area (full width x half height), so use full display width
-    // Use configured display margins
-    int16_t displayWidth = 1600;  // Standard display width
-    int16_t marginLeft = getDisplayMarginLeft();
-    int16_t marginRight = getDisplayMarginRight();
-    int16_t availableWidth = displayWidth - marginLeft - marginRight - (_outlineWidth * 4);  // outline padding
+    // Use content bounds (bezel + padding) for proper spacing
+    ContentBounds bounds = getContentBounds(1600, 1200);  // Standard display dimensions
+    int16_t availableWidth = bounds.width - (_outlineWidth * 4);  // outline padding
     
     // Try different line counts (1-3 lines)
     float bestScore = -1.0f;
@@ -284,12 +282,14 @@ void QuoteElement::draw(int16_t centerX, int16_t centerY) {
     int16_t gapBeforeAuthor = _ttf->getTextHeight(authorSize) / 2;
     
     // Calculate block edges (accounting for outline)
-    // Use configured display margins
+    // Use content bounds (bezel + padding) for proper spacing
     // centerX is the screen center (screenW / 2), so screenW = 2 * centerX
     int16_t screenWidth = 2 * centerX;
+    int16_t screenHeight = 1200;  // Standard display height
+    ContentBounds bounds = getContentBounds(screenWidth, screenHeight);
     int16_t blockTop = centerY - _totalHeight / 2 + _outlineWidth;
-    int16_t blockLeft = getDisplayMarginLeft() + _outlineWidth;
-    int16_t blockRight = screenWidth - getDisplayMarginRight() - _outlineWidth;
+    int16_t blockLeft = bounds.left + _outlineWidth;
+    int16_t blockRight = bounds.right - _outlineWidth;
     
     // Draw quote lines
     if (_quoteLines == 1) {

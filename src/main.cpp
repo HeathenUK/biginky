@@ -2109,8 +2109,11 @@ void mediaIndexLoadFromNVS();  // Load media index from NVS (called on startup)
 void mediaIndexSaveToNVS();  // Save media index to NVS
 void mediaIndexModeLoadFromNVS();  // Load media index mode from NVS (called on startup)
 void mediaIndexModeSaveToNVS();  // Save media index mode to NVS
-void displayMarginsLoadFromNVS();  // Load display margins from NVS (called on startup)
-void displayMarginsSaveToNVS();  // Save display margins to NVS
+void displayBezelLoadFromNVS();  // Load display bezel from NVS (called on startup)
+void displayBezelSaveToNVS();  // Save display bezel to NVS
+void contentPaddingLoadFromNVS();  // Load content padding from NVS (called on startup)
+void contentPaddingSaveToNVS();  // Save content padding to NVS
+// Legacy aliases are defined in nvs_manager.h
 // Media mappings index management functions
 int getNextMediaIndex();  // Get next index based on current mode (sequential or shuffle) - advances index
 int peekNextMediaIndex();  // Peek at next index without advancing (for status messages)
@@ -5471,11 +5474,18 @@ String exportConfigJSON() {
     cJSON_AddBoolToObject(root, "timeout_disabled", getManageTimeoutDisabled());
     cJSON_AddBoolToObject(root, "encryption_enabled", isEncryptionEnabled());
     
-    // Add display margins
-    cJSON_AddNumberToObject(root, "margin_top", getDisplayMarginTop());
-    cJSON_AddNumberToObject(root, "margin_bottom", getDisplayMarginBottom());
-    cJSON_AddNumberToObject(root, "margin_left", getDisplayMarginLeft());
-    cJSON_AddNumberToObject(root, "margin_right", getDisplayMarginRight());
+    // Add display bezel (visibility boundary) - new naming
+    cJSON_AddNumberToObject(root, "bezel_top", getDisplayBezelTop());
+    cJSON_AddNumberToObject(root, "bezel_bottom", getDisplayBezelBottom());
+    cJSON_AddNumberToObject(root, "bezel_left", getDisplayBezelLeft());
+    cJSON_AddNumberToObject(root, "bezel_right", getDisplayBezelRight());
+    // Also add with legacy names for backward compatibility
+    cJSON_AddNumberToObject(root, "margin_top", getDisplayBezelTop());
+    cJSON_AddNumberToObject(root, "margin_bottom", getDisplayBezelBottom());
+    cJSON_AddNumberToObject(root, "margin_left", getDisplayBezelLeft());
+    cJSON_AddNumberToObject(root, "margin_right", getDisplayBezelRight());
+    // Add content padding
+    cJSON_AddNumberToObject(root, "content_padding", getContentPadding());
 
     // Add detailed schedule
     String detailedScheduleJson = getDetailedScheduleJSON();
@@ -5639,45 +5649,60 @@ bool importConfigJSON(const String& json) {
         Serial.printf("  Restored %d allowed numbers\n", addedCount);
     }
 
-    // Display Margins
-    bool marginsChanged = false;
-    item = cJSON_GetObjectItem(root, "margin_top");
+    // Display Bezel (visibility boundary) - try new names first, fall back to legacy
+    bool bezelChanged = false;
+    item = cJSON_GetObjectItem(root, "bezel_top");
+    if (!item) item = cJSON_GetObjectItem(root, "margin_top");  // Legacy fallback
     if (item && cJSON_IsNumber(item)) {
         int16_t v = (int16_t)cJSON_GetNumberValue(item);
         if (v >= 0 && v <= 200) {
-            setDisplayMarginTop(v);
-            marginsChanged = true;
+            setDisplayBezelTop(v);
+            bezelChanged = true;
         }
     }
-    item = cJSON_GetObjectItem(root, "margin_bottom");
+    item = cJSON_GetObjectItem(root, "bezel_bottom");
+    if (!item) item = cJSON_GetObjectItem(root, "margin_bottom");  // Legacy fallback
     if (item && cJSON_IsNumber(item)) {
         int16_t v = (int16_t)cJSON_GetNumberValue(item);
         if (v >= 0 && v <= 200) {
-            setDisplayMarginBottom(v);
-            marginsChanged = true;
+            setDisplayBezelBottom(v);
+            bezelChanged = true;
         }
     }
-    item = cJSON_GetObjectItem(root, "margin_left");
+    item = cJSON_GetObjectItem(root, "bezel_left");
+    if (!item) item = cJSON_GetObjectItem(root, "margin_left");  // Legacy fallback
     if (item && cJSON_IsNumber(item)) {
         int16_t v = (int16_t)cJSON_GetNumberValue(item);
         if (v >= 0 && v <= 200) {
-            setDisplayMarginLeft(v);
-            marginsChanged = true;
+            setDisplayBezelLeft(v);
+            bezelChanged = true;
         }
     }
-    item = cJSON_GetObjectItem(root, "margin_right");
+    item = cJSON_GetObjectItem(root, "bezel_right");
+    if (!item) item = cJSON_GetObjectItem(root, "margin_right");  // Legacy fallback
     if (item && cJSON_IsNumber(item)) {
         int16_t v = (int16_t)cJSON_GetNumberValue(item);
         if (v >= 0 && v <= 200) {
-            setDisplayMarginRight(v);
-            marginsChanged = true;
+            setDisplayBezelRight(v);
+            bezelChanged = true;
         }
     }
-    if (marginsChanged) {
-        displayMarginsSaveToNVS();
-        Serial.printf("  Restored display margins: top=%d, bottom=%d, left=%d, right=%d\n",
-                     getDisplayMarginTop(), getDisplayMarginBottom(),
-                     getDisplayMarginLeft(), getDisplayMarginRight());
+    if (bezelChanged) {
+        displayBezelSaveToNVS();
+        Serial.printf("  Restored display bezel: top=%d, bottom=%d, left=%d, right=%d\n",
+                     getDisplayBezelTop(), getDisplayBezelBottom(),
+                     getDisplayBezelLeft(), getDisplayBezelRight());
+    }
+    
+    // Content Padding
+    item = cJSON_GetObjectItem(root, "content_padding");
+    if (item && cJSON_IsNumber(item)) {
+        int16_t v = (int16_t)cJSON_GetNumberValue(item);
+        if (v >= 0 && v <= 100) {
+            setContentPadding(v);
+            contentPaddingSaveToNVS();
+            Serial.printf("  Restored content padding: %d\n", v);
+        }
     }
 
     // WiFi Credentials
@@ -12957,8 +12982,9 @@ void setup() {
     uint8_t modeValue = getMediaIndexModeValue();
     g_mediaIndexMode = (modeValue == 1) ? MediaIndexMode::SHUFFLE : MediaIndexMode::SEQUENTIAL;
     
-    // Load display margins from NVS (for screen calibration)
-    displayMarginsLoadFromNVS();
+    // Load display bezel from NVS (for screen calibration) and content padding
+    displayBezelLoadFromNVS();
+    contentPaddingLoadFromNVS();
     
     // Initialize text placement mutex (protects textPlacement analyzer from concurrent access)
     // Text placement mutex removed - not available in this branch

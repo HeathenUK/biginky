@@ -2441,15 +2441,23 @@ static void publishMQTTMediaMappingsInternalImpl() {
         Serial.println("[Core 1] WARNING: Failed to get schedule JSON for media mappings");
     }
     
-    // Add config JSON (for backup/restore functionality)
+    // Add ENCRYPTED config JSON (for backup/restore functionality)
+    // Config contains sensitive data (WiFi credentials) - must be encrypted before transmission
     String configJsonStr = exportConfigJSON();
     if (configJsonStr.length() > 0 && !configJsonStr.startsWith("{\"error\"")) {
-        cJSON* configJson = cJSON_Parse(configJsonStr.c_str());
-        if (configJson != nullptr) {
-            cJSON_AddItemToObject(root, "config", configJson);
-            Serial.println("[Core 1] Added config to media mappings JSON");
+        // Encrypt the config using the web UI password
+        String encryptedConfig = encryptAndFormatMessage(configJsonStr);
+        if (encryptedConfig.length() > 0) {
+            // Parse the encrypted format {encrypted:true, iv:"...", payload:"...", hmac:"..."}
+            cJSON* encryptedConfigJson = cJSON_Parse(encryptedConfig.c_str());
+            if (encryptedConfigJson != nullptr) {
+                cJSON_AddItemToObject(root, "config", encryptedConfigJson);
+                Serial.println("[Core 1] Added ENCRYPTED config to media mappings JSON");
+            } else {
+                Serial.println("[Core 1] WARNING: Failed to parse encrypted config JSON");
+            }
         } else {
-            Serial.println("[Core 1] WARNING: Failed to parse config JSON for media mappings");
+            Serial.println("[Core 1] WARNING: Failed to encrypt config (no web UI password set?)");
         }
     } else {
         Serial.println("[Core 1] WARNING: Failed to get config JSON for media mappings");

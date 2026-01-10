@@ -360,8 +360,7 @@ Preferences managePrefs;  // NVS preferences for management interface settings (
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60) (non-static for nvs_manager module access)
-// Hour schedule: 24 boolean flags (one per hour, 0-23). If true, wake during that hour; if false, sleep through entire hour
-bool g_hour_schedule[24];  // Default: all hours enabled (will be initialized in hourScheduleLoadFromNVS) (non-static for nvs_manager module access)
+// Note: g_hour_schedule has been removed - use isHourEnabledInSchedule() from schedule_manager.h instead
 
 static TwoWire g_codec_wire0(0);
 static TwoWire g_codec_wire1(1);
@@ -6258,6 +6257,103 @@ bool handleManageCommand() {
         bool isSet = isWebUIPasswordSet();
         String resp = "{\"password_configured\":" + String(isSet ? "true" : "false") + "}";
         return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // GET /api/config/backup - Export encrypted configuration backup
+    server.on("/api/config/backup", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        if (!isWebUIPasswordSet()) {
+            return response->send(403, "application/json", "{\"success\":false,\"error\":\"Web UI password not set\"}");
+        }
+        
+        // Export config and encrypt it
+        String configJson = exportConfigJSON();
+        if (configJson.startsWith("{\"error\"")) {
+            return response->send(500, "application/json", configJson.c_str());
+        }
+        
+        // Encrypt the config
+        String encryptedPayload = encryptAndFormatMessage(configJson);
+        if (encryptedPayload.length() == 0) {
+            return response->send(500, "application/json", "{\"success\":false,\"error\":\"Failed to encrypt configuration\"}");
+        }
+        
+        // Set download headers
+        response->addHeader("Content-Disposition", "attachment; filename=\"biginky_config.backup\"");
+        return response->send(200, "application/json", encryptedPayload.c_str());
+    });
+    
+    // POST /api/config/restore - Import encrypted configuration backup
+    server.on("/api/config/restore", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        
+        if (!isWebUIPasswordSet()) {
+            return response->send(403, "application/json", "{\"success\":false,\"error\":\"Web UI password not set\"}");
+        }
+        
+        String body = request->body();
+        if (body.length() == 0) {
+            return response->send(400, "application/json", "{\"success\":false,\"error\":\"Empty request body\"}");
+        }
+        
+        // Parse the encrypted payload
+        cJSON* root = cJSON_Parse(body.c_str());
+        if (!root) {
+            return response->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON format\"}");
+        }
+        
+        cJSON* encryptedItem = cJSON_GetObjectItem(root, "encrypted");
+        cJSON* payloadItem = cJSON_GetObjectItem(root, "payload");
+        cJSON* ivItem = cJSON_GetObjectItem(root, "iv");
+        cJSON* hmacItem = cJSON_GetObjectItem(root, "hmac");
+        
+        if (!encryptedItem || !payloadItem || !hmacItem) {
+            cJSON_Delete(root);
+            return response->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid backup format - missing required fields\"}");
+        }
+        
+        // Construct message for HMAC validation
+        String messageForHMAC;
+        if (cJSON_IsTrue(encryptedItem)) {
+            if (!ivItem || !cJSON_IsString(ivItem)) {
+                cJSON_Delete(root);
+                return response->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid backup format - missing IV\"}");
+            }
+            messageForHMAC = "{\"encrypted\":true,\"iv\":\"" + String(cJSON_GetStringValue(ivItem)) + 
+                            "\",\"payload\":\"" + String(cJSON_GetStringValue(payloadItem)) + "\"}";
+        } else {
+            messageForHMAC = "{\"encrypted\":false,\"payload\":\"" + String(cJSON_GetStringValue(payloadItem)) + "\"}";
+        }
+        
+        // Validate HMAC
+        if (!validateWebUIHMAC(messageForHMAC, String(cJSON_GetStringValue(hmacItem)))) {
+            cJSON_Delete(root);
+            return response->send(403, "application/json", "{\"success\":false,\"error\":\"HMAC validation failed - wrong password?\"}");
+        }
+        
+        // Decrypt the payload
+        String configJsonStr;
+        if (cJSON_IsTrue(encryptedItem)) {
+            String ciphertextBase64 = String(cJSON_GetStringValue(ivItem)) + String(cJSON_GetStringValue(payloadItem));
+            configJsonStr = decryptMessage(ciphertextBase64);
+            if (configJsonStr.length() == 0) {
+                cJSON_Delete(root);
+                return response->send(403, "application/json", "{\"success\":false,\"error\":\"Failed to decrypt - wrong password?\"}");
+            }
+        } else {
+            // Base64 decode for unencrypted payload
+            configJsonStr = base64Decode(String(cJSON_GetStringValue(payloadItem)));
+        }
+        
+        cJSON_Delete(root);
+        
+        // Import the config
+        if (!importConfigJSON(configJsonStr)) {
+            return response->send(500, "application/json", "{\"success\":false,\"error\":\"Failed to import configuration\"}");
+        }
+        
+        return response->send(200, "application/json", "{\"success\":true,\"message\":\"Configuration restored successfully\"}");
     });
     
     // GET /api/files/sd - List files on SD Card (optionally in a subdirectory)

@@ -455,6 +455,154 @@ static String escapeCSVField(const String& field) {
     return escaped;
 }
 
+// Forward declarations for config backup/restore functions (defined in main.cpp)
+extern String exportConfigJSON();
+extern bool importConfigJSON(const String& json);
+extern String encryptAndFormatMessage(const String& plaintext);
+extern bool validateWebUIHMAC(const String& message, const String& providedHMAC);
+extern String decryptMessage(const String& ciphertext);
+
+// Handler for config_get command (export config)
+static bool handleConfigGetUnified(const CommandContext& ctx) {
+    // Only WEB_UI source is supported
+    if (ctx.source != CommandSource::WEB_UI) {
+        Serial.println("[CONFIG_GET] ERROR: Only WEB_UI source supported");
+        return false;
+    }
+    
+    Serial.println("[CONFIG_GET] Exporting device configuration...");
+    
+    // Get the unencrypted config JSON
+    String configJson = exportConfigJSON();
+    if (configJson.startsWith("{\"error\"")) {
+        Serial.println("[CONFIG_GET] ERROR: Failed to export configuration");
+        return false;
+    }
+    
+    // Note: The config will be sent back in the command completion status message
+    // via publishMQTTCommandCompletion. The completion handler needs to include
+    // the config data in the response.
+    
+    // Store the config JSON for the completion handler to use
+    // We'll need to modify publishMQTTCommandCompletion to include this data
+    
+    Serial.println("[CONFIG_GET] Configuration exported successfully");
+    Serial.printf("[CONFIG_GET] Config size: %d bytes\n", configJson.length());
+    
+    // The config data will be sent via a special status message
+    // We need to publish it separately since command completion can't carry large payloads
+    extern void publishMQTTConfigBackup(const String& configJson);
+    publishMQTTConfigBackup(configJson);
+    
+    return true;
+}
+
+// Handler for config_set command (import config)
+static bool handleConfigSetUnified(const CommandContext& ctx) {
+    // Only WEB_UI source is supported
+    if (ctx.source != CommandSource::WEB_UI) {
+        Serial.println("[CONFIG_SET] ERROR: Only WEB_UI source supported");
+        return false;
+    }
+    
+    Serial.println("[CONFIG_SET] Importing device configuration...");
+    
+    // Parse the incoming JSON to extract the config object
+    cJSON* root = cJSON_Parse(ctx.originalMessage.c_str());
+    if (!root) {
+        Serial.println("[CONFIG_SET] ERROR: Failed to parse command JSON");
+        return false;
+    }
+    
+    cJSON* configObj = cJSON_GetObjectItem(root, "config");
+    if (!configObj) {
+        Serial.println("[CONFIG_SET] ERROR: Missing 'config' field in command");
+        cJSON_Delete(root);
+        return false;
+    }
+    
+    // The config object could be:
+    // 1. The encrypted backup format: {"encrypted":true,"iv":"...","payload":"...","hmac":"..."}
+    // 2. A raw config object (if sent directly)
+    
+    cJSON* encryptedItem = cJSON_GetObjectItem(configObj, "encrypted");
+    
+    String configJsonStr;
+    
+    if (encryptedItem && cJSON_IsBool(encryptedItem) && cJSON_IsTrue(encryptedItem)) {
+        // Encrypted format - need to validate HMAC and decrypt
+        cJSON* ivItem = cJSON_GetObjectItem(configObj, "iv");
+        cJSON* payloadItem = cJSON_GetObjectItem(configObj, "payload");
+        cJSON* hmacItem = cJSON_GetObjectItem(configObj, "hmac");
+        
+        if (!payloadItem || !cJSON_IsString(payloadItem) || !hmacItem || !cJSON_IsString(hmacItem)) {
+            Serial.println("[CONFIG_SET] ERROR: Invalid encrypted config format - missing fields");
+            cJSON_Delete(root);
+            return false;
+        }
+        
+        // Construct message for HMAC validation
+        String messageForHMAC;
+        if (ivItem && cJSON_IsString(ivItem)) {
+            messageForHMAC = "{\"encrypted\":true,\"iv\":\"" + String(cJSON_GetStringValue(ivItem)) + 
+                            "\",\"payload\":\"" + String(cJSON_GetStringValue(payloadItem)) + "\"}";
+        } else {
+            messageForHMAC = "{\"encrypted\":true,\"payload\":\"" + String(cJSON_GetStringValue(payloadItem)) + "\"}";
+        }
+        
+        // Validate HMAC
+        if (!validateWebUIHMAC(messageForHMAC, String(cJSON_GetStringValue(hmacItem)))) {
+            Serial.println("[CONFIG_SET] ERROR: HMAC validation failed - wrong password or corrupted data");
+            cJSON_Delete(root);
+            return false;
+        }
+        
+        Serial.println("[CONFIG_SET] HMAC validated successfully");
+        
+        // Decrypt the payload
+        // The decryptMessage function expects base64-encoded IV+ciphertext
+        String ciphertextBase64;
+        if (ivItem && cJSON_IsString(ivItem)) {
+            // New format with separate IV
+            ciphertextBase64 = String(cJSON_GetStringValue(ivItem)) + String(cJSON_GetStringValue(payloadItem));
+        } else {
+            // Legacy format with IV prepended to payload
+            ciphertextBase64 = String(cJSON_GetStringValue(payloadItem));
+        }
+        
+        configJsonStr = decryptMessage(ciphertextBase64);
+        if (configJsonStr.length() == 0) {
+            Serial.println("[CONFIG_SET] ERROR: Failed to decrypt config - wrong password?");
+            cJSON_Delete(root);
+            return false;
+        }
+        
+        Serial.println("[CONFIG_SET] Config decrypted successfully");
+    } else {
+        // Raw config format (not encrypted) - just serialize it
+        char* configStr = cJSON_Print(configObj);
+        if (configStr) {
+            configJsonStr = String(configStr);
+            free(configStr);
+        } else {
+            Serial.println("[CONFIG_SET] ERROR: Failed to serialize config object");
+            cJSON_Delete(root);
+            return false;
+        }
+    }
+    
+    cJSON_Delete(root);
+    
+    // Import the configuration
+    if (!importConfigJSON(configJsonStr)) {
+        Serial.println("[CONFIG_SET] ERROR: Failed to import configuration");
+        return false;
+    }
+    
+    Serial.println("[CONFIG_SET] Configuration imported successfully");
+    return true;
+}
+
 // Handler for schedule_set command
 static bool handleScheduleSetUnified(const CommandContext& ctx) {
     // Only WEB_UI source is supported (MQTT command via JSON)
@@ -923,6 +1071,26 @@ static const UnifiedCommandEntry commandRegistry[] = {
         .handler = handleScheduleSetUnified,
         .requiresAuth = true,
         .description = "Update detailed scene schedule"
+    },
+    
+    // Config get (export configuration backup)
+    {
+        .mqttName = nullptr,
+        .webUIName = "config_get",
+        .httpEndpoint = nullptr,
+        .handler = handleConfigGetUnified,
+        .requiresAuth = true,
+        .description = "Export device configuration as encrypted backup"
+    },
+    
+    // Config set (import configuration backup)
+    {
+        .mqttName = nullptr,
+        .webUIName = "config_set",
+        .httpEndpoint = nullptr,
+        .handler = handleConfigSetUnified,
+        .requiresAuth = true,
+        .description = "Import device configuration from encrypted backup"
     }
 };
 

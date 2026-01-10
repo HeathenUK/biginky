@@ -940,6 +940,111 @@ void publishMQTTCommandCompletion(const String& commandId, const String& command
     free(jsonBuffer);
 }
 
+// Publish configuration backup to MQTT status topic
+// The config is sent as a special status message that the web UI recognizes
+void publishMQTTConfigBackup(const String& configJson) {
+    // Ensure WiFi and MQTT are connected
+    if (!wifiLoadCredentials()) {
+        Serial.println("WARNING: No WiFi credentials, cannot publish config backup");
+        return;
+    }
+    
+    // Connect to WiFi if not already connected
+    bool wifiWasConnected = (WiFi.status() == WL_CONNECTED);
+    
+    if (!wifiWasConnected) {
+        Serial.println("Connecting to WiFi for config backup publish...");
+        if (!wifiConnectPersistent(5, 20000, false)) {
+            Serial.println("WARNING: WiFi connection failed, cannot publish config backup");
+            return;
+        }
+    }
+    
+    // Load MQTT config and connect if needed
+    mqttLoadConfig();
+    bool mqttWasConnected = mqttConnected;
+    
+    if (!mqttWasConnected) {
+        Serial.println("Connecting to MQTT for config backup publish...");
+        if (!mqttConnect()) {
+            Serial.println("WARNING: MQTT connection failed, cannot publish config backup");
+            return;
+        }
+    }
+    
+    if (mqttClient == nullptr || !mqttConnected) {
+        Serial.println("ERROR: MQTT client or connection state invalid after connect attempt");
+        return;
+    }
+    
+    Serial.printf("Publishing config backup (%d bytes)...\n", configJson.length());
+    
+    // Build the status message with config_get completion and config data
+    // Format: {"timestamp":..., "command":"config_get", "command_completed":true, "success":true, "config":{...}}
+    time_t now = time(nullptr);
+    
+    // Parse the config JSON to embed it
+    cJSON* configObj = cJSON_Parse(configJson.c_str());
+    if (!configObj) {
+        Serial.println("ERROR: Failed to parse config JSON for backup");
+        return;
+    }
+    
+    // Build the full response
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        cJSON_Delete(configObj);
+        Serial.println("ERROR: Failed to create JSON object for config backup");
+        return;
+    }
+    
+    cJSON_AddNumberToObject(root, "timestamp", (double)now);
+    cJSON_AddStringToObject(root, "command", "config_get");
+    cJSON_AddBoolToObject(root, "command_completed", true);
+    cJSON_AddBoolToObject(root, "success", true);
+    cJSON_AddItemToObject(root, "config", configObj);  // configObj is now owned by root
+    cJSON_AddBoolToObject(root, "connected", true);
+    
+    char* plaintextJson = cJSON_Print(root);
+    cJSON_Delete(root);  // This also deletes configObj
+    
+    if (!plaintextJson) {
+        Serial.println("ERROR: Failed to serialize config backup JSON");
+        return;
+    }
+    
+    String plaintextStr = String(plaintextJson);
+    free(plaintextJson);
+    
+    // Encrypt the response
+    String encryptedJson = encryptAndFormatMessage(plaintextStr);
+    
+    if (encryptedJson.length() == 0) {
+        Serial.println("ERROR: Failed to encrypt config backup");
+        return;
+    }
+    
+    // Publish to status topic
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, encryptedJson.c_str(), encryptedJson.length(), 1, 1);
+    if (msg_id > 0) {
+        Serial.printf("Published config backup to %s (msg_id: %d)\n", mqttTopicStatus, msg_id);
+        
+        // Wait for confirmation (optional)
+        if (mqttPublishSem != nullptr) {
+            mqttPendingPublishMsgId = msg_id;
+            xSemaphoreTake(mqttPublishSem, 0);  // Clear semaphore
+            if (xSemaphoreTake(mqttPublishSem, pdMS_TO_TICKS(10000)) == pdTRUE) {
+                Serial.println("Config backup publish confirmed");
+            } else {
+                Serial.println("WARNING: Timeout waiting for config backup publish confirmation");
+            }
+            mqttPendingPublishMsgId = -1;
+        }
+    } else {
+        Serial.printf("Failed to publish config backup (msg_id: %d)\n", msg_id);
+    }
+}
+
 // Shared buffer for parallel status preparation (Core 1 prepares, Core 0 publishes)
 static char* g_preparedStatusBuffer = nullptr;
 static size_t g_preparedStatusSize = 0;

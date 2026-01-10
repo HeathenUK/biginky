@@ -15,9 +15,25 @@ import gzip
 import re
 
 def minify_html(html):
-    """Basic HTML/JS/CSS minification - remove unnecessary whitespace."""
+    """Basic HTML/JS/CSS minification - remove unnecessary whitespace.
+    
+    Note: We avoid aggressive whitespace collapsing inside <script> tags
+    because JavaScript // comments would eat subsequent code.
+    """
     # Remove HTML comments (but not IE conditional comments)
     html = re.sub(r'<!--(?!\[if).*?-->', '', html, flags=re.DOTALL)
+    
+    # Convert JS single-line comments to block comments (so newlines can be removed)
+    # This handles // comments inside <script> tags
+    def convert_js_comments(match):
+        script_content = match.group(1)
+        # Convert // comments to /* */ but be careful not to break URLs (http://)
+        # Only convert // at start of line or after whitespace/semicolon
+        script_content = re.sub(r'(^|[\s;])//([^\n]*)', r'\1/*\2 */', script_content, flags=re.MULTILINE)
+        return '<script>' + script_content + '</script>'
+    
+    html = re.sub(r'<script>(.*?)</script>', convert_js_comments, html, flags=re.DOTALL)
+    
     # Remove whitespace between tags
     html = re.sub(r'>\s+<', '><', html)
     # Collapse multiple spaces/newlines to single space

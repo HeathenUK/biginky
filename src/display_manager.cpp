@@ -3386,6 +3386,124 @@ static String fetchFeedContent(const char* url) {
     return payload;
 }
 
+// Helper: truncate text to fit width (no wrapping), adds "..." if truncated
+static void truncateToFitWidth(char* text, size_t bufSize, float fontSize, int16_t maxWidth) {
+    if (ttf.getTextWidth(text, fontSize) <= maxWidth) return;
+    
+    size_t len = strlen(text);
+    while (len > 3 && ttf.getTextWidth(text, fontSize) > maxWidth) {
+        text[len - 4] = '.';
+        text[len - 3] = '.';
+        text[len - 2] = '.';
+        text[len - 1] = '\0';
+        len--;
+    }
+}
+
+// Helper: calculate height needed for wrapped text
+static int countWrappedLines(const char* text, float fontSize, int16_t maxWidth) {
+    if (!text || text[0] == '\0') return 0;
+    
+    char buf[512];
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    
+    int lines = 0;
+    char* saveptr = nullptr;
+    char* word = strtok_r(buf, " ", &saveptr);
+    char line[256] = "";
+    
+    while (word) {
+        char testLine[256];
+        if (line[0] == '\0') {
+            strncpy(testLine, word, sizeof(testLine) - 1);
+        } else {
+            snprintf(testLine, sizeof(testLine), "%s %s", line, word);
+        }
+        testLine[sizeof(testLine) - 1] = '\0';
+        
+        if (ttf.getTextWidth(testLine, fontSize) > maxWidth) {
+            if (line[0] != '\0') {
+                lines++;
+                strncpy(line, word, sizeof(line) - 1);
+            } else {
+                // Single word too long - counts as one line
+                lines++;
+                line[0] = '\0';
+            }
+        } else {
+            strncpy(line, testLine, sizeof(line) - 1);
+        }
+        line[sizeof(line) - 1] = '\0';
+        word = strtok_r(nullptr, " ", &saveptr);
+    }
+    if (line[0] != '\0') lines++;
+    
+    return max(1, lines);
+}
+
+// Helper: draw wrapped text, returns Y position after last line
+static int16_t drawWrappedText(const char* text, int16_t x, int16_t y, float fontSize, 
+                               int16_t maxWidth, uint32_t color, int maxLines = 99) {
+    if (!text || text[0] == '\0') return y;
+    
+    char buf[512];
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    
+    int lineHeight = (int)(fontSize * 1.25f);
+    int lineCount = 0;
+    char* saveptr = nullptr;
+    char* word = strtok_r(buf, " ", &saveptr);
+    char line[256] = "";
+    
+    while (word && lineCount < maxLines) {
+        char testLine[256];
+        if (line[0] == '\0') {
+            strncpy(testLine, word, sizeof(testLine) - 1);
+        } else {
+            snprintf(testLine, sizeof(testLine), "%s %s", line, word);
+        }
+        testLine[sizeof(testLine) - 1] = '\0';
+        
+        if (ttf.getTextWidth(testLine, fontSize) > maxWidth) {
+            if (line[0] != '\0') {
+                // Check if this is the last allowed line - truncate with "..."
+                if (lineCount == maxLines - 1) {
+                    truncateToFitWidth(line, sizeof(line), fontSize, maxWidth);
+                }
+                ttf.drawTextAligned(x, y, line, fontSize, color, ALIGN_LEFT, ALIGN_TOP);
+                y += lineHeight;
+                lineCount++;
+                strncpy(line, word, sizeof(line) - 1);
+            } else {
+                // Single word too long - truncate it
+                strncpy(line, word, sizeof(line) - 1);
+                truncateToFitWidth(line, sizeof(line), fontSize, maxWidth);
+                ttf.drawTextAligned(x, y, line, fontSize, color, ALIGN_LEFT, ALIGN_TOP);
+                y += lineHeight;
+                lineCount++;
+                line[0] = '\0';
+            }
+        } else {
+            strncpy(line, testLine, sizeof(line) - 1);
+        }
+        line[sizeof(line) - 1] = '\0';
+        word = strtok_r(nullptr, " ", &saveptr);
+    }
+    
+    // Draw remaining text
+    if (line[0] != '\0' && lineCount < maxLines) {
+        if (lineCount == maxLines - 1) {
+            truncateToFitWidth(line, sizeof(line), fontSize, maxWidth);
+        }
+        ttf.drawTextAligned(x, y, line, fontSize, color, ALIGN_LEFT, ALIGN_TOP);
+        y += lineHeight;
+    }
+    
+    return y;
+}
+
 bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverride) {
     Serial.printf("=== Feed Scene: %s (max %d items) ===\n", feedUrl, maxItems);
     
@@ -3484,7 +3602,8 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
         feedTitle[sizeof(feedTitle) - 1] = '\0';
     }
     
-    // Strip HTML from descriptions
+    // Strip HTML from all text
+    stripHtmlTags(feedTitle);
     for (int i = 0; i < itemCount; i++) {
         stripHtmlTags(items[i].title);
         stripHtmlTags(items[i].description);
@@ -3500,118 +3619,152 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
     const int16_t bottomMargin = bounds.bottom;
     const int16_t contentWidth = rightMargin - leftMargin;
     
-    // Draw feed title at top
-    const float titleFontSize = 56.0f;
-    const float itemTitleFontSize = 36.0f;
-    const float descFontSize = 28.0f;
+    // Reserve space for timestamp at bottom
+    const int16_t timestampHeight = 40;
+    const int16_t availableHeight = bottomMargin - topMargin - timestampHeight;
     
-    int16_t y = topMargin + 40;
+    // Font size ratios: title : headline : description = 1.5 : 1.15 : 1.0
+    const float TITLE_RATIO = 1.5f;
+    const float HEADLINE_RATIO = 1.15f;
+    const float DESC_RATIO = 1.0f;
     
+    // Calculate optimal base font size
+    // Layout structure:
+    //   - Title: 1 line + separator (titleHeight + 20px gap + 2px line + 20px gap)
+    //   - Per item: headline (1 line) + description (up to 2 lines) + gap
+    
+    // Start with a large base size and scale down until it fits
+    float baseFontSize = 48.0f;  // Start large
+    const float minBaseFontSize = 18.0f;  // Don't go smaller than this
+    
+    const int16_t bulletWidth = 55;  // Space for "1. " etc.
+    const int16_t itemTextWidth = contentWidth - bulletWidth;
+    const int16_t itemGap = 15;  // Gap between items
+    
+    bool fits = false;
+    float titleFontSize, headlineFontSize, descFontSize;
+    int16_t titleLineHeight, headlineLineHeight, descLineHeight;
+    int maxDescLines = 2;  // Allow up to 2 lines of description per item
+    
+    while (baseFontSize >= minBaseFontSize && !fits) {
+        titleFontSize = baseFontSize * TITLE_RATIO;
+        headlineFontSize = baseFontSize * HEADLINE_RATIO;
+        descFontSize = baseFontSize * DESC_RATIO;
+        
+        titleLineHeight = (int16_t)(titleFontSize * 1.3f);
+        headlineLineHeight = (int16_t)(headlineFontSize * 1.25f);
+        descLineHeight = (int16_t)(descFontSize * 1.25f);
+        
+        // Calculate total height needed
+        int16_t totalHeight = 0;
+        
+        // Title section
+        if (feedTitle[0] != '\0') {
+            totalHeight += titleLineHeight;  // Title text
+            totalHeight += 42;  // Gap + separator + gap (20 + 2 + 20)
+        }
+        
+        // Items section
+        for (int i = 0; i < itemCount; i++) {
+            totalHeight += headlineLineHeight;  // Headline (single line, truncated)
+            
+            // Description (wrapped, max 2 lines)
+            if (items[i].description[0] != '\0') {
+                int descLines = countWrappedLines(items[i].description, descFontSize, itemTextWidth);
+                descLines = min(descLines, maxDescLines);
+                totalHeight += descLines * descLineHeight;
+            }
+            
+            if (i < itemCount - 1) {
+                totalHeight += itemGap;  // Gap between items (not after last)
+            }
+        }
+        
+        if (totalHeight <= availableHeight) {
+            fits = true;
+            Serial.printf("Feed: Font sizing found - base=%.1f, title=%.1f, headline=%.1f, desc=%.1f\n",
+                         baseFontSize, titleFontSize, headlineFontSize, descFontSize);
+        } else {
+            baseFontSize -= 2.0f;  // Try smaller
+        }
+    }
+    
+    if (!fits) {
+        // If still doesn't fit at minimum size, reduce description lines
+        maxDescLines = 1;
+        baseFontSize = minBaseFontSize;
+        titleFontSize = baseFontSize * TITLE_RATIO;
+        headlineFontSize = baseFontSize * HEADLINE_RATIO;
+        descFontSize = baseFontSize * DESC_RATIO;
+        titleLineHeight = (int16_t)(titleFontSize * 1.3f);
+        headlineLineHeight = (int16_t)(headlineFontSize * 1.25f);
+        descLineHeight = (int16_t)(descFontSize * 1.25f);
+        Serial.println("Feed: Using minimum font size with single-line descriptions");
+    }
+    
+    // Now render everything
+    int16_t y = topMargin;
+    
+    // Draw feed title (centered, single line, truncated if needed)
     if (feedTitle[0] != '\0') {
-        // Truncate title if too wide
         char displayTitle[128];
         strncpy(displayTitle, feedTitle, sizeof(displayTitle) - 1);
         displayTitle[sizeof(displayTitle) - 1] = '\0';
+        truncateToFitWidth(displayTitle, sizeof(displayTitle), titleFontSize, contentWidth);
         
-        while (ttf.getTextWidth(displayTitle, titleFontSize) > contentWidth && strlen(displayTitle) > 3) {
-            displayTitle[strlen(displayTitle) - 4] = '\0';
-            strcat(displayTitle, "...");
-        }
-        
-        ttf.drawTextAligned(display.width() / 2, y, displayTitle, titleFontSize,
+        ttf.drawTextAligned(display.width() / 2, y + titleLineHeight / 2, displayTitle, titleFontSize,
                            EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
-        y += 80;
+        y += titleLineHeight + 20;
         
-        // Draw separator line
-        for (int16_t x = leftMargin; x < rightMargin; x++) {
-            display.setPixelARGB(x, y, EL133UF1_BLACK);
+        // Draw separator line (2px thick)
+        for (int16_t lx = leftMargin; lx < rightMargin; lx++) {
+            display.setPixelARGB(lx, y, EL133UF1_BLACK);
+            display.setPixelARGB(lx, y + 1, EL133UF1_BLACK);
         }
-        y += 30;
+        y += 22;  // Line + gap
     }
-    
-    // Calculate space available for items
-    int16_t availableHeight = bottomMargin - y - 60;  // Leave room for timestamp
-    int16_t itemHeight = availableHeight / itemCount;
-    itemHeight = min(itemHeight, (int16_t)180);  // Cap item height
     
     // Draw items
-    for (int i = 0; i < itemCount && y < bottomMargin - 80; i++) {
-        // Draw item number/bullet
+    for (int i = 0; i < itemCount; i++) {
+        // Draw bullet/number
         char bullet[8];
         snprintf(bullet, sizeof(bullet), "%d.", i + 1);
-        ttf.drawTextAligned(leftMargin, y, bullet, itemTitleFontSize,
+        ttf.drawTextAligned(leftMargin, y, bullet, headlineFontSize,
                            EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
         
-        // Draw item title (with word wrap if needed)
-        char title[256];
-        strncpy(title, items[i].title, sizeof(title) - 1);
-        title[sizeof(title) - 1] = '\0';
+        int16_t textX = leftMargin + bulletWidth;
         
-        int16_t titleX = leftMargin + 50;
-        int16_t titleWidth = rightMargin - titleX;
+        // Draw headline (single line, truncated - NO WRAP)
+        char headline[256];
+        strncpy(headline, items[i].title, sizeof(headline) - 1);
+        headline[sizeof(headline) - 1] = '\0';
+        truncateToFitWidth(headline, sizeof(headline), headlineFontSize, itemTextWidth);
         
-        // Simple word wrap for title
-        int16_t titleY = y;
-        char* word = strtok(title, " ");
-        char line[128] = "";
+        ttf.drawTextAligned(textX, y, headline, headlineFontSize,
+                           EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
+        y += headlineLineHeight;
         
-        while (word) {
-            char testLine[128];
-            if (line[0] == '\0') {
-                strncpy(testLine, word, sizeof(testLine) - 1);
-            } else {
-                snprintf(testLine, sizeof(testLine), "%s %s", line, word);
-            }
-            testLine[sizeof(testLine) - 1] = '\0';
-            
-            if (ttf.getTextWidth(testLine, itemTitleFontSize) > titleWidth) {
-                // Draw current line and start new one
-                if (line[0] != '\0') {
-                    ttf.drawTextAligned(titleX, titleY, line, itemTitleFontSize,
-                                       EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
-                    titleY += 44;
-                }
-                strncpy(line, word, sizeof(line) - 1);
-            } else {
-                strncpy(line, testLine, sizeof(line) - 1);
-            }
-            line[sizeof(line) - 1] = '\0';
-            word = strtok(NULL, " ");
-        }
-        // Draw remaining text
-        if (line[0] != '\0') {
-            ttf.drawTextAligned(titleX, titleY, line, itemTitleFontSize,
-                               EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
-            titleY += 44;
+        // Draw description (wrapped, limited lines)
+        if (items[i].description[0] != '\0') {
+            // Use a slightly lighter appearance for description via smaller size already set
+            y = drawWrappedText(items[i].description, textX, y, descFontSize, 
+                               itemTextWidth, EL133UF1_BLACK, maxDescLines);
         }
         
-        // Draw description (truncated, single line)
-        if (items[i].description[0] != '\0' && titleY < y + itemHeight - 30) {
-            char desc[256];
-            strncpy(desc, items[i].description, sizeof(desc) - 1);
-            desc[sizeof(desc) - 1] = '\0';
-            
-            // Truncate to fit
-            while (ttf.getTextWidth(desc, descFontSize) > titleWidth && strlen(desc) > 3) {
-                desc[strlen(desc) - 4] = '\0';
-                strcat(desc, "...");
-            }
-            
-            ttf.drawTextAligned(titleX, titleY, desc, descFontSize,
-                               EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
+        // Gap between items
+        if (i < itemCount - 1) {
+            y += itemGap;
         }
-        
-        y += itemHeight;
     }
     
-    // Draw update time at bottom
+    // Draw update timestamp at bottom right
     time_t now;
     time(&now);
     struct tm* timeinfo = localtime(&now);
     char timeBuf[64];
     strftime(timeBuf, sizeof(timeBuf), "Updated %H:%M", timeinfo);
     
-    ttf.drawTextAligned(rightMargin, bottomMargin - 30, timeBuf, 28.0f,
+    ttf.drawTextAligned(rightMargin, bottomMargin - 15, timeBuf, descFontSize * 0.9f,
                        EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_MIDDLE);
     
     // Free items
@@ -3621,7 +3774,7 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
     Serial.println("Updating display...");
     display.update();
     display.waitForUpdate();
-    Serial.printf("Feed scene displayed: %d items\n", itemCount);
+    Serial.printf("Feed scene displayed: %d items at base font size %.1f\n", itemCount, baseFontSize);
     
     return true;
 }

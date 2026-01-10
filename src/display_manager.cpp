@@ -3658,6 +3658,31 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
         headlineLineHeight = (int16_t)(headlineFontSize * 1.25f);
         descLineHeight = (int16_t)(descFontSize * 1.25f);
         
+        // Check WIDTH constraints first - title and headlines must fit without truncation
+        bool widthFits = true;
+        
+        // Check title fits
+        if (feedTitle[0] != '\0') {
+            if (ttf.getTextWidth(feedTitle, titleFontSize) > contentWidth) {
+                widthFits = false;
+            }
+        }
+        
+        // Check all headlines fit
+        if (widthFits) {
+            for (int i = 0; i < itemCount; i++) {
+                if (ttf.getTextWidth(items[i].title, headlineFontSize) > itemTextWidth) {
+                    widthFits = false;
+                    break;
+                }
+            }
+        }
+        
+        if (!widthFits) {
+            baseFontSize -= 2.0f;  // Too wide, try smaller
+            continue;
+        }
+        
         // Calculate total height needed
         int16_t totalHeight = 0;
         
@@ -3669,7 +3694,7 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
         
         // Items section
         for (int i = 0; i < itemCount; i++) {
-            totalHeight += headlineLineHeight;  // Headline (single line, truncated)
+            totalHeight += headlineLineHeight;  // Headline (single line, no truncation)
             
             // Description (wrapped, max 2 lines)
             if (items[i].description[0] != '\0') {
@@ -3688,7 +3713,7 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
             Serial.printf("Feed: Font sizing found - base=%.1f, title=%.1f, headline=%.1f, desc=%.1f\n",
                          baseFontSize, titleFontSize, headlineFontSize, descFontSize);
         } else {
-            baseFontSize -= 2.0f;  // Try smaller
+            baseFontSize -= 2.0f;  // Too tall, try smaller
         }
     }
     

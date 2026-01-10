@@ -16,9 +16,10 @@ let currentDrawColor = '0'; // Default to black
 let currentFillColor = '1'; // Default to white
 let currentOutlineColor = '0'; // Default to black
 
-// Display margin overlay settings
-let displayMargins = { top: 50, bottom: 70, left: 60, right: 60 };  // Default margins
-let showMarginOverlay = false;  // Toggle for showing margin overlay
+// Display bezel settings (physical visibility boundary - hidden by frame)
+let displayBezel = { top: 50, bottom: 70, left: 60, right: 60 };  // Default bezel values
+let contentPadding = 20;  // Default content padding
+let showBezelOverlay = false;  // Toggle for showing bezel overlay (visible area)
 
 // Pending elements system - elements that can be moved before finalization
 let pendingElements = [];
@@ -92,77 +93,100 @@ function setOutlineColor(colorValue) {
     // Hidden input is updated by color picker component
 }
 
-// Update display margins from device config
-function updateDisplayMargins(margins) {
-    if (margins) {
-        if (margins.margin_top !== undefined) displayMargins.top = margins.margin_top;
-        if (margins.margin_bottom !== undefined) displayMargins.bottom = margins.margin_bottom;
-        if (margins.margin_left !== undefined) displayMargins.left = margins.margin_left;
-        if (margins.margin_right !== undefined) displayMargins.right = margins.margin_right;
-        console.log('Display margins updated:', displayMargins);
+// Update display bezel and padding from device config
+function updateDisplayMargins(config) {
+    if (config) {
+        // Read bezel values (try new names first, fall back to legacy margin_* names)
+        if (config.bezel_top !== undefined) displayBezel.top = config.bezel_top;
+        else if (config.margin_top !== undefined) displayBezel.top = config.margin_top;
         
-        // If overlay is visible, redraw to show updated margins
-        if (showMarginOverlay) {
+        if (config.bezel_bottom !== undefined) displayBezel.bottom = config.bezel_bottom;
+        else if (config.margin_bottom !== undefined) displayBezel.bottom = config.margin_bottom;
+        
+        if (config.bezel_left !== undefined) displayBezel.left = config.bezel_left;
+        else if (config.margin_left !== undefined) displayBezel.left = config.margin_left;
+        
+        if (config.bezel_right !== undefined) displayBezel.right = config.bezel_right;
+        else if (config.margin_right !== undefined) displayBezel.right = config.margin_right;
+        
+        // Read content padding
+        if (config.content_padding !== undefined) {
+            contentPadding = config.content_padding;
+        }
+        
+        console.log('Display bezel updated:', displayBezel, 'Content padding:', contentPadding);
+        
+        // If overlay is visible, redraw to show updated bezel
+        if (showBezelOverlay) {
             redrawCanvas();
         }
     }
 }
 
-// Toggle margin overlay visibility
+// Toggle bezel overlay visibility (shows what's physically visible)
 function toggleMarginOverlay() {
-    showMarginOverlay = !showMarginOverlay;
+    showBezelOverlay = !showBezelOverlay;
     const btn = document.getElementById('marginOverlayBtn');
     if (btn) {
-        btn.textContent = showMarginOverlay ? '🔲 Hide Safe Area' : '🔲 Show Safe Area';
-        btn.classList.toggle('active', showMarginOverlay);
+        btn.textContent = showBezelOverlay ? '🔲 Hide Safe Area' : '🔲 Show Safe Area';
+        btn.classList.toggle('active', showBezelOverlay);
     }
     redrawCanvas();
 }
 
-// Get current margin overlay state
+// Get current bezel overlay state
 function isMarginOverlayVisible() {
-    return showMarginOverlay;
+    return showBezelOverlay;
 }
 
-// Draw margin overlay (dark areas outside safe zone)
+// Draw bezel overlay (dark areas hidden by frame)
 function drawMarginOverlay() {
-    if (!showMarginOverlay || !ctx || !canvas) return;
+    if (!showBezelOverlay || !ctx || !canvas) return;
     
     const w = canvas.width;
     const h = canvas.height;
-    const top = displayMargins.top;
-    const bottom = displayMargins.bottom;
-    const left = displayMargins.left;
-    const right = displayMargins.right;
+    const top = displayBezel.top;
+    const bottom = displayBezel.bottom;
+    const left = displayBezel.left;
+    const right = displayBezel.right;
     
-    // Semi-transparent dark overlay for unsafe areas
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    // Semi-transparent dark overlay for hidden areas (covered by bezel/frame)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
     
-    // Top margin area
+    // Top bezel area
     if (top > 0) {
         ctx.fillRect(0, 0, w, top);
     }
     
-    // Bottom margin area
+    // Bottom bezel area
     if (bottom > 0) {
         ctx.fillRect(0, h - bottom, w, bottom);
     }
     
-    // Left margin area (between top and bottom)
+    // Left bezel area (between top and bottom)
     if (left > 0) {
         ctx.fillRect(0, top, left, h - top - bottom);
     }
     
-    // Right margin area (between top and bottom)
+    // Right bezel area (between top and bottom)
     if (right > 0) {
         ctx.fillRect(w - right, top, right, h - top - bottom);
     }
     
-    // Draw safe area border (dashed line)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    // Draw visible area border (solid white line)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
     ctx.lineWidth = 2;
-    ctx.setLineDash([8, 4]);
     ctx.strokeRect(left, top, w - left - right, h - top - bottom);
+    
+    // Draw content area border (dashed line showing where content should go)
+    const contentTop = top + contentPadding;
+    const contentBottom = bottom + contentPadding;
+    const contentLeft = left + contentPadding;
+    const contentRight = right + contentPadding;
+    ctx.strokeStyle = 'rgba(76, 175, 80, 0.6)';  // Green dashed line
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(contentLeft, contentTop, w - contentLeft - contentRight, h - contentTop - contentBottom);
     ctx.setLineDash([]);  // Reset to solid line
 }
 

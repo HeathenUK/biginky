@@ -1192,8 +1192,9 @@ bool displayHappyWeatherScene(const HappyWeatherConfig* config) {
     const int numLocations = config->numLocations;
     const int16_t DISPLAY_WIDTH = config->displayWidth;
     const int16_t DISPLAY_HEIGHT = config->displayHeight;
-    const int16_t MARGIN_TOP = config->marginTop;
-    const int16_t MARGIN_BOTTOM = config->marginBottom;
+    // Always use configured display margins (ignore config struct values)
+    const int16_t MARGIN_TOP = getDisplayMarginTop() + 30;      // Add padding beyond safe area
+    const int16_t MARGIN_BOTTOM = getDisplayMarginBottom() + 30; // Add padding beyond safe area
     const int16_t GAP_BETWEEN_PANELS = config->gapBetweenPanels;
     const int16_t NUM_PANELS = config->numPanels;
     const int16_t* panelWidths = config->panelWidths;

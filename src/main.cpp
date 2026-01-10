@@ -4737,9 +4737,7 @@ static bool startSdBufferedOTA() {
             }
             Serial.printf("Opened file for writing: %s\n", fullPath.c_str());
             
-            // Smaller buffer to reduce SDIO bus contention with WiFi
-            // ESP32-P4 shares SDIO between WiFi and SD card
-            const size_t BUFFER_SIZE = 2048;
+            const size_t BUFFER_SIZE = 8192;
             uint8_t buffer[BUFFER_SIZE];
             size_t totalReceived = 0;
             uint32_t lastProgress = 0;
@@ -4810,11 +4808,6 @@ static bool startSdBufferedOTA() {
                 }
                 
                 totalReceived += readBytes;
-                
-                // Yield to let WiFi SDIO driver process receive buffers
-                // ESP32-P4 shares SDIO bus between WiFi and SD card
-                taskYIELD();
-                delay(1);  // Small delay to reduce SDIO bus contention
                 
                 // Progress reporting
                 if (totalReceived - lastProgress >= 102400) {
@@ -9218,12 +9211,15 @@ bool handleManageCommand() {
         delay(100);  // Yield to other tasks
     }
     
-    // Stop the server
+    // Stop the server completely before OTA can start
+    // ESP32-P4 shares SDIO bus between WiFi and SD card - need clean shutdown
+    Serial.println("Stopping web server...");
     server.stop();
+    delay(100);
     
-    // Allow time for network connections to close cleanly
-    // This is important before OTA which heavily uses SDIO (shared with WiFi)
-    delay(500);
+    // Give network stack time to fully close all connections
+    Serial.println("Waiting for network cleanup...");
+    delay(1000);
     
     if (g_manage_should_exit) {
         Serial.println("Management interface closed (OTA requested)");

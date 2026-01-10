@@ -1114,6 +1114,118 @@ async function sendCanvasAction() {
     }
 }
 
+// ============================================================================
+// Configuration Backup/Restore Functions
+// ============================================================================
+
+// Request configuration backup from device
+async function requestConfigBackup() {
+    showStatus('configBackupStatus', 'Requesting configuration backup from device...', false);
+    
+    const payload = {
+        command: 'config_get'
+    };
+    
+    if (await publishMessage(payload)) {
+        showStatus('configBackupStatus', 'Request sent. Waiting for device to respond with configuration...', false);
+        setBusyState(true, 'Waiting for configuration backup...');
+    } else {
+        showStatus('configBackupStatus', 'Failed to send backup request', true);
+    }
+}
+
+// Handle incoming configuration backup data (called from mqtt.js when config_backup response arrives)
+function handleConfigBackupResponse(configData) {
+    // configData is the encrypted backup payload from the device
+    // It's already in the format we want to save (encrypted JSON with HMAC)
+    
+    const configBackupDownload = document.getElementById('configBackupDownload');
+    const configDownloadLink = document.getElementById('configDownloadLink');
+    
+    if (!configBackupDownload || !configDownloadLink) {
+        console.error('Config backup download elements not found');
+        showStatus('configBackupStatus', 'Error: UI elements not found', true);
+        return;
+    }
+    
+    // Create downloadable blob from config data
+    const configJson = JSON.stringify(configData, null, 2);
+    const blob = new Blob([configJson], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    // Generate filename with timestamp
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const filename = `biginky_config_${timestamp}.backup`;
+    
+    configDownloadLink.href = url;
+    configDownloadLink.download = filename;
+    configDownloadLink.textContent = `Download ${filename}`;
+    configBackupDownload.style.display = 'block';
+    
+    showStatus('configBackupStatus', 'Configuration backup ready for download!', false);
+    setBusyState(false);
+}
+
+// Handle configuration file import
+async function handleConfigImport(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    showStatus('configBackupStatus', 'Reading ' + file.name + '...', false);
+    
+    const reader = new FileReader();
+    reader.onload = async function(e) {
+        try {
+            const encryptedPayload = e.target.result;
+            
+            // Validate it looks like a valid backup file
+            let parsed;
+            try {
+                parsed = JSON.parse(encryptedPayload);
+            } catch (parseError) {
+                showStatus('configBackupStatus', 'Error: Invalid backup file format (not valid JSON)', true);
+                document.getElementById('configFileInput').value = '';
+                return;
+            }
+            
+            // Check for expected fields in encrypted backup
+            if (!parsed.encrypted && !parsed.payload && !parsed.hmac) {
+                showStatus('configBackupStatus', 'Error: Invalid backup file format (missing required fields)', true);
+                document.getElementById('configFileInput').value = '';
+                return;
+            }
+            
+            showStatus('configBackupStatus', 'Sending configuration to device for restore...', false);
+            
+            // Send the encrypted payload to the device - it will validate HMAC and decrypt
+            const payload = {
+                command: 'config_set',
+                config: parsed  // Send the entire encrypted config structure
+            };
+            
+            if (await publishMessage(payload)) {
+                showStatus('configBackupStatus', 'Configuration restore request sent. Waiting for device confirmation...', false);
+                setBusyState(true, 'Restoring configuration...');
+            } else {
+                showStatus('configBackupStatus', 'Failed to send restore request', true);
+            }
+        } catch (error) {
+            showStatus('configBackupStatus', 'Error reading backup file: ' + error.message, true);
+        }
+        
+        // Clear file input for next use
+        document.getElementById('configFileInput').value = '';
+    };
+    
+    reader.onerror = function(e) {
+        showStatus('configBackupStatus', 'Error reading file: ' + e, true);
+        document.getElementById('configFileInput').value = '';
+    };
+    
+    reader.readAsText(file);
+}
+
 // Helper function for uncompressed canvas action
 function sendCanvasActionUncompressed(canvas, pixelBytes, command, filename) {
     let binaryString = '';

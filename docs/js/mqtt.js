@@ -342,6 +342,32 @@ async function handleStatusMessage(message) {
                         }
                     }
                 }
+                
+                // Handle config_get command completion - device sends back config backup
+                if (status.command === 'config_get') {
+                    if (status.success && status.config) {
+                        if (typeof handleConfigBackupResponse === 'function') {
+                            handleConfigBackupResponse(status.config);
+                        }
+                    } else {
+                        if (typeof showStatus === 'function') {
+                            showStatus('configBackupStatus', 'Failed to get configuration: ' + (status.error || 'unknown error'), true);
+                        }
+                    }
+                }
+                
+                // Handle config_set command completion - device confirms restore
+                if (status.command === 'config_set') {
+                    if (status.success) {
+                        if (typeof showStatus === 'function') {
+                            showStatus('configBackupStatus', 'Configuration restored successfully! Device may need to restart for some changes to take effect.', false);
+                        }
+                    } else {
+                        if (typeof showStatus === 'function') {
+                            showStatus('configBackupStatus', 'Failed to restore configuration: ' + (status.error || 'unknown error'), true);
+                        }
+                    }
+                }
             } else if (pendingCommandId) {
                 // console.log('Command completion received but ID mismatch. Expected:', pendingCommandId, 'Got:', status.id);
             }

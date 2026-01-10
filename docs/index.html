@@ -613,6 +613,22 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 <div class="section">
+<h2 onclick="toggleSection(this)">Configuration Backup & Restore</h2>
+<div class="section-content" id="section-config-backup">
+<p>Export or import device configuration. Backup is encrypted with your Web UI password and includes WiFi credentials, schedule, media settings, and allowed phone numbers.</p>
+<div id="configBackupStatus" style="margin:10px 0;"></div>
+<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:15px;">
+<button onclick="requestConfigBackup()" id="configBackupBtn" disabled style="background:#2196F3;">Export Configuration</button>
+<input type="file" id="configFileInput" accept=".backup,.json" style="display:none" onchange="handleConfigImport(event)">
+<button onclick="document.getElementById('configFileInput').click()" id="configRestoreBtn" disabled style="background:#FF9800;">Import Configuration</button>
+</div>
+<div id="configBackupDownload" style="margin-top:15px;display:none;">
+<p style="color:#4CAF50;">Configuration backup ready:</p>
+<a id="configDownloadLink" href="#" download="biginky_config.backup" style="color:#4CAF50;font-weight:bold;text-decoration:underline;">Download biginky_config.backup</a>
+</div>
+</div>
+</div>
+<div class="section">
 <h2 onclick="toggleSection(this)">Command Log</h2>
 <div class="section-content" id="section-log">
 <div id="commandLog" style="max-height:300px;overflow-y:auto;background:#1a1a1a;padding:10px;border:1px solid #444;border-radius:4px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#e0e0e0;"></div>

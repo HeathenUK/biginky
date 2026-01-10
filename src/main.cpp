@@ -353,14 +353,13 @@ static Preferences numbersPrefs;  // NVS preferences for allowed phone numbers
 Preferences sleepPrefs;  // NVS preferences for sleep duration setting (non-static for nvs_manager module access)
 static Preferences otaPrefs;  // NVS preferences for OTA version tracking
 Preferences mediaPrefs;  // NVS preferences for media index storage (non-static for nvs_manager module access)
-Preferences hourSchedulePrefs;  // NVS preferences for hour schedule (non-static for nvs_manager module access)
 Preferences detailedSchedulePrefs;  // NVS preferences for detailed schedule (slots + scenes)
 Preferences authPrefs;  // NVS preferences for web UI authentication (non-static for webui_crypto module access)
 Preferences managePrefs;  // NVS preferences for management interface settings (non-static for nvs_manager module access)
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
 uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60) (non-static for nvs_manager module access)
-// Note: g_hour_schedule has been removed - use isHourEnabledInSchedule() from schedule_manager.h instead
+// Hour enable/disable is now managed by schedule_manager - use isHourEnabledInSchedule()
 
 static TwoWire g_codec_wire0(0);
 static TwoWire g_codec_wire1(1);
@@ -12557,8 +12556,7 @@ void setup() {
     // Load sleep duration interval from NVS
     sleepDurationLoadFromNVS();
     
-    // Load detailed schedule (slots + scenes) from NVS
-    // Note: hour schedule now embedded in detailed schedule - no separate hourScheduleLoadFromNVS call
+    // Load detailed schedule (hour enable/disable + scene slots) from NVS
     detailedScheduleLoadFromNVS();
     
     // Load management interface timeout disabled state from NVS

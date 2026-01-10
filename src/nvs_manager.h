@@ -4,9 +4,11 @@
  * 
  * Provides functions to load and save persistent settings to NVS:
  * - Audio volume
- * - Media index
+ * - Media index and mode (sequential/shuffle)
  * - Sleep duration interval
- * - Hour schedule (24-hour enable/disable flags)
+ * - Management interface timeout setting
+ * 
+ * Note: Hour schedule is now managed by schedule_manager.h (detailed schedule system)
  * 
  * Extracted from main_esp32p4_test.cpp as part of Priority 1 refactoring.
  */
@@ -20,7 +22,6 @@
 extern int g_audio_volume_pct;
 extern uint32_t lastMediaIndex;
 extern uint8_t g_sleep_interval_minutes;
-extern bool g_hour_schedule[24];
 extern bool g_is_cold_boot;
 
 /**
@@ -77,20 +78,6 @@ void sleepDurationLoadFromNVS();
  * Called whenever the sleep interval changes
  */
 void sleepDurationSaveToNVS();
-
-/**
- * Load hour schedule from NVS
- * Hour schedule: 24 boolean flags (one per hour, 0-23)
- * If true, wake during that hour; if false, sleep through entire hour
- * Called on startup to restore the hour schedule
- */
-void hourScheduleLoadFromNVS();
-
-/**
- * Save hour schedule to NVS
- * Called whenever the hour schedule changes
- */
-void hourScheduleSaveToNVS();
 
 /**
  * Load management interface timeout disabled state from NVS

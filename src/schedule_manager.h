@@ -52,7 +52,6 @@ struct HourSchedule {
 /**
  * Initialize default schedule (media at :00, weather at :30 for all enabled hours)
  * This matches the current hardcoded behavior
- * Requires g_hour_schedule array (external dependency)
  */
 void initializeDefaultSchedule();
 

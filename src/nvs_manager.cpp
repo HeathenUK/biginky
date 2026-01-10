@@ -14,14 +14,12 @@
 extern int g_audio_volume_pct;
 extern uint32_t lastMediaIndex;
 extern uint8_t g_sleep_interval_minutes;
-extern bool g_hour_schedule[24];
 extern bool g_is_cold_boot;
 
 // External references to Preferences objects in main file
 extern Preferences volumePrefs;
 extern Preferences mediaPrefs;
 extern Preferences sleepPrefs;
-extern Preferences hourSchedulePrefs;
 extern Preferences detailedSchedulePrefs;
 extern Preferences managePrefs;
 
@@ -162,66 +160,6 @@ void sleepDurationSaveToNVS() {
     guard.get().putUChar("interval", g_sleep_interval_minutes);
     
     Serial.printf("Saved sleep interval to NVS: %d minutes\n", g_sleep_interval_minutes);
-}
-
-void hourScheduleLoadFromNVS() {
-    // Initialize all hours to enabled by default
-    for (int i = 0; i < 24; i++) {
-        g_hour_schedule[i] = true;
-    }
-    
-    // Try to open in read-only mode first (to avoid creating namespace unnecessarily)
-    // If it doesn't exist, Preferences.begin() will fail and log an error, which is expected on first boot
-    NVSGuard guard(hourSchedulePrefs, "hours", true);  // Read-only
-    if (!guard.isOpen()) {
-        // This is normal on first boot or after NVS clear - namespace doesn't exist yet
-        // The Preferences library logs "NOT_FOUND" error, but we handle it gracefully here
-        // We'll use defaults (all hours enabled) and the namespace will be created on first save
-        // Note: This hour schedule is deprecated in favor of detailed scene schedule, 
-        // but kept for backward compatibility and as initial default
-        return;  // Use defaults - all hours enabled
-    }
-    
-    // Load hour schedule as a 24-byte string (each byte is '1' or '0')
-    String scheduleStr = guard.get().getString("schedule", "");
-    
-    if (scheduleStr.length() == 24) {
-        // Parse the schedule string
-        for (int i = 0; i < 24; i++) {
-            g_hour_schedule[i] = (scheduleStr.charAt(i) == '1');
-        }
-        if (g_is_cold_boot) {
-            Serial.println("Loaded hour schedule from NVS:");
-            for (int i = 0; i < 24; i++) {
-                Serial.printf("  Hour %02d: %s\n", i, g_hour_schedule[i] ? "ENABLED" : "DISABLED");
-            }
-        }
-    } else {
-        if (g_is_cold_boot) {
-            Serial.println("No hour schedule in NVS - using default (all hours enabled)");
-        }
-    }
-}
-
-void hourScheduleSaveToNVS() {
-    NVSGuard guard(hourSchedulePrefs, "hours", false);  // Read-write
-    if (!guard.isOpen()) {
-        Serial.println("WARNING: Failed to open NVS for saving hour schedule");
-        return;
-    }
-    
-    // Save hour schedule as a 24-byte string (each byte is '1' or '0')
-    String scheduleStr = "";
-    for (int i = 0; i < 24; i++) {
-        scheduleStr += (g_hour_schedule[i] ? '1' : '0');
-    }
-    
-    guard.get().putString("schedule", scheduleStr);
-    
-    Serial.println("Saved hour schedule to NVS:");
-    for (int i = 0; i < 24; i++) {
-        Serial.printf("  Hour %02d: %s\n", i, g_hour_schedule[i] ? "ENABLED" : "DISABLED");
-    }
 }
 
 // Management interface timeout disabled state

@@ -5934,11 +5934,22 @@ bool handleManageCommand() {
         }
     }
     
-    // Create server - use HTTP for local !manage interface
-    // HTTPS causes memory allocation failures (esp-aes needs internal RAM, not PSRAM)
-    // Since this is only accessible on the local AP (192.168.4.1), HTTP is fine
+    // Create server - following example pattern exactly
+    #ifdef PSY_ENABLE_SSL
+    PsychicHttpsServer server(443);
+    // Set certificate and private key from certificates.h
+    server.setCertificate(server_cert, server_key);
+    Serial.println("HTTPS server configured with SSL certificate");
+    #ifdef CONFIG_ESP_HTTPS_SERVER_ENABLE
+    Serial.println("BUILD CHECK: PSY_ENABLE_SSL=1, CONFIG_ESP_HTTPS_SERVER_ENABLE=1");
+    #else
+    Serial.println("BUILD CHECK: PSY_ENABLE_SSL=1, CONFIG_ESP_HTTPS_SERVER_ENABLE=0 (WARNING!)");
+    #endif
+    #else
     PsychicHttpServer server(80);
-    Serial.println("HTTP server for local !manage interface (HTTPS disabled to save internal RAM)");
+    Serial.println("HTTP server (HTTPS not available - PSY_ENABLE_SSL not defined)");
+    Serial.println("BUILD CHECK: PSY_ENABLE_SSL is NOT defined");
+    #endif
     
     // Increase max request body size for file uploads (default is 16KB)
     // ESP32-P4 has PSRAM, so we can handle larger requests

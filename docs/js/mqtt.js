@@ -265,6 +265,16 @@ async function handleStatusMessage(message) {
         // Display status
         updateDeviceStatus(status);
         
+        // Extract and cache ENCRYPTED config (for backup/restore functionality)
+        // Config is already encrypted by firmware - just cache the encrypted blob
+        if (status.config && typeof status.config === 'object' && status.config.encrypted) {
+            cachedDeviceConfig = status.config;
+            console.log('Cached encrypted config from status message');
+            if (typeof updateConfigBackupUI === 'function') {
+                updateConfigBackupUI(true);
+            }
+        }
+        
         // Store next wake time for busy state countdown
         let wakeTimeUpdated = false;
         if (status.next_wake) {
@@ -888,17 +898,7 @@ async function handleMediaMessage(message) {
             console.log('Media mappings payload does not contain schedule array');
         }
         
-        // Extract and store config (if present) - for backup/restore functionality
-        if (mediaData.config && typeof mediaData.config === 'object') {
-            cachedDeviceConfig = mediaData.config;
-            console.log('Cached device config from media mappings');
-            // Update config backup UI to show config is available
-            if (typeof updateConfigBackupUI === 'function') {
-                updateConfigBackupUI(true);
-            }
-        } else {
-            console.log('Media mappings payload does not contain config object');
-        }
+        // NOTE: Config is now in status message (published every wake), not media_mappings
         
         // Display media mappings table
         updateMediaMappingsTable(currentMediaMappings);

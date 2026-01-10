@@ -90,5 +90,8 @@ let allFonts = [];  // Store font list for media mapping editor
 let lastFramebufferUpdateTimestamp = 0;  // Last framebuffer update timestamp from status message
 let currentFramebufferData = null;  // Current framebuffer PNG data for loading onto canvas
 
+// Config backup/restore - cached from media mappings
+let cachedDeviceConfig = null;  // Device config from media mappings (for export)
+
 // Command tracking
 let pendingCommandId = null;  // UUID of the command we're waiting for completion

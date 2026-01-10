@@ -888,6 +888,18 @@ async function handleMediaMessage(message) {
             console.log('Media mappings payload does not contain schedule array');
         }
         
+        // Extract and store config (if present) - for backup/restore functionality
+        if (mediaData.config && typeof mediaData.config === 'object') {
+            cachedDeviceConfig = mediaData.config;
+            console.log('Cached device config from media mappings');
+            // Update config backup UI to show config is available
+            if (typeof updateConfigBackupUI === 'function') {
+                updateConfigBackupUI(true);
+            }
+        } else {
+            console.log('Media mappings payload does not contain config object');
+        }
+        
         // Display media mappings table
         updateMediaMappingsTable(currentMediaMappings);
     } catch (e) {

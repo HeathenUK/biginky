@@ -1118,26 +1118,33 @@ async function sendCanvasAction() {
 // Configuration Backup/Restore Functions
 // ============================================================================
 
-// Request configuration backup from device
-async function requestConfigBackup() {
-    showStatus('configBackupStatus', 'Requesting configuration backup from device...', false);
+// Update config backup UI to show availability status
+function updateConfigBackupUI(configAvailable) {
+    const exportBtn = document.getElementById('configBackupBtn');
+    const statusEl = document.getElementById('configBackupStatus');
     
-    const payload = {
-        command: 'config_get'
-    };
+    if (exportBtn) {
+        exportBtn.disabled = !configAvailable;
+        if (configAvailable) {
+            exportBtn.title = 'Export configuration from cached media mappings';
+        } else {
+            exportBtn.title = 'Waiting for media mappings to load config...';
+        }
+    }
     
-    if (await publishMessage(payload)) {
-        showStatus('configBackupStatus', 'Request sent. Waiting for device to respond with configuration...', false);
-        setBusyState(true, 'Waiting for configuration backup...');
-    } else {
-        showStatus('configBackupStatus', 'Failed to send backup request', true);
+    if (statusEl && configAvailable && !statusEl.textContent.includes('Error')) {
+        statusEl.textContent = 'Configuration available for export';
+        statusEl.style.color = '';
     }
 }
 
-// Handle incoming configuration backup data (called from mqtt.js when config_backup response arrives)
-function handleConfigBackupResponse(configData) {
-    // configData is the encrypted backup payload from the device
-    // It's already in the format we want to save (encrypted JSON with HMAC)
+// Export configuration from cached media mappings (no command needed!)
+function requestConfigBackup() {
+    // Use cached config from media mappings - no need to request from device
+    if (!cachedDeviceConfig) {
+        showStatus('configBackupStatus', 'No configuration available. Wait for media mappings to load.', true);
+        return;
+    }
     
     const configBackupDownload = document.getElementById('configBackupDownload');
     const configDownloadLink = document.getElementById('configDownloadLink');
@@ -1148,8 +1155,8 @@ function handleConfigBackupResponse(configData) {
         return;
     }
     
-    // Create downloadable blob from config data
-    const configJson = JSON.stringify(configData, null, 2);
+    // Create downloadable blob from cached config data
+    const configJson = JSON.stringify(cachedDeviceConfig, null, 2);
     const blob = new Blob([configJson], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     
@@ -1164,7 +1171,16 @@ function handleConfigBackupResponse(configData) {
     configBackupDownload.style.display = 'block';
     
     showStatus('configBackupStatus', 'Configuration backup ready for download!', false);
-    setBusyState(false);
+    console.log('Config export prepared from cached media mappings data');
+}
+
+// Legacy handler - kept for backward compatibility but no longer used
+function handleConfigBackupResponse(configData) {
+    // This was used when config_get command returned config via status message
+    // Now config comes from media mappings, so this is rarely needed
+    console.log('handleConfigBackupResponse called (legacy path)');
+    cachedDeviceConfig = configData;  // Cache it
+    requestConfigBackup();  // Trigger download
 }
 
 // Handle configuration file import
@@ -1177,31 +1193,40 @@ async function handleConfigImport(event) {
     const reader = new FileReader();
     reader.onload = async function(e) {
         try {
-            const encryptedPayload = e.target.result;
+            const fileContent = e.target.result;
             
             // Validate it looks like a valid backup file
             let parsed;
             try {
-                parsed = JSON.parse(encryptedPayload);
+                parsed = JSON.parse(fileContent);
             } catch (parseError) {
                 showStatus('configBackupStatus', 'Error: Invalid backup file format (not valid JSON)', true);
                 document.getElementById('configFileInput').value = '';
                 return;
             }
             
-            // Check for expected fields in encrypted backup
-            if (!parsed.encrypted && !parsed.payload && !parsed.hmac) {
-                showStatus('configBackupStatus', 'Error: Invalid backup file format (missing required fields)', true);
+            // Check if this is a plaintext config (new format from media_mappings)
+            // Plaintext configs have fields like: version, volume, media_mode, sleep_interval, etc.
+            const isPlaintextConfig = parsed.version !== undefined || 
+                                      parsed.volume !== undefined || 
+                                      parsed.sleep_interval !== undefined;
+            
+            // Check if this is an encrypted backup (old format)
+            const isEncryptedBackup = parsed.encrypted !== undefined && 
+                                      parsed.payload !== undefined;
+            
+            if (!isPlaintextConfig && !isEncryptedBackup) {
+                showStatus('configBackupStatus', 'Error: Invalid backup file format (not a valid config file)', true);
                 document.getElementById('configFileInput').value = '';
                 return;
             }
             
             showStatus('configBackupStatus', 'Sending configuration to device for restore...', false);
             
-            // Send the encrypted payload to the device - it will validate HMAC and decrypt
+            // Send config to device - it handles both formats
             const payload = {
                 command: 'config_set',
-                config: parsed  // Send the entire encrypted config structure
+                config: parsed  // Send the config (plaintext or encrypted)
             };
             
             if (await publishMessage(payload)) {

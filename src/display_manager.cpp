@@ -901,22 +901,24 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
         Serial.printf("[Layout] Scaled weather to %.2f%% to fit quarter area\n", weatherScale * 100.0f);
     }
     
-    // Scale quote to fit half area (with margins: 50px top/bottom, 40px left / 30px right)
+    // Scale quote to fit half area (using configured margins)
     // Important: quoteH includes both quote text AND author, so scaling considers the full element
-    // When quote is on bottom, add 10px extra to bottom margin (50px top, 60px bottom = 110px total)
+    // When quote is on bottom, add 10px extra to bottom margin for visual balance
     int16_t quoteW, quoteH;
     quoteElement.getDimensions(quoteW, quoteH);
     float quoteScale = 1.0f;
-    int16_t quoteHeightMargin = quoteOnTop ? 100 : 110;  // 50px top/bottom when on top, 50px top/60px bottom when on bottom
-    int16_t quoteWidthMargin = 70;  // 40px left + 30px right = 70px total
+    int16_t marginTop = getDisplayMarginTop();
+    int16_t marginBottom = getDisplayMarginBottom();
+    int16_t quoteHeightMargin = quoteOnTop ? (marginTop + marginBottom) : (marginTop + marginBottom + 10);
+    int16_t quoteWidthMargin = getDisplayMarginLeft() + getDisplayMarginRight();
     if (quoteW > (halfW - quoteWidthMargin) || quoteH > (halfH_area - quoteHeightMargin)) {
         float scaleW = (float)(halfW - quoteWidthMargin) / quoteW;
         float scaleH = (float)(halfH_area - quoteHeightMargin) / quoteH;
         quoteScale = (scaleW < scaleH) ? scaleW : scaleH;
         if (quoteScale < 0.5f) quoteScale = 0.5f;  // Minimum 50% size
         quoteElement.setAdaptiveSize(quoteScale);
-        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area (width margin: 40px left / 30px right, height margin: %dpx total - %s)\n", 
-                     quoteScale * 100.0f, quoteHeightMargin, quoteOnTop ? "50px top/bottom" : "50px top/60px bottom");
+        Serial.printf("[Layout] Scaled quote to %.2f%% to fit half area (width margin: %dpx, height margin: %dpx)\n", 
+                     quoteScale * 100.0f, quoteWidthMargin, quoteHeightMargin);
     }
     
     // Draw at fixed positions (centered in their assigned areas)

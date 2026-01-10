@@ -1174,13 +1174,14 @@ void wifiClearNetworks() {
 
 // ============================================================================
 // AP Mode Captive Portal for WiFi Configuration
+// Using ESP-IDF httpd to avoid conflicts with PsychicHttp middleware
 // ============================================================================
 
 #include <DNSServer.h>
-#include <WebServer.h>
+#include <esp_http_server.h>
 
 // Captive portal HTML - minimal and functional
-static const char AP_CONFIG_HTML[] PROGMEM = R"rawliteral(
+static const char AP_CONFIG_HTML[] = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
@@ -1203,7 +1204,6 @@ button:hover{background:#ff6b6b}
 .net{padding:10px;background:#0f0f23;border-radius:6px;margin:5px 0;cursor:pointer;display:flex;justify-content:space-between}
 .net:hover{background:#1a1a2e}
 .rssi{color:#4a4e69;font-size:12px}
-.hidden{display:none}
 .msg{padding:15px;border-radius:8px;margin:15px 0;text-align:center}
 .ok{background:#2d6a4f;color:#fff}
 .err{background:#9b2226;color:#fff}
@@ -1244,9 +1244,10 @@ document.getElementById('networks').innerHTML='<p style="color:#e94560">Scan fai
 }
 function pick(s){document.getElementById('ssid').value=s;document.getElementById('psk').focus();}
 function save(){
-let f=document.getElementById('f');
-let fd=new FormData(f);
-fetch('/save',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+let ssid=document.getElementById('ssid').value;
+let psk=document.getElementById('psk').value;
+let hidden=document.getElementById('hidden').checked;
+fetch('/save?ssid='+encodeURIComponent(ssid)+'&psk='+encodeURIComponent(psk)+'&hidden='+(hidden?'1':'0')).then(r=>r.json()).then(d=>{
 if(d.success){
 document.getElementById('msg').innerHTML='<div class="msg ok">&#9989; WiFi saved! Restarting...</div>';
 setTimeout(()=>{document.getElementById('msg').innerHTML='<div class="msg ok">You can close this page and reconnect to your normal WiFi.</div>';},3000);
@@ -1265,24 +1266,60 @@ return false;
 
 // Global state for AP mode
 static bool g_apConfigComplete = false;
-static WebServer* g_apServer = nullptr;
+static httpd_handle_t g_apHttpd = nullptr;
 static DNSServer* g_dnsServer = nullptr;
 
+// Helper to get query parameter value
+static String getQueryParam(httpd_req_t *req, const char* param) {
+    size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len <= 1) return "";
+    
+    char* buf = (char*)malloc(buf_len);
+    if (!buf) return "";
+    
+    String result = "";
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+        char value[128];
+        if (httpd_query_key_value(buf, param, value, sizeof(value)) == ESP_OK) {
+            // URL decode
+            result = "";
+            for (size_t i = 0; value[i]; i++) {
+                if (value[i] == '%' && value[i+1] && value[i+2]) {
+                    char hex[3] = {value[i+1], value[i+2], 0};
+                    result += (char)strtol(hex, nullptr, 16);
+                    i += 2;
+                } else if (value[i] == '+') {
+                    result += ' ';
+                } else {
+                    result += value[i];
+                }
+            }
+        }
+    }
+    free(buf);
+    return result;
+}
+
 // Handler for captive portal detection
-static void handleCaptivePortal() {
-    g_apServer->send(200, "text/html", AP_CONFIG_HTML);
+static esp_err_t handleCaptivePortal(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, AP_CONFIG_HTML, strlen(AP_CONFIG_HTML));
+    return ESP_OK;
 }
 
 // Handler for WiFi scan
-static void handleScan() {
+static esp_err_t handleScan(httpd_req_t *req) {
     Serial.println("AP Config: Scanning for networks...");
-    int n = WiFi.scanNetworks(false, true);  // Include hidden networks
+    int n = WiFi.scanNetworks(false, true);
     
     String json = "[";
     for (int i = 0; i < n; i++) {
         if (i > 0) json += ",";
         json += "{\"ssid\":\"";
-        json += WiFi.SSID(i);
+        // Escape quotes in SSID
+        String ssid = WiFi.SSID(i);
+        ssid.replace("\"", "\\\"");
+        json += ssid;
         json += "\",\"rssi\":";
         json += String(WiFi.RSSI(i));
         json += ",\"enc\":";
@@ -1293,42 +1330,47 @@ static void handleScan() {
     
     WiFi.scanDelete();
     Serial.printf("AP Config: Found %d networks\n", n);
-    g_apServer->send(200, "application/json", json);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json.c_str(), json.length());
+    return ESP_OK;
 }
 
 // Handler for saving WiFi credentials
-static void handleSave() {
-    String ssid = g_apServer->arg("ssid");
-    String psk = g_apServer->arg("psk");
-    bool hidden = g_apServer->hasArg("hidden");
+static esp_err_t handleSave(httpd_req_t *req) {
+    String ssid = getQueryParam(req, "ssid");
+    String psk = getQueryParam(req, "psk");
+    String hiddenStr = getQueryParam(req, "hidden");
+    bool hidden = (hiddenStr == "1" || hiddenStr == "true");
     
     Serial.printf("AP Config: Saving SSID='%s' hidden=%d\n", ssid.c_str(), hidden);
     
+    String response;
+    
     if (ssid.length() == 0 || ssid.length() > 32) {
-        g_apServer->send(200, "application/json", "{\"success\":false,\"error\":\"Invalid SSID\"}");
-        return;
+        response = "{\"success\":false,\"error\":\"Invalid SSID\"}";
+    } else if (psk.length() > 64) {
+        response = "{\"success\":false,\"error\":\"Password too long\"}";
+    } else {
+        // Save to multi-network system
+        if (!wifiAddNetwork(ssid.c_str(), psk.c_str(), hidden, true)) {
+            response = "{\"success\":false,\"error\":\"Failed to save\"}";
+        } else {
+            // Also save as primary credentials for legacy compatibility
+            strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+            wifiSSID[sizeof(wifiSSID) - 1] = '\0';
+            strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+            wifiPSK[sizeof(wifiPSK) - 1] = '\0';
+            wifiSaveCredentials();
+            
+            response = "{\"success\":true}";
+            g_apConfigComplete = true;
+        }
     }
     
-    if (psk.length() > 64) {
-        g_apServer->send(200, "application/json", "{\"success\":false,\"error\":\"Password too long\"}");
-        return;
-    }
-    
-    // Save to multi-network system
-    if (!wifiAddNetwork(ssid.c_str(), psk.c_str(), hidden, true)) {
-        g_apServer->send(200, "application/json", "{\"success\":false,\"error\":\"Failed to save\"}");
-        return;
-    }
-    
-    // Also save as primary credentials for legacy compatibility
-    strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
-    wifiSSID[sizeof(wifiSSID) - 1] = '\0';
-    strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
-    wifiPSK[sizeof(wifiPSK) - 1] = '\0';
-    wifiSaveCredentials();
-    
-    g_apServer->send(200, "application/json", "{\"success\":true}");
-    g_apConfigComplete = true;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response.c_str(), response.length());
+    return ESP_OK;
 }
 
 bool wifiStartAPConfigMode(uint8_t timeoutMinutes) {
@@ -1359,26 +1401,29 @@ bool wifiStartAPConfigMode(uint8_t timeoutMinutes) {
     g_dnsServer->start(53, "*", apIP);
     Serial.println("DNS server started (captive portal)");
     
-    // Start HTTP server
-    g_apServer = new WebServer(80);
+    // Start HTTP server using ESP-IDF httpd
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.uri_match_fn = httpd_uri_match_wildcard;
+    config.max_uri_handlers = 8;
     
-    // Captive portal detection endpoints (various OS/browsers)
-    g_apServer->on("/", handleCaptivePortal);
-    g_apServer->on("/generate_204", handleCaptivePortal);  // Android
-    g_apServer->on("/gen_204", handleCaptivePortal);       // Android
-    g_apServer->on("/hotspot-detect.html", handleCaptivePortal);  // iOS
-    g_apServer->on("/canonical.html", handleCaptivePortal);  // iOS
-    g_apServer->on("/success.txt", handleCaptivePortal);   // iOS
-    g_apServer->on("/ncsi.txt", handleCaptivePortal);      // Windows
-    g_apServer->on("/connecttest.txt", handleCaptivePortal);  // Windows
-    g_apServer->on("/redirect", handleCaptivePortal);      // Windows
-    g_apServer->onNotFound(handleCaptivePortal);           // Catch-all
+    if (httpd_start(&g_apHttpd, &config) != ESP_OK) {
+        Serial.println("ERROR: Failed to start HTTP server");
+        g_dnsServer->stop();
+        delete g_dnsServer;
+        g_dnsServer = nullptr;
+        WiFi.softAPdisconnect(true);
+        return false;
+    }
     
-    // API endpoints
-    g_apServer->on("/scan", HTTP_GET, handleScan);
-    g_apServer->on("/save", HTTP_POST, handleSave);
+    // Register URI handlers
+    httpd_uri_t scan_uri = { .uri = "/scan", .method = HTTP_GET, .handler = handleScan, .user_ctx = nullptr };
+    httpd_uri_t save_uri = { .uri = "/save", .method = HTTP_GET, .handler = handleSave, .user_ctx = nullptr };
+    httpd_uri_t root_uri = { .uri = "/*", .method = HTTP_GET, .handler = handleCaptivePortal, .user_ctx = nullptr };
     
-    g_apServer->begin();
+    httpd_register_uri_handler(g_apHttpd, &scan_uri);
+    httpd_register_uri_handler(g_apHttpd, &save_uri);
+    httpd_register_uri_handler(g_apHttpd, &root_uri);
+    
     Serial.println("HTTP server started");
     
     Serial.println("========================================");
@@ -1393,7 +1438,6 @@ bool wifiStartAPConfigMode(uint8_t timeoutMinutes) {
     
     while (!g_apConfigComplete) {
         g_dnsServer->processNextRequest();
-        g_apServer->handleClient();
         delay(10);
         
         // Check for timeout (if not indefinite)
@@ -1414,9 +1458,8 @@ bool wifiStartAPConfigMode(uint8_t timeoutMinutes) {
     
     // Cleanup
     Serial.println("Stopping AP mode...");
-    g_apServer->stop();
-    delete g_apServer;
-    g_apServer = nullptr;
+    httpd_stop(g_apHttpd);
+    g_apHttpd = nullptr;
     
     g_dnsServer->stop();
     delete g_dnsServer;

@@ -3406,9 +3406,9 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
         }
     }
     
-    // Load font
-    if (!ttf.loadFont(opensans_ttf, opensans_ttf_len)) {
-        Serial.println("WARNING: Failed to load OpenSans font");
+    // Load font (OpenSans default)
+    if (!loadFontByName("")) {
+        Serial.println("WARNING: Failed to load default font");
     }
     
     // Clear to white background
@@ -3524,7 +3524,7 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
         
         // Draw separator line
         for (int16_t x = leftMargin; x < rightMargin; x++) {
-            display.setPixelARGB(x, y, EL133UF1_DARK_GRAY);
+            display.setPixelARGB(x, y, EL133UF1_BLACK);
         }
         y += 30;
     }
@@ -3540,7 +3540,7 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
         char bullet[8];
         snprintf(bullet, sizeof(bullet), "%d.", i + 1);
         ttf.drawTextAligned(leftMargin, y, bullet, itemTitleFontSize,
-                           EL133UF1_DARK_GRAY, ALIGN_LEFT, ALIGN_TOP);
+                           EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
         
         // Draw item title (with word wrap if needed)
         char title[256];
@@ -3598,7 +3598,7 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
             }
             
             ttf.drawTextAligned(titleX, titleY, desc, descFontSize,
-                               EL133UF1_DARK_GRAY, ALIGN_LEFT, ALIGN_TOP);
+                               EL133UF1_BLACK, ALIGN_LEFT, ALIGN_TOP);
         }
         
         y += itemHeight;
@@ -3612,7 +3612,7 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
     strftime(timeBuf, sizeof(timeBuf), "Updated %H:%M", timeinfo);
     
     ttf.drawTextAligned(rightMargin, bottomMargin - 30, timeBuf, 28.0f,
-                       EL133UF1_DARK_GRAY, ALIGN_RIGHT, ALIGN_MIDDLE);
+                       EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_MIDDLE);
     
     // Free items
     free(items);

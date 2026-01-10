@@ -907,11 +907,11 @@ static void placeTimeDateAndQuote(EL133UF1* display, EL133UF1_TTF* ttf,
     int16_t quoteW, quoteH;
     quoteElement.getDimensions(quoteW, quoteH);
     float quoteScale = 1.0f;
-    // Use content bounds (bezel + padding) for scaling calculations
-    ContentBounds bounds = getContentBounds(1600, 1200);
-    int16_t verticalPadding = (1200 - bounds.height);  // Total vertical padding
+    // Use visible bounds (bezel only) for quote scaling - quotes can go closer to edge
+    VisibleBounds visBounds = getVisibleBounds(1600, 1200);
+    int16_t verticalPadding = (1200 - visBounds.height);  // Total bezel
     int16_t quoteHeightMargin = quoteOnTop ? verticalPadding : (verticalPadding + 10);
-    int16_t quoteWidthMargin = 1600 - bounds.width;  // Total horizontal padding
+    int16_t quoteWidthMargin = 1600 - visBounds.width;  // Total horizontal bezel
     if (quoteW > (halfW - quoteWidthMargin) || quoteH > (halfH_area - quoteHeightMargin)) {
         float scaleW = (float)(halfW - quoteWidthMargin) / quoteW;
         float scaleH = (float)(halfH_area - quoteHeightMargin) / quoteH;
@@ -1811,7 +1811,9 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     // Target font size 140, but scale down if text is too wide
     const float targetNameFontSize = 140.0f;
     const float minNameFontSize = 60.0f;    // Don't go smaller than this
-    ContentBounds weatherBounds = getContentBounds(display.width(), display.height());
+    // Weather scene uses 30px padding for comfortable text margins
+    const int16_t WEATHER_PADDING = 30;
+    ContentBounds weatherBounds = getContentBounds(display.width(), display.height(), WEATHER_PADDING);
     const int16_t maxNameWidth = weatherBounds.width;
     
     float actualNameFontSize = targetNameFontSize;
@@ -2367,8 +2369,10 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId, const c
         return false;
     }
     
-    // Layout constants - use content bounds (bezel + padding) for safe area
-    ContentBounds bounds = getContentBounds(display.width(), display.height());
+    // Layout constants - use content bounds with scene-specific padding
+    // TfL board uses 20px padding for a clean, station-like appearance
+    const int16_t TFL_PADDING = 20;
+    ContentBounds bounds = getContentBounds(display.width(), display.height(), TFL_PADDING);
     const int16_t leftMargin = bounds.left;
     const int16_t rightMargin = bounds.right;
     const int16_t topSafe = bounds.top;
@@ -2808,7 +2812,9 @@ bool displaySwimConditionsScene() {
     
     const int16_t W = display.width();   // 1600
     const int16_t H = display.height();  // 1200
-    ContentBounds bounds = getContentBounds(W, H);
+    // Swim conditions uses 15px padding for a data-dense dashboard feel
+    const int16_t SWIM_PADDING = 15;
+    ContentBounds bounds = getContentBounds(W, H, SWIM_PADDING);
     const int16_t marginL = bounds.left;
     const int16_t marginR = W - bounds.right;  // pixels from right edge
     const int16_t topSafe = bounds.top;

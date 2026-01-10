@@ -233,9 +233,6 @@ static int16_t g_display_bezel_bottom = 70;   // Bottom bezel (usually larger du
 static int16_t g_display_bezel_left = 60;     // Left bezel
 static int16_t g_display_bezel_right = 60;    // Right bezel
 
-// Content padding (aesthetic spacing from visible edge to content)
-static int16_t g_content_padding = 20;        // Default 20px padding
-
 // Bezel getters
 int16_t getDisplayBezelTop() { return g_display_bezel_top; }
 int16_t getDisplayBezelBottom() { return g_display_bezel_bottom; }
@@ -254,14 +251,6 @@ void setDisplayBezelTop(int16_t value) { g_display_bezel_top = value; }
 void setDisplayBezelBottom(int16_t value) { g_display_bezel_bottom = value; }
 void setDisplayBezelLeft(int16_t value) { g_display_bezel_left = value; }
 void setDisplayBezelRight(int16_t value) { g_display_bezel_right = value; }
-
-// Content padding getter/setter
-int16_t getContentPadding() { return g_content_padding; }
-void setContentPadding(int16_t value) { 
-    if (value < 0) value = 0;
-    if (value > 100) value = 100;
-    g_content_padding = value; 
-}
 
 void displayBezelLoadFromNVS() {
     NVSGuard guard(displayPrefs, "display", true);  // Read-only
@@ -311,37 +300,6 @@ void displayBezelSaveToNVS() {
                  g_display_bezel_left, g_display_bezel_right);
 }
 
-void contentPaddingLoadFromNVS() {
-    NVSGuard guard(displayPrefs, "display", true);  // Read-only
-    if (!guard.isOpen()) {
-        Serial.println("WARNING: Failed to open NVS for content padding - using default (20px)");
-        g_content_padding = 20;
-        return;
-    }
-    
-    g_content_padding = guard.get().getShort("padding", 20);
-    
-    // Clamp to reasonable values (0-100 pixels)
-    if (g_content_padding < 0) g_content_padding = 0;
-    if (g_content_padding > 100) g_content_padding = 100;
-    
-    if (g_is_cold_boot) {
-        Serial.printf("Loaded content padding from NVS: %d\n", g_content_padding);
-    }
-}
-
-void contentPaddingSaveToNVS() {
-    NVSGuard guard(displayPrefs, "display", false);  // Read-write
-    if (!guard.isOpen()) {
-        Serial.println("WARNING: Failed to open NVS for saving content padding");
-        return;
-    }
-    
-    guard.get().putShort("padding", g_content_padding);
-    
-    Serial.printf("Saved content padding to NVS: %d\n", g_content_padding);
-}
-
 VisibleBounds getVisibleBounds(int16_t displayWidth, int16_t displayHeight) {
     VisibleBounds bounds;
     bounds.left = g_display_bezel_left;
@@ -353,12 +311,12 @@ VisibleBounds getVisibleBounds(int16_t displayWidth, int16_t displayHeight) {
     return bounds;
 }
 
-ContentBounds getContentBounds(int16_t displayWidth, int16_t displayHeight) {
+ContentBounds getContentBounds(int16_t displayWidth, int16_t displayHeight, int16_t padding) {
     ContentBounds bounds;
-    bounds.left = g_display_bezel_left + g_content_padding;
-    bounds.right = displayWidth - g_display_bezel_right - g_content_padding;
-    bounds.top = g_display_bezel_top + g_content_padding;
-    bounds.bottom = displayHeight - g_display_bezel_bottom - g_content_padding;
+    bounds.left = g_display_bezel_left + padding;
+    bounds.right = displayWidth - g_display_bezel_right - padding;
+    bounds.top = g_display_bezel_top + padding;
+    bounds.bottom = displayHeight - g_display_bezel_bottom - padding;
     bounds.width = bounds.right - bounds.left;
     bounds.height = bounds.bottom - bounds.top;
     return bounds;

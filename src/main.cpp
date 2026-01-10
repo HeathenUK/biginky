@@ -2111,8 +2111,6 @@ void mediaIndexModeLoadFromNVS();  // Load media index mode from NVS (called on 
 void mediaIndexModeSaveToNVS();  // Save media index mode to NVS
 void displayBezelLoadFromNVS();  // Load display bezel from NVS (called on startup)
 void displayBezelSaveToNVS();  // Save display bezel to NVS
-void contentPaddingLoadFromNVS();  // Load content padding from NVS (called on startup)
-void contentPaddingSaveToNVS();  // Save content padding to NVS
 // Legacy aliases are defined in nvs_manager.h
 // Media mappings index management functions
 int getNextMediaIndex();  // Get next index based on current mode (sequential or shuffle) - advances index
@@ -5484,8 +5482,6 @@ String exportConfigJSON() {
     cJSON_AddNumberToObject(root, "margin_bottom", getDisplayBezelBottom());
     cJSON_AddNumberToObject(root, "margin_left", getDisplayBezelLeft());
     cJSON_AddNumberToObject(root, "margin_right", getDisplayBezelRight());
-    // Add content padding
-    cJSON_AddNumberToObject(root, "content_padding", getContentPadding());
 
     // Add detailed schedule
     String detailedScheduleJson = getDetailedScheduleJSON();
@@ -5692,17 +5688,6 @@ bool importConfigJSON(const String& json) {
         Serial.printf("  Restored display bezel: top=%d, bottom=%d, left=%d, right=%d\n",
                      getDisplayBezelTop(), getDisplayBezelBottom(),
                      getDisplayBezelLeft(), getDisplayBezelRight());
-    }
-    
-    // Content Padding
-    item = cJSON_GetObjectItem(root, "content_padding");
-    if (item && cJSON_IsNumber(item)) {
-        int16_t v = (int16_t)cJSON_GetNumberValue(item);
-        if (v >= 0 && v <= 100) {
-            setContentPadding(v);
-            contentPaddingSaveToNVS();
-            Serial.printf("  Restored content padding: %d\n", v);
-        }
     }
 
     // WiFi Credentials
@@ -12982,9 +12967,8 @@ void setup() {
     uint8_t modeValue = getMediaIndexModeValue();
     g_mediaIndexMode = (modeValue == 1) ? MediaIndexMode::SHUFFLE : MediaIndexMode::SEQUENTIAL;
     
-    // Load display bezel from NVS (for screen calibration) and content padding
+    // Load display bezel from NVS (for screen calibration)
     displayBezelLoadFromNVS();
-    contentPaddingLoadFromNVS();
     
     // Initialize text placement mutex (protects textPlacement analyzer from concurrent access)
     // Text placement mutex removed - not available in this branch

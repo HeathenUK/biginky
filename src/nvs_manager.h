@@ -154,14 +154,6 @@ void setDisplayBezelLeft(int16_t value);
 void setDisplayBezelRight(int16_t value);
 
 /**
- * Content padding - aesthetic spacing from visible edge to content
- */
-int16_t getContentPadding();
-void setContentPadding(int16_t value);
-void contentPaddingLoadFromNVS();
-void contentPaddingSaveToNVS();
-
-/**
  * Helper struct for visible bounds (bezel only)
  */
 struct VisibleBounds {
@@ -174,7 +166,7 @@ struct VisibleBounds {
 };
 
 /**
- * Helper struct for content bounds (bezel + padding)
+ * Helper struct for content bounds (bezel + scene-specific padding)
  */
 struct ContentBounds {
     int16_t left;      // Content left edge (bezel_left + padding)
@@ -192,10 +184,14 @@ struct ContentBounds {
 VisibleBounds getVisibleBounds(int16_t displayWidth, int16_t displayHeight);
 
 /**
- * Get content bounds (bezel + padding) - where content should be placed
- * Use this for: text positioning, UI elements, scene layouts
+ * Get content bounds (bezel + scene-specific padding)
+ * Each scene decides its own padding based on aesthetic needs
+ * @param displayWidth Full display width (e.g., 1600)
+ * @param displayHeight Full display height (e.g., 1200)
+ * @param padding Scene-specific padding from visible edge to content (default 0)
+ * @return ContentBounds struct with content area coordinates
  */
-ContentBounds getContentBounds(int16_t displayWidth, int16_t displayHeight);
+ContentBounds getContentBounds(int16_t displayWidth, int16_t displayHeight, int16_t padding = 0);
 
 // ============================================================================
 // Legacy aliases for backward compatibility (deprecated - use Bezel functions)

@@ -5543,14 +5543,29 @@ bool importConfigJSON(const String& json) {
         Serial.printf("  Restored media index: %lu\n", (unsigned long)index);
     }
 
-    // Sleep Interval
+    // Sleep Interval: 0 = always-on, -1 = event-driven, >0 = interval in minutes (must be factor of 60)
     item = cJSON_GetObjectItem(root, "sleep_interval");
     if (item && cJSON_IsNumber(item)) {
-        uint8_t interval = (uint8_t)cJSON_GetNumberValue(item);
-        if (interval > 0 && interval <= 60 && (60 % interval == 0)) {
-            g_sleep_interval_minutes = interval;
+        int interval = (int)cJSON_GetNumberValue(item);
+        bool valid = false;
+        if (interval == 0 || interval == -1) {
+            // Special modes: always-on or event-driven
+            valid = true;
+        } else if (interval > 0 && interval <= 60 && (60 % interval == 0)) {
+            // Standard interval mode (must be factor of 60)
+            valid = true;
+        }
+        
+        if (valid) {
+            g_sleep_interval_minutes = (int8_t)interval;
             sleepDurationSaveToNVS();
-            Serial.printf("  Restored sleep interval: %d minutes\n", interval);
+            if (interval == 0) {
+                Serial.println("  Restored sleep mode: ALWAYS-ON (0)");
+            } else if (interval == -1) {
+                Serial.println("  Restored sleep mode: EVENT-DRIVEN (-1)");
+            } else {
+                Serial.printf("  Restored sleep interval: %d minutes\n", interval);
+            }
         }
     }
 

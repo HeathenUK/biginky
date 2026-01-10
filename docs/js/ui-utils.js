@@ -27,7 +27,7 @@ function updateConnectionStatus(status, message) {
     connectBtn.disabled = (status === 'connected' || status === 'connecting' || status === 'reconnecting' || !hasPassword);
     disconnectBtn.disabled = (status === 'disconnected');
     
-    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'otaBtn', 'manageBtn', 'weatherPlaceBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn', 'tflDeparturesBtn', 'swimConditionsBtn', 'configBackupBtn', 'configRestoreBtn'];
+    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'otaBtn', 'manageBtn', 'weatherPlaceBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn', 'tflDeparturesBtn', 'swimConditionsBtn', 'feedSceneBtn', 'configBackupBtn', 'configRestoreBtn'];
     buttons.forEach(id => {
         const btn = document.getElementById(id);
         if (btn) {
@@ -45,7 +45,7 @@ function updateConnectionStatus(status, message) {
 // Update UI state based on password status
 function updatePasswordStatus() {
     const hasPassword = (webUIPassword && webUIPassword.length > 0);
-    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'otaBtn', 'manageBtn', 'weatherPlaceBtn', 'connectBtn', 'addMediaBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn', 'tflDeparturesBtn', 'swimConditionsBtn', 'configBackupBtn', 'configRestoreBtn'];
+    const buttons = ['textDisplayBtn', 'canvasActionBtn', 'clearBtn', 'nextBtn', 'otaBtn', 'manageBtn', 'weatherPlaceBtn', 'connectBtn', 'addMediaBtn', 'happyWeatherBtn', 'shuffleOnBtn', 'shuffleOffBtn', 'tflDeparturesBtn', 'swimConditionsBtn', 'feedSceneBtn', 'configBackupBtn', 'configRestoreBtn'];
     
     buttons.forEach(id => {
         const btn = document.getElementById(id);
@@ -95,6 +95,7 @@ function logCommand(action, data) {
             'shuffle_off': 'Shuffle mode disabled command sent',
             'weather_place': 'Weather for place command sent',
             'tfl_departures': 'TfL departures command sent',
+            'feed': 'RSS/Atom/JSON feed command sent',
             'ota': 'OTA mode command sent',
             '!manage': 'WiFi Management command sent',
             'config_get': 'Configuration backup requested',

@@ -385,6 +385,38 @@ table th,table td{padding:6px;font-size:12px;}
 </div>
 </div>
 <div class="section">
+<h2 onclick="toggleSection(this)">📰 News Feed</h2>
+<div class="section-content" id="section-feed">
+<p>Display the latest entries from an RSS, Atom, or JSON feed. White background with black text.</p>
+<label>Feed URL:</label>
+<input type="text" id="feedUrl" placeholder="https://example.com/rss.xml" style="width:100%;max-width:400px;">
+<div style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;">
+<div>
+<label>Items to show:</label>
+<select id="feedCount" style="width:70px;">
+<option value="1">1</option>
+<option value="2">2</option>
+<option value="3">3</option>
+<option value="4">4</option>
+<option value="5" selected>5</option>
+<option value="6">6</option>
+<option value="7">7</option>
+<option value="8">8</option>
+<option value="9">9</option>
+<option value="10">10</option>
+</select>
+</div>
+<div>
+<label>Title override (optional):</label>
+<input type="text" id="feedTitle" placeholder="Custom title" style="width:150px;">
+</div>
+</div>
+<p style="color:#888;font-size:13px;margin-top:10px;">Supports: RSS 2.0, Atom, JSON Feed. Auto-detects format.</p>
+<button onclick="sendFeedScene()" id="feedSceneBtn" disabled style="margin-top:15px;">Display Feed</button>
+<div id="feedStatus"></div>
+</div>
+</div>
+<div class="section">
 <h2 onclick="toggleSection(this)">Drawing Canvas</h2>
 <div class="section-content" id="section-canvas">
 <div class="canvas-controls-wrapper" style="margin-bottom:8px;">

@@ -6,7 +6,8 @@ const SCENE_TYPES = {
     image: { name: 'Show Image', paramType: 'image_dropdown' },
     weather_place: { name: 'Weather for Place', paramType: 'weather_place' },
     tfl_departures: { name: 'TfL Departures', paramType: 'tfl_station_full' },
-    swim_conditions: { name: 'Swim Conditions (Fionphort)', paramType: null }
+    swim_conditions: { name: 'Swim Conditions (Fionphort)', paramType: null },
+    feed: { name: 'RSS/Atom/JSON Feed', paramType: 'feed_config' }
 };
 
 // TfL line directions lookup (based on actual line routes)
@@ -333,6 +334,64 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             lineSelect.onchange = updateDirectionOptions;
             
             paramCell.appendChild(directionSelect);
+        } else if (paramType === 'feed_config') {
+            // Parse existing JSON parameter if present
+            let feedParams = { url: '', count: 5, title: '' };
+            if (paramValue) {
+                try {
+                    const parsed = JSON.parse(paramValue);
+                    feedParams = { ...feedParams, ...parsed };
+                } catch (e) {
+                    // If not JSON, treat as plain URL (backwards compatibility)
+                    feedParams.url = paramValue;
+                }
+            }
+            
+            // URL input
+            const urlInput = document.createElement('input');
+            urlInput.type = 'text';
+            urlInput.className = 'slot-parameter slot-parameter-feed-url';
+            urlInput.placeholder = 'Feed URL (RSS/Atom/JSON)';
+            urlInput.value = feedParams.url;
+            urlInput.style.background = '#1a1a1a';
+            urlInput.style.color = '#e0e0e0';
+            urlInput.style.border = '1px solid #444';
+            urlInput.style.padding = '4px';
+            urlInput.style.width = '250px';
+            urlInput.style.marginRight = '4px';
+            paramCell.appendChild(urlInput);
+            
+            // Count dropdown
+            const countSelect = document.createElement('select');
+            countSelect.className = 'slot-parameter slot-parameter-feed-count';
+            countSelect.style.background = '#1a1a1a';
+            countSelect.style.color = '#e0e0e0';
+            countSelect.style.border = '1px solid #444';
+            countSelect.style.padding = '4px';
+            countSelect.style.width = '60px';
+            countSelect.style.marginRight = '4px';
+            
+            for (let i = 1; i <= 10; i++) {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.text = i.toString();
+                opt.selected = (i === feedParams.count);
+                countSelect.appendChild(opt);
+            }
+            paramCell.appendChild(countSelect);
+            
+            // Title override input (optional)
+            const titleInput = document.createElement('input');
+            titleInput.type = 'text';
+            titleInput.className = 'slot-parameter slot-parameter-feed-title';
+            titleInput.placeholder = 'Title (optional)';
+            titleInput.value = feedParams.title || '';
+            titleInput.style.background = '#1a1a1a';
+            titleInput.style.color = '#e0e0e0';
+            titleInput.style.border = '1px solid #444';
+            titleInput.style.padding = '4px';
+            titleInput.style.width = '140px';
+            paramCell.appendChild(titleInput);
         }
     }
     
@@ -591,6 +650,24 @@ async function saveScheduleToDevice() {
                         slots.push(slot);
                     }
                     // Skip empty tfl_station slots
+                    return;
+                } else if (paramType === 'feed_config') {
+                    const urlInput = slotRow.querySelector('.slot-parameter-feed-url');
+                    const countSelect = slotRow.querySelector('.slot-parameter-feed-count');
+                    const titleInput = slotRow.querySelector('.slot-parameter-feed-title');
+                    
+                    const url = urlInput ? urlInput.value.trim() : '';
+                    const count = countSelect ? parseInt(countSelect.value) : 5;
+                    const title = titleInput ? titleInput.value.trim() : '';
+                    
+                    if (url.length > 0) {
+                        // Store as JSON object
+                        const feedParam = { url, count };
+                        if (title) feedParam.title = title;
+                        slot.parameter = JSON.stringify(feedParam);
+                        slots.push(slot);
+                    }
+                    // Skip empty feed slots
                     return;
                 } else {
                     slots.push(slot);  // Default: push all other slots (like weather)

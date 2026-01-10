@@ -301,6 +301,40 @@ async function sendSwimConditions() {
     }
 }
 
+async function sendFeedScene() {
+    const urlInput = document.getElementById('feedUrl');
+    const countSelect = document.getElementById('feedCount');
+    const titleInput = document.getElementById('feedTitle');
+    
+    const url = urlInput ? urlInput.value.trim() : '';
+    const count = countSelect ? parseInt(countSelect.value) : 5;
+    const title = titleInput ? titleInput.value.trim() : '';
+    
+    if (!url) {
+        showStatus('feedStatus', 'Please enter a feed URL', true);
+        return;
+    }
+    
+    showStatus('feedStatus', 'Sending feed command...', false);
+    
+    const payload = {
+        command: 'feed',
+        url: url,
+        count: count
+    };
+    
+    if (title) {
+        payload.title = title;
+    }
+    
+    if (await publishMessage(payload)) {
+        showStatus('feedStatus', `Feed command sent for ${url}!`, false);
+        setBusyState(true, 'Command sent, waiting for device response...');
+    } else {
+        showStatus('feedStatus', 'Failed to send command', true);
+    }
+}
+
 async function sendCanvasToDisplay() {
     console.log('sendCanvasToDisplay() called');
     const canvas = document.getElementById('drawCanvas');

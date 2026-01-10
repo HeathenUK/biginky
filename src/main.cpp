@@ -5498,9 +5498,16 @@ String exportConfigJSON() {
         cJSON_AddItemToObject(root, "allowed_numbers", allowedNumbers);
     }
 
-    // Add WiFi credentials
+    // Add WiFi credentials (legacy - single network)
     cJSON_AddStringToObject(root, "wifi_ssid", wifiSSID);
     cJSON_AddStringToObject(root, "wifi_psk", wifiPSK);
+    
+    // Add WiFi networks array (new - multi-network support)
+    String networksJson = wifiGetNetworksJSONWithPSK();
+    cJSON* networksArray = cJSON_Parse(networksJson.c_str());
+    if (networksArray) {
+        cJSON_AddItemToObject(root, "wifi_networks", networksArray);
+    }
 
     char* jsonStr = cJSON_PrintUnformatted(root);
     String result = "";
@@ -5690,26 +5697,37 @@ bool importConfigJSON(const String& json) {
                      getDisplayBezelLeft(), getDisplayBezelRight());
     }
 
-    // WiFi Credentials
-    String restoredSsid = "";
-    String restoredPsk = "";
+    // WiFi Networks (new multi-network format)
+    item = cJSON_GetObjectItem(root, "wifi_networks");
+    if (item && cJSON_IsArray(item)) {
+        char* networksJson = cJSON_PrintUnformatted(item);
+        if (networksJson) {
+            int count = wifiLoadNetworksFromJSON(networksJson);
+            Serial.printf("  Restored %d WiFi networks\n", count);
+            free(networksJson);
+        }
+    } else {
+        // Fall back to legacy single-network format
+        String restoredSsid = "";
+        String restoredPsk = "";
 
-    item = cJSON_GetObjectItem(root, "wifi_ssid");
-    if (item && cJSON_IsString(item)) {
-        restoredSsid = cJSON_GetStringValue(item);
-    }
-    item = cJSON_GetObjectItem(root, "wifi_psk");
-    if (item && cJSON_IsString(item)) {
-        restoredPsk = cJSON_GetStringValue(item);
-    }
+        item = cJSON_GetObjectItem(root, "wifi_ssid");
+        if (item && cJSON_IsString(item)) {
+            restoredSsid = cJSON_GetStringValue(item);
+        }
+        item = cJSON_GetObjectItem(root, "wifi_psk");
+        if (item && cJSON_IsString(item)) {
+            restoredPsk = cJSON_GetStringValue(item);
+        }
 
-    if (restoredSsid.length() > 0) {
-        strncpy(wifiSSID, restoredSsid.c_str(), sizeof(wifiSSID) - 1);
-        wifiSSID[sizeof(wifiSSID) - 1] = '\0';
-        strncpy(wifiPSK, restoredPsk.c_str(), sizeof(wifiPSK) - 1);
-        wifiPSK[sizeof(wifiPSK) - 1] = '\0';
-        wifiSaveCredentials();
-        Serial.printf("  Restored WiFi credentials for SSID: %s\n", wifiSSID);
+        if (restoredSsid.length() > 0) {
+            strncpy(wifiSSID, restoredSsid.c_str(), sizeof(wifiSSID) - 1);
+            wifiSSID[sizeof(wifiSSID) - 1] = '\0';
+            strncpy(wifiPSK, restoredPsk.c_str(), sizeof(wifiPSK) - 1);
+            wifiPSK[sizeof(wifiPSK) - 1] = '\0';
+            wifiSaveCredentials();
+            Serial.printf("  Restored WiFi credentials for SSID: %s\n", wifiSSID);
+        }
     }
 
     cJSON_Delete(root);
@@ -6640,6 +6658,97 @@ bool handleManageCommand() {
         bool success = displayCalibrationPattern();
         String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to display calibration pattern\"}";
         return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // ============== WiFi Networks API ==============
+    
+    // GET /api/wifi/networks - Get list of configured networks (PSK excluded)
+    server.on("/api/wifi/networks", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String json = wifiGetNetworksJSON();
+        return response->send(200, "application/json", json.c_str());
+    });
+    
+    // POST /api/wifi/networks - Add or update a network
+    server.on("/api/wifi/networks", HTTP_POST, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String body = request->body();
+        
+        cJSON* root = cJSON_Parse(body.c_str());
+        if (!root) {
+            return response->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+        }
+        
+        cJSON* ssid = cJSON_GetObjectItem(root, "ssid");
+        cJSON* psk = cJSON_GetObjectItem(root, "psk");
+        cJSON* hidden = cJSON_GetObjectItem(root, "hidden");
+        cJSON* enabled = cJSON_GetObjectItem(root, "enabled");
+        
+        if (!ssid || !cJSON_IsString(ssid) || strlen(ssid->valuestring) == 0) {
+            cJSON_Delete(root);
+            return response->send(400, "application/json", "{\"success\":false,\"error\":\"SSID required\"}");
+        }
+        
+        const char* pskStr = (psk && cJSON_IsString(psk)) ? psk->valuestring : "";
+        bool isHidden = (hidden && cJSON_IsBool(hidden)) ? cJSON_IsTrue(hidden) : false;
+        bool isEnabled = (enabled && cJSON_IsBool(enabled)) ? cJSON_IsTrue(enabled) : true;
+        
+        bool success = wifiAddNetwork(ssid->valuestring, pskStr, isHidden, isEnabled);
+        cJSON_Delete(root);
+        
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Failed to add network (max 8)\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // DELETE /api/wifi/networks - Remove a network
+    server.on("/api/wifi/networks", HTTP_DELETE, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        String body = request->body();
+        
+        cJSON* root = cJSON_Parse(body.c_str());
+        if (!root) {
+            return response->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+        }
+        
+        cJSON* ssid = cJSON_GetObjectItem(root, "ssid");
+        if (!ssid || !cJSON_IsString(ssid)) {
+            cJSON_Delete(root);
+            return response->send(400, "application/json", "{\"success\":false,\"error\":\"SSID required\"}");
+        }
+        
+        bool success = wifiRemoveNetwork(ssid->valuestring);
+        cJSON_Delete(root);
+        
+        String resp = success ? "{\"success\":true}" : "{\"success\":false,\"error\":\"Network not found\"}";
+        return response->send(200, "application/json", resp.c_str());
+    });
+    
+    // GET /api/wifi/scan - Scan for visible networks
+    server.on("/api/wifi/scan", HTTP_GET, [addCorsHeaders](PsychicRequest *request, PsychicResponse *response) {
+        addCorsHeaders(response);
+        Serial.println("WiFi scan requested via web UI");
+        
+        int result = WiFi.scanNetworks(false, true);  // async=false, show_hidden=true
+        
+        cJSON* root = cJSON_CreateArray();
+        for (int i = 0; i < result; i++) {
+            cJSON* net = cJSON_CreateObject();
+            cJSON_AddStringToObject(net, "ssid", WiFi.SSID(i).c_str());
+            cJSON_AddNumberToObject(net, "rssi", WiFi.RSSI(i));
+            cJSON_AddNumberToObject(net, "channel", WiFi.channel(i));
+            cJSON_AddBoolToObject(net, "secure", WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+            cJSON_AddItemToArray(root, net);
+        }
+        
+        WiFi.scanDelete();
+        
+        char* json = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        
+        String jsonStr = json ? json : "[]";
+        if (json) free(json);
+        
+        return response->send(200, "application/json", jsonStr.c_str());
     });
     
     // GET /api/schedule - Get detailed schedule (slots + scenes)

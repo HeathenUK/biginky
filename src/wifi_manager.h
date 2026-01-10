@@ -4,6 +4,8 @@
  * 
  * Provides functions for:
  * - WiFi credential management (load, save, clear)
+ * - Multi-network support with RSSI-based selection
+ * - Hidden network support
  * - Persistent WiFi connection with retries
  * - NTP time synchronization
  * - Time validation
@@ -16,6 +18,77 @@
 #define WIFI_MANAGER_H
 
 #include <Arduino.h>
+
+// Maximum number of WiFi networks that can be stored
+#define WIFI_MAX_NETWORKS 8
+
+/**
+ * WiFi network configuration
+ */
+struct WiFiNetwork {
+    char ssid[33];      // Max SSID length is 32 + null
+    char psk[65];       // Max PSK length is 64 + null
+    bool hidden;        // True if hidden network (must probe)
+    bool enabled;       // Can disable without deleting
+};
+
+/**
+ * Get the list of configured WiFi networks
+ * @param networks Array to fill with network configs
+ * @param maxNetworks Maximum number of networks to return
+ * @return Number of networks loaded
+ */
+int wifiGetNetworks(WiFiNetwork* networks, int maxNetworks);
+
+/**
+ * Add or update a WiFi network
+ * @param ssid Network SSID
+ * @param psk Network password (empty for open networks)
+ * @param hidden True if this is a hidden network
+ * @param enabled True if network should be used for connections
+ * @return true if added/updated successfully
+ */
+bool wifiAddNetwork(const char* ssid, const char* psk, bool hidden = false, bool enabled = true);
+
+/**
+ * Remove a WiFi network by SSID
+ * @param ssid Network SSID to remove
+ * @return true if removed, false if not found
+ */
+bool wifiRemoveNetwork(const char* ssid);
+
+/**
+ * Get all networks as JSON array string
+ * @return JSON array of network objects (ssid, hidden, enabled - PSK excluded for security)
+ */
+String wifiGetNetworksJSON();
+
+/**
+ * Get all networks as JSON array string including PSKs (for config export)
+ * @return JSON array of network objects including PSKs
+ */
+String wifiGetNetworksJSONWithPSK();
+
+/**
+ * Load networks from JSON array (for config import)
+ * @param json JSON array of network objects
+ * @return Number of networks imported
+ */
+int wifiLoadNetworksFromJSON(const char* json);
+
+/**
+ * Connect to the best available network (strongest signal)
+ * Scans for visible networks, matches against known networks,
+ * connects to strongest signal first. Falls back to hidden networks.
+ * @param timeoutPerAttemptMs Timeout for each connection attempt
+ * @return true if connected to any network
+ */
+bool wifiConnectBest(uint32_t timeoutPerAttemptMs = 15000);
+
+/**
+ * Print list of configured networks to Serial
+ */
+void wifiPrintNetworks();
 
 /**
  * Load WiFi credentials from NVS or RTC cache

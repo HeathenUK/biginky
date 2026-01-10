@@ -1303,6 +1303,24 @@ bool publishPreparedStatus() {
         }
     }
     
+    // Add ENCRYPTED config to status (for backup/restore functionality)
+    // Config contains sensitive data (WiFi credentials) - encrypted separately within the status
+    String configJsonStr = exportConfigJSON();
+    if (configJsonStr.length() > 0 && !configJsonStr.startsWith("{\"error\"")) {
+        String encryptedConfig = encryptAndFormatMessage(configJsonStr);
+        if (encryptedConfig.length() > 0) {
+            // Insert encrypted config before the closing brace
+            int lastBrace = plaintextJson.lastIndexOf('}');
+            if (lastBrace > 0) {
+                String configField = ",\"config\":" + encryptedConfig;
+                plaintextJson = plaintextJson.substring(0, lastBrace) + configField + "}";
+            }
+            Serial.println("Added ENCRYPTED config to status JSON");
+        } else {
+            Serial.println("WARNING: Failed to encrypt config for status (no password set?)");
+        }
+    }
+    
     // Encrypt the JSON (now with WiFi info included)
     String encryptedJson = encryptAndFormatMessage(plaintextJson);
     if (encryptedJson.length() == 0) {
@@ -2441,27 +2459,8 @@ static void publishMQTTMediaMappingsInternalImpl() {
         Serial.println("[Core 1] WARNING: Failed to get schedule JSON for media mappings");
     }
     
-    // Add ENCRYPTED config JSON (for backup/restore functionality)
-    // Config contains sensitive data (WiFi credentials) - must be encrypted before transmission
-    String configJsonStr = exportConfigJSON();
-    if (configJsonStr.length() > 0 && !configJsonStr.startsWith("{\"error\"")) {
-        // Encrypt the config using the web UI password
-        String encryptedConfig = encryptAndFormatMessage(configJsonStr);
-        if (encryptedConfig.length() > 0) {
-            // Parse the encrypted format {encrypted:true, iv:"...", payload:"...", hmac:"..."}
-            cJSON* encryptedConfigJson = cJSON_Parse(encryptedConfig.c_str());
-            if (encryptedConfigJson != nullptr) {
-                cJSON_AddItemToObject(root, "config", encryptedConfigJson);
-                Serial.println("[Core 1] Added ENCRYPTED config to media mappings JSON");
-            } else {
-                Serial.println("[Core 1] WARNING: Failed to parse encrypted config JSON");
-            }
-        } else {
-            Serial.println("[Core 1] WARNING: Failed to encrypt config (no web UI password set?)");
-        }
-    } else {
-        Serial.println("[Core 1] WARNING: Failed to get config JSON for media mappings");
-    }
+    // NOTE: Config is NOT included in media_mappings - it's in the status message instead
+    // (status is published every wake cycle, media_mappings only on cold boot)
     
     // Print JSON to string (cJSON_Print handles memory allocation)
     // Use cJSON_PrintBuffered with custom malloc for PSRAM

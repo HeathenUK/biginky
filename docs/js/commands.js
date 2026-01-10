@@ -1123,11 +1123,15 @@ let decryptedDeviceConfig = null;
 
 // Load device settings from cached encrypted config
 async function loadDeviceSettings() {
+    console.log('loadDeviceSettings() called');
     const statusEl = document.getElementById('deviceSettingsStatus');
     const contentEl = document.getElementById('deviceSettingsContent');
     const loadingEl = document.getElementById('deviceSettingsLoading');
     
+    console.log('loadDeviceSettings: cachedDeviceConfig exists:', !!cachedDeviceConfig);
+    
     if (!cachedDeviceConfig) {
+        console.log('loadDeviceSettings: No cached config, returning early');
         if (statusEl) {
             statusEl.textContent = 'No configuration available. Wait for device status message.';
             statusEl.style.color = '#f44336';
@@ -1281,6 +1285,7 @@ async function saveDeviceSettings() {
 
 // Update device settings UI when config becomes available
 function updateDeviceSettingsUI(configAvailable) {
+    console.log('updateDeviceSettingsUI called, configAvailable:', configAvailable, 'decryptedDeviceConfig:', !!decryptedDeviceConfig);
     const loadingEl = document.getElementById('deviceSettingsLoading');
     const statusEl = document.getElementById('deviceSettingsStatus');
     
@@ -1291,6 +1296,7 @@ function updateDeviceSettingsUI(configAvailable) {
         }
         // Auto-load settings when config first becomes available
         if (!decryptedDeviceConfig) {
+            console.log('updateDeviceSettingsUI: Triggering loadDeviceSettings()');
             loadDeviceSettings();
         }
     }

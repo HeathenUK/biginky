@@ -1093,11 +1093,11 @@ HappyWeatherConfig getDefaultHappyWeatherConfig() {
     config.locations[5] = {"Bruvik",          60.48f,   5.68f,  1};
     config.numLocations = 6;
     
-    // Layout constants (hardcoded defaults)
+    // Layout constants - use configured display margins
     config.displayWidth = 1600;
     config.displayHeight = 1200;
-    config.marginTop = 80;
-    config.marginBottom = 100;
+    config.marginTop = getDisplayMarginTop() + 30;      // Add 30px padding beyond safe area
+    config.marginBottom = getDisplayMarginBottom() + 30; // Add 30px padding beyond safe area
     config.gapBetweenPanels = 25;
     
     // Panel widths (hardcoded defaults)
@@ -1807,7 +1807,7 @@ bool displayWeatherForPlace(float lat, float lon, const char* placeName) {
     // Target font size 140, but scale down if text is too wide
     const float targetNameFontSize = 140.0f;
     const float minNameFontSize = 60.0f;    // Don't go smaller than this
-    const int16_t maxNameWidth = display.width() - 100;  // 50px margin each side
+    const int16_t maxNameWidth = display.width() - getDisplayMarginLeft() - getDisplayMarginRight();
     
     float actualNameFontSize = targetNameFontSize;
     int16_t nameWidth = ttf.getTextWidth(displayName, targetNameFontSize);
@@ -2362,13 +2362,12 @@ bool displayTflDepartureBoard(const char* stationId, const char* lineId, const c
         return false;
     }
     
-    // Layout constants - account for ~50px covered at top, ~70px covered at bottom
-    // Visible area is approximately y=50 to y=1130
-    const int16_t leftMargin = 60;
-    const int16_t rightMargin = display.width() - 60;
-    const int16_t topSafe = 50;      // Top of visible area
-    const int16_t bottomSafe = 1130; // Bottom of visible area (1200 - 70)
-    const int16_t stationY = topSafe + 80;  // 130 - station name near top
+    // Layout constants - use configured display margins for safe area
+    const int16_t leftMargin = getDisplayMarginLeft();
+    const int16_t rightMargin = display.width() - getDisplayMarginRight();
+    const int16_t topSafe = getDisplayMarginTop();
+    const int16_t bottomSafe = display.height() - getDisplayMarginBottom();
+    const int16_t stationY = topSafe + 80;  // Station name near top
     const int16_t firstRowY = 310;          // First arrival row
     const int16_t rowHeight = 170;          // Height between arrival rows
     const int16_t timeDisplayY = bottomSafe - 80;  // 1050 - clock near bottom (+20px margin)
@@ -2803,9 +2802,12 @@ bool displaySwimConditionsScene() {
     
     const int16_t W = display.width();   // 1600
     const int16_t H = display.height();  // 1200
-    const int16_t margin = 40;
-    const int16_t topSafe = 50;
-    const int16_t bottomSafe = 1130;
+    const int16_t marginL = getDisplayMarginLeft();
+    const int16_t marginR = getDisplayMarginRight();
+    const int16_t topSafe = getDisplayMarginTop();
+    const int16_t bottomSafe = H - getDisplayMarginBottom();
+    const int16_t contentWidth = W - marginL - marginR;
+    const int16_t gapBetweenCols = 40;  // Internal gap between columns
     
     // Title
     const float titleSize = 72.0f;
@@ -2817,14 +2819,14 @@ bool displaySwimConditionsScene() {
                         EL133UF1_BLACK, ALIGN_CENTER, ALIGN_MIDDLE);
     
     // Divider line
-    for (int x = margin; x < W - margin; x++) {
+    for (int x = marginL; x < W - marginR; x++) {
         display.setPixel(x, topSafe + 145, EL133UF1_BLACK);
     }
     
     // Grid layout - 2 columns, 3 rows
-    const int16_t colWidth = (W - margin * 3) / 2;
-    const int16_t col1X = margin;
-    const int16_t col2X = margin * 2 + colWidth;
+    const int16_t colWidth = (contentWidth - gapBetweenCols) / 2;
+    const int16_t col1X = marginL;
+    const int16_t col2X = marginL + colWidth + gapBetweenCols;
     const int16_t rowHeight = 280;
     const int16_t row1Y = topSafe + 180;
     const int16_t row2Y = row1Y + rowHeight;
@@ -2983,12 +2985,12 @@ bool displaySwimConditionsScene() {
     // ===== Footer =====
     char updateTime[32];
     strftime(updateTime, sizeof(updateTime), "Updated %H:%M", timeinfo);
-    ttf.drawTextAligned(margin + 10, bottomSafe - 20, updateTime, 28.0f,
+    ttf.drawTextAligned(marginL + 10, bottomSafe - 20, updateTime, 28.0f,
                         EL133UF1_BLACK, ALIGN_LEFT, ALIGN_MIDDLE);
     
     char dateStr[32];
     strftime(dateStr, sizeof(dateStr), "%A %d %B", timeinfo);
-    ttf.drawTextAligned(W - margin - 10, bottomSafe - 20, dateStr, 28.0f,
+    ttf.drawTextAligned(W - marginR - 10, bottomSafe - 20, dateStr, 28.0f,
                         EL133UF1_BLACK, ALIGN_RIGHT, ALIGN_MIDDLE);
     
     // Update display

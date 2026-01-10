@@ -3194,10 +3194,11 @@ static void auto_cycle_task(void* arg) {
             time_ok = true;
         }
         
-        // Parse parameter JSON (expects: {"url": "...", "count": 5, "title": "..."})
+        // Parse parameter JSON (expects: {"url": "...", "count": 5, "title": "...", "font": "..."})
         String feedUrl = "";
         int feedCount = 5;
         String feedTitle = "";
+        String feedFont = "";
         
         if (parameter.length() > 0) {
             cJSON* paramRoot = cJSON_Parse(parameter.c_str());
@@ -3214,6 +3215,10 @@ static void auto_cycle_task(void* arg) {
                 if (titleItem && cJSON_IsString(titleItem)) {
                     feedTitle = titleItem->valuestring;
                 }
+                cJSON* fontItem = cJSON_GetObjectItem(paramRoot, "font");
+                if (fontItem && cJSON_IsString(fontItem)) {
+                    feedFont = fontItem->valuestring;
+                }
                 cJSON_Delete(paramRoot);
             } else {
                 // If not JSON, treat entire parameter as URL
@@ -3224,7 +3229,8 @@ static void auto_cycle_task(void* arg) {
         bool success = false;
         if (feedUrl.length() > 0) {
             success = displayFeedScene(feedUrl.c_str(), feedCount, 
-                                       feedTitle.length() > 0 ? feedTitle.c_str() : nullptr);
+                                       feedTitle.length() > 0 ? feedTitle.c_str() : nullptr,
+                                       feedFont.length() > 0 ? feedFont.c_str() : nullptr);
         }
         
         if (!success) {

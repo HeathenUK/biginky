@@ -512,12 +512,17 @@ static bool handleFeedUnified(const CommandContext& ctx) {
     // Extract optional title override
     String title = extractJsonStringField(ctx.originalMessage, "title");
     
-    Serial.printf("[FEED] Displaying feed: %s (max %d items)\n", url.c_str(), count);
+    // Extract optional font
+    String font = extractJsonStringField(ctx.originalMessage, "font");
+    
+    Serial.printf("[FEED] Displaying feed: %s (max %d items, font: %s)\n", 
+                  url.c_str(), count, font.length() > 0 ? font.c_str() : "default");
     
     return displayFeedScene(
         url.c_str(),
         count,
-        title.length() > 0 ? title.c_str() : nullptr
+        title.length() > 0 ? title.c_str() : nullptr,
+        font.length() > 0 ? font.c_str() : nullptr
     );
 }
 

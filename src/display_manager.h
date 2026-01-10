@@ -184,8 +184,9 @@ bool displayCalibrationPattern();
  * @param feedUrl URL of the feed to fetch
  * @param maxItems Maximum number of items to display (1-10, default 5)
  * @param title Optional title override (uses feed title if nullptr)
+ * @param fontName Optional font name (uses OpenSans if nullptr or empty)
  * @return true if successful, false otherwise
  */
-bool displayFeedScene(const char* feedUrl, int maxItems = 5, const char* title = nullptr);
+bool displayFeedScene(const char* feedUrl, int maxItems = 5, const char* title = nullptr, const char* fontName = nullptr);
 
 #endif // DISPLAY_MANAGER_H

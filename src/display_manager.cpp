@@ -3504,7 +3504,7 @@ static int16_t drawWrappedText(const char* text, int16_t x, int16_t y, float fon
     return y;
 }
 
-bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverride) {
+bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverride, const char* fontName) {
     Serial.printf("=== Feed Scene: %s (max %d items) ===\n", feedUrl, maxItems);
     
     // Validate parameters
@@ -3524,9 +3524,12 @@ bool displayFeedScene(const char* feedUrl, int maxItems, const char* titleOverri
         }
     }
     
-    // Load font (OpenSans default)
-    if (!loadFontByName("")) {
-        Serial.println("WARNING: Failed to load default font");
+    // Load requested font (or default OpenSans if not specified)
+    String fontToLoad = (fontName && strlen(fontName) > 0) ? String(fontName) : String("");
+    if (!loadFontByName(fontToLoad)) {
+        Serial.println("WARNING: Failed to load font, using default");
+    } else if (fontName && strlen(fontName) > 0) {
+        Serial.printf("Feed: Using font '%s'\n", fontName);
     }
     
     // Clear to white background

@@ -29,7 +29,7 @@ extern String lastProcessedCommandId;  // ID of the last command that was proces
 extern std::vector<struct MediaMapping> g_media_mappings;
 extern bool g_media_mappings_loaded;
 extern uint32_t lastMediaIndex;
-extern uint8_t g_sleep_interval_minutes;
+extern int8_t g_sleep_interval_minutes;
 
 // Font list from RTC memory (scanned at cold boot)
 // FontInfo struct is defined in main.cpp - forward declare here

@@ -21,7 +21,7 @@
 // Forward declarations for global variables (defined in main file)
 extern int g_audio_volume_pct;
 extern uint32_t lastMediaIndex;
-extern uint8_t g_sleep_interval_minutes;
+extern int8_t g_sleep_interval_minutes;
 extern bool g_is_cold_boot;
 
 /**

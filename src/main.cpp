@@ -358,7 +358,7 @@ Preferences authPrefs;  // NVS preferences for web UI authentication (non-static
 Preferences managePrefs;  // NVS preferences for management interface settings (non-static for nvs_manager module access)
 static const char* OPENAI_API_KEY = "";
 static bool g_codec_ready = false;
-uint8_t g_sleep_interval_minutes = 1;  // Sleep interval in minutes (must be factor of 60) (non-static for nvs_manager module access)
+int8_t g_sleep_interval_minutes = 1;  // Sleep interval: >0 = wake every N mins, 0 = always-on, -1 = event-driven (non-static for nvs_manager module access)
 // Hour enable/disable is now managed by schedule_manager - use isHourEnabledInSchedule()
 
 static TwoWire g_codec_wire0(0);
@@ -994,6 +994,100 @@ bool isHourEnabled(int hour) {
 }
 
 static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSleepSeconds) {
+    // Handle special sleep modes
+    if (g_sleep_interval_minutes == 0) {
+        // ALWAYS-ON mode: Light sleep (delay) instead of deep sleep
+        // Calculate time until next slot and wait with periodic MQTT processing
+        Serial.println("ALWAYS-ON mode (interval=0): Light sleep until next minute");
+        
+        time_t now = time(nullptr);
+        struct tm tm_now;
+        gmtime_r(&now, &tm_now);
+        
+        // Calculate seconds until next minute boundary
+        uint32_t secs_until_next_min = 60 - tm_now.tm_sec;
+        if (secs_until_next_min < 5) secs_until_next_min += 60;  // If too soon, wait for next minute
+        
+        Serial.printf("ALWAYS-ON: Waiting %lu seconds (with MQTT)\n", (unsigned long)secs_until_next_min);
+        
+        uint32_t start_ms = millis();
+        uint32_t wait_ms = secs_until_next_min * 1000;
+        
+        // Loop until time elapses (MQTT is handled by its own task)
+        while ((millis() - start_ms) < wait_ms) {
+            // Short delay to avoid busy-waiting
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        
+        Serial.println("ALWAYS-ON: Wake time reached, returning to main loop");
+        return;  // Return to caller to process next scheduled action
+    }
+    
+    if (g_sleep_interval_minutes == -1) {
+        // EVENT-DRIVEN mode: Sleep until next scheduled slot
+        Serial.println("EVENT-DRIVEN mode (interval=-1): Calculating next scheduled slot...");
+        time_t now = time(nullptr);
+        if (now <= 1577836800) {
+            // Time invalid - fallback to hourly
+            Serial.println("Time invalid, falling back to hourly wake");
+            sleepNowSeconds(3600);
+            return;
+        }
+        
+        struct tm tm_now;
+        gmtime_r(&now, &tm_now);
+        int current_hour = tm_now.tm_hour;
+        int current_min = tm_now.tm_min;
+        
+        // Search for next enabled slot (up to 24 hours ahead)
+        uint32_t best_sleep_seconds = 0;
+        bool found_slot = false;
+        
+        for (int hours_ahead = 0; hours_ahead < 25 && !found_slot; hours_ahead++) {
+            int check_hour = (current_hour + hours_ahead) % 24;
+            
+            // Check if this hour is enabled
+            if (!isHourEnabledInSchedule(check_hour)) {
+                continue;
+            }
+            
+            // Hour is enabled - find next slot
+            // For first hour (hours_ahead == 0), only consider slots after current minute
+            int start_min = (hours_ahead == 0) ? current_min + 1 : 0;
+            
+            // Check if there's a slot in this hour
+            for (int min = start_min; min < 60; min++) {
+                if (hasScheduleSlot(check_hour, min)) {
+                    // Found a slot - calculate sleep duration
+                    int mins_until = (hours_ahead * 60) + (min - current_min);
+                    if (mins_until <= 0) mins_until += 24 * 60;  // Wrap around
+                    
+                    best_sleep_seconds = (uint32_t)(mins_until * 60 - tm_now.tm_sec);
+                    found_slot = true;
+                    Serial.printf("Next scheduled slot: %02d:%02d (in %d minutes)\n", 
+                                  check_hour, min, mins_until);
+                    break;
+                }
+            }
+        }
+        
+        if (!found_slot) {
+            // No enabled slots found - fallback to top of hour
+            Serial.println("No enabled schedule slots found, falling back to hourly wake");
+            uint32_t secs_until_hour = (60 - tm_now.tm_min) * 60 - tm_now.tm_sec;
+            if (secs_until_hour < 60) secs_until_hour += 3600;  // At least 1 hour
+            best_sleep_seconds = secs_until_hour;
+        }
+        
+        // Sanity check
+        if (best_sleep_seconds < 30) best_sleep_seconds = 60;
+        if (best_sleep_seconds > 24 * 3600) best_sleep_seconds = 24 * 3600;
+        
+        Serial.printf("EVENT-DRIVEN: Sleeping for %lu seconds\n", (unsigned long)best_sleep_seconds);
+        sleepNowSeconds(best_sleep_seconds);
+        return;  // Never returns
+    }
+    
     time_t now = time(nullptr);
     if (now <= 1577836800) {  // time invalid
         Serial.printf("Time invalid, sleeping for fallback: %lu seconds\n", (unsigned long)fallback_seconds);
@@ -1010,8 +1104,8 @@ static void sleepUntilNextMinuteOrFallback(uint32_t fallback_seconds = kCycleSle
     // Sleep interval must be a factor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60)
     // This ensures we always wake at :00 for the hourly media cycle
     // We sleep until the NEXT aligned minute mark, never waking mid-minute
-    uint32_t interval_minutes = g_sleep_interval_minutes;
-    if (interval_minutes == 0 || 60 % interval_minutes != 0) {
+    int32_t interval_minutes = g_sleep_interval_minutes;
+    if (interval_minutes <= 0 || 60 % interval_minutes != 0) {
         // Invalid interval, default to 1 minute
         interval_minutes = 1;
         Serial.println("WARNING: Invalid sleep interval, defaulting to 1 minute");
@@ -10247,40 +10341,63 @@ bool handleVolumeCommand(const String& parameter) {
  * Format: !sleep_interval <minutes>
  * Example: !sleep_interval 2 (wake every 2 minutes)
  *          !sleep_interval 4 (wake every 4 minutes)
- * Must be a factor of 60: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60
+ *          !sleep_interval 0 (always-on mode - stay awake, never sleep)
+ *          !sleep_interval -1 (event-driven mode - sleep until next scheduled slot)
+ * Positive values must be factors of 60: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60
  * Default is 1 (wake every minute)
  */
 bool handleSleepIntervalCommand(const String& parameter) {
     Serial.println("Processing !sleep_interval command...");
     
     if (parameter.length() == 0) {
-        Serial.printf("Current sleep interval: %d minutes\n", g_sleep_interval_minutes);
+        if (g_sleep_interval_minutes == 0) {
+            Serial.println("Current sleep mode: ALWAYS-ON (0) - device stays awake");
+        } else if (g_sleep_interval_minutes == -1) {
+            Serial.println("Current sleep mode: EVENT-DRIVEN (-1) - sleep until next scheduled slot");
+        } else {
+            Serial.printf("Current sleep interval: %d minutes\n", g_sleep_interval_minutes);
+        }
         Serial.println("Usage: !sleep_interval <minutes>");
-        Serial.println("Valid values (must be factors of 60): 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
+        Serial.println("Special modes: 0 = always-on, -1 = event-driven");
+        Serial.println("Interval values (must be factors of 60): 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
         return false;
     }
     
     int newInterval = parameter.toInt();
     
-    // Validate: must be a factor of 60
-    if (newInterval <= 0 || newInterval > 60 || 60 % newInterval != 0) {
-        Serial.printf("ERROR: Sleep interval must be a factor of 60 (got: %d)\n", newInterval);
-        Serial.println("Valid values: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
+    // Validate: 0 = always-on, -1 = event-driven, >0 must be factor of 60
+    if (newInterval == 0) {
+        // Always-on mode
+        g_sleep_interval_minutes = 0;
+        sleepDurationSaveToNVS();
+        Serial.println("Sleep mode set to: ALWAYS-ON (0)");
+        Serial.println("Device will stay awake and connected to MQTT");
+        return true;
+    } else if (newInterval == -1) {
+        // Event-driven mode
+        g_sleep_interval_minutes = -1;
+        sleepDurationSaveToNVS();
+        Serial.println("Sleep mode set to: EVENT-DRIVEN (-1)");
+        Serial.println("Device will deep sleep until next scheduled slot");
+        return true;
+    } else if (newInterval > 0 && newInterval <= 60 && 60 % newInterval == 0) {
+        // Valid interval
+        g_sleep_interval_minutes = (int8_t)newInterval;
+        sleepDurationSaveToNVS();
+        Serial.printf("Sleep interval set to %d minutes\n", g_sleep_interval_minutes);
+        Serial.printf("Device will wake at: ");
+        for (int i = 0; i < 60; i += newInterval) {
+            Serial.printf(":%02d", i);
+            if (i + newInterval < 60) Serial.print(", ");
+        }
+        Serial.println(" (and always at :00 for hourly media cycle)");
+        return true;
+    } else {
+        Serial.printf("ERROR: Invalid sleep interval (got: %d)\n", newInterval);
+        Serial.println("Special modes: 0 = always-on, -1 = event-driven");
+        Serial.println("Interval values (must be factors of 60): 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
         return false;
     }
-    
-    g_sleep_interval_minutes = (uint8_t)newInterval;
-    sleepDurationSaveToNVS();
-    
-    Serial.printf("Sleep interval set to %d minutes\n", g_sleep_interval_minutes);
-    Serial.printf("Device will wake at: ");
-    for (int i = 0; i < 60; i += newInterval) {
-        Serial.printf(":%02d", i);
-        if (i + newInterval < 60) Serial.print(", ");
-    }
-    Serial.println(" (and always at :00 for hourly media cycle)");
-    
-    return true;
 }
 
 /**

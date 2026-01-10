@@ -736,13 +736,11 @@ void publishMQTTStatus() {
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
     
     // Sleep interval (device setting, always include - independent of time validity)
-    extern uint8_t g_sleep_interval_minutes;
-    uint32_t interval_minutes = g_sleep_interval_minutes;
-    if (interval_minutes == 0 || 60 % interval_minutes != 0) {
-        interval_minutes = 1;  // Normalize invalid values to default
-    }
-    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"sleep_interval_minutes\":%lu",
-                       (unsigned long)interval_minutes);
+    extern int8_t g_sleep_interval_minutes;
+    int interval_minutes = g_sleep_interval_minutes;
+    // 0 = always-on, -1 = event-driven, >0 = interval in minutes
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"sleep_interval_minutes\":%d",
+                       interval_minutes);
     
     // WiFi information (if connected)
     if (WiFi.status() == WL_CONNECTED) {
@@ -1153,13 +1151,11 @@ static void statusPreparationTask(void* arg) {
     written += snprintf(jsonBuffer + written, jsonSize - written, ",\"connected\":true");
     
     // Sleep interval (device setting, always include - independent of time validity)
-    extern uint8_t g_sleep_interval_minutes;
-    uint32_t interval_minutes = g_sleep_interval_minutes;
-    if (interval_minutes == 0 || 60 % interval_minutes != 0) {
-        interval_minutes = 1;  // Normalize invalid values to default
-    }
-    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"sleep_interval_minutes\":%lu",
-                       (unsigned long)interval_minutes);
+    extern int8_t g_sleep_interval_minutes;
+    int interval_minutes = g_sleep_interval_minutes;
+    // 0 = always-on, -1 = event-driven, >0 = interval in minutes
+    written += snprintf(jsonBuffer + written, jsonSize - written, ",\"sleep_interval_minutes\":%d",
+                       interval_minutes);
     
     // NOTE: WiFi information is NOT included in parallel status preparation (Core 1)
     // because ESP32 WiFi API is NOT thread-safe and should only be called from Core 0.

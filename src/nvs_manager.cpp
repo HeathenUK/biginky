@@ -13,7 +13,7 @@
 // External references to global state in main file
 extern int g_audio_volume_pct;
 extern uint32_t lastMediaIndex;
-extern uint8_t g_sleep_interval_minutes;
+extern int8_t g_sleep_interval_minutes;
 extern bool g_is_cold_boot;
 
 // External references to Preferences objects in main file
@@ -135,18 +135,29 @@ void sleepDurationLoadFromNVS() {
         return;
     }
     
-    uint8_t savedInterval = guard.get().getUChar("interval", 1);  // Default to 1 if not set
+    // Use getChar for signed 8-bit value (backward compatible - same bits, different interpretation)
+    int8_t savedInterval = guard.get().getChar("interval", 1);  // Default to 1 if not set
     
-    // Validate: must be a factor of 60
-    // Valid factors: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60
-    if (savedInterval == 0 || 60 % savedInterval != 0) {
-        Serial.printf("WARNING: Invalid sleep interval %d in NVS (not a factor of 60), using default (1)\n", savedInterval);
-        g_sleep_interval_minutes = 1;
-    } else {
+    // Validate: 0 = always-on, -1 = event-driven, >0 must be factor of 60
+    if (savedInterval == 0 || savedInterval == -1) {
+        // Special modes - valid as-is
+        g_sleep_interval_minutes = savedInterval;
+        if (g_is_cold_boot) {
+            if (savedInterval == 0) {
+                Serial.println("Loaded sleep mode from NVS: ALWAYS-ON (0)");
+            } else {
+                Serial.println("Loaded sleep mode from NVS: EVENT-DRIVEN (-1)");
+            }
+        }
+    } else if (savedInterval > 0 && 60 % savedInterval == 0) {
+        // Valid interval (factor of 60)
         g_sleep_interval_minutes = savedInterval;
         if (g_is_cold_boot) {
             Serial.printf("Loaded sleep interval from NVS: %d minutes\n", g_sleep_interval_minutes);
         }
+    } else {
+        Serial.printf("WARNING: Invalid sleep interval %d in NVS, using default (1)\n", savedInterval);
+        g_sleep_interval_minutes = 1;
     }
 }
 
@@ -157,9 +168,15 @@ void sleepDurationSaveToNVS() {
         return;
     }
     
-    guard.get().putUChar("interval", g_sleep_interval_minutes);
+    guard.get().putChar("interval", g_sleep_interval_minutes);
     
-    Serial.printf("Saved sleep interval to NVS: %d minutes\n", g_sleep_interval_minutes);
+    if (g_sleep_interval_minutes == 0) {
+        Serial.println("Saved sleep mode to NVS: ALWAYS-ON (0)");
+    } else if (g_sleep_interval_minutes == -1) {
+        Serial.println("Saved sleep mode to NVS: EVENT-DRIVEN (-1)");
+    } else {
+        Serial.printf("Saved sleep interval to NVS: %d minutes\n", g_sleep_interval_minutes);
+    }
 }
 
 // Management interface timeout disabled state

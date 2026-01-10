@@ -114,6 +114,20 @@ void wifiClearCredentials();
 void enterConfigMode();
 
 /**
+ * Start AP mode with captive portal for WiFi configuration
+ * Creates a WiFi access point "BigInky-Setup" that users can connect to
+ * Serves a simple web page to configure WiFi credentials
+ * @param timeoutMinutes How long to run AP mode before giving up (0 = indefinite)
+ * @return true if WiFi was configured, false if timed out or failed
+ */
+bool wifiStartAPConfigMode(uint8_t timeoutMinutes = 5);
+
+/**
+ * Clear all stored networks
+ */
+void wifiClearNetworks();
+
+/**
  * Persistent WiFi connection function - keeps trying until connected
  * @param maxRetries Maximum number of connection attempts
  * @param timeoutPerAttemptMs Timeout for each connection attempt in milliseconds

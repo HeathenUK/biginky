@@ -1085,8 +1085,15 @@ bool wifiConnectPersistent(int maxRetries, uint32_t timeoutPerAttemptMs, bool re
     // All retries exhausted
     if (required) {
         Serial.println("ERROR: WiFi connection failed after all retries - this is required, will keep trying...");
-        while (WiFi.status() != WL_CONNECTED) {
-            Serial.println("Retrying WiFi connection (required)...");
+        
+        // Even for required connections, have an absolute maximum to allow fallback to AP config mode
+        // 20 additional retries at ~30s each = about 10 more minutes before giving up
+        const int absoluteMaxRetries = 20;
+        int persistentRetry = 0;
+        
+        while (WiFi.status() != WL_CONNECTED && persistentRetry < absoluteMaxRetries) {
+            persistentRetry++;
+            Serial.printf("Retrying WiFi connection (required) - attempt %d/%d...\n", persistentRetry, absoluteMaxRetries);
             delay(5000);
             if (WiFi.status() != WL_CONNECTED) {
                 WiFi.disconnect();
@@ -1109,12 +1116,18 @@ bool wifiConnectPersistent(int maxRetries, uint32_t timeoutPerAttemptMs, bool re
                 return true;
             }
         }
+        
+        // Exhausted all retries even in required mode
+        Serial.println("\n========================================");
+        Serial.println("CRITICAL: WiFi connection failed after exhaustive retries!");
+        Serial.println("Network may be unavailable or credentials incorrect.");
+        Serial.println("Returning false to allow AP config mode fallback.");
+        Serial.println("========================================\n");
+        return false;
     } else {
         Serial.println("WiFi connection failed after all retries");
         return false;
     }
-    
-    return true;  // Should never reach here, but satisfy compiler
 }
 
 void wifiSaveCredentials() {
@@ -1149,6 +1162,272 @@ void wifiClearCredentials() {
     wifiCredentialsCached = false;
     
     Serial.println("WiFi credentials cleared from NVS and cache");
+}
+
+void wifiClearNetworks() {
+    g_wifiNetworkCount = 0;
+    memset(g_wifiNetworks, 0, sizeof(g_wifiNetworks));
+    g_wifiNetworksLoaded = true;  // Mark as loaded (but empty)
+    saveNetworksToNVS();
+    Serial.println("All WiFi networks cleared");
+}
+
+// ============================================================================
+// AP Mode Captive Portal for WiFi Configuration
+// ============================================================================
+
+#include <DNSServer.h>
+#include <WebServer.h>
+
+// Captive portal HTML - minimal and functional
+static const char AP_CONFIG_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BigInky WiFi Setup</title>
+<style>
+*{box-sizing:border-box;font-family:system-ui,-apple-system,sans-serif}
+body{margin:0;padding:20px;background:#1a1a2e;color:#eee;min-height:100vh}
+.c{max-width:400px;margin:0 auto}
+h1{color:#e94560;margin:0 0 10px;font-size:24px}
+p{color:#aaa;margin:0 0 20px;font-size:14px}
+.card{background:#16213e;padding:20px;border-radius:12px;margin-bottom:15px}
+label{display:block;margin-bottom:5px;color:#aaa;font-size:13px}
+input,select{width:100%;padding:12px;border:1px solid #333;border-radius:8px;background:#0f0f23;color:#fff;font-size:16px;margin-bottom:15px}
+input:focus,select:focus{outline:none;border-color:#e94560}
+button{width:100%;padding:14px;background:#e94560;border:none;border-radius:8px;color:#fff;font-size:16px;cursor:pointer;font-weight:600}
+button:hover{background:#ff6b6b}
+.scan{background:#4a4e69;margin-bottom:10px}
+.scan:hover{background:#6c757d}
+.net{padding:10px;background:#0f0f23;border-radius:6px;margin:5px 0;cursor:pointer;display:flex;justify-content:space-between}
+.net:hover{background:#1a1a2e}
+.rssi{color:#4a4e69;font-size:12px}
+.hidden{display:none}
+.msg{padding:15px;border-radius:8px;margin:15px 0;text-align:center}
+.ok{background:#2d6a4f;color:#fff}
+.err{background:#9b2226;color:#fff}
+#networks{max-height:200px;overflow-y:auto}
+</style>
+</head>
+<body>
+<div class="c">
+<h1>&#128420; BigInky Setup</h1>
+<p>Connect your device to WiFi</p>
+<div id="msg"></div>
+<div class="card">
+<button class="scan" onclick="scan()">&#128270; Scan for Networks</button>
+<div id="networks"></div>
+<form id="f" onsubmit="return save()">
+<label>Network Name (SSID)</label>
+<input type="text" id="ssid" name="ssid" required maxlength="32" placeholder="Enter or select network">
+<label>Password</label>
+<input type="password" id="psk" name="psk" maxlength="64" placeholder="Leave empty for open network">
+<label><input type="checkbox" id="hidden" name="hidden"> Hidden network</label><br><br>
+<button type="submit">&#128274; Save &amp; Connect</button>
+</form>
+</div>
+<p style="text-align:center;font-size:12px;color:#666">After saving, the device will restart and connect to your network.</p>
+</div>
+<script>
+function scan(){
+document.getElementById('networks').innerHTML='<p style="color:#aaa">Scanning...</p>';
+fetch('/scan').then(r=>r.json()).then(d=>{
+let h='';
+d.forEach(n=>{
+h+='<div class="net" onclick="pick(\''+n.ssid+'\')"><span>'+n.ssid+(n.enc?' &#128274;':' &#128275;')+'</span><span class="rssi">'+n.rssi+' dBm</span></div>';
+});
+document.getElementById('networks').innerHTML=h||'<p style="color:#aaa">No networks found</p>';
+}).catch(e=>{
+document.getElementById('networks').innerHTML='<p style="color:#e94560">Scan failed</p>';
+});
+}
+function pick(s){document.getElementById('ssid').value=s;document.getElementById('psk').focus();}
+function save(){
+let f=document.getElementById('f');
+let fd=new FormData(f);
+fetch('/save',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+if(d.success){
+document.getElementById('msg').innerHTML='<div class="msg ok">&#9989; WiFi saved! Restarting...</div>';
+setTimeout(()=>{document.getElementById('msg').innerHTML='<div class="msg ok">You can close this page and reconnect to your normal WiFi.</div>';},3000);
+}else{
+document.getElementById('msg').innerHTML='<div class="msg err">&#10060; '+d.error+'</div>';
+}
+}).catch(e=>{
+document.getElementById('msg').innerHTML='<div class="msg err">&#10060; Connection error</div>';
+});
+return false;
+}
+</script>
+</body>
+</html>
+)rawliteral";
+
+// Global state for AP mode
+static bool g_apConfigComplete = false;
+static WebServer* g_apServer = nullptr;
+static DNSServer* g_dnsServer = nullptr;
+
+// Handler for captive portal detection
+static void handleCaptivePortal() {
+    g_apServer->send(200, "text/html", AP_CONFIG_HTML);
+}
+
+// Handler for WiFi scan
+static void handleScan() {
+    Serial.println("AP Config: Scanning for networks...");
+    int n = WiFi.scanNetworks(false, true);  // Include hidden networks
+    
+    String json = "[";
+    for (int i = 0; i < n; i++) {
+        if (i > 0) json += ",";
+        json += "{\"ssid\":\"";
+        json += WiFi.SSID(i);
+        json += "\",\"rssi\":";
+        json += String(WiFi.RSSI(i));
+        json += ",\"enc\":";
+        json += (WiFi.encryptionType(i) != WIFI_AUTH_OPEN) ? "true" : "false";
+        json += "}";
+    }
+    json += "]";
+    
+    WiFi.scanDelete();
+    Serial.printf("AP Config: Found %d networks\n", n);
+    g_apServer->send(200, "application/json", json);
+}
+
+// Handler for saving WiFi credentials
+static void handleSave() {
+    String ssid = g_apServer->arg("ssid");
+    String psk = g_apServer->arg("psk");
+    bool hidden = g_apServer->hasArg("hidden");
+    
+    Serial.printf("AP Config: Saving SSID='%s' hidden=%d\n", ssid.c_str(), hidden);
+    
+    if (ssid.length() == 0 || ssid.length() > 32) {
+        g_apServer->send(200, "application/json", "{\"success\":false,\"error\":\"Invalid SSID\"}");
+        return;
+    }
+    
+    if (psk.length() > 64) {
+        g_apServer->send(200, "application/json", "{\"success\":false,\"error\":\"Password too long\"}");
+        return;
+    }
+    
+    // Save to multi-network system
+    if (!wifiAddNetwork(ssid.c_str(), psk.c_str(), hidden, true)) {
+        g_apServer->send(200, "application/json", "{\"success\":false,\"error\":\"Failed to save\"}");
+        return;
+    }
+    
+    // Also save as primary credentials for legacy compatibility
+    strncpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID) - 1);
+    wifiSSID[sizeof(wifiSSID) - 1] = '\0';
+    strncpy(wifiPSK, psk.c_str(), sizeof(wifiPSK) - 1);
+    wifiPSK[sizeof(wifiPSK) - 1] = '\0';
+    wifiSaveCredentials();
+    
+    g_apServer->send(200, "application/json", "{\"success\":true}");
+    g_apConfigComplete = true;
+}
+
+bool wifiStartAPConfigMode(uint8_t timeoutMinutes) {
+    Serial.println("\n========================================");
+    Serial.println("  WiFi AP Configuration Mode");
+    Serial.println("========================================");
+    
+    // Disconnect any existing connection
+    WiFi.disconnect(true);
+    delay(100);
+    
+    // Start Access Point
+    const char* apSSID = "BigInky-Setup";
+    Serial.printf("Starting AP: %s\n", apSSID);
+    
+    WiFi.mode(WIFI_AP);
+    if (!WiFi.softAP(apSSID)) {
+        Serial.println("ERROR: Failed to start AP");
+        return false;
+    }
+    
+    delay(100);
+    IPAddress apIP = WiFi.softAPIP();
+    Serial.printf("AP IP address: %s\n", apIP.toString().c_str());
+    
+    // Start DNS server for captive portal (redirect all domains to our IP)
+    g_dnsServer = new DNSServer();
+    g_dnsServer->start(53, "*", apIP);
+    Serial.println("DNS server started (captive portal)");
+    
+    // Start HTTP server
+    g_apServer = new WebServer(80);
+    
+    // Captive portal detection endpoints (various OS/browsers)
+    g_apServer->on("/", handleCaptivePortal);
+    g_apServer->on("/generate_204", handleCaptivePortal);  // Android
+    g_apServer->on("/gen_204", handleCaptivePortal);       // Android
+    g_apServer->on("/hotspot-detect.html", handleCaptivePortal);  // iOS
+    g_apServer->on("/canonical.html", handleCaptivePortal);  // iOS
+    g_apServer->on("/success.txt", handleCaptivePortal);   // iOS
+    g_apServer->on("/ncsi.txt", handleCaptivePortal);      // Windows
+    g_apServer->on("/connecttest.txt", handleCaptivePortal);  // Windows
+    g_apServer->on("/redirect", handleCaptivePortal);      // Windows
+    g_apServer->onNotFound(handleCaptivePortal);           // Catch-all
+    
+    // API endpoints
+    g_apServer->on("/scan", HTTP_GET, handleScan);
+    g_apServer->on("/save", HTTP_POST, handleSave);
+    
+    g_apServer->begin();
+    Serial.println("HTTP server started");
+    
+    Serial.println("========================================");
+    Serial.printf("Connect to WiFi: %s\n", apSSID);
+    Serial.println("Then open any webpage or http://192.168.4.1");
+    Serial.println("========================================\n");
+    
+    // Run AP mode loop
+    g_apConfigComplete = false;
+    uint32_t startTime = millis();
+    uint32_t timeoutMs = timeoutMinutes * 60 * 1000;
+    
+    while (!g_apConfigComplete) {
+        g_dnsServer->processNextRequest();
+        g_apServer->handleClient();
+        delay(10);
+        
+        // Check for timeout (if not indefinite)
+        if (timeoutMinutes > 0 && (millis() - startTime) >= timeoutMs) {
+            Serial.println("AP Config: Timeout reached");
+            break;
+        }
+        
+        // Check for serial input to exit early
+        if (Serial.available()) {
+            char ch = Serial.read();
+            if (ch == 'q' || ch == 'Q') {
+                Serial.println("AP Config: Cancelled via serial");
+                break;
+            }
+        }
+    }
+    
+    // Cleanup
+    Serial.println("Stopping AP mode...");
+    g_apServer->stop();
+    delete g_apServer;
+    g_apServer = nullptr;
+    
+    g_dnsServer->stop();
+    delete g_dnsServer;
+    g_dnsServer = nullptr;
+    
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    
+    Serial.println("AP mode stopped");
+    
+    return g_apConfigComplete;
 }
 
 

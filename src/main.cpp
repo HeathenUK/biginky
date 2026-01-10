@@ -2666,8 +2666,14 @@ static void auto_cycle_task(void* arg) {
             // Don't disconnect WiFi here - doMqttCheckCycle() will use it
             // wifiConnectPersistent() in doMqttCheckCycle() will detect existing connection
         } else {
-            Serial.println("WARNING: WiFi connection failed on cold boot - cannot sync NTP");
-            time_ok = false;
+            // WiFi connection failed after all retries - need to enter AP config mode
+            Serial.println("\n========================================");
+            Serial.println("CRITICAL: WiFi connection failed on cold boot!");
+            Serial.println("Entering AP configuration mode for network setup.");
+            Serial.println("========================================\n");
+            g_config_mode_needed = true;
+            vTaskDelete(NULL);  // Delete this task - main loop will handle config
+            return;  // Should never reach here, but satisfy compiler
         }
         
         // Update time variables after NTP sync
@@ -3338,8 +3344,14 @@ static void doMqttCheckCycle(bool time_ok, bool isTopOfHour, int currentHour) {
         // Connect WiFi if not already connected
         if (WiFi.status() != WL_CONNECTED) {
             if (!wifiConnectPersistent(10, 30000, true)) {  // 10 retries, 30s per attempt, required
-                Serial.println("ERROR: WiFi connection failed - this should not happen (required mode)");
-                return;  // Can't proceed without WiFi
+                // WiFi connection failed after exhaustive retries - trigger AP config mode
+                Serial.println("\n========================================");
+                Serial.println("CRITICAL: WiFi connection failed for MQTT!");
+                Serial.println("Entering AP configuration mode for network setup.");
+                Serial.println("========================================\n");
+                g_config_mode_needed = true;
+                vTaskDelete(NULL);  // Delete this task - main loop will handle config
+                return;  // Should never reach here
             }
         }
         
@@ -13340,6 +13352,26 @@ void setup() {
 // ============================================================================
 
 void loop() {
+    // Check if config mode was requested by auto_cycle_task (no WiFi credentials)
+    if (g_config_mode_needed) {
+        g_config_mode_needed = false;
+        Serial.println("\n>>> Entering AP config mode (no WiFi configured or connection failed) <<<");
+        
+        // Start AP mode with captive portal for WiFi configuration
+        if (wifiStartAPConfigMode()) {
+            // Config mode completed successfully, restart to apply
+            Serial.println("WiFi configured - restarting to connect...");
+            delay(1000);
+            ESP.restart();
+        } else {
+            // Config mode failed or timed out - try serial config as last resort
+            Serial.println("AP config mode failed - falling back to serial config...");
+            enterConfigMode();
+            ESP.restart();
+        }
+    }
+    
     // Main loop - handled by FreeRTOS tasks
     // OTA server runs in a dedicated task with sufficient stack
+    delay(100);  // Small delay to prevent watchdog issues
 }

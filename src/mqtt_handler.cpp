@@ -34,6 +34,9 @@
 #include "nvs_guard.h"  // For NVS access
 #include "Preferences.h"  // For Preferences
 
+// External function from main.cpp for config export
+extern String exportConfigJSON();
+
 // MQTT configuration - hardcoded
 #define MQTT_BROKER_HOSTNAME "mqtt.flespi.io"
 #define MQTT_BROKER_PORT 8883
@@ -2436,6 +2439,20 @@ static void publishMQTTMediaMappingsInternalImpl() {
         }
     } else {
         Serial.println("[Core 1] WARNING: Failed to get schedule JSON for media mappings");
+    }
+    
+    // Add config JSON (for backup/restore functionality)
+    String configJsonStr = exportConfigJSON();
+    if (configJsonStr.length() > 0 && !configJsonStr.startsWith("{\"error\"")) {
+        cJSON* configJson = cJSON_Parse(configJsonStr.c_str());
+        if (configJson != nullptr) {
+            cJSON_AddItemToObject(root, "config", configJson);
+            Serial.println("[Core 1] Added config to media mappings JSON");
+        } else {
+            Serial.println("[Core 1] WARNING: Failed to parse config JSON for media mappings");
+        }
+    } else {
+        Serial.println("[Core 1] WARNING: Failed to get config JSON for media mappings");
     }
     
     // Print JSON to string (cJSON_Print handles memory allocation)

@@ -16,6 +16,10 @@ let currentDrawColor = '0'; // Default to black
 let currentFillColor = '1'; // Default to white
 let currentOutlineColor = '0'; // Default to black
 
+// Display margin overlay settings
+let displayMargins = { top: 50, bottom: 70, left: 60, right: 60 };  // Default margins
+let showMarginOverlay = false;  // Toggle for showing margin overlay
+
 // Pending elements system - elements that can be moved before finalization
 let pendingElements = [];
 let draggingElements = []; // Array of elements being dragged
@@ -86,6 +90,80 @@ function getOutlineColorValue() {
 function setOutlineColor(colorValue) {
     currentOutlineColor = colorValue;
     // Hidden input is updated by color picker component
+}
+
+// Update display margins from device config
+function updateDisplayMargins(margins) {
+    if (margins) {
+        if (margins.margin_top !== undefined) displayMargins.top = margins.margin_top;
+        if (margins.margin_bottom !== undefined) displayMargins.bottom = margins.margin_bottom;
+        if (margins.margin_left !== undefined) displayMargins.left = margins.margin_left;
+        if (margins.margin_right !== undefined) displayMargins.right = margins.margin_right;
+        console.log('Display margins updated:', displayMargins);
+        
+        // If overlay is visible, redraw to show updated margins
+        if (showMarginOverlay) {
+            redrawCanvas();
+        }
+    }
+}
+
+// Toggle margin overlay visibility
+function toggleMarginOverlay() {
+    showMarginOverlay = !showMarginOverlay;
+    const btn = document.getElementById('marginOverlayBtn');
+    if (btn) {
+        btn.textContent = showMarginOverlay ? '🔲 Hide Safe Area' : '🔲 Show Safe Area';
+        btn.classList.toggle('active', showMarginOverlay);
+    }
+    redrawCanvas();
+}
+
+// Get current margin overlay state
+function isMarginOverlayVisible() {
+    return showMarginOverlay;
+}
+
+// Draw margin overlay (dark areas outside safe zone)
+function drawMarginOverlay() {
+    if (!showMarginOverlay || !ctx || !canvas) return;
+    
+    const w = canvas.width;
+    const h = canvas.height;
+    const top = displayMargins.top;
+    const bottom = displayMargins.bottom;
+    const left = displayMargins.left;
+    const right = displayMargins.right;
+    
+    // Semi-transparent dark overlay for unsafe areas
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    
+    // Top margin area
+    if (top > 0) {
+        ctx.fillRect(0, 0, w, top);
+    }
+    
+    // Bottom margin area
+    if (bottom > 0) {
+        ctx.fillRect(0, h - bottom, w, bottom);
+    }
+    
+    // Left margin area (between top and bottom)
+    if (left > 0) {
+        ctx.fillRect(0, top, left, h - top - bottom);
+    }
+    
+    // Right margin area (between top and bottom)
+    if (right > 0) {
+        ctx.fillRect(w - right, top, right, h - top - bottom);
+    }
+    
+    // Draw safe area border (dashed line)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 4]);
+    ctx.strokeRect(left, top, w - left - right, h - top - bottom);
+    ctx.setLineDash([]);  // Reset to solid line
 }
 
 function getBrushSize() {
@@ -1063,6 +1141,9 @@ function redrawCanvas() {
     for (const elem of pendingElements) {
         drawPendingElement(elem, false);
     }
+    
+    // Draw margin overlay if enabled (shows areas outside safe zone)
+    drawMarginOverlay();
 }
 
 // Removed updateFinalizeButton - no longer needed since "Go" button finalizes
@@ -1450,6 +1531,9 @@ function clearCanvas() {
     if (processingPanel) {
         processingPanel.style.display = 'none';
     }
+    
+    // Draw margin overlay if enabled
+    drawMarginOverlay();
     
     showStatus('canvasStatus', 'Canvas cleared', false);
 }

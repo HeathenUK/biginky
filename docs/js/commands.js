@@ -1205,6 +1205,11 @@ async function loadDeviceSettings() {
             timeoutDisabledEl.checked = decryptedDeviceConfig.timeout_disabled;
         }
         
+        // Update canvas margin overlay with device margins
+        if (typeof updateDisplayMargins === 'function') {
+            updateDisplayMargins(decryptedDeviceConfig);
+        }
+        
         // Show content, hide loading
         if (contentEl) contentEl.style.display = 'block';
         if (loadingEl) loadingEl.style.display = 'none';

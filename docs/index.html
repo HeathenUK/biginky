@@ -44,6 +44,7 @@ button.flex-shrink{flex-shrink:0;margin-top:0;}
 .tool-btn{background:#333;border:2px solid #555;color:#e0e0e0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
 .tool-btn:hover{background:#444;border-color:#666;}
 .tool-btn.active{background:#4CAF50;border-color:#45a049;color:white;}
+#marginOverlayBtn.active{background:#FF9800;border-color:#F57C00;color:white;}
 .color-btn{transition:transform 0.1s;border-radius:4px;}
 .color-btn:hover{transform:scale(1.1);border-color:#4CAF50 !important;}
 .color-btn.active{border-color:#4CAF50 !important;border-width:3px !important;}
@@ -549,6 +550,7 @@ table th,table td{padding:6px;font-size:12px;}
 <button onclick="redoCanvas()" id="redoBtn" disabled>Redo</button>
 <button onclick="loadImageToCanvas()" id="loadImageBtn">Load Image</button>
 <button onclick="loadFramebufferToCanvas()" id="loadFrameBtn" disabled>Load Frame</button>
+<button onclick="toggleMarginOverlay()" id="marginOverlayBtn" title="Show/hide safe drawing area based on display margins">🔲 Show Safe Area</button>
 <input type="file" id="imageFileInput" accept="image/*" capture="environment" style="display:none;" onchange="handleImageFileSelect(event)">
 </div>
 <div class="canvas-actions-secondary" style="display:flex;gap:8px;align-items:center;flex-shrink:0;margin-left:auto;">

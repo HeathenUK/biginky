@@ -336,7 +336,7 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             paramCell.appendChild(directionSelect);
         } else if (paramType === 'feed_config') {
             // Parse existing JSON parameter if present
-            let feedParams = { url: '', count: 5, title: '' };
+            let feedParams = { url: '', count: 5, title: '', font: '' };
             if (paramValue) {
                 try {
                     const parsed = JSON.parse(paramValue);
@@ -391,7 +391,37 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             titleInput.style.border = '1px solid #444';
             titleInput.style.padding = '4px';
             titleInput.style.width = '140px';
+            titleInput.style.marginRight = '4px';
             paramCell.appendChild(titleInput);
+            
+            // Font dropdown (optional)
+            const fontSelect = document.createElement('select');
+            fontSelect.className = 'slot-parameter slot-parameter-feed-font';
+            fontSelect.style.background = '#1a1a1a';
+            fontSelect.style.color = '#e0e0e0';
+            fontSelect.style.border = '1px solid #444';
+            fontSelect.style.padding = '4px';
+            fontSelect.style.width = '130px';
+            
+            // Add default option
+            const defaultOpt = document.createElement('option');
+            defaultOpt.value = '';
+            defaultOpt.text = '(default font)';
+            defaultOpt.selected = !feedParams.font;
+            fontSelect.appendChild(defaultOpt);
+            
+            // Add fonts from allFonts global (populated from media mappings)
+            if (typeof allFonts !== 'undefined' && Array.isArray(allFonts)) {
+                allFonts.forEach(font => {
+                    const opt = document.createElement('option');
+                    opt.value = font.name || font.filename || '';
+                    opt.text = (font.family || font.name || font.filename) + 
+                              (font.type === 'builtin' ? ' (Built-in)' : '');
+                    opt.selected = (opt.value === feedParams.font);
+                    fontSelect.appendChild(opt);
+                });
+            }
+            paramCell.appendChild(fontSelect);
         }
     }
     
@@ -655,15 +685,18 @@ async function saveScheduleToDevice() {
                     const urlInput = slotRow.querySelector('.slot-parameter-feed-url');
                     const countSelect = slotRow.querySelector('.slot-parameter-feed-count');
                     const titleInput = slotRow.querySelector('.slot-parameter-feed-title');
+                    const fontSelect = slotRow.querySelector('.slot-parameter-feed-font');
                     
                     const url = urlInput ? urlInput.value.trim() : '';
                     const count = countSelect ? parseInt(countSelect.value) : 5;
                     const title = titleInput ? titleInput.value.trim() : '';
+                    const font = fontSelect ? fontSelect.value : '';
                     
                     if (url.length > 0) {
                         // Store as JSON object
                         const feedParam = { url, count };
                         if (title) feedParam.title = title;
+                        if (font) feedParam.font = font;
                         slot.parameter = JSON.stringify(feedParam);
                         slots.push(slot);
                     }

@@ -305,10 +305,12 @@ async function sendFeedScene() {
     const urlInput = document.getElementById('feedUrl');
     const countSelect = document.getElementById('feedCount');
     const titleInput = document.getElementById('feedTitle');
+    const fontSelect = document.getElementById('feedFont');
     
     const url = urlInput ? urlInput.value.trim() : '';
     const count = countSelect ? parseInt(countSelect.value) : 5;
     const title = titleInput ? titleInput.value.trim() : '';
+    const font = fontSelect ? fontSelect.value : '';
     
     if (!url) {
         showStatus('feedStatus', 'Please enter a feed URL', true);
@@ -325,6 +327,10 @@ async function sendFeedScene() {
     
     if (title) {
         payload.title = title;
+    }
+    
+    if (font) {
+        payload.font = font;
     }
     
     if (await publishMessage(payload)) {

@@ -1041,37 +1041,46 @@ function updateFontList(fonts) {
         return;
     }
     
-    const select = document.getElementById('textFont');
-    if (!select) {
-        console.log('updateFontList: textFont select element not found');
-        return;
-    }
+    // Update both textFont (text display) and feedFont (feed scene) dropdowns
+    const selectIds = ['textFont', 'feedFont'];
     
-    console.log('updateFontList: Found textFont select, processing', fonts.length, 'fonts');
-    const currentValue = select.value;
-    select.innerHTML = '';
-    
-    fonts.forEach((font, index) => {
-        console.log(`updateFontList: Processing font ${index}:`, font);
-        const option = document.createElement('option');
-        option.value = font.name || font.filename || 'OpenSans';
-        const displayName = (font.family || font.name || font.filename) + 
-                          (font.type === 'builtin' ? ' (Built-in)' : '');
-        option.textContent = displayName;
-        console.log(`updateFontList: Created option - value: "${option.value}", text: "${displayName}"`);
-        if (option.value === currentValue) {
-            option.selected = true;
-            console.log(`updateFontList: Selected option matches current value: "${currentValue}"`);
+    selectIds.forEach(selectId => {
+        const select = document.getElementById(selectId);
+        if (!select) {
+            console.log(`updateFontList: ${selectId} select element not found`);
+            return;
         }
-        select.appendChild(option);
+        
+        console.log(`updateFontList: Found ${selectId} select, processing`, fonts.length, 'fonts');
+        const currentValue = select.value;
+        select.innerHTML = '';
+        
+        // Add "(default)" option for feedFont only
+        if (selectId === 'feedFont') {
+            const defaultOpt = document.createElement('option');
+            defaultOpt.value = '';
+            defaultOpt.textContent = '(default)';
+            select.appendChild(defaultOpt);
+        }
+        
+        fonts.forEach((font, index) => {
+            const option = document.createElement('option');
+            option.value = font.name || font.filename || 'OpenSans';
+            const displayName = (font.family || font.name || font.filename) + 
+                              (font.type === 'builtin' ? ' (Built-in)' : '');
+            option.textContent = displayName;
+            if (option.value === currentValue) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+        
+        // If current selection is no longer valid (and not feedFont with default), select first option
+        if (!select.value && fonts.length > 0 && selectId !== 'feedFont') {
+            select.value = fonts[0].name || fonts[0].filename;
+            console.log(`updateFontList: ${selectId} - No valid selection, set to first font:`, select.value);
+        }
+        
+        console.log(`updateFontList: ${selectId} complete. Final select value:`, select.value);
     });
-    
-    // If current selection is no longer valid, select first option
-    if (!select.value && fonts.length > 0) {
-        select.value = fonts[0].name || fonts[0].filename;
-        console.log('updateFontList: No valid selection, set to first font:', select.value);
-    }
-    
-    console.log('updateFontList: Complete. Final select value:', select.value);
-    console.log('updateFontList: Final select options count:', select.options.length);
 }

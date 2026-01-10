@@ -13,7 +13,6 @@
 #include <Arduino.h>
 
 // External dependencies (defined in main.cpp or nvs_manager)
-extern bool g_hour_schedule[24];
 extern bool g_is_cold_boot;
 extern Preferences detailedSchedulePrefs;
 
@@ -26,7 +25,7 @@ static HourSchedule g_detailed_schedule[24];
  */
 void initializeDefaultSchedule() {
     for (int h = 0; h < 24; h++) {
-        g_detailed_schedule[h].enabled = g_hour_schedule[h];  // Use hour schedule enabled state
+        g_detailed_schedule[h].enabled = true;  // Default all hours to enabled
         g_detailed_schedule[h].slots.clear();
         
         if (g_detailed_schedule[h].enabled) {

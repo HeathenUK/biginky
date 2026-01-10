@@ -1115,6 +1115,188 @@ async function sendCanvasAction() {
 }
 
 // ============================================================================
+// Device Settings Functions
+// ============================================================================
+
+// Cache for decrypted device config (for editing)
+let decryptedDeviceConfig = null;
+
+// Load device settings from cached encrypted config
+async function loadDeviceSettings() {
+    const statusEl = document.getElementById('deviceSettingsStatus');
+    const contentEl = document.getElementById('deviceSettingsContent');
+    const loadingEl = document.getElementById('deviceSettingsLoading');
+    
+    if (!cachedDeviceConfig) {
+        if (statusEl) {
+            statusEl.textContent = 'No configuration available. Wait for device status message.';
+            statusEl.style.color = '#f44336';
+        }
+        return;
+    }
+    
+    // Check if config is encrypted
+    if (!cachedDeviceConfig.encrypted || !cachedDeviceConfig.payload) {
+        if (statusEl) {
+            statusEl.textContent = 'Error: Config from device is not encrypted (firmware update needed?)';
+            statusEl.style.color = '#f44336';
+        }
+        return;
+    }
+    
+    // Check if password is available
+    if (!webUIPassword) {
+        if (statusEl) {
+            statusEl.textContent = 'Error: Password required to decrypt settings';
+            statusEl.style.color = '#f44336';
+        }
+        return;
+    }
+    
+    if (statusEl) {
+        statusEl.textContent = 'Decrypting settings...';
+        statusEl.style.color = '#ff9800';
+    }
+    
+    try {
+        // Decrypt the config
+        const decrypted = await decryptMessage(cachedDeviceConfig.payload, cachedDeviceConfig.iv);
+        
+        if (!decrypted) {
+            if (statusEl) {
+                statusEl.textContent = 'Error: Failed to decrypt settings. Password may be incorrect.';
+                statusEl.style.color = '#f44336';
+            }
+            return;
+        }
+        
+        // Parse JSON
+        decryptedDeviceConfig = JSON.parse(decrypted);
+        console.log('Decrypted device config:', decryptedDeviceConfig);
+        
+        // Populate UI fields
+        const volumeEl = document.getElementById('settingVolume');
+        const sleepIntervalEl = document.getElementById('settingSleepInterval');
+        const shuffleModeEl = document.getElementById('settingShuffleMode');
+        const encryptionEnabledEl = document.getElementById('settingEncryptionEnabled');
+        const timeoutDisabledEl = document.getElementById('settingTimeoutDisabled');
+        
+        if (volumeEl && decryptedDeviceConfig.volume !== undefined) {
+            volumeEl.value = decryptedDeviceConfig.volume;
+        }
+        
+        if (sleepIntervalEl && decryptedDeviceConfig.sleep_interval !== undefined) {
+            sleepIntervalEl.value = decryptedDeviceConfig.sleep_interval.toString();
+        }
+        
+        if (shuffleModeEl && decryptedDeviceConfig.media_mode !== undefined) {
+            shuffleModeEl.checked = (decryptedDeviceConfig.media_mode === 1);
+        }
+        
+        if (encryptionEnabledEl && decryptedDeviceConfig.encryption_enabled !== undefined) {
+            encryptionEnabledEl.checked = decryptedDeviceConfig.encryption_enabled;
+        }
+        
+        if (timeoutDisabledEl && decryptedDeviceConfig.timeout_disabled !== undefined) {
+            timeoutDisabledEl.checked = decryptedDeviceConfig.timeout_disabled;
+        }
+        
+        // Show content, hide loading
+        if (contentEl) contentEl.style.display = 'block';
+        if (loadingEl) loadingEl.style.display = 'none';
+        
+        if (statusEl) {
+            statusEl.textContent = 'Settings loaded successfully';
+            statusEl.style.color = '#4CAF50';
+        }
+        
+    } catch (e) {
+        console.error('Failed to load device settings:', e);
+        if (statusEl) {
+            statusEl.textContent = 'Error loading settings: ' + e.message;
+            statusEl.style.color = '#f44336';
+        }
+    }
+}
+
+// Save device settings via config_set command
+async function saveDeviceSettings() {
+    const statusEl = document.getElementById('deviceSettingsStatus');
+    
+    // Gather values from UI
+    const volumeEl = document.getElementById('settingVolume');
+    const sleepIntervalEl = document.getElementById('settingSleepInterval');
+    const shuffleModeEl = document.getElementById('settingShuffleMode');
+    const encryptionEnabledEl = document.getElementById('settingEncryptionEnabled');
+    const timeoutDisabledEl = document.getElementById('settingTimeoutDisabled');
+    
+    const volume = volumeEl ? parseInt(volumeEl.value) : 50;
+    const sleepInterval = sleepIntervalEl ? parseInt(sleepIntervalEl.value) : 1;
+    const shuffleMode = shuffleModeEl ? shuffleModeEl.checked : false;
+    const encryptionEnabled = encryptionEnabledEl ? encryptionEnabledEl.checked : true;
+    const timeoutDisabled = timeoutDisabledEl ? timeoutDisabledEl.checked : false;
+    
+    // Validate
+    if (isNaN(volume) || volume < 0 || volume > 100) {
+        if (statusEl) {
+            statusEl.textContent = 'Error: Volume must be between 0 and 100';
+            statusEl.style.color = '#f44336';
+        }
+        return;
+    }
+    
+    // Build config update object (only include changed fields)
+    const configUpdate = {
+        volume: volume,
+        sleep_interval: sleepInterval,
+        media_mode: shuffleMode ? 1 : 0,
+        encryption_enabled: encryptionEnabled,
+        timeout_disabled: timeoutDisabled
+    };
+    
+    if (statusEl) {
+        statusEl.textContent = 'Saving settings...';
+        statusEl.style.color = '#ff9800';
+    }
+    
+    // Send config_set command
+    const payload = {
+        command: 'config_set',
+        config: configUpdate
+    };
+    
+    if (await publishMessage(payload)) {
+        if (statusEl) {
+            statusEl.textContent = 'Settings update sent. Waiting for device confirmation...';
+            statusEl.style.color = '#ff9800';
+        }
+        setBusyState(true, 'Saving settings...');
+    } else {
+        if (statusEl) {
+            statusEl.textContent = 'Failed to send settings update';
+            statusEl.style.color = '#f44336';
+        }
+    }
+}
+
+// Update device settings UI when config becomes available
+function updateDeviceSettingsUI(configAvailable) {
+    const loadingEl = document.getElementById('deviceSettingsLoading');
+    const statusEl = document.getElementById('deviceSettingsStatus');
+    
+    if (configAvailable) {
+        if (loadingEl) {
+            loadingEl.textContent = 'Configuration available. Click "Refresh Settings" to load.';
+            loadingEl.style.color = '#4CAF50';
+        }
+        // Auto-load settings when config first becomes available
+        if (!decryptedDeviceConfig) {
+            loadDeviceSettings();
+        }
+    }
+}
+
+// ============================================================================
 // Configuration Backup/Restore Functions
 // ============================================================================
 

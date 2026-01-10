@@ -265,13 +265,16 @@ async function handleStatusMessage(message) {
         // Display status
         updateDeviceStatus(status);
         
-        // Extract and cache ENCRYPTED config (for backup/restore functionality)
+        // Extract and cache ENCRYPTED config (for backup/restore and settings functionality)
         // Config is already encrypted by firmware - just cache the encrypted blob
         if (status.config && typeof status.config === 'object' && status.config.encrypted) {
             cachedDeviceConfig = status.config;
             console.log('Cached encrypted config from status message');
             if (typeof updateConfigBackupUI === 'function') {
                 updateConfigBackupUI(true);
+            }
+            if (typeof updateDeviceSettingsUI === 'function') {
+                updateDeviceSettingsUI(true);
             }
         }
         
@@ -366,15 +369,26 @@ async function handleStatusMessage(message) {
                     }
                 }
                 
-                // Handle config_set command completion - device confirms restore
+                // Handle config_set command completion - device confirms restore or settings update
                 if (status.command === 'config_set') {
                     if (status.success) {
+                        // Update both config backup and device settings status
                         if (typeof showStatus === 'function') {
                             showStatus('configBackupStatus', 'Configuration restored successfully! Device may need to restart for some changes to take effect.', false);
+                        }
+                        const settingsStatusEl = document.getElementById('deviceSettingsStatus');
+                        if (settingsStatusEl) {
+                            settingsStatusEl.textContent = 'Settings saved successfully!';
+                            settingsStatusEl.style.color = '#4CAF50';
                         }
                     } else {
                         if (typeof showStatus === 'function') {
                             showStatus('configBackupStatus', 'Failed to restore configuration: ' + (status.error || 'unknown error'), true);
+                        }
+                        const settingsStatusEl = document.getElementById('deviceSettingsStatus');
+                        if (settingsStatusEl) {
+                            settingsStatusEl.textContent = 'Failed to save settings: ' + (status.error || 'unknown error');
+                            settingsStatusEl.style.color = '#f44336';
                         }
                     }
                 }

@@ -1139,16 +1139,17 @@ function updateConfigBackupUI(configAvailable) {
 }
 
 // Export configuration from cached media mappings (no command needed!)
-// Config is ENCRYPTED before saving to protect sensitive data (WiFi credentials, etc.)
-async function requestConfigBackup() {
-    // Use cached config from media mappings - no need to request from device
+// Config is ALREADY ENCRYPTED by firmware - just save the encrypted blob directly
+function requestConfigBackup() {
+    // Use cached config from media mappings - already encrypted by firmware
     if (!cachedDeviceConfig) {
         showStatus('configBackupStatus', 'No configuration available. Wait for media mappings to load.', true);
         return;
     }
     
-    if (!webUIPassword) {
-        showStatus('configBackupStatus', 'Error: Password required to encrypt backup', true);
+    // Verify this is an encrypted config blob (has expected fields)
+    if (!cachedDeviceConfig.encrypted || !cachedDeviceConfig.payload) {
+        showStatus('configBackupStatus', 'Error: Config from device is not encrypted (firmware update needed?)', true);
         return;
     }
     
@@ -1161,57 +1162,23 @@ async function requestConfigBackup() {
         return;
     }
     
-    showStatus('configBackupStatus', 'Encrypting configuration...', false);
+    // Config is already encrypted by firmware - save directly
+    const encryptedJson = JSON.stringify(cachedDeviceConfig, null, 2);
+    const blob = new Blob([encryptedJson], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
     
-    try {
-        // Encrypt the config JSON (contains sensitive data like WiFi credentials)
-        const configJson = JSON.stringify(cachedDeviceConfig);
-        const encryptedPayload = await encryptMessage(configJson);
-        
-        if (!encryptedPayload) {
-            showStatus('configBackupStatus', 'Error: Failed to encrypt configuration', true);
-            return;
-        }
-        
-        // Create encrypted message structure (same format firmware uses)
-        const encryptedMessage = {
-            encrypted: true,
-            payload: encryptedPayload
-        };
-        
-        // Compute HMAC for integrity verification
-        const messageForHMAC = JSON.stringify(encryptedMessage);
-        const hmac = await computeHMAC(messageForHMAC);
-        
-        if (!hmac) {
-            showStatus('configBackupStatus', 'Error: Failed to compute HMAC', true);
-            return;
-        }
-        
-        // Add HMAC to encrypted message
-        encryptedMessage.hmac = hmac;
-        
-        // Create downloadable blob from ENCRYPTED config
-        const encryptedJson = JSON.stringify(encryptedMessage, null, 2);
-        const blob = new Blob([encryptedJson], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        
-        // Generate filename with timestamp
-        const now = new Date();
-        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
-        const filename = `biginky_config_${timestamp}.backup`;
-        
-        configDownloadLink.href = url;
-        configDownloadLink.download = filename;
-        configDownloadLink.textContent = `Download ${filename}`;
-        configBackupDownload.style.display = 'block';
-        
-        showStatus('configBackupStatus', 'Encrypted configuration backup ready for download!', false);
-        console.log('Config export prepared (encrypted) from cached media mappings data');
-    } catch (error) {
-        console.error('Config backup encryption error:', error);
-        showStatus('configBackupStatus', 'Error encrypting configuration: ' + error.message, true);
-    }
+    // Generate filename with timestamp
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const filename = `biginky_config_${timestamp}.backup`;
+    
+    configDownloadLink.href = url;
+    configDownloadLink.download = filename;
+    configDownloadLink.textContent = `Download ${filename}`;
+    configBackupDownload.style.display = 'block';
+    
+    showStatus('configBackupStatus', 'Configuration backup ready for download (encrypted by device)', false);
+    console.log('Config export: saving firmware-encrypted blob directly');
 }
 
 // Legacy handler - kept for backward compatibility but no longer used

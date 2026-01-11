@@ -92,7 +92,6 @@ async function sendWeatherPlace() {
     }
 }
 
-// Fetch and populate lines for a TfL station
 // Line direction mappings - which directions each line uses
 const lineDirections = {
     'northern': ['Northbound', 'Southbound'],
@@ -106,7 +105,43 @@ const lineDirections = {
     'circle': ['Eastbound', 'Westbound'],
     'hammersmith-city': ['Eastbound', 'Westbound'],
     'piccadilly': ['Eastbound', 'Westbound'],
-    'elizabeth': ['Eastbound', 'Westbound']
+    'elizabeth': ['Eastbound', 'Westbound'],
+    'dlr': ['All']
+};
+
+// Static mapping of stations to lines (avoids unreliable TfL API calls)
+const stationLines = {
+    '940GZZLUEMB': ['bakerloo', 'circle', 'district', 'northern'],
+    '940GZZLUHGT': ['northern'],
+    '940GZZLUACY': ['northern'],
+    '940GZZLUEFN': ['northern'],
+    '940GZZLUBST': ['bakerloo', 'circle', 'hammersmith-city', 'jubilee', 'metropolitan'],
+    '940GZZLUKSX': ['circle', 'hammersmith-city', 'metropolitan', 'northern', 'piccadilly', 'victoria'],
+    '940GZZLUWLO': ['bakerloo', 'jubilee', 'northern', 'waterloo-city'],
+    '940GZZLUVIC': ['circle', 'district', 'victoria'],
+    '940GZZLUPCC': ['bakerloo', 'piccadilly'],
+    '940GZZLUOXC': ['bakerloo', 'central', 'victoria'],
+    '940GZZLUGPK': ['jubilee', 'piccadilly', 'victoria'],
+    '940GZZLUBNK': ['central', 'northern', 'waterloo-city', 'dlr'],
+    '940GZZLULVT': ['central', 'circle', 'hammersmith-city', 'metropolitan', 'elizabeth'],
+    '940GZZLUPAC': ['bakerloo', 'circle', 'district', 'hammersmith-city', 'elizabeth']
+};
+
+// Line display names
+const lineNames = {
+    'bakerloo': 'Bakerloo',
+    'central': 'Central',
+    'circle': 'Circle',
+    'district': 'District',
+    'hammersmith-city': 'Hammersmith & City',
+    'jubilee': 'Jubilee',
+    'metropolitan': 'Metropolitan',
+    'northern': 'Northern',
+    'piccadilly': 'Piccadilly',
+    'victoria': 'Victoria',
+    'waterloo-city': 'Waterloo & City',
+    'elizabeth': 'Elizabeth',
+    'dlr': 'DLR'
 };
 
 // Update direction dropdown based on selected line
@@ -139,7 +174,7 @@ function updateTflDirections() {
     // If no line selected, keep just "All directions"
 }
 
-async function onTflStationChange() {
+function onTflStationChange() {
     const selectEl = document.getElementById('tflStationSelect');
     const customInput = document.getElementById('tflCustomStation');
     const lineSelect = document.getElementById('tflLineSelect');
@@ -159,75 +194,25 @@ async function onTflStationChange() {
     
     // If no station selected or custom, don't fetch lines
     if (!stationId || stationId === '' || stationId === 'custom') {
+        loadingEl.style.display = 'none';
         return;
     }
     
-    // Show loading indicator
-    loadingEl.style.display = 'block';
+    // Use static mapping instead of unreliable TfL API
+    const lines = stationLines[stationId];
     
-    try {
-        // Fetch station details from TfL API to get lines
-        const response = await fetch(`https://api.tfl.gov.uk/StopPoint/${stationId}`);
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        // Extract unique line IDs from the station data
-        const lines = new Set();
-        if (data.lineModeGroups) {
-            for (const group of data.lineModeGroups) {
-                if (group.modeName === 'tube' && group.lineIdentifier) {
-                    for (const lineId of group.lineIdentifier) {
-                        lines.add(lineId);
-                    }
-                }
-            }
-        }
-        
-        // Also check lines array if present
-        if (data.lines) {
-            for (const line of data.lines) {
-                if (line.id) {
-                    lines.add(line.id);
-                }
-            }
-        }
-        
-        // Line name mappings (TfL uses lowercase IDs)
-        const lineNames = {
-            'bakerloo': 'Bakerloo',
-            'central': 'Central',
-            'circle': 'Circle',
-            'district': 'District',
-            'hammersmith-city': 'Hammersmith & City',
-            'jubilee': 'Jubilee',
-            'metropolitan': 'Metropolitan',
-            'northern': 'Northern',
-            'piccadilly': 'Piccadilly',
-            'victoria': 'Victoria',
-            'waterloo-city': 'Waterloo & City',
-            'elizabeth': 'Elizabeth',
-            'dlr': 'DLR',
-            'overground': 'Overground',
-            'tram': 'Tramlink'
-        };
-        
-        // Add lines to dropdown
-        for (const lineId of Array.from(lines).sort()) {
+    if (lines && lines.length > 0) {
+        // Add lines to dropdown from static mapping
+        for (const lineId of lines) {
             const option = document.createElement('option');
             option.value = lineId;
             option.textContent = lineNames[lineId] || lineId;
             lineSelect.appendChild(option);
         }
-        
-    } catch (error) {
-        console.error('Failed to fetch TfL station lines:', error);
-        // Silently fail - user can still use "All lines"
-    } finally {
-        loadingEl.style.display = 'none';
     }
+    
+    // Hide loading indicator (not needed for static lookup, but keep for consistency)
+    loadingEl.style.display = 'none';
 }
 
 async function sendTflDepartures() {

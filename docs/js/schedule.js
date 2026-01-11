@@ -64,6 +64,24 @@ const TFL_LINES = [
     { id: 'waterloo-city', name: 'Waterloo & City' }
 ];
 
+// Static mapping of stations to lines (for filtering line dropdown)
+const TFL_STATION_LINES = {
+    '940GZZLUEMB': ['bakerloo', 'circle', 'district', 'northern'],
+    '940GZZLUHGT': ['northern'],
+    '940GZZLUACY': ['northern'],
+    '940GZZLUEFN': ['northern'],
+    '940GZZLUBST': ['bakerloo', 'circle', 'hammersmith-city', 'jubilee', 'metropolitan'],
+    '940GZZLUKSX': ['circle', 'hammersmith-city', 'metropolitan', 'northern', 'piccadilly', 'victoria'],
+    '940GZZLUWLO': ['bakerloo', 'jubilee', 'northern', 'waterloo-city'],
+    '940GZZLUVIC': ['circle', 'district', 'victoria'],
+    '940GZZLUPCC': ['bakerloo', 'piccadilly'],
+    '940GZZLUOXC': ['bakerloo', 'central', 'victoria'],
+    '940GZZLUGPK': ['jubilee', 'piccadilly', 'victoria'],
+    '940GZZLUBNK': ['central', 'northern', 'waterloo-city', 'dlr'],
+    '940GZZLULVT': ['central', 'circle', 'hammersmith-city', 'metropolitan', 'elizabeth'],
+    '940GZZLUPAC': ['bakerloo', 'circle', 'district', 'hammersmith-city', 'elizabeth']
+};
+
 let currentSchedule = null;  // Store current schedule data
 
 function getAccessibleMinutes(intervalMinutes) {
@@ -289,14 +307,6 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             lineSelect.style.padding = '4px';
             lineSelect.style.width = '140px';
             lineSelect.style.marginRight = '4px';
-            
-            TFL_LINES.forEach(line => {
-                const opt = document.createElement('option');
-                opt.value = line.id;
-                opt.text = line.name;
-                opt.selected = (line.id === tflParams.lineId);
-                lineSelect.appendChild(opt);
-            });
             paramCell.appendChild(lineSelect);
             
             // Direction dropdown
@@ -307,6 +317,41 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
             directionSelect.style.border = '1px solid #444';
             directionSelect.style.padding = '4px';
             directionSelect.style.width = '120px';
+            
+            // Populate line dropdown based on selected station
+            function updateLineOptions() {
+                const selectedStation = stationSelect.value;
+                const currentLineValue = lineSelect.value;
+                lineSelect.innerHTML = '';
+                
+                // Always add "All Lines" option
+                const allOpt = document.createElement('option');
+                allOpt.value = '';
+                allOpt.text = '-- All Lines --';
+                lineSelect.appendChild(allOpt);
+                
+                // Get lines for this station (or show all if station unknown)
+                const stationLineIds = TFL_STATION_LINES[selectedStation];
+                const linesToShow = stationLineIds 
+                    ? TFL_LINES.filter(l => l.id === '' || stationLineIds.includes(l.id))
+                    : TFL_LINES;
+                
+                linesToShow.forEach(line => {
+                    if (line.id === '') return;  // Skip "All Lines" - already added
+                    const opt = document.createElement('option');
+                    opt.value = line.id;
+                    opt.text = line.name;
+                    opt.selected = (line.id === tflParams.lineId);
+                    lineSelect.appendChild(opt);
+                });
+                
+                // Try to preserve selection, or default to first option
+                if (currentLineValue && Array.from(lineSelect.options).some(o => o.value === currentLineValue)) {
+                    lineSelect.value = currentLineValue;
+                }
+                
+                updateDirectionOptions();
+            }
             
             // Populate direction based on selected line
             function updateDirectionOptions() {
@@ -330,7 +375,9 @@ function createScheduleSlotRow(hour, slot = { minute: 0, scene: 'media', paramet
                 }
             }
             
-            updateDirectionOptions();
+            // Initialize and connect change handlers
+            updateLineOptions();
+            stationSelect.onchange = updateLineOptions;
             lineSelect.onchange = updateDirectionOptions;
             
             paramCell.appendChild(directionSelect);
